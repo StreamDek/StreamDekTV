@@ -1,0 +1,12 @@
+{
+  "name": "streamdek-tv",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "android": "cd android && gradlew.bat installDebug",
+    "android:dev": "cd android && gradlew.bat installDebug",
+    "android:prod": "cd android && gradlew.bat installRelease",
+    "android:build": "cd android && gradlew.bat assembleRelease",
+    "android:compile": "cd android && gradlew.bat :app:compileDebugKotlin"
+  }
+}

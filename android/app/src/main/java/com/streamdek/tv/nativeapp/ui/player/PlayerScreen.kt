@@ -8,9 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
@@ -35,10 +33,12 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.focus.FocusRequester
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -62,12 +62,14 @@ fun PlayerScreen(
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val view = LocalView.current
+
     var detail by remember { mutableStateOf<MediaDetail?>(null) }
     var currentEpisode by remember(request) { mutableStateOf(request.episode) }
     var nextEpisode by remember { mutableStateOf<EpisodeContext?>(null) }
     var candidate by remember { mutableStateOf<ResolvedPlaybackCandidate?>(null) }
     var currentSourceUrl by remember { mutableStateOf<String?>(null) }
-    var currentLabel by remember { mutableStateOf("Selecting stream") }
+    var currentLabel by remember { mutableStateOf("Selecting stream…") }
     var paused by remember { mutableStateOf(false) }
     var positionSec by remember { mutableDoubleStateOf(0.0) }
     var durationSec by remember { mutableDoubleStateOf(0.0) }
@@ -80,15 +82,25 @@ fun PlayerScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var playerView: MPVView? by remember { mutableStateOf(null) }
     var loading by remember { mutableStateOf(true) }
-    var controlsVisible by remember { mutableStateOf(true) }
+    var controlsVisible by remember { mutableStateOf(false) }
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
 
-    val playPauseRequester = remember { androidx.compose.ui.focus.FocusRequester() }
-    val rewindRequester = remember { androidx.compose.ui.focus.FocusRequester() }
-    val forwardRequester = remember { androidx.compose.ui.focus.FocusRequester() }
-    val nextRequester = remember { androidx.compose.ui.focus.FocusRequester() }
-    val progressRequester = remember { androidx.compose.ui.focus.FocusRequester() }
-    val settingsRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val playRequester = remember { FocusRequester() }
+    val subtitlesRequester = remember { FocusRequester() }
+    val audioRequester = remember { FocusRequester() }
+    val sourcesRequester = remember { FocusRequester() }
+    val rewindRequester = remember { FocusRequester() }
+    val nextRequester = remember { FocusRequester() }
+    val speedRequester = remember { FocusRequester() }
+    val progressRequester = remember { FocusRequester() }
+    val panelCloseRequester = remember { FocusRequester() }
+    val panelFirstItemRequester = remember { FocusRequester() }
+
+    // Keep screen on while the player is active
+    DisposableEffect(Unit) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
 
     fun hideControlsNow() {
         controlsHideJob?.cancel()
@@ -108,15 +120,17 @@ fun PlayerScreen(
         }
     }
 
+    fun requestPlaybackFocus() {
+        scope.launch {
+            delay(60)
+            playRequester.requestFocus()
+        }
+    }
+
     fun showControls(focusPlay: Boolean = false) {
         controlsVisible = true
         scheduleControlsHide()
-        if (focusPlay) {
-            scope.launch {
-                delay(60)
-                playPauseRequester.requestFocus()
-            }
-        }
+        if (focusPlay) requestPlaybackFocus()
     }
 
     fun registerInteraction() {
@@ -126,6 +140,7 @@ fun PlayerScreen(
 
     suspend fun loadPlayback() {
         loading = true
+        controlsVisible = false
         detail = repository.fetchDetail(request.mediaId, request.mediaType)
         if (request.mediaType == "tv" && currentEpisode == null) {
             val firstSeason = detail?.seasons?.firstOrNull()?.seasonNumber
@@ -143,10 +158,16 @@ fun PlayerScreen(
                 )
             }
         }
-        val resolved = repository.resolvePlayback(request.mediaType, request.mediaId, request.imdbId, currentEpisode)
+        val resolved = repository.resolvePlayback(
+            request.mediaType,
+            request.mediaId,
+            request.imdbId,
+            currentEpisode,
+            preferredStreamKey = request.selectedStreamKey,
+        )
         candidate = resolved
         currentSourceUrl = resolved.source?.url
-        currentLabel = resolved.source?.label ?: "No playable stream found"
+        currentLabel = request.selectedStreamLabel ?: resolved.source?.label ?: "No playable stream found"
         val progress = repository.fetchProgress(request.mediaType, request.mediaId, currentEpisode)
         positionSec = progress?.positionSec ?: 0.0
         durationSec = progress?.durationSec ?: 0.0
@@ -178,6 +199,13 @@ fun PlayerScreen(
         }
     }
 
+    LaunchedEffect(panel) {
+        if (panel != null) {
+            delay(80)
+            panelFirstItemRequester.requestFocus()
+        }
+    }
+
     DisposableEffect(request.mediaId, currentEpisode, currentSourceUrl) {
         onDispose {
             controlsHideJob?.cancel()
@@ -187,35 +215,29 @@ fun PlayerScreen(
         }
     }
 
-    BackHandler(enabled = panel != null) {
-        panel = null
-        showControls()
-    }
-
     BackHandler {
-        scope.launch {
-            repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+        if (panel != null) {
+            panel = null
+            showControls(focusPlay = true)
+        } else {
+            scope.launch {
+                repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+            }
+            onBack()
         }
-        onBack()
     }
 
     val breathing = rememberInfiniteTransition(label = "player-loading")
     val logoScale by breathing.animateFloat(
-        initialValue = 0.98f,
-        targetValue = 1.04f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1400),
-            repeatMode = RepeatMode.Reverse,
-        ),
+        initialValue = 0.97f,
+        targetValue = 1.03f,
+        animationSpec = infiniteRepeatable(animation = tween(1600), repeatMode = RepeatMode.Reverse),
         label = "logo-breathe",
     )
     val logoAlpha by breathing.animateFloat(
-        initialValue = 0.72f,
+        initialValue = 0.68f,
         targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1400),
-            repeatMode = RepeatMode.Reverse,
-        ),
+        animationSpec = infiniteRepeatable(animation = tween(1600), repeatMode = RepeatMode.Reverse),
         label = "logo-alpha",
     )
 
@@ -225,14 +247,10 @@ fun PlayerScreen(
             .background(Color.Black)
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
-                if (panel == null && !controlsVisible && event.key in setOf(
-                        Key.DirectionCenter,
-                        Key.Enter,
-                        Key.NumPadEnter,
-                        Key.DirectionLeft,
-                        Key.DirectionRight,
-                        Key.DirectionUp,
-                        Key.DirectionDown,
+                if (!loading && panel == null && !controlsVisible && event.key in setOf(
+                        Key.DirectionCenter, Key.Enter, Key.NumPadEnter,
+                        Key.DirectionLeft, Key.DirectionRight,
+                        Key.DirectionUp, Key.DirectionDown,
                     )
                 ) {
                     showControls(focusPlay = true)
@@ -245,12 +263,18 @@ fun PlayerScreen(
             factory = { context ->
                 MPVView(context).apply {
                     setHeaders(mapOf("User-Agent" to "Mozilla/5.0 StreamDekTV"))
+                    onRemoteCenterCallback = {
+                        if (!controlsVisible || panel != null) {
+                            showControls(focusPlay = true)
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     onLoadCallback = { _, _, _ ->
                         loading = false
-                        showControls()
-                        if (positionSec > 0.0) {
-                            seekTo(positionSec)
-                        }
+                        showControls(focusPlay = true)
+                        if (positionSec > 0.0) seekTo(positionSec)
                     }
                     onProgressCallback = { position, duration ->
                         positionSec = position
@@ -270,7 +294,7 @@ fun PlayerScreen(
                     onErrorCallback = { message ->
                         error = message
                         loading = false
-                        controlsVisible = true
+                        showControls(focusPlay = true)
                     }
                     onTracksChangedCallback = { audio, subtitles, selectedAudioTrackId, selectedSubtitleTrackId ->
                         audioTracks = audio
@@ -283,27 +307,22 @@ fun PlayerScreen(
             },
             update = { view ->
                 playerView = view
-                if (!currentSourceUrl.isNullOrBlank()) {
-                    view.setSource(currentSourceUrl)
+                view.onRemoteCenterCallback = {
+                    if (!controlsVisible || panel != null) {
+                        showControls(focusPlay = true)
+                        true
+                    } else {
+                        false
+                    }
                 }
+                if (!currentSourceUrl.isNullOrBlank()) view.setSource(currentSourceUrl)
                 view.setPaused(paused)
                 view.setSpeed(speed)
             },
             modifier = Modifier.fillMaxSize(),
         )
 
-        if (!loading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color(0x68000000), Color.Transparent, Color(0xB0000000)),
-                        ),
-                    ),
-            )
-        }
-
+        // Loading screen — backdrop + breathing logo only, no controls
         if (loading) {
             val loadingBackdrop = detail?.backdrop ?: detail?.poster
             if (!loadingBackdrop.isNullOrBlank()) {
@@ -319,22 +338,22 @@ fun PlayerScreen(
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            colors = listOf(Color(0xE6000000), Color(0xB3000000), Color(0xF4000000)),
+                            colors = listOf(Color(0xE0000000), Color(0xAA000000), Color(0xF0000000)),
                         ),
                     ),
             )
-            Column(
+            Box(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .padding(horizontal = 48.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+                contentAlignment = Alignment.Center,
             ) {
                 detail?.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
                     AsyncImage(
                         model = logo,
                         contentDescription = detail?.title ?: request.title,
                         modifier = Modifier
-                            .width(360.dp)
+                            .width(340.dp)
                             .scale(logoScale)
                             .alpha(logoAlpha),
                         contentScale = ContentScale.Fit,
@@ -347,106 +366,84 @@ fun PlayerScreen(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = currentLabel,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
-                    modifier = Modifier.padding(top = 18.dp),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
-        }
-
-        PlayerOverlayVisibility(
-            visible = controlsVisible || paused || panel != null || loading || error != null,
-            modifier = Modifier.align(Alignment.TopStart).padding(28.dp),
-        ) {
-            PlayerTopInfo(
-                detail = detail,
-                requestTitle = request.title,
-                currentEpisode = currentEpisode,
-                currentLabel = currentLabel,
-                error = error,
+            Text(
+                text = currentLabel,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 36.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
 
-        PlayerOverlayVisibility(
-            visible = controlsVisible || paused || panel != null || loading || error != null,
-            modifier = Modifier.align(Alignment.Center),
-        ) {
-            PlayerCenterControls(
-                paused = paused,
-                hasNext = nextEpisode != null,
-                playPauseRequester = playPauseRequester,
-                rewindRequester = rewindRequester,
-                forwardRequester = forwardRequester,
-                nextRequester = nextRequester,
-                progressRequester = progressRequester,
-                onInteract = { registerInteraction() },
-                onRewind = {
-                    playerView?.seekTo((positionSec - 10.0).coerceAtLeast(0.0))
-                    registerInteraction()
-                },
-                onPlayPause = {
-                    paused = !paused
-                    if (!paused) scheduleControlsHide()
-                },
-                onForward = {
-                    playerView?.seekTo((positionSec + 10.0).coerceAtMost(durationSec.takeIf { it > 0.0 } ?: (positionSec + 10.0)))
-                    registerInteraction()
-                },
-                onNext = {
-                    nextEpisode?.let { currentEpisode = it }
-                    registerInteraction()
-                },
-            )
-        }
-
-        PlayerOverlayVisibility(
-            visible = controlsVisible || paused || panel != null || loading || error != null,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 28.dp),
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                PlayerTimeline(
+        // Playback controls — bottom bar
+        if (!loading) {
+            PlayerOverlayVisibility(
+                visible = controlsVisible || paused || panel != null || error != null,
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+                PlayerBottomBar(
+                    detail = detail,
+                    requestTitle = request.title,
+                    currentEpisode = currentEpisode,
+                    currentLabel = currentLabel,
+                    error = error,
+                    paused = paused,
+                    hasNext = nextEpisode != null,
                     positionSec = positionSec,
                     durationSec = durationSec,
-                    requester = progressRequester,
-                    controlsRequester = playPauseRequester,
-                    settingsRequester = settingsRequester,
+                    selectedPanel = panel,
+                    playRequester = playRequester,
+                    subtitlesRequester = subtitlesRequester,
+                    audioRequester = audioRequester,
+                    sourcesRequester = sourcesRequester,
+                    rewindRequester = rewindRequester,
+                    nextRequester = nextRequester,
+                    speedRequester = speedRequester,
+                    progressRequester = progressRequester,
                     onInteract = { registerInteraction() },
+                    onPlayPause = {
+                        paused = !paused
+                        if (!paused) scheduleControlsHide()
+                    },
+                    onRewind = {
+                        playerView?.seekTo((positionSec - 10.0).coerceAtLeast(0.0))
+                        registerInteraction()
+                    },
+                    onNext = {
+                        nextEpisode?.let { currentEpisode = it }
+                        registerInteraction()
+                    },
                     onSeekRelative = { delta ->
                         playerView?.seekTo(
-                            (positionSec + delta).coerceAtLeast(0.0).coerceAtMost(durationSec.takeIf { it > 0.0 } ?: (positionSec + delta)),
+                            (positionSec + delta).coerceAtLeast(0.0)
+                                .coerceAtMost(durationSec.takeIf { it > 0.0 } ?: (positionSec + delta)),
                         )
                         registerInteraction()
                     },
-                    modifier = Modifier.width(920.dp),
-                )
-                SettingsPanel(
-                    requester = settingsRequester,
-                    progressRequester = progressRequester,
-                    selectedPanel = panel,
-                    onInteract = { registerInteraction() },
                     onOpenPanel = {
                         panel = it
-                        showControls()
+                        controlsVisible = true
                     },
-                    modifier = Modifier
-                        .padding(top = 14.dp)
-                        .width(920.dp),
                 )
             }
         }
 
+        // Option panel (sources / audio / subtitles)
         panel?.let { activePanel ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x54000000)),
+            )
             PlayerOverlayVisibility(
                 visible = true,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .padding(end = 24.dp),
+                    .padding(end = 36.dp, top = 52.dp, bottom = 52.dp),
             ) {
                 PlayerOptionPanel(
                     panel = activePanel,
@@ -456,49 +453,51 @@ fun PlayerScreen(
                     selectedAudioId = selectedAudioId,
                     selectedSubtitleId = selectedSubtitleId,
                     currentSpeed = speed,
+                    closeRequester = panelCloseRequester,
+                    firstItemRequester = panelFirstItemRequester,
                     onClose = {
                         panel = null
-                        showControls()
+                        showControls(focusPlay = true)
                     },
                     onInteract = { registerInteraction() },
                     onSelectStream = { index ->
                         scope.launch {
                             val stream = candidate?.streams?.getOrNull(index) ?: return@launch
-                            val selected = repository.resolvePlayback(request.mediaType, request.mediaId, request.imdbId, currentEpisode, forceRefresh = true)
-                            val matched = selected.streams.firstOrNull {
-                                (it.infoHash != null && it.infoHash == stream.infoHash) ||
-                                    (it.url != null && it.url == stream.url)
-                            }
-                            currentSourceUrl = if (matched != null) {
-                                repository.resolvePlayback(request.mediaType, request.mediaId, request.imdbId, currentEpisode, forceRefresh = true).source?.url
-                            } else {
-                                selected.source?.url
-                            }
-                            currentLabel = stream.addonName
+                            val selected = repository.resolvePlayback(
+                                request.mediaType,
+                                request.mediaId,
+                                request.imdbId,
+                                currentEpisode,
+                                preferredStreamKey = repository.streamSelectionKey(stream),
+                                forceRefresh = true,
+                            )
+                            candidate = selected
+                            currentSourceUrl = selected.source?.url
+                            currentLabel = selected.source?.label ?: repository.describeStreamOption(stream)
                             panel = null
                             loading = true
-                            showControls()
+                            controlsVisible = false
                         }
                     },
                     onSelectAudio = {
                         playerView?.setAudioTrack(it)
                         panel = null
-                        showControls()
+                        showControls(focusPlay = true)
                     },
                     onDisableSubtitles = {
                         playerView?.disableSubtitleTrack()
                         panel = null
-                        showControls()
+                        showControls(focusPlay = true)
                     },
                     onSelectSubtitle = {
                         playerView?.setSubtitleTrack(it)
                         panel = null
-                        showControls()
+                        showControls(focusPlay = true)
                     },
                     onSelectSpeed = {
                         speed = it
                         panel = null
-                        showControls()
+                        showControls(focusPlay = true)
                     },
                 )
             }

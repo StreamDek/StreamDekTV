@@ -38,6 +38,7 @@ import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.TvSessionInfo
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -65,11 +66,13 @@ fun AuthScreen(
 
     LaunchedEffect(mode) {
         if (mode != AuthMode.TvCode) return@LaunchedEffect
+        TvDebugLogger.i("AuthUi", "starting TV code flow")
         busy = true
         status = null
         tvSession = runCatching { repository.createTvSession() }
             .onFailure { status = it.message ?: "Could not start TV sign-in" }
             .getOrNull()
+        TvDebugLogger.i("AuthUi", "tvSession created code=${tvSession?.userCode ?: "none"}")
         busy = false
     }
 
@@ -80,17 +83,33 @@ fun AuthScreen(
             val result = repository.pollTvSession(session.deviceCode)
             when (result.status) {
                 "approved" -> {
-                    repository.completeTvSession(result)
-                    onSignedIn()
+                    TvDebugLogger.i("AuthUi", "tvSession approved")
+                    runCatching {
+                        repository.completeTvSession(result)
+                    }.onSuccess {
+                        TvDebugLogger.i("AuthUi", "tvSession sign-in complete, navigating back")
+                        onSignedIn()
+                    }.onFailure {
+                        TvDebugLogger.e("AuthUi", "tvSession bootstrap completion failed", it)
+                        status = it.message ?: "TV sign-in finished, but account setup failed"
+                    }
                     return@LaunchedEffect
                 }
-                "authorization_pending" -> status = "Waiting for approval on your phone"
-                "slow_down" -> status = "Approval pending. Polling more slowly"
+                "authorization_pending" -> {
+                    TvDebugLogger.d("AuthUi", "tvSession pending")
+                    status = "Waiting for approval on your phone"
+                }
+                "slow_down" -> {
+                    TvDebugLogger.w("AuthUi", "tvSession slow_down")
+                    status = "Approval pending. Polling more slowly"
+                }
                 "expired_token" -> {
+                    TvDebugLogger.w("AuthUi", "tvSession expired")
                     status = "That code expired. Reload TV sign-in"
                     return@LaunchedEffect
                 }
                 else -> {
+                    TvDebugLogger.w("AuthUi", "tvSession failed status=${result.status}")
                     status = "TV sign-in failed"
                     return@LaunchedEffect
                 }

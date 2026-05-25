@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp.ui
 
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +41,7 @@ import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.account.AccountScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
 import com.streamdek.tv.nativeapp.ui.detail.DetailScreen
+import com.streamdek.tv.nativeapp.ui.detail.PlaybackStreamsScreen
 import com.streamdek.tv.nativeapp.ui.home.HomeScreen
 import com.streamdek.tv.nativeapp.ui.library.LibraryScreen
 import com.streamdek.tv.nativeapp.ui.network.NetworkBrowseScreen
@@ -154,6 +156,22 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         )
                     }
                 }
+                composable("streams") {
+                    val request = repository.currentPlaybackRequest()
+                    if (request == null) {
+                        navController.popBackStack()
+                    } else {
+                        PlaybackStreamsScreen(
+                            repository = repository,
+                            request = request,
+                            onBack = { navController.popBackStack() },
+                            onPlayRequest = { selectedRequest ->
+                                repository.savePlaybackRequest(selectedRequest)
+                                navController.navigate("player")
+                            },
+                        )
+                    }
+                }
                 composable("detail/{type}/{id}") { backStackEntryInner ->
                     DetailScreen(
                         repository = repository,
@@ -165,7 +183,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         },
                         onPlay = { request: PlaybackRequest ->
                             repository.savePlaybackRequest(request)
-                            navController.navigate("player")
+                            navController.navigate("streams")
                         },
                         onRequireAuth = {
                             navController.navigate("auth")
@@ -209,9 +227,16 @@ private fun TvFloatingNav(
     val activeIndex = TopLevelDestination.entries.indexOfFirst { it.route == highlightedRoute }.coerceAtLeast(0)
     val activeOffset = slotWidths.take(activeIndex).fold(0.dp) { acc, width -> acc + width + 6.dp }
     val animatedOffset by animateDpAsState(activeOffset, label = "nav-pill-offset")
+    var navHasFocus by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
+            .onFocusChanged { navHasFocus = it.hasFocus }
+            .border(
+                width = if (navHasFocus) 2.dp else 0.dp,
+                color = if (navHasFocus) Color(0x90F0BA66) else Color.Transparent,
+                shape = RoundedCornerShape(999.dp),
+            )
             .clip(RoundedCornerShape(999.dp))
             .background(Color(0xE611141B))
             .padding(horizontal = 8.dp, vertical = 6.dp),

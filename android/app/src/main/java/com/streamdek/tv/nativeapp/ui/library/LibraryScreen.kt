@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,25 +46,42 @@ import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.LibraryResponse
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
+import kotlinx.coroutines.CancellationException
 
 @Composable
 fun LibraryScreen(
     repository: StreamDekRepository,
     onOpenDetail: (String, String) -> Unit,
 ) {
+    val session by repository.session.collectAsState()
+    val bootstrap by repository.bootstrap.collectAsState()
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
     val initialCardRequester = remember { FocusRequester() }
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    LaunchedEffect(Unit) {
-        library = repository.fetchLibrary(forceRefresh = true)
+    LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
+        error = null
+        try {
+            val result = repository.fetchLibrary(forceRefresh = true)
+            library = result
+            TvDebugLogger.i("LibraryUi", "library loaded continue=${result.continueWatching.size} watchlist=${result.watchlist.size}")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            library = null
+            error = failure.message
+            TvDebugLogger.e("LibraryUi", "library failed to load", failure)
+        }
     }
 
     LaunchedEffect(library) {
-        if (library != null) {
+        val hasItems = library?.continueWatching?.isNotEmpty() == true || library?.watchlist?.isNotEmpty() == true
+        if (hasItems) {
             kotlinx.coroutines.delay(180)
             initialCardRequester.requestFocus()
         }
@@ -111,6 +129,13 @@ fun LibraryScreen(
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
             )
+            error?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFF0BA66),
+                )
+            }
         }
 
         LazyColumn(
@@ -163,7 +188,7 @@ fun LibraryScreen(
             if (continueWatching.isEmpty() && watchlist.isEmpty()) {
                 item {
                     Text(
-                        text = "Your library is empty right now.",
+                        text = if (session == null) "Sign in to load your synced library." else "Your library is empty right now.",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
                         modifier = Modifier.padding(start = 48.dp, end = 48.dp),

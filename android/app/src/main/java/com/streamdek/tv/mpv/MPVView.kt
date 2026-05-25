@@ -5,6 +5,7 @@ import android.content.res.AssetManager
 import android.graphics.SurfaceTexture
 import android.util.AttributeSet
 import android.util.Log
+import android.view.KeyEvent
 import android.view.Surface
 import android.view.TextureView
 import dev.jdtech.mpv.MPVLib
@@ -65,11 +66,26 @@ class MPVView @JvmOverloads constructor(
     var onEndCallback: (() -> Unit)? = null
     var onErrorCallback: ((message: String) -> Unit)? = null
     var onTracksChangedCallback: ((audioTracks: List<MpvTrackInfo>, subtitleTracks: List<MpvTrackInfo>, selectedAudioTrackId: Int?, selectedSubtitleTrackId: Int?) -> Unit)? = null
+    var onRemoteCenterCallback: (() -> Boolean)? = null
 
     init {
         surfaceTextureListener = this
         isOpaque = false
         keepScreenOn = true
+        isFocusable = true
+        isFocusableInTouchMode = true
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (
+            event.action == KeyEvent.ACTION_UP &&
+            (event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == KeyEvent.KEYCODE_ENTER)
+        ) {
+            if (onRemoteCenterCallback?.invoke() == true) {
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
@@ -121,6 +137,7 @@ class MPVView @JvmOverloads constructor(
         onEndCallback = null
         onErrorCallback = null
         onTracksChangedCallback = null
+        onRemoteCenterCallback = null
         if (wasInitialized) {
             MPVLib.removeObserver(this)
             MPVLib.removeLogObserver(this)

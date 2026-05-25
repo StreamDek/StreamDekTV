@@ -19,12 +19,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,11 +54,12 @@ import com.streamdek.tv.nativeapp.data.HomeRail
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 private val HomeRailsTop = 360.dp
 
@@ -76,6 +77,8 @@ fun HomeScreen(
     onOpenAccount: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val session by repository.session.collectAsState()
+    val bootstrap by repository.bootstrap.collectAsState()
     var uiState by remember { mutableStateOf<HomeUiState>(HomeUiState.Loading) }
     val verticalListState = rememberLazyListState()
     val horizontalListStates = remember { mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>() }
@@ -84,9 +87,17 @@ fun HomeScreen(
     var focusedItem by remember { mutableStateOf<MediaItem?>(null) }
     var heroDetail by remember { mutableStateOf<MediaDetail?>(null) }
 
-    LaunchedEffect(Unit) {
-        uiState = runCatching { HomeUiState.Ready(repository.fetchHomeContent()) }
-            .getOrElse { HomeUiState.Error(it.message ?: "Could not load home") }
+    LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
+        uiState = HomeUiState.Loading
+        try {
+            uiState = HomeUiState.Ready(repository.fetchHomeContent())
+            TvDebugLogger.i("HomeUi", "home loaded")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            TvDebugLogger.e("HomeUi", "home failed to load", error)
+            uiState = HomeUiState.Error(error.message ?: "Could not load home")
+        }
     }
 
     Box(
@@ -370,7 +381,6 @@ private fun RailSection(
 ) {
     val requesters = remember(row.id) { mutableMapOf<String, FocusRequester>() }
     val initialFocusHandled = remember(row.id) { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -408,9 +418,6 @@ private fun RailSection(
                     modifier = Modifier.focusRequester(requester),
                     onFocused = {
                         requestVerticalPlacement()
-                        scope.launch {
-                            rowState.animateScrollToItem(index)
-                        }
                         onItemFocused(index, item)
                     },
                     onPressed = { onItemPressed(item) },

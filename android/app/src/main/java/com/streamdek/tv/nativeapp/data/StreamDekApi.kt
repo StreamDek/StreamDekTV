@@ -89,6 +89,10 @@ class StreamDekApi(
         body: String? = null,
         session: AuthSession? = sessionStore.currentSession(),
     ): T? = withContext(Dispatchers.IO) {
+        TvDebugLogger.i(
+            "Api",
+            "request method=$method path=$path auth=${session != null} profile=${sessionStore.activeProfileId() ?: "none"}",
+        )
         val builder = Request.Builder()
             .url("$baseUrl$path")
             .header("Accept", "application/json")
@@ -103,6 +107,9 @@ class StreamDekApi(
         if (session != null) {
             builder.header("Authorization", "Bearer ${session.user.accessToken}")
             builder.header("x-user-id", session.user.uid)
+            sessionStore.activeProfileId()?.takeIf { it.isNotBlank() }?.let {
+                builder.header("x-profile-id", it)
+            }
         }
 
         val requestBody = body?.toRequestBody(jsonMediaType)
@@ -115,10 +122,22 @@ class StreamDekApi(
         }.build()
 
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return@withContext null
+            if (!response.isSuccessful) {
+                val errorBody = runCatching { response.body?.string() }.getOrNull().orEmpty()
+                TvDebugLogger.w(
+                    "Api",
+                    "response method=$method path=$path code=${response.code} body=${errorBody.take(240)}",
+                )
+                return@withContext null
+            }
             val raw = response.body?.string()?.takeIf { it.isNotBlank() } ?: return@withContext null
+            TvDebugLogger.d("Api", "response method=$method path=$path code=${response.code} bytes=${raw.length}")
             val type = object : TypeToken<T>() {}.type
-            gson.fromJson<T>(raw, type)
+            runCatching {
+                gson.fromJson<T>(raw, type)
+            }.onFailure {
+                TvDebugLogger.e("Api", "json parse failed path=$path payload=${raw.take(240)}", it)
+            }.getOrNull()
         }
     }
 }

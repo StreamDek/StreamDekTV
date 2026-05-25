@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,7 +41,6 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.BlurEffect
@@ -70,15 +68,18 @@ import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.SeasonDetail
+import com.streamdek.tv.nativeapp.data.SeasonEpisode
 import com.streamdek.tv.nativeapp.data.SeasonRef
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.TraktCommentItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import kotlinx.coroutines.launch
 
 private sealed interface DetailUiState {
     data object Loading : DetailUiState
-    data class Ready(val detail: MediaDetail, val season: SeasonDetail?) : DetailUiState
+    data class Ready(val detail: MediaDetail) : DetailUiState
     data class Error(val message: String) : DetailUiState
 }
 
@@ -94,14 +95,17 @@ fun DetailScreen(
 ) {
     var uiState by remember(mediaType, mediaId) { mutableStateOf<DetailUiState>(DetailUiState.Loading) }
     var selectedSeasonNumber by remember(mediaType, mediaId) { mutableIntStateOf(1) }
-    var selectedSeason by remember(mediaType, mediaId) { mutableStateOf<SeasonDetail?>(null) }
     var selectedEpisodeIndex by remember(mediaType, mediaId) { mutableIntStateOf(0) }
+    var selectedSeason by remember(mediaType, mediaId) { mutableStateOf<SeasonDetail?>(null) }
     var progressFraction by remember(mediaType, mediaId) { mutableStateOf<Float?>(null) }
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
-    val verticalState = rememberLazyListState()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
     val playButtonRequester = remember(mediaType, mediaId) { FocusRequester() }
+    val commentsRequester = remember(mediaType, mediaId) { FocusRequester() }
+    val detailListState = rememberLazyListState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(mediaType, mediaId) {
         uiState = DetailUiState.Loading
@@ -110,33 +114,28 @@ fun DetailScreen(
             uiState = DetailUiState.Error("Could not load title details")
             return@LaunchedEffect
         }
-        val initialSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
-        selectedSeasonNumber = initialSeasonNumber
-        val firstSeason = if (mediaType == "tv") repository.fetchSeason(mediaId, initialSeasonNumber) else null
-        selectedSeason = firstSeason
+        selectedSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
         selectedEpisodeIndex = 0
-        uiState = DetailUiState.Ready(detail, firstSeason)
+        selectedSeason = if (mediaType == "tv" && detail.seasons.isNotEmpty()) {
+            repository.fetchSeason(mediaId, selectedSeasonNumber)
+        } else {
+            null
+        }
+        uiState = DetailUiState.Ready(detail)
     }
 
     val detail = (uiState as? DetailUiState.Ready)?.detail
-    val seasonDetail = selectedSeason ?: (uiState as? DetailUiState.Ready)?.season
-    val selectedEpisode = seasonDetail?.episodes?.getOrNull(selectedEpisodeIndex)
+    val selectedEpisode = selectedSeason?.episodes?.getOrNull(selectedEpisodeIndex)
 
-    fun currentEpisodeContext(): EpisodeContext? =
-        selectedEpisode?.let {
-            EpisodeContext(
-                seasonNumber = selectedSeasonNumber,
-                episodeNumber = it.episodeNumber,
-                title = it.name,
-                overview = it.overview,
-                still = it.still,
-                runtime = it.runtime,
-                airDate = it.airDate,
-                tmdbEpisodeId = it.id,
-            )
+    fun currentEpisodeContext(): EpisodeContext? = selectedEpisode?.toEpisodeContext(selectedSeasonNumber)
+
+    LaunchedEffect(selectedSeasonNumber, detail?.id) {
+        if (detail?.type == "tv") {
+            selectedSeason = repository.fetchSeason(detail.id, selectedSeasonNumber)
         }
+    }
 
-    LaunchedEffect(mediaType, mediaId, selectedEpisodeIndex, selectedSeasonNumber) {
+    LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedEpisodeIndex) {
         val progress = repository.fetchProgress(mediaType, mediaId, currentEpisodeContext())
         progressFraction = progress?.progress?.div(100.0)?.toFloat()?.coerceIn(0f, 1f)
         progressLabel = progress?.takeIf { it.positionSec > 0 && it.durationSec > 0 }?.let {
@@ -146,40 +145,36 @@ fun DetailScreen(
 
     LaunchedEffect(mediaType, mediaId) {
         inWatchlist = repository.fetchLibrary().watchlist.any { it.id == mediaId && it.type == mediaType }
+        comments = repository.fetchTraktComments(mediaId, mediaType)
     }
 
-    LaunchedEffect(detail?.id, seasonDetail?.seasonNumber, selectedEpisodeIndex) {
-        detail?.let { loaded ->
-            buildList {
-                loaded.backdrop?.let(::add)
-                loaded.poster?.let(::add)
-                loaded.titleLogo?.let(::add)
-                loaded.cast.take(12).forEach { it.photo?.let(::add) }
-                loaded.similarTitles.take(12).forEach {
-                    it.backdrop?.let(::add)
-                    it.poster?.let(::add)
-                }
-                seasonDetail?.episodes?.take(10)?.forEach { it.still?.let(::add) }
-            }.distinct().forEach { url ->
-                context.imageLoader.enqueue(
-                    ImageRequest.Builder(context)
-                        .data(url)
-                        .memoryCacheKey(url)
-                        .diskCacheKey(url)
-                        .build(),
-                )
+    LaunchedEffect(detail?.id, selectedSeasonNumber, selectedEpisodeIndex) {
+        detail ?: return@LaunchedEffect
+        buildList {
+            detail.backdrop?.let(::add)
+            detail.poster?.let(::add)
+            detail.titleLogo?.let(::add)
+            detail.cast.take(10).forEach { it.photo?.let(::add) }
+            detail.similarTitles.take(10).forEach {
+                it.backdrop?.let(::add)
+                it.poster?.let(::add)
             }
-            if (repository.currentSession() != null) {
-                runCatching {
-                    repository.prefetchPlayback(
-                        mediaType = loaded.type,
-                        mediaId = loaded.id,
-                        imdbId = loaded.imdbId,
-                        episode = currentEpisodeContext(),
-                    )
-                }
-            }
+            comments.take(6).forEach { it.avatar?.let(::add) }
+        }.distinct().forEach { url ->
+            context.imageLoader.enqueue(
+                ImageRequest.Builder(context)
+                    .data(url)
+                    .memoryCacheKey(url)
+                    .diskCacheKey(url)
+                    .crossfade(false)
+                    .allowHardware(true)
+                    .build(),
+            )
         }
+    }
+
+    LaunchedEffect(mediaType, mediaId) {
+        detailListState.scrollToItem(0)
     }
 
     Box(
@@ -193,16 +188,9 @@ fun DetailScreen(
                 contentDescription = null,
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        renderEffect = BlurEffect(radiusX = 36f, radiusY = 36f)
-                    }
-                    .blur(30.dp),
+                    .graphicsLayer { renderEffect = BlurEffect(radiusX = 34f, radiusY = 34f) }
+                    .blur(28.dp),
                 contentScale = ContentScale.Crop,
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0x22000000)),
             )
         }
 
@@ -211,26 +199,16 @@ fun DetailScreen(
                 .fillMaxSize()
                 .drawWithCache {
                     val leftFade = Brush.horizontalGradient(
-                        colors = listOf(
-                            Color(0xFF040404),
-                            Color(0xF0040404),
-                            Color(0x94040404),
-                            Color.Transparent,
-                        ),
-                        endX = size.width * 0.56f,
+                        colors = listOf(Color(0xF0040404), Color(0xAA040404), Color.Transparent),
+                        endX = size.width * 0.58f,
                     )
-                    val bottomFade = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color(0x55040404),
-                            Color(0xE8040404),
-                            Color(0xFF040404),
-                        ),
-                        startY = size.height * 0.64f,
+                    val verticalFade = Brush.verticalGradient(
+                        colors = listOf(Color(0x55040404), Color(0xC8040404), Color(0xFF040404)),
+                        startY = size.height * 0.16f,
                     )
                     onDrawBehind {
                         drawRect(leftFade)
-                        drawRect(bottomFade)
+                        drawRect(verticalFade)
                     }
                 },
         )
@@ -239,96 +217,111 @@ fun DetailScreen(
             DetailUiState.Loading -> DetailLoading()
             is DetailUiState.Error -> DetailError(state.message)
             is DetailUiState.Ready -> {
-                Row(modifier = Modifier.fillMaxSize()) {
-                    DetailHeroPane(
-                        detail = state.detail,
-                        playButtonRequester = playButtonRequester,
-                        progressFraction = progressFraction,
-                        progressLabel = progressLabel,
-                        inWatchlist = inWatchlist,
-                        selectedEpisode = currentEpisodeContext(),
-                        selectedEpisodeTitle = selectedEpisode?.name,
-                        onBack = onBack,
-                        onTrailer = {
-                            val trailerUrl = when {
-                                state.detail.trailerKey.isNullOrBlank() -> null
-                                state.detail.trailerSite.equals("Vimeo", ignoreCase = true) ->
-                                    "https://player.vimeo.com/video/${state.detail.trailerKey}"
-                                else -> "https://www.youtube.com/watch?v=${state.detail.trailerKey}"
-                            }
-                            trailerUrl?.let {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                })
-                            }
-                        },
-                        onToggleWatchlist = {
-                            val item = MediaItem(
-                                id = state.detail.id,
-                                tmdbId = state.detail.tmdbId,
-                                title = state.detail.title,
-                                type = state.detail.type,
-                                poster = state.detail.poster,
-                                backdrop = state.detail.backdrop,
-                                description = state.detail.description,
-                                rating = state.detail.rating,
-                                year = state.detail.year,
-                            )
-                            if (inWatchlist) repository.removeFromWatchlist(item) else repository.addToWatchlist(item)
-                            inWatchlist = !inWatchlist
-                        },
-                        onPlay = { episode ->
-                            if (repository.currentSession() == null) {
-                                onRequireAuth()
-                            } else {
-                                onPlay(
-                                    PlaybackRequest(
-                                        mediaId = state.detail.id,
-                                        mediaType = state.detail.type,
-                                        imdbId = state.detail.imdbId,
-                                        episode = episode,
-                                        title = state.detail.title,
-                                    ),
-                                )
-                            }
-                        },
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Fixed hero + details — focusing these buttons won't trigger scroll
+                    Column(
                         modifier = Modifier
-                            .width(440.dp)
-                            .fillMaxHeight()
-                            .padding(start = 40.dp, top = 24.dp, end = 18.dp, bottom = 24.dp),
-                    )
-
-                    LazyColumn(
-                        state = verticalState,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .padding(top = 32.dp, end = 24.dp, bottom = 24.dp),
-                        contentPadding = PaddingValues(bottom = 64.dp),
+                            .fillMaxWidth()
+                            .padding(start = 42.dp, end = 42.dp, top = 36.dp),
                         verticalArrangement = Arrangement.spacedBy(26.dp),
                     ) {
-                        if (mediaType == "tv" && state.detail.seasons.isNotEmpty()) {
-                            item(key = "episodes") {
+                        HeroSection(
+                            detail = state.detail,
+                            selectedEpisode = currentEpisodeContext(),
+                            progressFraction = progressFraction,
+                            progressLabel = progressLabel,
+                            inWatchlist = inWatchlist,
+                            playButtonRequester = playButtonRequester,
+                            onBack = onBack,
+                            onTrailer = {
+                                val trailerUrl = when {
+                                    state.detail.trailerKey.isNullOrBlank() -> null
+                                    state.detail.trailerSite.equals("Vimeo", ignoreCase = true) ->
+                                        "https://player.vimeo.com/video/${state.detail.trailerKey}"
+                                    else -> "https://www.youtube.com/watch?v=${state.detail.trailerKey}"
+                                }
+                                trailerUrl?.let {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    })
+                                }
+                            },
+                            onToggleWatchlist = {
+                                val item = MediaItem(
+                                    id = state.detail.id,
+                                    tmdbId = state.detail.tmdbId,
+                                    title = state.detail.title,
+                                    type = state.detail.type,
+                                    poster = state.detail.poster,
+                                    backdrop = state.detail.backdrop,
+                                    description = state.detail.description,
+                                    rating = state.detail.rating,
+                                    year = state.detail.year,
+                                )
+                                if (inWatchlist) repository.removeFromWatchlist(item) else repository.addToWatchlist(item)
+                                inWatchlist = !inWatchlist
+                            },
+                            onPlay = {
+                                if (repository.currentSession() == null) {
+                                    onRequireAuth()
+                                } else {
+                                    onPlay(
+                                        PlaybackRequest(
+                                            mediaId = state.detail.id,
+                                            mediaType = state.detail.type,
+                                            imdbId = state.detail.imdbId,
+                                            episode = currentEpisodeContext(),
+                                            title = state.detail.title,
+                                        ),
+                                    )
+                                }
+                            },
+                        )
+                        DetailsPanel(
+                            detail = state.detail,
+                            selectedEpisode = selectedEpisode,
+                            progressLabel = progressLabel,
+                        )
+                    }
+
+                    // Scrollable section — only starts scrolling once focus moves past details
+                    LazyColumn(
+                        state = detailListState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentPadding = PaddingValues(start = 42.dp, end = 42.dp, top = 20.dp, bottom = 88.dp),
+                        verticalArrangement = Arrangement.spacedBy(26.dp),
+                    ) {
+                        if (comments.isNotEmpty()) {
+                            item("comments") {
+                                CommentsSection(
+                                    comments = comments,
+                                    commentsRequester = commentsRequester,
+                                )
+                            }
+                        }
+
+                        if (state.detail.type == "tv" && state.detail.seasons.isNotEmpty()) {
+                            item("episodes") {
                                 EpisodesSection(
                                     seasons = state.detail.seasons,
                                     selectedSeasonNumber = selectedSeasonNumber,
-                                    seasonDetail = seasonDetail,
+                                    seasonDetail = selectedSeason,
                                     selectedEpisodeIndex = selectedEpisodeIndex,
-                                    onSeasonFocused = { seasonNumber ->
-                                        if (selectedSeasonNumber != seasonNumber) {
-                                            selectedSeasonNumber = seasonNumber
+                                    onSeasonFocused = {
+                                        if (selectedSeasonNumber != it) {
+                                            selectedSeasonNumber = it
                                             selectedEpisodeIndex = 0
                                         }
                                     },
-                                    onSeasonPressed = { seasonNumber ->
-                                        if (selectedSeasonNumber != seasonNumber) {
-                                            selectedSeasonNumber = seasonNumber
+                                    onSeasonPressed = {
+                                        if (selectedSeasonNumber != it) {
+                                            selectedSeasonNumber = it
                                             selectedEpisodeIndex = 0
                                         }
                                     },
-                                    onEpisodeFocused = { index ->
-                                        selectedEpisodeIndex = index
-                                    },
+                                    onEpisodeFocused = { selectedEpisodeIndex = it },
                                     onEpisodePressed = { episode ->
                                         if (repository.currentSession() == null) {
                                             onRequireAuth()
@@ -349,31 +342,20 @@ fun DetailScreen(
                         }
 
                         if (state.detail.cast.isNotEmpty()) {
-                            item(key = "cast") {
-                                CastSection(state.detail.cast)
-                            }
+                            item("cast") { CastSection(state.detail.cast) }
                         }
 
                         if (state.detail.similarTitles.isNotEmpty()) {
-                            item(key = "similar") {
-                                SimilarSection(
-                                    items = state.detail.similarTitles,
-                                    onOpenDetail = onOpenDetail,
-                                )
-                            }
+                            item("similar") { SimilarSection(state.detail.similarTitles, onOpenDetail) }
                         }
-                    }
-                }
-
-                LaunchedEffect(selectedSeasonNumber) {
-                    if (mediaType == "tv") {
-                        selectedSeason = repository.fetchSeason(mediaId, selectedSeasonNumber)
                     }
                 }
 
                 LaunchedEffect(state.detail.id) {
-                    kotlinx.coroutines.delay(250)
+                    kotlinx.coroutines.delay(220)
                     playButtonRequester.requestFocus()
+                    kotlinx.coroutines.delay(50)
+                    detailListState.scrollToItem(0)
                 }
             }
         }
@@ -381,222 +363,104 @@ fun DetailScreen(
 }
 
 @Composable
-private fun DetailLoading() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(48.dp),
-        verticalArrangement = Arrangement.Center,
-    ) {
+internal fun DetailLoading(label: String = "Loading") {
+    Box(modifier = Modifier.fillMaxSize().padding(48.dp), contentAlignment = Alignment.CenterStart) {
         Text(
-            text = "Loading details",
-            style = MaterialTheme.typography.headlineMedium,
+            text = label,
+            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onBackground,
         )
     }
 }
 
 @Composable
-private fun DetailError(message: String) {
+internal fun DetailError(message: String) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(48.dp),
+        modifier = Modifier.fillMaxSize().padding(48.dp),
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "Detail failed to load",
-            style = MaterialTheme.typography.headlineMedium,
+            text = "Could not load this title",
+            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onBackground,
         )
         Text(
             text = message,
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
             modifier = Modifier.padding(top = 12.dp),
         )
     }
 }
 
-@OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun DetailHeroPane(
+private fun HeroSection(
     detail: MediaDetail,
-    playButtonRequester: FocusRequester,
+    selectedEpisode: EpisodeContext?,
     progressFraction: Float?,
     progressLabel: String?,
     inWatchlist: Boolean,
-    selectedEpisode: EpisodeContext?,
-    selectedEpisodeTitle: String?,
+    playButtonRequester: FocusRequester,
     onBack: () -> Unit,
     onTrailer: () -> Unit,
     onToggleWatchlist: suspend () -> Unit,
-    onPlay: (EpisodeContext?) -> Unit,
-    modifier: Modifier = Modifier,
+    onPlay: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val meta = listOfNotNull(
-        if (detail.type == "tv") "Series" else "Movie",
-        detail.year,
-        detail.genreNames.firstOrNull(),
-    ).joinToString("  •  ")
-
     Column(
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        Button(
-            onClick = onBack,
-            shape = ButtonDefaults.shape(AppPillShape),
-            colors = ButtonDefaults.colors(
-                containerColor = Color(0xCC111317),
-                contentColor = MaterialTheme.colorScheme.onBackground,
-            ),
-            modifier = Modifier
-                .width(132.dp)
-                .focusProperties { canFocus = false },
-        ) {
-            Text("Back")
-        }
-
-        detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logoUrl ->
-            AsyncImage(
-                model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
-                    .data(logoUrl)
-                    .crossfade(300)
-                    .build(),
-                contentDescription = detail.title,
-                modifier = Modifier
-                    .height(88.dp)
-                    .fillMaxWidth(0.72f),
-                contentScale = ContentScale.Fit,
-            )
-        } ?: Text(
-            text = detail.title,
-            style = MaterialTheme.typography.displayMedium.copy(fontWeight = FontWeight.Black),
-            color = MaterialTheme.colorScheme.onBackground,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-
         Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
         ) {
-            if (meta.isNotBlank()) {
-                Text(
-                    text = meta,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.84f),
-                )
-            }
-            detail.rating?.let { rating ->
-                ImdbBadge(rating = rating)
-            }
-        }
-
-        detail.tagline?.takeIf { it.isNotBlank() }?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f),
-            )
-        }
-
-        detail.description?.takeIf { it.isNotBlank() }?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
-                maxLines = 8,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-
-        if (!selectedEpisodeTitle.isNullOrBlank()) {
-            Text(
-                text = "Selected episode: $selectedEpisodeTitle",
-                style = MaterialTheme.typography.labelLarge,
-                color = Color(0xFFF0BA66),
-            )
+            BackPill(onBack)
+            detail.rating?.let { ImdbBadge(it) }
         }
 
         Column(
-            modifier = Modifier.padding(top = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth(0.62f),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Primary play / continue button
-            Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-                val hasProgress = (progressFraction ?: 0f) > 0f
-                Button(
-                    onClick = { onPlay(selectedEpisode) },
-                    shape = ButtonDefaults.shape(
-                        if (hasProgress)
-                            RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 0.dp, bottomEnd = 0.dp)
-                        else
-                            RoundedCornerShape(16.dp),
-                    ),
-                    colors = ButtonDefaults.colors(
-                        containerColor = Color(0xFFF4EDE2),
-                        focusedContainerColor = Color.White,
-                        contentColor = Color(0xFF18120A),
-                    ),
-                    modifier = Modifier
-                        .width(280.dp)
-                        .height(58.dp)
-                        .focusRequester(playButtonRequester),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(26.dp),
-                        )
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = when {
-                                    hasProgress -> "Continue Watching"
-                                    detail.type == "tv" && selectedEpisode != null ->
-                                        "Play  S${selectedEpisode.seasonNumber} E${selectedEpisode.episodeNumber}"
-                                    detail.type == "tv" -> "Play Episode"
-                                    else -> "Play"
-                                },
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
-                            )
-                            if (hasProgress && selectedEpisode != null) {
-                                Text(
-                                    text = "S${selectedEpisode.seasonNumber} E${selectedEpisode.episodeNumber}${selectedEpisodeTitle?.let { " • $it" } ?: ""}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0x8818120A),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                    }
-                }
-                if (hasProgress) {
-                    Box(
-                        modifier = Modifier
-                            .width(280.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp))
-                            .background(Color(0x2818120A)),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(progressFraction ?: 0f)
-                                .height(4.dp)
-                                .background(Color(0xFFB99352)),
-                        )
-                    }
-                }
+            detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
+                AsyncImage(
+                    model = logo,
+                    contentDescription = detail.title,
+                    modifier = Modifier.height(98.dp).fillMaxWidth(),
+                    contentScale = ContentScale.Fit,
+                )
+            } ?: Text(
+                text = detail.title,
+                style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+
+            Text(
+                text = buildList {
+                    detail.year?.let(::add)
+                    detail.genreNames.take(3).joinToString(" • ").takeIf { it.isNotBlank() }?.let(::add)
+                    selectedEpisode?.let { add("S${it.seasonNumber} E${it.episodeNumber}") }
+                }.joinToString("  •  "),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+            )
+
+            detail.description?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.86f),
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
 
-            // Secondary actions row
+            ContinuePlayButton(detail, selectedEpisode, progressLabel, progressFraction, playButtonRequester, onPlay)
+
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (!detail.trailerKey.isNullOrBlank()) {
                     Button(
@@ -606,9 +470,7 @@ private fun DetailHeroPane(
                             containerColor = Color(0xCC111317),
                             contentColor = MaterialTheme.colorScheme.onBackground,
                         ),
-                    ) {
-                        Text("Trailer")
-                    }
+                    ) { Text("Trailer") }
                 }
                 Button(
                     onClick = { scope.launch { onToggleWatchlist() } },
@@ -620,11 +482,277 @@ private fun DetailHeroPane(
                 ) {
                     Icon(
                         imageVector = if (inWatchlist) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
-                        contentDescription = if (inWatchlist) "In Watchlist" else "Add to Watchlist",
+                        contentDescription = null,
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DetailsPanel(
+    detail: MediaDetail,
+    selectedEpisode: SeasonEpisode?,
+    progressLabel: String?,
+) {
+    val items = buildList<Pair<String, String>> {
+        detail.releaseDate?.takeIf { it.isNotBlank() }?.let { add("Release" to it) }
+        detail.runtime?.takeIf { it > 0 }?.let { add("Runtime" to "$it min") }
+        detail.status?.takeIf { it.isNotBlank() }?.let { add("Status" to it) }
+        detail.numberOfSeasons?.takeIf { it > 0 }?.let { add("Seasons" to it.toString()) }
+        detail.numberOfEpisodes?.takeIf { it > 0 }?.let { add("Episodes" to it.toString()) }
+        selectedEpisode?.let { add("Episode" to "E${it.episodeNumber} ${it.name}") }
+        progressLabel?.let { add("Progress" to it) }
+    }
+
+    if (items.isEmpty() && detail.tagline.isNullOrBlank()) return
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "Details",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        detail.tagline?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = Color(0xFFF0BA66),
+            )
+        }
+        if (items.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                itemsIndexed(items) { _, item ->
+                    DetailBox(label = item.first, value = item.second)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailBox(label: String, value: String) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0x1A11141B))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = label.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.52f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+    }
+}
+
+@Composable
+private fun CommentsSection(
+    comments: List<TraktCommentItem>,
+    commentsRequester: FocusRequester,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "Trakt Comments",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusGroup(),
+            contentPadding = PaddingValues(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            itemsIndexed(comments.take(8), key = { _, item -> item.id }) { index, comment ->
+                CommentCard(
+                    comment = comment,
+                    requestFocus = if (index == 0) commentsRequester else null,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun CommentCard(
+    comment: TraktCommentItem,
+    requestFocus: FocusRequester?,
+) {
+    Card(
+        onClick = {},
+        modifier = Modifier
+            .width(340.dp)
+            .then(if (requestFocus != null) Modifier.focusRequester(requestFocus) else Modifier),
+        shape = CardDefaults.shape(AppCardShape),
+        colors = CardDefaults.colors(
+            containerColor = Color(0x1611141B),
+            focusedContainerColor = Color(0x2811141B),
+        ),
+        border = CardDefaults.border(
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppCardShape),
+        ),
+        scale = CardDefaults.scale(focusedScale = 1.015f),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            AsyncImage(
+                model = comment.avatar,
+                contentDescription = comment.author,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF15181D)),
+                contentScale = ContentScale.Crop,
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = comment.author,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                Text(
+                    text = listOfNotNull(
+                        comment.userRating?.let { "★$it" },
+                        comment.likes.takeIf { it > 0 }?.let { "♥ $it" },
+                        comment.replies.takeIf { it > 0 }?.let { "↩ $it" },
+                    ).joinToString("  "),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.66f),
+                )
+            }
+            Text(
+                text = if (comment.spoiler) "Spoiler comment hidden on TV." else comment.comment,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+                maxLines = 5,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        }
+    }
+}
+
+
+@Composable
+private fun ContinuePlayButton(
+    detail: MediaDetail,
+    selectedEpisode: EpisodeContext?,
+    progressLabel: String?,
+    progressFraction: Float?,
+    playButtonRequester: FocusRequester,
+    onPlay: () -> Unit,
+) {
+    val hasProgress = (progressFraction ?: 0f) > 0f
+    val title = when {
+        hasProgress -> "Continue Watching"
+        detail.type == "tv" && selectedEpisode != null -> "Choose Stream"
+        detail.type == "tv" -> "Choose Stream"
+        else -> "Play"
+    }
+    val subtitle = when {
+        hasProgress -> progressLabel
+        detail.type == "tv" && selectedEpisode != null -> "S${selectedEpisode.seasonNumber} E${selectedEpisode.episodeNumber}${selectedEpisode.title?.let { "  •  $it" } ?: ""}"
+        else -> null
+    }
+    Button(
+        onClick = onPlay,
+        shape = ButtonDefaults.shape(RoundedCornerShape(18.dp)),
+        colors = ButtonDefaults.colors(
+            containerColor = Color(0xFFF4EDE2),
+            focusedContainerColor = Color.White,
+            contentColor = Color(0xFF18120A),
+        ),
+        modifier = Modifier
+            .width(330.dp)
+            .focusRequester(playButtonRequester),
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(28.dp))
+                Column(
+                    modifier = Modifier.padding(start = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                    )
+                    subtitle?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color(0xAA18120A),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+            if (hasProgress) {
+                ProgressMeter(
+                    progress = (progressFraction ?: 0f).toDouble() * 100.0,
+                    modifier = Modifier
+                        .padding(top = 5.dp)
+                        .width(276.dp)
+                        .height(4.dp),
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+internal fun BackPill(onBack: () -> Unit) {
+    Card(
+        onClick = onBack,
+        shape = CardDefaults.shape(AppPillShape),
+        colors = CardDefaults.colors(
+            containerColor = Color(0xCC111317),
+            focusedContainerColor = Color(0xFF1B2028),
+        ),
+        border = CardDefaults.border(
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppPillShape),
+        ),
+    ) {
+        Text(
+            text = "Back",
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
     }
 }
 
@@ -639,17 +767,15 @@ private fun EpisodesSection(
     onEpisodeFocused: (Int) -> Unit,
     onEpisodePressed: (EpisodeContext) -> Unit,
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        SectionTitle("Episodes")
-
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+            text = "Episodes",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
         LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusGroup(),
-            contentPadding = PaddingValues(horizontal = 8.dp),
+            modifier = Modifier.fillMaxWidth().focusGroup(),
+            contentPadding = PaddingValues(horizontal = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             itemsIndexed(seasons, key = { _, season -> season.seasonNumber }) { _, season ->
@@ -661,31 +787,9 @@ private fun EpisodesSection(
                 )
             }
         }
-
-        seasonDetail?.episodes?.getOrNull(selectedEpisodeIndex)?.let { episode ->
-            Text(
-                text = "E${episode.episodeNumber} • ${episode.name}",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.padding(horizontal = 8.dp),
-            )
-            episode.overview?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-
         LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusGroup(),
-            contentPadding = PaddingValues(horizontal = 8.dp),
+            modifier = Modifier.fillMaxWidth().focusGroup(),
+            contentPadding = PaddingValues(horizontal = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             itemsIndexed(seasonDetail?.episodes.orEmpty(), key = { _, episode -> episode.id }) { index, episode ->
@@ -694,20 +798,7 @@ private fun EpisodesSection(
                     seasonNumber = selectedSeasonNumber,
                     selected = index == selectedEpisodeIndex,
                     onFocused = { onEpisodeFocused(index) },
-                    onPressed = {
-                        onEpisodePressed(
-                            EpisodeContext(
-                                seasonNumber = selectedSeasonNumber,
-                                episodeNumber = episode.episodeNumber,
-                                title = episode.name,
-                                overview = episode.overview,
-                                still = episode.still,
-                                runtime = episode.runtime,
-                                airDate = episode.airDate,
-                                tmdbEpisodeId = episode.id,
-                            ),
-                        )
-                    },
+                    onPressed = { onEpisodePressed(episode.toEpisodeContext(selectedSeasonNumber)) },
                 )
             }
         }
@@ -716,17 +807,12 @@ private fun EpisodesSection(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun SeasonChip(
-    title: String,
-    selected: Boolean,
-    onFocused: () -> Unit,
-    onPressed: () -> Unit,
-) {
-    var isFocused by remember { mutableStateOf(false) }
+private fun SeasonChip(title: String, selected: Boolean, onFocused: () -> Unit, onPressed: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
     Card(
         onClick = onPressed,
         modifier = Modifier.onFocusChanged {
-            isFocused = it.isFocused
+            focused = it.isFocused
             if (it.isFocused) onFocused()
         },
         shape = CardDefaults.shape(AppPillShape),
@@ -735,17 +821,14 @@ private fun SeasonChip(
             focusedContainerColor = Color(0xFF2A2D36),
         ),
         border = CardDefaults.border(
-            focusedBorder = Border(
-                BorderStroke(2.dp, Color(0xFFF0BA66)),
-                shape = AppPillShape,
-            ),
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppPillShape),
         ),
         scale = CardDefaults.scale(focusedScale = 1.02f),
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.titleSmall,
-            color = if (isFocused) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
+            color = if (focused) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
         )
     }
@@ -754,7 +837,7 @@ private fun SeasonChip(
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun EpisodeCard(
-    episode: com.streamdek.tv.nativeapp.data.SeasonEpisode,
+    episode: SeasonEpisode,
     seasonNumber: Int,
     selected: Boolean,
     onFocused: () -> Unit,
@@ -762,53 +845,29 @@ private fun EpisodeCard(
 ) {
     Card(
         onClick = onPressed,
-        modifier = Modifier
-            .size(width = 296.dp, height = 176.dp)
-            .onFocusChanged { if (it.isFocused) onFocused() },
+        modifier = Modifier.size(width = 300.dp, height = 182.dp).onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
             containerColor = if (selected) Color(0x1EF4EDE2) else Color(0xFF181A1F),
             focusedContainerColor = Color(0xFF181A1F),
         ),
         border = CardDefaults.border(
-            focusedBorder = Border(
-                BorderStroke(2.dp, Color(0xFFF0BA66)),
-                shape = AppCardShape,
-            ),
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppCardShape),
         ),
         scale = CardDefaults.scale(focusedScale = 1.025f),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(AppCardShape),
-        ) {
-            AsyncImage(
-                model = episode.still,
-                contentDescription = episode.name,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
+        Box(modifier = Modifier.fillMaxSize().clip(AppCardShape)) {
+            AsyncImage(model = episode.still, contentDescription = episode.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color(0x22000000), Color(0xE0000000)),
-                        ),
-                    ),
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(colors = listOf(Color.Transparent, Color(0x30000000), Color(0xE2000000))),
+                ),
             )
             Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(16.dp),
+                modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text(
-                    text = "S$seasonNumber E${episode.episodeNumber}",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = Color(0xFFF0BA66),
-                )
+                Text("S$seasonNumber E${episode.episodeNumber}", style = MaterialTheme.typography.labelLarge, color = Color(0xFFF0BA66))
                 Text(
                     text = episode.name,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -823,54 +882,20 @@ private fun EpisodeCard(
 
 @Composable
 private fun CastSection(cast: List<CastMember>) {
-    val castRowState = androidx.compose.foundation.lazy.rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        SectionTitle("Cast")
+    val firstRequester = remember { FocusRequester() }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "Cast",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
         LazyRow(
-            state = castRowState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusGroup(),
-            contentPadding = PaddingValues(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            modifier = Modifier.fillMaxWidth().focusGroup(),
+            contentPadding = PaddingValues(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             itemsIndexed(cast, key = { _, member -> member.id }) { index, member ->
-                CastCard(
-                    member = member,
-                    onFocused = {
-                        scope.launch {
-                            castRowState.animateScrollToItem(index.coerceAtLeast(0))
-                        }
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SimilarSection(
-    items: List<MediaItem>,
-    onOpenDetail: (String, String) -> Unit,
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        SectionTitle("More Like This")
-        LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusGroup(),
-            contentPadding = PaddingValues(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            itemsIndexed(items, key = { _, item -> item.id }) { _, item ->
-                SimilarCard(item = item, onPressed = { onOpenDetail(item.type, item.id) })
+                CastCard(member, requestFocus = if (index == 0) firstRequester else null)
             }
         }
     }
@@ -878,114 +903,103 @@ private fun SimilarSection(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun SimilarCard(
-    item: MediaItem,
-    onPressed: () -> Unit,
-) {
+private fun CastCard(member: CastMember, requestFocus: FocusRequester? = null) {
+    val cardShape = RoundedCornerShape(14.dp)
+    Card(
+        onClick = {},
+        modifier = Modifier
+            .width(90.dp)
+            .then(if (requestFocus != null) Modifier.focusRequester(requestFocus) else Modifier),
+        shape = CardDefaults.shape(cardShape),
+        colors = CardDefaults.colors(
+            containerColor = Color(0xFF15181D),
+            focusedContainerColor = Color(0xFF1E2128),
+        ),
+        scale = CardDefaults.scale(focusedScale = 1.02f),
+        border = CardDefaults.border(
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = cardShape),
+        ),
+    ) {
+        Column {
+            AsyncImage(
+                model = member.photo,
+                contentDescription = member.name,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(120.dp)
+                    .clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
+                    .background(Color(0xFF15181D)),
+                contentScale = ContentScale.Crop,
+            )
+            Column(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = member.name,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                member.character?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SimilarSection(items: List<MediaItem>, onOpenDetail: (String, String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "More Like This",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        LazyRow(
+            modifier = Modifier.fillMaxWidth().focusGroup(),
+            contentPadding = PaddingValues(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            itemsIndexed(items, key = { _, item -> item.id }) { _, item ->
+                SimilarCard(item, onPressed = { onOpenDetail(item.type, item.id) })
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun SimilarCard(item: MediaItem, onPressed: () -> Unit) {
     Card(
         onClick = onPressed,
-        modifier = Modifier.size(width = 210.dp, height = 118.dp),
+        modifier = Modifier.size(width = 220.dp, height = 124.dp),
         shape = CardDefaults.shape(AppCardShape),
-        colors = CardDefaults.colors(
-            containerColor = Color(0xFF181A1F),
-            focusedContainerColor = Color(0xFF181A1F),
-        ),
+        colors = CardDefaults.colors(containerColor = Color(0xFF181A1F), focusedContainerColor = Color(0xFF181A1F)),
         border = CardDefaults.border(
-            focusedBorder = Border(
-                BorderStroke(2.dp, Color(0xFFF0BA66)),
-                shape = AppCardShape,
-            ),
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppCardShape),
         ),
         scale = CardDefaults.scale(focusedScale = 1.02f),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(AppCardShape),
-        ) {
-            AsyncImage(
-                model = item.backdrop ?: item.poster,
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color(0xCC000000)),
-                        ),
-                    ),
-            )
+        Box(modifier = Modifier.fillMaxSize().clip(AppCardShape)) {
+            AsyncImage(model = item.backdrop ?: item.poster, contentDescription = item.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(colors = listOf(Color.Transparent, Color(0xCC000000)))))
             Text(
                 text = item.title,
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onBackground,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(12.dp),
+                modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
             )
-        }
-    }
-}
-
-@OptIn(ExperimentalTvMaterial3Api::class)
-@Composable
-private fun CastCard(
-    member: CastMember,
-    onFocused: () -> Unit,
-) {
-    Card(
-        onClick = {},
-        modifier = Modifier
-            .width(102.dp)
-            .onFocusChanged { if (it.isFocused) onFocused() },
-        shape = CardDefaults.shape(AppCardShape),
-        colors = CardDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = Color(0x1811141B),
-        ),
-        scale = CardDefaults.scale(focusedScale = 1.02f),
-        border = CardDefaults.border(
-            focusedBorder = Border(
-                BorderStroke(2.dp, Color(0xFFF0BA66)),
-                shape = AppCardShape,
-            ),
-        ),
-    ) {
-        Column(
-            modifier = Modifier.padding(4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            AsyncImage(
-                model = member.photo,
-                contentDescription = member.name,
-                modifier = Modifier
-                    .size(94.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF15181D)),
-                contentScale = ContentScale.Crop,
-            )
-            Text(
-                text = member.name,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onBackground,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            member.character?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
         }
     }
 }
@@ -993,34 +1007,17 @@ private fun CastCard(
 @Composable
 private fun ImdbBadge(rating: Double) {
     Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFFF5C518))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+        modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFFF5C518)).padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = "IMDb",
-            color = Color(0xFF111111),
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-        )
-        Text(
-            text = "%.1f".format(rating),
-            color = Color(0xFF111111),
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-        )
+        Text("IMDb", color = Color(0xFF111111), style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black))
+        Text("%.1f".format(rating), color = Color(0xFF111111), style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
     }
 }
 
-@Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
-        color = MaterialTheme.colorScheme.onBackground,
-        modifier = Modifier.padding(start = 8.dp),
-    )
+private fun SeasonEpisode.toEpisodeContext(seasonNumber: Int): EpisodeContext {
+    return EpisodeContext(seasonNumber, episodeNumber, name, overview, still, runtime, airDate, id)
 }
 
 private fun formatTime(seconds: Double): String {

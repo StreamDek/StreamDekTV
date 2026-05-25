@@ -12,3 +12,9 @@
 -keep class com.facebook.react.turbomodule.** { *; }
 
 # Add any project specific keep options here:
+
+# Gson-backed API/session models are decoded reflectively in release builds.
+# Keep field names, generic signatures, and serialized-name annotations so
+# TMDB/account payloads continue to deserialize after R8 obfuscation.
+-keepattributes Signature,*Annotation*
+-keep class com.streamdek.tv.nativeapp.data.** { *; }

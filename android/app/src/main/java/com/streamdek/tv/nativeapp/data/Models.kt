@@ -144,6 +144,22 @@ data class PagedRailResponse(
     val page: Int = 1,
 )
 
+data class TraktCommentItem(
+    val id: Long,
+    val author: String,
+    val avatar: String? = null,
+    val comment: String,
+    val likes: Int = 0,
+    val replies: Int = 0,
+    val userRating: Int? = null,
+    val spoiler: Boolean = false,
+    val createdAt: String? = null,
+)
+
+data class TraktCommentsResponse(
+    val results: List<TraktCommentItem> = emptyList(),
+)
+
 data class HomeRail(
     val id: String,
     val title: String,
@@ -163,28 +179,52 @@ data class AccountProfile(
 data class DeviceInfo(
     val id: String? = null,
     val name: String? = null,
+    val platform: String? = null,
+    val deviceType: String? = null,
+    val appVersion: String? = null,
+    val lastSeenAt: String? = null,
+    val isCurrent: Boolean = false,
 )
 
 data class SessionInfo(
     val id: String? = null,
-    val createdAt: String? = null,
+    val clientName: String? = null,
+    val clientPlatform: String? = null,
+    val deviceId: String? = null,
+    val lastSeenAt: String? = null,
+    val isCurrent: Boolean = false,
 )
 
 data class SyncStatus(
     val lastSettingsSyncAt: String? = null,
+    val cloudSyncEnabled: Boolean = true,
+    val playbackSyncEnabled: Boolean = true,
+    val mobileReady: Boolean = true,
+    val tvReady: Boolean = true,
+    val currentTheme: String? = null,
+    val traktConnected: Boolean = false,
 )
 
 data class AppPreferences(
     val theme: String = "cinema-blue",
+    val colorMode: String = "night",
+    val startScreen: String = "home",
     val homeRowCardStyle: String = "landscape",
+    val compactMode: Boolean = false,
+    val syncOverCellular: Boolean = false,
 )
 
 data class PlaybackPreferences(
     val autoplayNextEpisode: Boolean = true,
-    val preferredQuality: String = "best",
-    val defaultSubtitleLanguage: String = "off",
+    val preferredQuality: String = "1080p",
+    val maxFileSizeGB: String = "2",
+    val streamingServer: String = "addon",
+    val defaultSubtitleLanguage: String = "en",
     val defaultAudioLanguage: String = "en",
-    val resolvedPlaybackUrlCacheTtl: String = "1h",
+    val externalPlayerEnabled: Boolean = false,
+    val preferEmbeddedMpvByDefault: Boolean = true,
+    val decoderMode: String = "auto",
+    val renderSurface: String = "standard",
 )
 
 data class PreferencesEnvelope(
@@ -290,6 +330,10 @@ data class LibraryResponse(
     val watchlist: List<MediaItem> = emptyList(),
 )
 
+data class TraktPlaybackResponse(
+    val results: List<ContinueWatchingItem> = emptyList(),
+)
+
 data class PlaybackProgressRecord(
     val positionSec: Double,
     val durationSec: Double,
@@ -351,4 +395,6 @@ data class PlaybackRequest(
     val imdbId: String? = null,
     val episode: EpisodeContext? = null,
     val title: String? = null,
+    val selectedStreamKey: String? = null,
+    val selectedStreamLabel: String? = null,
 )
