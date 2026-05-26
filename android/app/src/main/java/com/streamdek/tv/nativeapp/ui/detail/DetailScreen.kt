@@ -3,8 +3,11 @@ package com.streamdek.tv.nativeapp.ui.detail
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.relocation.BringIntoViewResponder
+import androidx.compose.foundation.relocation.bringIntoViewResponder
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +53,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
@@ -83,6 +87,7 @@ private sealed interface DetailUiState {
     data class Error(val message: String) : DetailUiState
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DetailScreen(
     repository: StreamDekRepository,
@@ -104,6 +109,12 @@ fun DetailScreen(
     val playButtonRequester = remember(mediaType, mediaId) { FocusRequester() }
     val commentsRequester = remember(mediaType, mediaId) { FocusRequester() }
     val detailListState = rememberLazyListState()
+    val noScrollResponder = remember {
+        object : BringIntoViewResponder {
+            override fun calculateRectForParent(localRect: Rect): Rect = localRect
+            override suspend fun bringChildIntoView(localRect: () -> Rect?) { }
+        }
+    }
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -217,137 +228,135 @@ fun DetailScreen(
             DetailUiState.Loading -> DetailLoading()
             is DetailUiState.Error -> DetailError(state.message)
             is DetailUiState.Ready -> {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Fixed hero + details — focusing these buttons won't trigger scroll
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 42.dp, end = 42.dp, top = 36.dp),
-                        verticalArrangement = Arrangement.spacedBy(26.dp),
-                    ) {
-                        HeroSection(
-                            detail = state.detail,
-                            selectedEpisode = currentEpisodeContext(),
-                            progressFraction = progressFraction,
-                            progressLabel = progressLabel,
-                            inWatchlist = inWatchlist,
-                            playButtonRequester = playButtonRequester,
-                            onBack = onBack,
-                            onTrailer = {
-                                val trailerUrl = when {
-                                    state.detail.trailerKey.isNullOrBlank() -> null
-                                    state.detail.trailerSite.equals("Vimeo", ignoreCase = true) ->
-                                        "https://player.vimeo.com/video/${state.detail.trailerKey}"
-                                    else -> "https://www.youtube.com/watch?v=${state.detail.trailerKey}"
-                                }
-                                trailerUrl?.let {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    })
-                                }
-                            },
-                            onToggleWatchlist = {
-                                val item = MediaItem(
-                                    id = state.detail.id,
-                                    tmdbId = state.detail.tmdbId,
-                                    title = state.detail.title,
-                                    type = state.detail.type,
-                                    poster = state.detail.poster,
-                                    backdrop = state.detail.backdrop,
-                                    description = state.detail.description,
-                                    rating = state.detail.rating,
-                                    year = state.detail.year,
-                                )
-                                if (inWatchlist) repository.removeFromWatchlist(item) else repository.addToWatchlist(item)
-                                inWatchlist = !inWatchlist
-                            },
-                            onPlay = {
-                                if (repository.currentSession() == null) {
-                                    onRequireAuth()
-                                } else {
-                                    onPlay(
-                                        PlaybackRequest(
-                                            mediaId = state.detail.id,
-                                            mediaType = state.detail.type,
-                                            imdbId = state.detail.imdbId,
-                                            episode = currentEpisodeContext(),
-                                            title = state.detail.title,
-                                        ),
+                LazyColumn(
+                    state = detailListState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 42.dp, end = 42.dp, top = 36.dp, bottom = 88.dp),
+                    verticalArrangement = Arrangement.spacedBy(26.dp),
+                ) {
+                    item("hero") {
+                        // Wrapped in no-op BringIntoViewResponder so focusing Back/CTA/Trailer/Watchlist
+                        // doesn't trigger LazyColumn to auto-scroll to center them.
+                        Box(modifier = Modifier.bringIntoViewResponder(noScrollResponder)) {
+                            HeroSection(
+                                detail = state.detail,
+                                selectedEpisode = currentEpisodeContext(),
+                                progressFraction = progressFraction,
+                                progressLabel = progressLabel,
+                                inWatchlist = inWatchlist,
+                                playButtonRequester = playButtonRequester,
+                                onBack = onBack,
+                                onTrailer = {
+                                    val trailerUrl = when {
+                                        state.detail.trailerKey.isNullOrBlank() -> null
+                                        state.detail.trailerSite.equals("Vimeo", ignoreCase = true) ->
+                                            "https://player.vimeo.com/video/${state.detail.trailerKey}"
+                                        else -> "https://www.youtube.com/watch?v=${state.detail.trailerKey}"
+                                    }
+                                    trailerUrl?.let {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        })
+                                    }
+                                },
+                                onToggleWatchlist = {
+                                    val item = MediaItem(
+                                        id = state.detail.id,
+                                        tmdbId = state.detail.tmdbId,
+                                        title = state.detail.title,
+                                        type = state.detail.type,
+                                        poster = state.detail.poster,
+                                        backdrop = state.detail.backdrop,
+                                        description = state.detail.description,
+                                        rating = state.detail.rating,
+                                        year = state.detail.year,
                                     )
-                                }
-                            },
-                        )
-                        DetailsPanel(
-                            detail = state.detail,
-                            selectedEpisode = selectedEpisode,
-                            progressLabel = progressLabel,
-                        )
+                                    if (inWatchlist) repository.removeFromWatchlist(item) else repository.addToWatchlist(item)
+                                    inWatchlist = !inWatchlist
+                                },
+                                onPlay = {
+                                    if (repository.currentSession() == null) {
+                                        onRequireAuth()
+                                    } else {
+                                        onPlay(
+                                            PlaybackRequest(
+                                                mediaId = state.detail.id,
+                                                mediaType = state.detail.type,
+                                                imdbId = state.detail.imdbId,
+                                                episode = currentEpisodeContext(),
+                                                title = state.detail.title,
+                                            ),
+                                        )
+                                    }
+                                },
+                            )
+                        }
                     }
 
-                    // Scrollable section — only starts scrolling once focus moves past details
-                    LazyColumn(
-                        state = detailListState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentPadding = PaddingValues(start = 42.dp, end = 42.dp, top = 20.dp, bottom = 88.dp),
-                        verticalArrangement = Arrangement.spacedBy(26.dp),
-                    ) {
-                        if (comments.isNotEmpty()) {
-                            item("comments") {
-                                CommentsSection(
-                                    comments = comments,
-                                    commentsRequester = commentsRequester,
-                                )
-                            }
+                    item("details") {
+                        Box(modifier = Modifier.bringIntoViewResponder(noScrollResponder)) {
+                            DetailsPanel(
+                                detail = state.detail,
+                                selectedEpisode = selectedEpisode,
+                                progressLabel = progressLabel,
+                            )
                         }
+                    }
 
-                        if (state.detail.type == "tv" && state.detail.seasons.isNotEmpty()) {
-                            item("episodes") {
-                                EpisodesSection(
-                                    seasons = state.detail.seasons,
-                                    selectedSeasonNumber = selectedSeasonNumber,
-                                    seasonDetail = selectedSeason,
-                                    selectedEpisodeIndex = selectedEpisodeIndex,
-                                    onSeasonFocused = {
-                                        if (selectedSeasonNumber != it) {
-                                            selectedSeasonNumber = it
-                                            selectedEpisodeIndex = 0
-                                        }
-                                    },
-                                    onSeasonPressed = {
-                                        if (selectedSeasonNumber != it) {
-                                            selectedSeasonNumber = it
-                                            selectedEpisodeIndex = 0
-                                        }
-                                    },
-                                    onEpisodeFocused = { selectedEpisodeIndex = it },
-                                    onEpisodePressed = { episode ->
-                                        if (repository.currentSession() == null) {
-                                            onRequireAuth()
-                                        } else {
-                                            onPlay(
-                                                PlaybackRequest(
-                                                    mediaId = state.detail.id,
-                                                    mediaType = state.detail.type,
-                                                    imdbId = state.detail.imdbId,
-                                                    episode = episode,
-                                                    title = state.detail.title,
-                                                ),
-                                            )
-                                        }
-                                    },
-                                )
-                            }
+                    if (comments.isNotEmpty()) {
+                        item("comments") {
+                            CommentsSection(
+                                comments = comments,
+                                commentsRequester = commentsRequester,
+                            )
                         }
+                    }
 
-                        if (state.detail.cast.isNotEmpty()) {
-                            item("cast") { CastSection(state.detail.cast) }
+                    if (state.detail.type == "tv" && state.detail.seasons.isNotEmpty()) {
+                        item("episodes") {
+                            EpisodesSection(
+                                seasons = state.detail.seasons,
+                                selectedSeasonNumber = selectedSeasonNumber,
+                                seasonDetail = selectedSeason,
+                                selectedEpisodeIndex = selectedEpisodeIndex,
+                                onSeasonFocused = {
+                                    if (selectedSeasonNumber != it) {
+                                        selectedSeasonNumber = it
+                                        selectedEpisodeIndex = 0
+                                    }
+                                },
+                                onSeasonPressed = {
+                                    if (selectedSeasonNumber != it) {
+                                        selectedSeasonNumber = it
+                                        selectedEpisodeIndex = 0
+                                    }
+                                },
+                                onEpisodeFocused = { selectedEpisodeIndex = it },
+                                onEpisodePressed = { episode ->
+                                    if (repository.currentSession() == null) {
+                                        onRequireAuth()
+                                    } else {
+                                        onPlay(
+                                            PlaybackRequest(
+                                                mediaId = state.detail.id,
+                                                mediaType = state.detail.type,
+                                                imdbId = state.detail.imdbId,
+                                                episode = episode,
+                                                title = state.detail.title,
+                                            ),
+                                        )
+                                    }
+                                },
+                            )
                         }
+                    }
 
-                        if (state.detail.similarTitles.isNotEmpty()) {
-                            item("similar") { SimilarSection(state.detail.similarTitles, onOpenDetail) }
-                        }
+                    if (state.detail.cast.isNotEmpty()) {
+                        item("cast") { CastSection(state.detail.cast) }
+                    }
+
+                    if (state.detail.similarTitles.isNotEmpty()) {
+                        item("similar") { SimilarSection(state.detail.similarTitles, onOpenDetail) }
                     }
                 }
 

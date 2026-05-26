@@ -7,8 +7,13 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
@@ -39,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -84,7 +90,12 @@ fun PlayerScreen(
     var loading by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
+    var lastWorkingSourceUrl by remember { mutableStateOf<String?>(null) }
+    var lastWorkingLabel by remember { mutableStateOf<String?>(null) }
+    var pauseInfoVisible by remember { mutableStateOf(false) }
 
+    val errorBackRequester = remember { FocusRequester() }
+    val errorSourcesRequester = remember { FocusRequester() }
     val playRequester = remember { FocusRequester() }
     val subtitlesRequester = remember { FocusRequester() }
     val audioRequester = remember { FocusRequester() }
@@ -185,10 +196,27 @@ fun PlayerScreen(
         loadPlayback()
     }
 
+    // Drive MPV state from LaunchedEffect so JNI calls only happen when values change,
+    // not on every recomposition triggered by overlay animations.
     LaunchedEffect(currentSourceUrl) {
+        if (!currentSourceUrl.isNullOrBlank()) playerView?.setSource(currentSourceUrl)
         if (positionSec > 0.0) {
             delay(1200)
             playerView?.seekTo(positionSec)
+        }
+    }
+
+    LaunchedEffect(speed) {
+        playerView?.setSpeed(speed)
+    }
+
+    LaunchedEffect(paused) {
+        playerView?.setPaused(paused)
+        if (paused) {
+            delay(2500)
+            pauseInfoVisible = true
+        } else {
+            pauseInfoVisible = false
         }
     }
 
@@ -203,6 +231,13 @@ fun PlayerScreen(
         if (panel != null) {
             delay(80)
             panelFirstItemRequester.requestFocus()
+        }
+    }
+
+    LaunchedEffect(error) {
+        if (error != null) {
+            delay(80)
+            try { errorBackRequester.requestFocus() } catch (_: Exception) { }
         }
     }
 
@@ -247,14 +282,25 @@ fun PlayerScreen(
             .background(Color.Black)
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
-                if (!loading && panel == null && !controlsVisible && event.key in setOf(
+                if (!loading && panel == null && !controlsVisible && error == null) {
+                    when (event.key) {
+                        Key.DirectionLeft, Key.DirectionRight -> {
+                            // Reveal controls and land focus on the progress bar for scrubbing
+                            controlsVisible = true
+                            scheduleControlsHide()
+                            scope.launch {
+                                delay(60)
+                                try { progressRequester.requestFocus() } catch (_: Exception) { }
+                            }
+                            return@onPreviewKeyEvent true
+                        }
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter,
-                        Key.DirectionLeft, Key.DirectionRight,
-                        Key.DirectionUp, Key.DirectionDown,
-                    )
-                ) {
-                    showControls(focusPlay = true)
-                    return@onPreviewKeyEvent true
+                        Key.DirectionUp, Key.DirectionDown -> {
+                            showControls(focusPlay = true)
+                            return@onPreviewKeyEvent true
+                        }
+                        else -> {}
+                    }
                 }
                 false
             },
@@ -273,6 +319,9 @@ fun PlayerScreen(
                     }
                     onLoadCallback = { _, _, _ ->
                         loading = false
+                        error = null
+                        lastWorkingSourceUrl = currentSourceUrl
+                        lastWorkingLabel = currentLabel
                         showControls(focusPlay = true)
                         if (positionSec > 0.0) seekTo(positionSec)
                     }
@@ -315,9 +364,6 @@ fun PlayerScreen(
                         false
                     }
                 }
-                if (!currentSourceUrl.isNullOrBlank()) view.setSource(currentSourceUrl)
-                view.setPaused(paused)
-                view.setSpeed(speed)
             },
             modifier = Modifier.fillMaxSize(),
         )
@@ -379,10 +425,87 @@ fun PlayerScreen(
             )
         }
 
+        // Error overlay — shown when playback fails so user always has a clear exit path
+        if (error != null && !loading) {
+            val canResume = lastWorkingSourceUrl != null && lastWorkingSourceUrl != currentSourceUrl
+            val hasMultipleStreams = (candidate?.streams?.size ?: 0) > 1
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xCC000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                PlayerGlassSurface(
+                    modifier = Modifier.width(500.dp),
+                    contentPadding = PaddingValues(24.dp),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        androidx.tv.material3.Text(
+                            text = "Playback Error",
+                            style = androidx.tv.material3.MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Black),
+                            color = Color(0xFFFFB4AB),
+                        )
+                        androidx.tv.material3.Text(
+                            text = error!!,
+                            style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.82f),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.tv.material3.Button(
+                                onClick = {
+                                    scope.launch {
+                                        repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+                                    }
+                                    onBack()
+                                },
+                                modifier = Modifier.focusRequester(errorBackRequester),
+                            ) {
+                                androidx.tv.material3.Text("Go Back")
+                            }
+                            if (hasMultipleStreams) {
+                                androidx.tv.material3.OutlinedButton(
+                                    onClick = {
+                                        error = null
+                                        panel = OverlayPanel.Streams
+                                        controlsVisible = true
+                                    },
+                                    modifier = Modifier.focusRequester(errorSourcesRequester),
+                                ) {
+                                    androidx.tv.material3.Text("Try Another Source")
+                                }
+                            }
+                            if (canResume) {
+                                androidx.tv.material3.OutlinedButton(
+                                    onClick = {
+                                        error = null
+                                        loading = true
+                                        controlsVisible = false
+                                        currentSourceUrl = lastWorkingSourceUrl
+                                        currentLabel = lastWorkingLabel ?: "Previous source"
+                                    },
+                                ) {
+                                    androidx.tv.material3.Text(
+                                        "Resume ${lastWorkingLabel?.take(24) ?: "last source"}",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Playback controls — bottom bar
-        if (!loading) {
+        if (!loading && error == null) {
             PlayerOverlayVisibility(
-                visible = controlsVisible || paused || panel != null || error != null,
+                visible = controlsVisible || paused || panel != null,
                 modifier = Modifier.align(Alignment.BottomCenter),
             ) {
                 PlayerBottomBar(
@@ -432,6 +555,62 @@ fun PlayerScreen(
             }
         }
 
+        // Pause info card — title logo + synopsis, appears 2.5 s after pause
+        if (pauseInfoVisible && paused && !loading && error == null && panel == null && !controlsVisible) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 52.dp)
+                    .width(360.dp),
+            ) {
+                PlayerGlassSurface {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (!detail?.titleLogo.isNullOrBlank()) {
+                            AsyncImage(
+                                model = detail!!.titleLogo,
+                                contentDescription = detail?.title ?: request.title,
+                                modifier = Modifier.height(52.dp),
+                                contentScale = ContentScale.Fit,
+                                alignment = Alignment.CenterStart,
+                            )
+                        } else {
+                            androidx.tv.material3.Text(
+                                text = detail?.title ?: request.title ?: "",
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                                color = Color.White,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        currentEpisode?.let { ep ->
+                            androidx.tv.material3.Text(
+                                text = "S${ep.seasonNumber} · E${ep.episodeNumber}" + (ep.title?.let { " — $it" } ?: ""),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFF0BA66),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        val synopsis = currentEpisode?.overview ?: detail?.description
+                        if (!synopsis.isNullOrBlank()) {
+                            androidx.tv.material3.Text(
+                                text = synopsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.74f),
+                                maxLines = 5,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        androidx.tv.material3.Text(
+                            text = "${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(positionSec)} / ${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(durationSec)}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White.copy(alpha = 0.55f),
+                        )
+                    }
+                }
+            }
+        }
+
         // Option panel (sources / audio / subtitles)
         panel?.let { activePanel ->
             Box(
@@ -463,20 +642,33 @@ fun PlayerScreen(
                     onSelectStream = { index ->
                         scope.launch {
                             val stream = candidate?.streams?.getOrNull(index) ?: return@launch
-                            val selected = repository.resolvePlayback(
-                                request.mediaType,
-                                request.mediaId,
-                                request.imdbId,
-                                currentEpisode,
-                                preferredStreamKey = repository.streamSelectionKey(stream),
-                                forceRefresh = true,
-                            )
-                            candidate = selected
-                            currentSourceUrl = selected.source?.url
-                            currentLabel = selected.source?.label ?: repository.describeStreamOption(stream)
                             panel = null
                             loading = true
                             controlsVisible = false
+                            val selected = try {
+                                repository.resolvePlayback(
+                                    request.mediaType,
+                                    request.mediaId,
+                                    request.imdbId,
+                                    currentEpisode,
+                                    preferredStreamKey = repository.streamSelectionKey(stream),
+                                    forceRefresh = true,
+                                )
+                            } catch (e: Exception) {
+                                error = "Could not load this source: ${e.message ?: "Unknown error"}"
+                                loading = false
+                                controlsVisible = true
+                                return@launch
+                            }
+                            if (selected.source == null) {
+                                error = "This source could not be resolved. Please try another."
+                                loading = false
+                                controlsVisible = true
+                                return@launch
+                            }
+                            candidate = selected
+                            currentSourceUrl = selected.source.url
+                            currentLabel = selected.source.label ?: repository.describeStreamOption(stream)
                         }
                     },
                     onSelectAudio = {

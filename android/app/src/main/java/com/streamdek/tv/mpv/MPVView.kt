@@ -41,6 +41,7 @@ class MPVView @JvmOverloads constructor(
 
     private var initialized = false
     private var pendingSource: String? = null
+    private var activeSource: String? = null
     private var paused = false
     private var surface: Surface? = null
     private var headers: Map<String, String>? = null
@@ -131,6 +132,7 @@ class MPVView @JvmOverloads constructor(
             pendingLoadRunnable = null
         }
         pendingSource = null
+        activeSource = null
         isSwitchingSource = false
         onLoadCallback = null
         onProgressCallback = null
@@ -315,7 +317,12 @@ class MPVView @JvmOverloads constructor(
 
     fun setSource(url: String?) {
         if (url.isNullOrBlank() || isDestroyed) return
+        if (url == activeSource) {
+            Log.i(TAG, "setSource no-op — already active")
+            return
+        }
         Log.i(TAG, "setSource called ${summarizeSource(url)}")
+        activeSource = url
         pendingSource = url
         scheduleLoad(url)
     }

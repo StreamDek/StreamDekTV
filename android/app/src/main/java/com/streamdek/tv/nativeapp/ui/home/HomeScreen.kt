@@ -1,7 +1,10 @@
 package com.streamdek.tv.nativeapp.ui.home
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.relocation.BringIntoViewResponder
+import androidx.compose.foundation.relocation.bringIntoViewResponder
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -188,7 +192,25 @@ fun HomeScreen(
                     }
                 }
 
-                val rows = state.content.rails
+                val rows = remember(state.content.rails) {
+                    val list = state.content.rails.toMutableList()
+                    val netIdx = list.indexOfFirst { rail -> rail.items.any { it.type == "network" } }
+                    if (netIdx > 0) {
+                        val target = minOf(3, list.size - 1)
+                        if (netIdx != target) {
+                            val netRail = list.removeAt(netIdx)
+                            list.add(target, netRail)
+                        }
+                    }
+                    list.toList()
+                }
+                val homeFirstCardRequester = remember { FocusRequester() }
+
+                LaunchedEffect(state.content) {
+                    delay(150)
+                    try { homeFirstCardRequester.requestFocus() } catch (_: Exception) { }
+                }
+
                 HeroBlock(
                     item = hero,
                     detail = heroDetail,
@@ -235,7 +257,7 @@ fun HomeScreen(
                                         onOpenDetail(item.type, item.id)
                                     }
                                 },
-                                shouldRequestInitialFocus = rowIndex == 0,
+                                firstCardRequester = if (rowIndex == 0) homeFirstCardRequester else null,
                                 requestVerticalPlacement = {
                                     if (activeRowIndex != rowIndex) {
                                         activeRowIndex = rowIndex
@@ -246,7 +268,7 @@ fun HomeScreen(
                     }
                 }
 
-                LaunchedEffect(activeRowIndex, rows.size) {
+                LaunchedEffect(activeRowIndex) {
                     if (rows.isNotEmpty()) {
                         delay(40)
                         verticalListState.animateScrollToItem(activeRowIndex.coerceIn(0, rows.lastIndex))
@@ -368,7 +390,7 @@ private fun HeroBlock(
     }
 }
 
-@OptIn(ExperimentalTvMaterial3Api::class)
+@OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun RailSection(
     row: HomeRail,
@@ -376,11 +398,16 @@ private fun RailSection(
     initialFocusIndex: Int,
     onItemFocused: (Int, MediaItem) -> Unit,
     onItemPressed: (MediaItem) -> Unit,
-    shouldRequestInitialFocus: Boolean,
+    firstCardRequester: FocusRequester? = null,
     requestVerticalPlacement: () -> Unit,
 ) {
     val requesters = remember(row.id) { mutableMapOf<String, FocusRequester>() }
-    val initialFocusHandled = remember(row.id) { mutableStateOf(false) }
+    val noScrollResponder = remember {
+        object : BringIntoViewResponder {
+            override fun calculateRectForParent(localRect: Rect): Rect = localRect
+            override suspend fun bringChildIntoView(localRect: () -> Rect?) { }
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -393,6 +420,9 @@ private fun RailSection(
             modifier = Modifier.padding(start = 52.dp),
         )
 
+        // BringIntoViewResponder no-op stops focus-driven horizontal scroll from
+        // propagating up and causing the LazyColumn to jump to a different row.
+        Box(modifier = Modifier.bringIntoViewResponder(noScrollResponder)) {
         LazyRow(
             state = rowState,
             modifier = Modifier
@@ -404,18 +434,11 @@ private fun RailSection(
             itemsIndexed(row.items, key = { _, item -> "${row.id}:${item.id}" }) { index, item ->
                 val key = "${row.id}:${item.id}"
                 val requester = requesters.getOrPut(key) { FocusRequester() }
-
-                LaunchedEffect(row.id, index, initialFocusIndex, shouldRequestInitialFocus) {
-                    if (shouldRequestInitialFocus && !initialFocusHandled.value && index == initialFocusIndex) {
-                        delay(120)
-                        requester.requestFocus()
-                        initialFocusHandled.value = true
-                    }
-                }
+                val effectiveRequester = if (index == 0 && firstCardRequester != null) firstCardRequester else requester
 
                 MediaPosterCard(
                     item = item,
-                    modifier = Modifier.focusRequester(requester),
+                    modifier = Modifier.focusRequester(effectiveRequester),
                     onFocused = {
                         requestVerticalPlacement()
                         onItemFocused(index, item)
@@ -424,6 +447,7 @@ private fun RailSection(
                 )
             }
         }
+        } // end BringIntoViewResponder wrapper Box
     }
 }
 
@@ -438,6 +462,7 @@ private fun MediaPosterCard(
     var isFocused by remember { mutableStateOf(false) }
     val isNetworkCard = item.type == "network"
     val networkStyle = remember(item.title) { networkSurfaceStyle(item.title) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Card(
         onClick = onPressed,
@@ -454,8 +479,8 @@ private fun MediaPosterCard(
             },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
-            containerColor = if (isNetworkCard) networkStyle.background else Color(0xFF181A1F),
-            focusedContainerColor = if (isNetworkCard) networkStyle.background else Color(0xFF181A1F),
+            containerColor = if (isNetworkCard) Color.White else Color(0xFF181A1F),
+            focusedContainerColor = if (isNetworkCard) Color.White else Color(0xFF181A1F),
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
@@ -473,11 +498,15 @@ private fun MediaPosterCard(
         ) {
             if (isNetworkCard) {
                 AsyncImage(
-                    model = item.titleLogo ?: item.poster,
+                    model = ImageRequest.Builder(context)
+                        .data(item.titleLogo ?: item.poster)
+                        .allowRgb565(false)
+                        .crossfade(200)
+                        .build(),
                     contentDescription = item.title,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     colorFilter = networkStyle.logoTint?.let { ColorFilter.tint(it) },
                     contentScale = ContentScale.Fit,
                 )
@@ -556,10 +585,7 @@ private data class NetworkSurfaceStyle(
     val logoTint: Color? = null,
 )
 
-private fun networkSurfaceStyle(name: String): NetworkSurfaceStyle = when {
-    name.contains("netflix", ignoreCase = true) -> NetworkSurfaceStyle(Color(0xFF141416))
-    name.contains("prime", ignoreCase = true) -> NetworkSurfaceStyle(Color(0xFF091723))
-    name.contains("apple", ignoreCase = true) -> NetworkSurfaceStyle(Color(0xFFF3F6FA), Color(0xFF111317))
-    name.contains("hbo", ignoreCase = true) || name.contains("max", ignoreCase = true) -> NetworkSurfaceStyle(Color(0xFF18112E))
-    else -> NetworkSurfaceStyle(Color(0xFF1D2631))
-}
+private fun networkSurfaceStyle(name: String): NetworkSurfaceStyle = NetworkSurfaceStyle(
+    background = Color(0xFFFFFFFF),
+    logoTint = null,
+)

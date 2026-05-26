@@ -292,7 +292,7 @@ fun AccountScreen(
                                     bootstrap = repository.bootstrap.value
                                 }
                             }
-                            ChoiceRow("Max File Size", playbackPrefs?.maxFileSizeGB ?: "2") {
+                            ChoiceRow("Max File Size", formatFileSizeGB(playbackPrefs?.maxFileSizeGB ?: "2")) {
                                 scope.launch {
                                     repository.updatePlaybackPreferences(mapOf("maxFileSizeGB" to nextOf(listOf("0", "2", "5", "10", "20"), playbackPrefs?.maxFileSizeGB ?: "2")))
                                     bootstrap = repository.bootstrap.value
@@ -595,6 +595,11 @@ private fun PreferenceRow(label: String, value: Boolean, onToggle: () -> Unit) {
         Text(label, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f), style = MaterialTheme.typography.bodyMedium)
         OutlinedButton(onClick = onToggle, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text(if (value) "On" else "Off") }
     }
+}
+
+private fun formatFileSizeGB(raw: String): String = when (raw) {
+    "0" -> "Unlimited"
+    else -> "$raw GB"
 }
 
 @Composable
