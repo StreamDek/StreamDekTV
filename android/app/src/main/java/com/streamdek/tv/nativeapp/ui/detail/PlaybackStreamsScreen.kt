@@ -185,9 +185,8 @@ fun PlaybackStreamsScreen(
                         modifier = Modifier
                             .width(430.dp)
                             .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.Center,
                     ) {
-                        BackPill(onBack)
                         StreamsInfoPanel(detail, request, overview)
                     }
                     LazyColumn(
@@ -222,9 +221,8 @@ fun PlaybackStreamsScreen(
                         modifier = Modifier
                             .width(430.dp)
                             .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.Center,
                     ) {
-                        BackPill(onBack)
                         StreamsInfoPanel(detail, request, overview)
                     }
 
@@ -259,8 +257,8 @@ fun PlaybackStreamsScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxWidth(),
-                            contentPadding = PaddingValues(bottom = 48.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(top = 10.dp, bottom = 48.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
                             if (filteredStreams.isEmpty()) {
                                 item("empty") { EmptyStreamsMessage() }
@@ -349,6 +347,7 @@ private fun StreamsInfoPanel(detail: MediaDetail?, request: PlaybackRequest, ove
             .clip(RoundedCornerShape(28.dp))
             .background(Color(0x1611141B))
             .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         detail?.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
@@ -359,6 +358,7 @@ private fun StreamsInfoPanel(detail: MediaDetail?, request: PlaybackRequest, ove
                     .height(84.dp)
                     .fillMaxWidth(),
                 contentScale = ContentScale.Fit,
+                alignment = Alignment.Center,
             )
         } ?: Text(
             text = detail?.title ?: request.title ?: "Playback",
@@ -385,6 +385,7 @@ private fun StreamsInfoPanel(detail: MediaDetail?, request: PlaybackRequest, ove
                 text = meta,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
         }
 
@@ -393,6 +394,7 @@ private fun StreamsInfoPanel(detail: MediaDetail?, request: PlaybackRequest, ove
                 text = it,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.84f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
             )
         }
     }
