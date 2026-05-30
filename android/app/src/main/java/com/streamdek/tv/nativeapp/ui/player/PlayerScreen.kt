@@ -90,6 +90,7 @@ fun PlayerScreen(
     var loading by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
+    var pendingSeekJob by remember { mutableStateOf<Job?>(null) }
     var lastWorkingSourceUrl by remember { mutableStateOf<String?>(null) }
     var lastWorkingLabel by remember { mutableStateOf<String?>(null) }
     var pauseInfoVisible by remember { mutableStateOf(false) }
@@ -117,6 +118,18 @@ fun PlayerScreen(
         controlsHideJob?.cancel()
         controlsHideJob = null
         controlsVisible = false
+    }
+
+    fun scheduleSeek(targetSeconds: Double) {
+        val target = targetSeconds
+            .coerceAtLeast(0.0)
+            .coerceAtMost(durationSec.takeIf { it > 0.0 } ?: targetSeconds)
+        positionSec = target
+        pendingSeekJob?.cancel()
+        pendingSeekJob = scope.launch {
+            delay(180)
+            playerView?.seekTo(target)
+        }
     }
 
     fun scheduleControlsHide() {
@@ -150,6 +163,8 @@ fun PlayerScreen(
     }
 
     suspend fun loadPlayback() {
+        pendingSeekJob?.cancel()
+        pendingSeekJob = null
         loading = true
         controlsVisible = false
         detail = repository.fetchDetail(request.mediaId, request.mediaType)
@@ -244,6 +259,7 @@ fun PlayerScreen(
     DisposableEffect(request.mediaId, currentEpisode, currentSourceUrl) {
         onDispose {
             controlsHideJob?.cancel()
+            pendingSeekJob?.cancel()
             scope.launch {
                 repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
             }
@@ -533,7 +549,7 @@ fun PlayerScreen(
                         if (!paused) scheduleControlsHide()
                     },
                     onRewind = {
-                        playerView?.seekTo((positionSec - 10.0).coerceAtLeast(0.0))
+                        scheduleSeek(positionSec - 10.0)
                         registerInteraction()
                     },
                     onNext = {
@@ -541,10 +557,7 @@ fun PlayerScreen(
                         registerInteraction()
                     },
                     onSeekRelative = { delta ->
-                        playerView?.seekTo(
-                            (positionSec + delta).coerceAtLeast(0.0)
-                                .coerceAtMost(durationSec.takeIf { it > 0.0 } ?: (positionSec + delta)),
-                        )
+                        scheduleSeek(positionSec + delta)
                         registerInteraction()
                     },
                     onOpenPanel = {

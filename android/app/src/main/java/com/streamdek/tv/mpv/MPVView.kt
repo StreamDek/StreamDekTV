@@ -167,17 +167,17 @@ class MPVView @JvmOverloads constructor(
         MPVLib.setOptionString("hwdec-codecs", "all")
         MPVLib.setOptionString("ao", "audiotrack,opensles")
         MPVLib.setOptionString("cache", "yes")
-        // Track changes in mkv/stream sources often force a refresh seek.
-        // Give mpv enough cache headroom to survive that seek without draining
-        // immediately back into buffering.
-        MPVLib.setOptionString("cache-secs", "300")
-        MPVLib.setOptionString("cache-on-disk", "yes")
-        MPVLib.setOptionString("cache-pause-wait", "1")
+        // Keep network playback smooth without reserving hundreds of MB of
+        // demux/cache memory on TV hardware.
+        MPVLib.setOptionString("cache-secs", "90")
+        MPVLib.setOptionString("cache-on-disk", "no")
+        MPVLib.setOptionString("cache-pause-wait", "3")
         MPVLib.setOptionString("demuxer-seekable-cache", "yes")
-        MPVLib.setOptionString("demuxer-readahead-secs", "45")
-        MPVLib.setOptionString("demuxer-max-bytes", "536870912")
-        MPVLib.setOptionString("demuxer-max-back-bytes", "536870912")
+        MPVLib.setOptionString("demuxer-readahead-secs", "15")
+        MPVLib.setOptionString("demuxer-max-bytes", "100663296")
+        MPVLib.setOptionString("demuxer-max-back-bytes", "33554432")
         MPVLib.setOptionString("network-timeout", "60")
+        MPVLib.setOptionString("prefetch-playlist", "no")
         MPVLib.setOptionString("sub-auto", "fuzzy")
         MPVLib.setOptionString("sub-visibility", "yes")
         MPVLib.setOptionString("sub-font", "Arial")
@@ -590,9 +590,6 @@ class MPVView @JvmOverloads constructor(
 
     override fun eventProperty(property: String, value: Boolean) {
         if (isDestroyed) return
-        if (property == "eof-reached" && value) {
-            onEndCallback?.invoke()
-        }
     }
 
     override fun eventProperty(property: String, value: String) {
