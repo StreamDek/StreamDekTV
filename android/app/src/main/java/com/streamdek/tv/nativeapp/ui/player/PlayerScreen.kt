@@ -225,11 +225,15 @@ fun PlayerScreen(
         playerView?.setSpeed(speed)
     }
 
-    LaunchedEffect(paused) {
+    LaunchedEffect(paused, panel, loading, error) {
         playerView?.setPaused(paused)
-        if (paused) {
+        if (paused && panel == null && !loading && error == null) {
+            pauseInfoVisible = false
             delay(2500)
-            pauseInfoVisible = true
+            if (paused && panel == null && !loading && error == null) {
+                controlsVisible = false
+                pauseInfoVisible = true
+            }
         } else {
             pauseInfoVisible = false
         }

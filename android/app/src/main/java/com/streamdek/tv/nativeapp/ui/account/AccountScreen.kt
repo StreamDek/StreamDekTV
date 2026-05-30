@@ -31,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -81,6 +82,7 @@ fun AccountScreen(
     var status by remember { mutableStateOf<String?>(null) }
     var selectedSection by remember { mutableStateOf(SettingsSection.Profile) }
     val firstSectionRequester = remember { FocusRequester() }
+    val contentEntryRequester = remember { FocusRequester() }
     val appUpdateState by appUpdateManager.uiState.collectAsState()
 
     LaunchedEffect(Unit) {
@@ -110,6 +112,7 @@ fun AccountScreen(
             sessionPresent = session != null,
             selectedSection = selectedSection,
             firstSectionRequester = firstSectionRequester,
+            contentEntryRequester = contentEntryRequester,
             onSelectSection = { selectedSection = it },
             onSignIn = onSignIn,
             onSignOut = {
@@ -138,6 +141,12 @@ fun AccountScreen(
                         text = selectedSection.label,
                         style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
                         color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier
+                            .focusRequester(contentEntryRequester)
+                            .focusProperties {
+                                left = firstSectionRequester
+                            }
+                            .focusable(),
                     )
                     status?.let {
                         Text(
@@ -488,6 +497,7 @@ private fun SettingsSidebar(
     sessionPresent: Boolean,
     selectedSection: SettingsSection,
     firstSectionRequester: FocusRequester,
+    contentEntryRequester: FocusRequester,
     onSelectSection: (SettingsSection) -> Unit,
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
@@ -508,6 +518,7 @@ private fun SettingsSidebar(
                 title = section.label,
                 selected = selectedSection == section,
                 requester = if (index == 0) firstSectionRequester else null,
+                rightRequester = contentEntryRequester,
                 // onFocused does NOT change the section — only onClick does.
                 // This prevents navigation returning from content from jumping to a different section.
                 onFocused = {},
@@ -518,7 +529,7 @@ private fun SettingsSidebar(
         Spacer(modifier = Modifier.height(10.dp))
 
         if (!sessionPresent) {
-            SidebarItem(title = "Sign In", selected = false, onFocused = {}, onClick = onSignIn)
+            SidebarItem(title = "Sign In", selected = false, rightRequester = contentEntryRequester, onFocused = {}, onClick = onSignIn)
         } else {
             SignOutButton(onSignOut = onSignOut)
         }
@@ -561,6 +572,7 @@ private fun SidebarItem(
     title: String,
     selected: Boolean,
     requester: FocusRequester? = null,
+    rightRequester: FocusRequester? = null,
     onFocused: () -> Unit,
     onClick: () -> Unit,
 ) {
@@ -578,6 +590,9 @@ private fun SidebarItem(
                 shape = RoundedCornerShape(10.dp),
             )
             .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
+            .focusProperties {
+                if (rightRequester != null) right = rightRequester
+            }
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onFocused()

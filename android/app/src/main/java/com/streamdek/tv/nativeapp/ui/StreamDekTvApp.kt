@@ -30,6 +30,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -253,6 +256,14 @@ private fun AppUpdatePrompt(
 ) {
     val scope = rememberCoroutineScope()
     val release = state.availableRelease ?: return
+    val installRequester = remember(release.versionCode, state.blockedByUnknownSources) { FocusRequester() }
+    val laterRequester = remember(release.versionCode) { FocusRequester() }
+
+    LaunchedEffect(release.versionCode, state.showPrompt, state.blockedByUnknownSources, state.isInstalling) {
+        if (!state.showPrompt) return@LaunchedEffect
+        kotlinx.coroutines.delay(80)
+        runCatching { installRequester.requestFocus() }
+    }
 
     Box(
         modifier = Modifier
@@ -305,6 +316,9 @@ private fun AppUpdatePrompt(
                 onClick = { scope.launch { updateManager.startUpdate() } },
                 enabled = !state.isInstalling,
                 shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                modifier = Modifier
+                    .focusRequester(installRequester)
+                    .focusProperties { right = laterRequester },
             ) {
                 Text(
                     when {
@@ -319,6 +333,9 @@ private fun AppUpdatePrompt(
                 onClick = { updateManager.dismissPrompt() },
                 enabled = !release.required,
                 shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                modifier = Modifier
+                    .focusRequester(laterRequester)
+                    .focusProperties { left = installRequester },
             ) {
                 Text("Later")
             }
