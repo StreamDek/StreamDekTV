@@ -418,7 +418,7 @@ private fun HeroSection(
     val scope = rememberCoroutineScope()
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -430,15 +430,20 @@ private fun HeroSection(
         }
 
         Column(
-            modifier = Modifier.fillMaxWidth(0.62f),
+            modifier = Modifier
+                .fillMaxWidth(0.7f)
+                .padding(top = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
                 AsyncImage(
                     model = logo,
                     contentDescription = detail.title,
-                    modifier = Modifier.height(98.dp).fillMaxWidth(),
+                    modifier = Modifier
+                        .height(58.dp)
+                        .fillMaxWidth(),
                     contentScale = ContentScale.Fit,
+                    alignment = Alignment.CenterStart,
                 )
             } ?: Text(
                 text = detail.title,
@@ -458,6 +463,14 @@ private fun HeroSection(
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
             )
 
+            detail.tagline?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color(0xFFF0BA66),
+                )
+            }
+
             detail.description?.takeIf { it.isNotBlank() }?.let {
                 Text(
                     text = it,
@@ -468,31 +481,73 @@ private fun HeroSection(
                 )
             }
 
-            ContinuePlayButton(detail, selectedEpisode, progressLabel, progressFraction, playButtonRequester, onPlay)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ContinuePlayButton(
+                    detail = detail,
+                    selectedEpisode = selectedEpisode,
+                    progressLabel = progressLabel,
+                    progressFraction = progressFraction,
+                    playButtonRequester = playButtonRequester,
+                    onPlay = onPlay,
+                    modifier = Modifier.width(236.dp),
+                )
                 if (!detail.trailerKey.isNullOrBlank()) {
                     Button(
                         onClick = onTrailer,
                         shape = ButtonDefaults.shape(AppPillShape),
                         colors = ButtonDefaults.colors(
-                            containerColor = Color(0xCC111317),
-                            contentColor = MaterialTheme.colorScheme.onBackground,
+                            containerColor = Color(0xFFF0BA66),
+                            focusedContainerColor = Color(0xFFFFD792),
+                            contentColor = Color(0xFF18120A),
+                            focusedContentColor = Color(0xFF18120A),
                         ),
-                    ) { Text("Trailer") }
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Text(
+                                "Trailer",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                            )
+                        }
+                    }
                 }
                 Button(
                     onClick = { scope.launch { onToggleWatchlist() } },
                     shape = ButtonDefaults.shape(AppPillShape),
                     colors = ButtonDefaults.colors(
-                        containerColor = if (inWatchlist) Color(0x2AF4EDE2) else Color(0xCC111317),
+                        containerColor = if (inWatchlist) Color(0xFFF0BA66) else Color(0xCC111317),
+                        focusedContainerColor = if (inWatchlist) Color(0xFFFFD792) else Color(0xFF1C222A),
                         contentColor = MaterialTheme.colorScheme.onBackground,
+                        focusedContentColor = MaterialTheme.colorScheme.onBackground,
                     ),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
                 ) {
-                    Icon(
-                        imageVector = if (inWatchlist) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
-                        contentDescription = null,
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = if (inWatchlist) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            if (inWatchlist) "In Watchlist" else "Watchlist",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                        )
+                    }
                 }
             }
         }
@@ -523,13 +578,6 @@ private fun DetailsPanel(
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onBackground,
         )
-        detail.tagline?.takeIf { it.isNotBlank() }?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                color = Color(0xFFF0BA66),
-            )
-        }
         if (items.isNotEmpty()) {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 2.dp),
@@ -672,6 +720,7 @@ private fun ContinuePlayButton(
     progressFraction: Float?,
     playButtonRequester: FocusRequester,
     onPlay: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val hasProgress = (progressFraction ?: 0f) > 0f
     val title = when {
@@ -693,30 +742,31 @@ private fun ContinuePlayButton(
             focusedContainerColor = Color.White,
             contentColor = Color(0xFF18120A),
         ),
-        modifier = Modifier
-            .width(330.dp)
+        modifier = modifier
             .focusRequester(playButtonRequester),
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Column(
             modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.Center,
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
+                horizontalArrangement = Arrangement.Start,
             ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(28.dp))
+                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(24.dp))
                 Column(
                     modifier = Modifier.padding(start = 10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                    horizontalAlignment = Alignment.Start,
                     verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     subtitle?.takeIf { it.isNotBlank() }?.let {
                         Text(
@@ -734,7 +784,7 @@ private fun ContinuePlayButton(
                     progress = (progressFraction ?: 0f).toDouble() * 100.0,
                     modifier = Modifier
                         .padding(top = 5.dp)
-                        .width(276.dp)
+                        .fillMaxWidth()
                         .height(4.dp),
                 )
             }
