@@ -6,18 +6,19 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -27,6 +28,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -34,7 +37,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
-import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
@@ -49,7 +51,6 @@ import com.streamdek.tv.nativeapp.data.GenreItem
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
-import com.streamdek.tv.nativeapp.ui.AppPillShape
 import java.time.Year
 
 @Composable
@@ -68,6 +69,7 @@ fun NetworkBrowseScreen(
     var genres by remember { mutableStateOf<List<GenreItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val initialCardRequester = remember { FocusRequester() }
 
     LaunchedEffect(networkId, mediaType, year, genreId) {
         loading = true
@@ -96,9 +98,17 @@ fun NetworkBrowseScreen(
         }
     }
 
+    LaunchedEffect(loading, results) {
+        if (!loading && results.isNotEmpty()) {
+            kotlinx.coroutines.delay(180)
+            initialCardRequester.requestFocus()
+        }
+    }
+
     val visibleResults = results.filter { item ->
         minRating == null || (item.rating ?: 0.0) >= minRating!!.toDouble()
     }
+    val resultRows = visibleResults.chunked(4)
     val yearOptions = remember {
         listOf<String?>(null) + (0..10).map { (Year.now().value - it).toString() }
     }
@@ -121,21 +131,15 @@ fun NetworkBrowseScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 48.dp, end = 48.dp, top = 48.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedButton(
-                onClick = onBack,
-                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
-            ) {
-                Text("Back")
-            }
             Text(
                 text = networkName,
                 style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black),
                 color = MaterialTheme.colorScheme.onBackground,
             )
             Text(
-                text = "Filter by type, year, genre, and rating.",
+                text = "Browse by type, year, genre, and rating.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
             )
@@ -144,43 +148,25 @@ fun NetworkBrowseScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 188.dp),
-            contentPadding = PaddingValues(bottom = 120.dp),
+                .padding(top = 156.dp),
+            contentPadding = PaddingValues(bottom = 180.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
             item {
-                FilterRow(
-                    title = "Type",
-                    options = listOf("All" to "all", "Movies" to "movie", "Series" to "tv"),
-                    selected = mediaType,
-                    onSelected = {
+                FilterBar(
+                    mediaType = mediaType,
+                    onMediaTypeSelected = {
                         mediaType = it
                         genreId = null
                     },
-                )
-            }
-            item {
-                FilterRow(
-                    title = "Year",
-                    options = yearOptions.map { (it ?: "All") to (it ?: "") },
-                    selected = year ?: "",
-                    onSelected = { year = it.ifBlank { null } },
-                )
-            }
-            item {
-                FilterRow(
-                    title = "Genre",
-                    options = listOf("All" to "") + genres.map { it.name to it.id.toString() },
-                    selected = genreId?.toString().orEmpty(),
-                    onSelected = { genreId = it.toIntOrNull() },
-                )
-            }
-            item {
-                FilterRow(
-                    title = "Rating",
-                    options = listOf("All" to "", "5+" to "5", "6+" to "6", "7+" to "7", "8+" to "8"),
-                    selected = minRating?.toString().orEmpty(),
-                    onSelected = { minRating = it.toIntOrNull() },
+                    year = year,
+                    onYearSelected = { year = it.ifBlank { null } },
+                    genreId = genreId,
+                    onGenreSelected = { genreId = it.toIntOrNull() },
+                    minRating = minRating,
+                    onMinRatingSelected = { minRating = it.toIntOrNull() },
+                    genres = genres,
+                    yearOptions = yearOptions,
                 )
             }
             item {
@@ -191,62 +177,157 @@ fun NetworkBrowseScreen(
                     modifier = Modifier.padding(start = 48.dp, end = 48.dp),
                 )
             }
-            item {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(4),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(860.dp)
-                        .padding(horizontal = 48.dp),
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(18.dp),
-                ) {
-                    gridItems(visibleResults, key = { "${it.type}:${it.id}" }) { item ->
-                        NetworkCatalogCard(item = item, onPressed = { onOpenDetail(item.type, item.id) })
-                    }
+            if (resultRows.isEmpty() && !loading) {
+                item {
+                    Text(
+                        text = "No titles matched these filters.",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                        modifier = Modifier.padding(start = 48.dp, end = 48.dp),
+                    )
                 }
+            }
+            items(resultRows) { rowItems ->
+                NetworkResultRow(
+                    items = rowItems,
+                    initialFocusRequester = if (rowItems == resultRows.firstOrNull()) initialCardRequester else null,
+                    onOpenDetail = onOpenDetail,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun FilterRow(
-    title: String,
+private fun FilterBar(
+    mediaType: String,
+    onMediaTypeSelected: (String) -> Unit,
+    year: String?,
+    onYearSelected: (String) -> Unit,
+    genreId: Int?,
+    onGenreSelected: (String) -> Unit,
+    minRating: Int?,
+    onMinRatingSelected: (String) -> Unit,
+    genres: List<GenreItem>,
+    yearOptions: List<String?>,
+) {
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusGroup(),
+        contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            FilterDropdown(
+                label = "Type",
+                value = when (mediaType) {
+                    "movie" -> "Movies"
+                    "tv" -> "Series"
+                    else -> "All"
+                },
+                options = listOf("All" to "all", "Movies" to "movie", "Series" to "tv"),
+                selected = mediaType,
+                onSelected = onMediaTypeSelected,
+            )
+        }
+        item {
+            FilterDropdown(
+                label = "Year",
+                value = year ?: "All",
+                options = yearOptions.map { (it ?: "All") to (it ?: "") },
+                selected = year ?: "",
+                onSelected = onYearSelected,
+            )
+        }
+        item {
+            FilterDropdown(
+                label = "Genre",
+                value = genres.firstOrNull { it.id == genreId }?.name ?: "All",
+                options = listOf("All" to "") + genres.map { it.name to it.id.toString() },
+                selected = genreId?.toString().orEmpty(),
+                onSelected = onGenreSelected,
+            )
+        }
+        item {
+            FilterDropdown(
+                label = "Rating",
+                value = minRating?.let { "$it+" } ?: "All",
+                options = listOf("All" to "", "5+" to "5", "6+" to "6", "7+" to "7", "8+" to "8"),
+                selected = minRating?.toString().orEmpty(),
+                onSelected = onMinRatingSelected,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilterDropdown(
+    label: String,
+    value: String,
     options: List<Pair<String, String>>,
     selected: String,
     onSelected: (String) -> Unit,
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.66f),
-            modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-        )
-        LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusGroup(),
-            contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+    var expanded by remember(label, selected) { mutableStateOf(false) }
+
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true },
+            shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+            colors = ButtonDefaults.colors(
+                containerColor = Color(0x2611141B),
+                contentColor = MaterialTheme.colorScheme.onBackground,
+            ),
         ) {
-            items(options, key = { it.second.ifBlank { it.first } }) { option ->
-                val isSelected = option.second == selected
-                OutlinedButton(
-                    onClick = { onSelected(option.second) },
-                    shape = ButtonDefaults.shape(AppPillShape),
-                    colors = ButtonDefaults.colors(
-                        containerColor = if (isSelected) Color(0xFFF4EDE2) else Color(0x1215181D),
-                        contentColor = if (isSelected) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground,
-                    ),
-                ) {
-                    Text(option.first)
-                }
+            Text(
+                text = "$label: $value ▾",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.background(Color(0xEE11141B)),
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = option.first,
+                            color = if (option.second == selected) Color(0xFFF0BA66) else MaterialTheme.colorScheme.onBackground,
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelected(option.second)
+                    },
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun NetworkResultRow(
+    items: List<MediaItem>,
+    initialFocusRequester: FocusRequester? = null,
+    onOpenDetail: (String, String) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 48.dp, end = 48.dp)
+            .focusGroup(),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        items.forEachIndexed { index, item ->
+            NetworkCatalogCard(
+                item = item,
+                modifier = if (initialFocusRequester != null && index == 0) Modifier.focusRequester(initialFocusRequester) else Modifier,
+                onPressed = { onOpenDetail(item.type, item.id) },
+            )
         }
     }
 }
@@ -255,11 +336,12 @@ private fun FilterRow(
 @Composable
 private fun NetworkCatalogCard(
     item: MediaItem,
+    modifier: Modifier = Modifier,
     onPressed: () -> Unit,
 ) {
     Card(
         onClick = onPressed,
-        modifier = Modifier.size(width = 320.dp, height = 190.dp),
+        modifier = modifier.size(width = 260.dp, height = 150.dp),
         colors = CardDefaults.colors(
             containerColor = Color(0xFF181A1F),
             focusedContainerColor = Color(0xFF181A1F),
@@ -288,7 +370,7 @@ private fun NetworkCatalogCard(
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color(0xE0000000)),
+                            colors = listOf(Color.Transparent, Color(0xD9000000)),
                         ),
                     ),
             )

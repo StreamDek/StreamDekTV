@@ -446,6 +446,10 @@ class StreamDekRepository(
         return api.get<PlaybackProgressResponse>(query)?.progress
     }
 
+    suspend fun fetchContinueWatchingItem(mediaType: String, mediaId: String): ContinueWatchingItem? {
+        return fetchLibrary().continueWatching.firstOrNull { it.type == mediaType && it.id == mediaId }
+    }
+
     suspend fun syncProgress(
         mediaType: String,
         mediaId: String,
@@ -482,16 +486,20 @@ class StreamDekRepository(
         preferredStreamKey: String? = null,
         forceRefresh: Boolean = false,
     ): ResolvedPlaybackCandidate {
-        val cacheKey = playbackCacheKey(mediaType, mediaId, imdbId, episode, preferredStreamKey)
+        val episodeKey = buildEpisodeKey(episode)
+        val effectivePreferredStreamKey = preferredStreamKey
+            ?: sessionStore.preferredStreamKey(mediaType, mediaId, episodeKey)
+        val cacheKey = playbackCacheKey(mediaType, mediaId, imdbId, episode, effectivePreferredStreamKey)
         if (!forceRefresh) {
             resolvedPlaybackCache[cacheKey]?.let { return it }
         }
         val lookupType = if (mediaType == "tv") "series" else "movie"
         val videoId = buildStreamVideoId(imdbId ?: mediaId, episode)
         val streams = api.get<AddonStreamsResponse>("/addons/streams/$lookupType/$videoId")?.streams.orEmpty()
-        for (stream in rankStreams(streams, preferredStreamKey)) {
+        for (stream in rankStreams(streams, effectivePreferredStreamKey)) {
             val resolvedUrl = resolveStreamToUrl(stream)
             if (!resolvedUrl.isNullOrBlank()) {
+                val resolvedStreamKey = streamSelectionKey(stream)
                 val candidate = ResolvedPlaybackCandidate(
                     source = ResolvedPlaybackSource(
                         url = resolvedUrl,
@@ -502,6 +510,7 @@ class StreamDekRepository(
                     stream = stream,
                     streams = streams,
                 )
+                sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, resolvedStreamKey)
                 resolvedPlaybackCache[cacheKey] = candidate
                 return candidate
             }

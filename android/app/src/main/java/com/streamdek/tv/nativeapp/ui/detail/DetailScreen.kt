@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.dp
@@ -102,6 +103,7 @@ fun DetailScreen(
     var selectedSeasonNumber by remember(mediaType, mediaId) { mutableIntStateOf(1) }
     var selectedEpisodeIndex by remember(mediaType, mediaId) { mutableIntStateOf(0) }
     var selectedSeason by remember(mediaType, mediaId) { mutableStateOf<SeasonDetail?>(null) }
+    var resumeEpisodeContext by remember(mediaType, mediaId) { mutableStateOf<EpisodeContext?>(null) }
     var progressFraction by remember(mediaType, mediaId) { mutableStateOf<Float?>(null) }
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
@@ -146,8 +148,9 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedEpisodeIndex) {
-        val progress = repository.fetchProgress(mediaType, mediaId, currentEpisodeContext())
+    LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedEpisodeIndex, resumeEpisodeContext) {
+        val progressEpisode = if (mediaType == "tv") resumeEpisodeContext ?: currentEpisodeContext() else currentEpisodeContext()
+        val progress = repository.fetchProgress(mediaType, mediaId, progressEpisode)
         progressFraction = progress?.progress?.div(100.0)?.toFloat()?.coerceIn(0f, 1f)
         progressLabel = progress?.takeIf { it.positionSec > 0 && it.durationSec > 0 }?.let {
             "${formatTime(it.positionSec)} / ${formatTime(it.durationSec)}"
@@ -155,7 +158,11 @@ fun DetailScreen(
     }
 
     LaunchedEffect(mediaType, mediaId) {
-        inWatchlist = repository.fetchLibrary().watchlist.any { it.id == mediaId && it.type == mediaType }
+        val library = repository.fetchLibrary()
+        inWatchlist = library.watchlist.any { it.id == mediaId && it.type == mediaType }
+        resumeEpisodeContext = library.continueWatching
+            .firstOrNull { it.id == mediaId && it.type == mediaType }
+            ?.episode
         comments = repository.fetchTraktComments(mediaId, mediaType)
     }
 
@@ -282,7 +289,11 @@ fun DetailScreen(
                                                 mediaId = state.detail.id,
                                                 mediaType = state.detail.type,
                                                 imdbId = state.detail.imdbId,
-                                                episode = currentEpisodeContext(),
+                                                episode = if (state.detail.type == "tv" && (progressFraction ?: 0f) > 0f) {
+                                                    resumeEpisodeContext ?: currentEpisodeContext()
+                                                } else {
+                                                    currentEpisodeContext()
+                                                },
                                                 title = state.detail.title,
                                             ),
                                         )
@@ -578,7 +589,7 @@ private fun DetailsPanel(
         )
         if (items.isNotEmpty()) {
             LazyRow(
-                contentPadding = PaddingValues(horizontal = 2.dp),
+                contentPadding = PaddingValues(start = 0.dp, end = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 itemsIndexed(items) { _, item ->
@@ -649,11 +660,12 @@ private fun CommentCard(
         onClick = {},
         modifier = Modifier
             .width(340.dp)
+            .height(196.dp)
             .then(if (requestFocus != null) Modifier.focusRequester(requestFocus) else Modifier),
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
-            containerColor = Color(0x1611141B),
-            focusedContainerColor = Color(0x2811141B),
+            containerColor = Color(0x3311141B),
+            focusedContainerColor = Color(0x4411141B),
         ),
         border = CardDefaults.border(
             focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppCardShape),
@@ -776,15 +788,6 @@ private fun ContinuePlayButton(
                         )
                     }
                 }
-            }
-            if (hasProgress) {
-                ProgressMeter(
-                    progress = (progressFraction ?: 0f).toDouble() * 100.0,
-                    modifier = Modifier
-                        .padding(top = 5.dp)
-                        .fillMaxWidth()
-                        .height(4.dp),
-                )
             }
         }
     }
@@ -932,6 +935,16 @@ private fun EpisodeCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+                episode.airDate?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                        textAlign = TextAlign.Start,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }

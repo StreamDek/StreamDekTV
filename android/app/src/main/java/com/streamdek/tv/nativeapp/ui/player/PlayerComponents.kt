@@ -375,9 +375,9 @@ internal fun PlayerTimeline(
     var focused by remember { mutableStateOf(false) }
     val progress = if (durationSec > 0.0) (positionSec / durationSec).coerceIn(0.0, 1.0).toFloat() else 0f
     val seekStepSeconds = when {
-        durationSec >= 7200.0 -> 60.0
-        durationSec >= 3600.0 -> 30.0
-        else -> 15.0
+        durationSec >= 7200.0 -> 20.0
+        durationSec >= 3600.0 -> 12.0
+        else -> 8.0
     }
 
     Column(
@@ -390,11 +390,31 @@ internal fun PlayerTimeline(
                 if (it.isFocused) onInteract()
             }
             .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
                 when (event.key) {
-                    Key.DirectionLeft -> { onSeekRelative(-seekStepSeconds); true }
-                    Key.DirectionRight -> { onSeekRelative(seekStepSeconds); true }
-                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> { onInteract(); true }
+                    Key.DirectionLeft -> {
+                        if (event.type == KeyEventType.KeyDown) {
+                            onSeekRelative(-seekStepSeconds)
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Key.DirectionRight -> {
+                        if (event.type == KeyEventType.KeyDown) {
+                            onSeekRelative(seekStepSeconds)
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                        if (event.type == KeyEventType.KeyUp) {
+                            onInteract()
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     else -> false
                 }
             },

@@ -350,8 +350,8 @@ private fun HeroBlock(
                 contentDescription = item.title,
                 modifier = Modifier
                     .padding(top = 2.dp)
-                    .width(320.dp)
-                    .height(if (item.type == "network") 96.dp else 110.dp),
+                    .width(256.dp)
+                    .height(if (item.type == "network") 77.dp else 88.dp),
                 contentScale = ContentScale.Fit,
             )
         } else {
@@ -383,8 +383,6 @@ private fun HeroBlock(
                 text = description,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
-                maxLines = if (compact) 2 else 4,
-                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -505,8 +503,9 @@ private fun MediaPosterCard(
                         .build(),
                     contentDescription = item.title,
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                        .align(Alignment.Center)
+                        .width(88.dp)
+                        .height(36.dp),
                     colorFilter = networkStyle.logoTint?.let { ColorFilter.tint(it) },
                     contentScale = ContentScale.Fit,
                 )

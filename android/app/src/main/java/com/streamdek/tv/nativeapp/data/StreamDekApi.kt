@@ -23,6 +23,7 @@ class AuthSessionStore(
     private val sessionIdKey = "streamdek_tv_session_id"
     private val deviceIdKey = "streamdek_tv_device_id"
     private val activeProfileIdKey = "streamdek_tv_active_profile_id"
+    private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
 
     private val _session = MutableStateFlow(loadSession())
     val session: StateFlow<AuthSession?> = _session
@@ -49,6 +50,17 @@ class AuthSessionStore(
 
     fun deviceId(): String = readOrCreate(deviceIdKey)
 
+    fun preferredStreamKey(mediaType: String, mediaId: String, episodeKey: String?): String? {
+        return preferences.getString(streamPreferenceStorageKey(mediaType, mediaId, episodeKey), null)
+    }
+
+    fun savePreferredStreamKey(mediaType: String, mediaId: String, episodeKey: String?, streamKey: String?) {
+        val storageKey = streamPreferenceStorageKey(mediaType, mediaId, episodeKey)
+        preferences.edit().apply {
+            if (streamKey.isNullOrBlank()) remove(storageKey) else putString(storageKey, streamKey)
+        }.apply()
+    }
+
     private fun loadSession(): AuthSession? {
         val raw = preferences.getString(authKey, null) ?: return null
         return runCatching { gson.fromJson(raw, AuthSession::class.java) }.getOrNull()
@@ -60,6 +72,11 @@ class AuthSessionStore(
         val created = UUID.randomUUID().toString()
         preferences.edit().putString(key, created).apply()
         return created
+    }
+
+    private fun streamPreferenceStorageKey(mediaType: String, mediaId: String, episodeKey: String?): String {
+        val profile = activeProfileId() ?: "default"
+        return listOf(preferredStreamKeyPrefix, profile, mediaType, mediaId, episodeKey.orEmpty()).joinToString(":")
     }
 }
 

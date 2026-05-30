@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -40,6 +41,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -91,9 +93,14 @@ fun PlayerScreen(
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
     var pendingSeekJob by remember { mutableStateOf<Job?>(null) }
+    var pendingResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var lastWorkingSourceUrl by remember { mutableStateOf<String?>(null) }
     var lastWorkingLabel by remember { mutableStateOf<String?>(null) }
     var pauseInfoVisible by remember { mutableStateOf(false) }
+    var lastSeekInputAt by remember { mutableStateOf(0L) }
+    var lastSeekDirection by remember { mutableIntStateOf(0) }
+    var seekBurstCount by remember { mutableIntStateOf(0) }
+    var subtitlePreferenceAppliedForSource by remember { mutableStateOf<String?>(null) }
 
     val errorBackRequester = remember { FocusRequester() }
     val errorSourcesRequester = remember { FocusRequester() }
@@ -132,6 +139,25 @@ fun PlayerScreen(
         }
     }
 
+    fun scheduleRelativeSeek(baseDeltaSeconds: Double) {
+        val now = System.currentTimeMillis()
+        val direction = if (baseDeltaSeconds >= 0.0) 1 else -1
+        seekBurstCount = if (lastSeekDirection == direction && now - lastSeekInputAt <= 450L) {
+            seekBurstCount + 1
+        } else {
+            0
+        }
+        lastSeekDirection = direction
+        lastSeekInputAt = now
+        val multiplier = when {
+            seekBurstCount >= 10 -> 8.0
+            seekBurstCount >= 6 -> 4.0
+            seekBurstCount >= 3 -> 2.0
+            else -> 1.0
+        }
+        scheduleSeek(positionSec + (baseDeltaSeconds * multiplier))
+    }
+
     fun scheduleControlsHide() {
         controlsHideJob?.cancel()
         controlsHideJob = null
@@ -152,12 +178,14 @@ fun PlayerScreen(
     }
 
     fun showControls(focusPlay: Boolean = false) {
+        pauseInfoVisible = false
         controlsVisible = true
         scheduleControlsHide()
         if (focusPlay) requestPlaybackFocus()
     }
 
     fun registerInteraction() {
+        pauseInfoVisible = false
         if (!controlsVisible) controlsVisible = true
         scheduleControlsHide()
     }
@@ -167,11 +195,17 @@ fun PlayerScreen(
         pendingSeekJob = null
         loading = true
         controlsVisible = false
+        pauseInfoVisible = false
         detail = repository.fetchDetail(request.mediaId, request.mediaType)
+        val continueWatchingItem = if (request.mediaType == "tv") {
+            repository.fetchContinueWatchingItem(request.mediaType, request.mediaId)
+        } else {
+            null
+        }
         if (request.mediaType == "tv" && currentEpisode == null) {
             val firstSeason = detail?.seasons?.firstOrNull()?.seasonNumber
             val season = firstSeason?.let { repository.fetchSeason(request.mediaId, it) }
-            currentEpisode = season?.episodes?.firstOrNull()?.let {
+            currentEpisode = continueWatchingItem?.episode ?: season?.episodes?.firstOrNull()?.let {
                 EpisodeContext(
                     seasonNumber = season.seasonNumber,
                     episodeNumber = it.episodeNumber,
@@ -184,6 +218,11 @@ fun PlayerScreen(
                 )
             }
         }
+        val progress = repository.fetchProgress(request.mediaType, request.mediaId, currentEpisode)
+        pendingResumePositionSec = progress?.positionSec
+            ?.takeIf { it > 0.0 }
+            ?: continueWatchingItem?.positionSec
+            ?: continueWatchingItem?.resumeAt
         val resolved = repository.resolvePlayback(
             request.mediaType,
             request.mediaId,
@@ -194,8 +233,7 @@ fun PlayerScreen(
         candidate = resolved
         currentSourceUrl = resolved.source?.url
         currentLabel = request.selectedStreamLabel ?: resolved.source?.label ?: "No playable stream found"
-        val progress = repository.fetchProgress(request.mediaType, request.mediaId, currentEpisode)
-        positionSec = progress?.positionSec ?: 0.0
+        positionSec = pendingResumePositionSec ?: 0.0
         durationSec = progress?.durationSec ?: 0.0
         nextEpisode = resolveNextEpisode(repository, request, detail, currentEpisode)
         if (resolved.source == null) {
@@ -214,10 +252,12 @@ fun PlayerScreen(
     // Drive MPV state from LaunchedEffect so JNI calls only happen when values change,
     // not on every recomposition triggered by overlay animations.
     LaunchedEffect(currentSourceUrl) {
+        subtitlePreferenceAppliedForSource = null
         if (!currentSourceUrl.isNullOrBlank()) playerView?.setSource(currentSourceUrl)
-        if (positionSec > 0.0) {
+        val resumeAt = pendingResumePositionSec
+        if (resumeAt != null && resumeAt > 0.0) {
             delay(1200)
-            playerView?.seekTo(positionSec)
+            playerView?.seekTo(resumeAt)
         }
     }
 
@@ -343,7 +383,7 @@ fun PlayerScreen(
                         lastWorkingSourceUrl = currentSourceUrl
                         lastWorkingLabel = currentLabel
                         showControls(focusPlay = true)
-                        if (positionSec > 0.0) seekTo(positionSec)
+                        pendingResumePositionSec?.takeIf { it > 0.0 }?.let { seekTo(it) }
                     }
                     onProgressCallback = { position, duration ->
                         positionSec = position
@@ -370,6 +410,21 @@ fun PlayerScreen(
                         subtitleTracks = subtitles
                         selectedAudioId = selectedAudioTrackId ?: -1
                         selectedSubtitleId = selectedSubtitleTrackId ?: -1
+                        val currentSource = currentSourceUrl
+                        if (
+                            currentSource != null &&
+                            subtitlePreferenceAppliedForSource != currentSource
+                        ) {
+                            subtitlePreferenceAppliedForSource = currentSource
+                            preferredSubtitleTrack(
+                                subtitles = subtitles,
+                                preferredLanguage = repository.bootstrap.value?.preferences?.playback?.defaultSubtitleLanguage ?: "en",
+                            )?.let { preferredTrack ->
+                                if (selectedSubtitleTrackId != preferredTrack.id) {
+                                    setSubtitleTrack(preferredTrack.id)
+                                }
+                            }
+                        }
                     }
                     playerView = this
                 }
@@ -505,6 +560,7 @@ fun PlayerScreen(
                                         error = null
                                         loading = true
                                         controlsVisible = false
+                                        pendingResumePositionSec = positionSec.takeIf { it > 0.0 }
                                         currentSourceUrl = lastWorkingSourceUrl
                                         currentLabel = lastWorkingLabel ?: "Previous source"
                                     },
@@ -525,7 +581,7 @@ fun PlayerScreen(
         // Playback controls — bottom bar
         if (!loading && error == null) {
             PlayerOverlayVisibility(
-                visible = controlsVisible || paused || panel != null,
+                visible = controlsVisible || panel != null || (paused && !pauseInfoVisible),
                 modifier = Modifier.align(Alignment.BottomCenter),
             ) {
                 PlayerBottomBar(
@@ -561,7 +617,7 @@ fun PlayerScreen(
                         registerInteraction()
                     },
                     onSeekRelative = { delta ->
-                        scheduleSeek(positionSec + delta)
+                        scheduleRelativeSeek(delta)
                         registerInteraction()
                     },
                     onOpenPanel = {
@@ -577,24 +633,41 @@ fun PlayerScreen(
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .padding(end = 52.dp)
-                    .width(360.dp),
+                    .fillMaxSize(),
             ) {
-                PlayerGlassSurface {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .width(520.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(Color.Transparent, Color(0x38000000), Color(0xC0000000)),
+                            ),
+                        ),
+                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(360.dp)
+                        .padding(end = 52.dp),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                         if (!detail?.titleLogo.isNullOrBlank()) {
                             AsyncImage(
                                 model = detail!!.titleLogo,
                                 contentDescription = detail?.title ?: request.title,
                                 modifier = Modifier.height(52.dp),
                                 contentScale = ContentScale.Fit,
-                                alignment = Alignment.CenterStart,
+                                alignment = Alignment.CenterEnd,
                             )
                         } else {
                             androidx.tv.material3.Text(
                                 text = detail?.title ?: request.title ?: "",
                                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
                                 color = Color.White,
+                                textAlign = TextAlign.End,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -604,6 +677,7 @@ fun PlayerScreen(
                                 text = "S${ep.seasonNumber} · E${ep.episodeNumber}" + (ep.title?.let { " — $it" } ?: ""),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFFF0BA66),
+                                textAlign = TextAlign.End,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -614,6 +688,7 @@ fun PlayerScreen(
                                 text = synopsis,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.White.copy(alpha = 0.74f),
+                                textAlign = TextAlign.End,
                                 maxLines = 5,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -622,6 +697,7 @@ fun PlayerScreen(
                             text = "${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(positionSec)} / ${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(durationSec)}",
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                             color = Color.White.copy(alpha = 0.55f),
+                            textAlign = TextAlign.End,
                         )
                     }
                 }
@@ -635,84 +711,89 @@ fun PlayerScreen(
                     .fillMaxSize()
                     .background(Color(0x54000000)),
             )
-            PlayerOverlayVisibility(
-                visible = true,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 36.dp, top = 52.dp, bottom = 52.dp),
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.CenterEnd,
             ) {
-                PlayerOptionPanel(
-                    panel = activePanel,
-                    candidate = candidate,
-                    audioTracks = audioTracks,
-                    subtitleTracks = subtitleTracks,
-                    selectedAudioId = selectedAudioId,
-                    selectedSubtitleId = selectedSubtitleId,
-                    currentSpeed = speed,
-                    closeRequester = panelCloseRequester,
-                    firstItemRequester = panelFirstItemRequester,
-                    onClose = {
-                        panel = null
-                        showControls(focusPlay = true)
-                    },
-                    onInteract = { registerInteraction() },
-                    onSelectStream = { index ->
-                        scope.launch {
-                            val stream = candidate?.streams?.getOrNull(index) ?: return@launch
+                PlayerOverlayVisibility(
+                    visible = true,
+                    modifier = Modifier.padding(end = 36.dp, top = 52.dp, bottom = 52.dp),
+                ) {
+                    PlayerOptionPanel(
+                        panel = activePanel,
+                        candidate = candidate,
+                        audioTracks = audioTracks,
+                        subtitleTracks = subtitleTracks,
+                        selectedAudioId = selectedAudioId,
+                        selectedSubtitleId = selectedSubtitleId,
+                        currentSpeed = speed,
+                        closeRequester = panelCloseRequester,
+                        firstItemRequester = panelFirstItemRequester,
+                        onClose = {
                             panel = null
-                            loading = true
-                            controlsVisible = false
-                            val selected = try {
-                                repository.resolvePlayback(
-                                    request.mediaType,
-                                    request.mediaId,
-                                    request.imdbId,
-                                    currentEpisode,
-                                    preferredStreamKey = repository.streamSelectionKey(stream),
-                                    forceRefresh = true,
-                                )
-                            } catch (e: Exception) {
-                                error = "Could not load this source: ${e.message ?: "Unknown error"}"
-                                loading = false
-                                controlsVisible = true
-                                return@launch
+                            showControls(focusPlay = true)
+                        },
+                        onInteract = { registerInteraction() },
+                        onSelectStream = { index ->
+                            scope.launch {
+                                val stream = candidate?.streams?.getOrNull(index) ?: return@launch
+                                panel = null
+                                loading = true
+                                controlsVisible = false
+                                pendingResumePositionSec = positionSec.takeIf { it > 0.0 }
+                                val selected = try {
+                                    repository.resolvePlayback(
+                                        request.mediaType,
+                                        request.mediaId,
+                                        request.imdbId,
+                                        currentEpisode,
+                                        preferredStreamKey = repository.streamSelectionKey(stream),
+                                        forceRefresh = true,
+                                    )
+                                } catch (e: Exception) {
+                                    error = "Could not load this source: ${e.message ?: "Unknown error"}"
+                                    loading = false
+                                    controlsVisible = true
+                                    return@launch
+                                }
+                                if (selected.source == null) {
+                                    error = "This source could not be resolved. Please try another."
+                                    loading = false
+                                    controlsVisible = true
+                                    return@launch
+                                }
+                                candidate = selected
+                                currentSourceUrl = selected.source.url
+                                currentLabel = selected.source.label ?: repository.describeStreamOption(stream)
                             }
-                            if (selected.source == null) {
-                                error = "This source could not be resolved. Please try another."
-                                loading = false
-                                controlsVisible = true
-                                return@launch
-                            }
-                            candidate = selected
-                            currentSourceUrl = selected.source.url
-                            currentLabel = selected.source.label ?: repository.describeStreamOption(stream)
-                        }
-                    },
-                    onSelectAudio = {
-                        playerView?.setAudioTrack(it)
-                        panel = null
-                        showControls(focusPlay = true)
-                    },
-                    onDisableSubtitles = {
-                        playerView?.disableSubtitleTrack()
-                        panel = null
-                        showControls(focusPlay = true)
-                    },
-                    onSelectSubtitle = {
-                        playerView?.setSubtitleTrack(it)
-                        panel = null
-                        showControls(focusPlay = true)
-                    },
-                    onSelectSpeed = {
-                        speed = it
-                        panel = null
-                        showControls(focusPlay = true)
-                    },
-                )
+                        },
+                        onSelectAudio = {
+                            playerView?.setAudioTrack(it)
+                            panel = null
+                            showControls(focusPlay = true)
+                        },
+                        onDisableSubtitles = {
+                            subtitlePreferenceAppliedForSource = currentSourceUrl
+                            playerView?.disableSubtitleTrack()
+                            panel = null
+                            showControls(focusPlay = true)
+                        },
+                        onSelectSubtitle = {
+                            subtitlePreferenceAppliedForSource = currentSourceUrl
+                            playerView?.setSubtitleTrack(it)
+                            panel = null
+                            showControls(focusPlay = true)
+                        },
+                        onSelectSpeed = {
+                            speed = it
+                            panel = null
+                            showControls(focusPlay = true)
+                        },
+                    )
+                }
             }
         }
     }
-}
 
 private suspend fun resolveNextEpisode(
     repository: StreamDekRepository,
@@ -748,4 +829,29 @@ private suspend fun resolveNextEpisode(
         airDate = first.airDate,
         tmdbEpisodeId = first.id,
     )
+}
+
+private fun preferredSubtitleTrack(
+    subtitles: List<MpvTrackInfo>,
+    preferredLanguage: String,
+): MpvTrackInfo? {
+    val normalizedPreference = preferredLanguage.trim().lowercase()
+    if (normalizedPreference.isBlank() || normalizedPreference == "off") return null
+    return subtitles.firstOrNull { track ->
+        subtitleMatchesPreference(track, normalizedPreference)
+    }
+}
+
+private fun subtitleMatchesPreference(track: MpvTrackInfo, preferredLanguage: String): Boolean {
+    val normalizedLanguage = track.language?.trim()?.lowercase().orEmpty()
+    val normalizedTitle = track.title?.trim()?.lowercase().orEmpty()
+    val aliases = when (preferredLanguage) {
+        "en", "eng", "english" -> setOf("en", "eng", "english")
+        else -> setOf(preferredLanguage)
+    }
+    return aliases.any { alias ->
+        normalizedLanguage == alias ||
+            normalizedLanguage.startsWith("$alias-") ||
+            normalizedTitle.contains(alias)
+    }
 }
