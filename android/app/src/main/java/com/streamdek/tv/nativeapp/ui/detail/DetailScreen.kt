@@ -150,7 +150,7 @@ fun DetailScreen(
         val progress = repository.fetchProgress(mediaType, mediaId, currentEpisodeContext())
         progressFraction = progress?.progress?.div(100.0)?.toFloat()?.coerceIn(0f, 1f)
         progressLabel = progress?.takeIf { it.positionSec > 0 && it.durationSec > 0 }?.let {
-            "Continue Watching  ${formatTime(it.positionSec)} / ${formatTime(it.durationSec)}"
+            "${formatTime(it.positionSec)} / ${formatTime(it.durationSec)}"
         }
     }
 
@@ -245,7 +245,6 @@ fun DetailScreen(
                                 progressLabel = progressLabel,
                                 inWatchlist = inWatchlist,
                                 playButtonRequester = playButtonRequester,
-                                onBack = onBack,
                                 onTrailer = {
                                     val trailerUrl = when {
                                         state.detail.trailerKey.isNullOrBlank() -> null
@@ -410,7 +409,6 @@ private fun HeroSection(
     progressLabel: String?,
     inWatchlist: Boolean,
     playButtonRequester: FocusRequester,
-    onBack: () -> Unit,
     onTrailer: () -> Unit,
     onToggleWatchlist: suspend () -> Unit,
     onPlay: () -> Unit,
@@ -420,13 +418,14 @@ private fun HeroSection(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top,
-        ) {
-            BackPill(onBack)
-            detail.rating?.let { ImdbBadge(it) }
+        detail.rating?.let { rating ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.Top,
+            ) {
+                ImdbBadge(rating)
+            }
         }
 
         Column(
@@ -483,8 +482,8 @@ private fun HeroSection(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.Start),
+                verticalAlignment = Alignment.Top,
             ) {
                 ContinuePlayButton(
                     detail = detail,
@@ -567,7 +566,6 @@ private fun DetailsPanel(
         detail.numberOfSeasons?.takeIf { it > 0 }?.let { add("Seasons" to it.toString()) }
         detail.numberOfEpisodes?.takeIf { it > 0 }?.let { add("Episodes" to it.toString()) }
         selectedEpisode?.let { add("Episode" to "E${it.episodeNumber} ${it.name}") }
-        progressLabel?.let { add("Progress" to it) }
     }
 
     if (items.isEmpty() && detail.tagline.isNullOrBlank()) return

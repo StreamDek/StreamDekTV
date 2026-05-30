@@ -182,10 +182,27 @@ class StreamDekRepository(
     }
 
     suspend fun fetchLatestAppRelease(): AppReleaseManifest? {
-        val rawPath = BuildConfig.STREAMDEK_OTA_MANIFEST_PATH.takeIf { it.isNotBlank() } ?: return null
-        val path = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
-        return api.get<AppReleaseManifest>(path, session = null)
-            ?.takeIf { it.versionCode > 0 && it.versionName.isNotBlank() && it.apkUrl.isNotBlank() }
+        val configuredPath = BuildConfig.STREAMDEK_OTA_MANIFEST_PATH.takeIf { it.isNotBlank() }
+        val candidatePaths = buildList {
+            configuredPath?.let(::add)
+            add("/public/updates/android-tv/latest")
+            add("/updates/android-tv/latest")
+            add("/app/updates/android-tv/latest")
+        }.map { raw ->
+            if (raw.startsWith("/")) raw else "/$raw"
+        }.distinct()
+
+        for (path in candidatePaths) {
+            val manifest = api.get<AppReleaseManifest>(path, session = null)
+                ?.takeIf { it.versionCode > 0 && it.versionName.isNotBlank() && it.apkUrl.isNotBlank() }
+            if (manifest != null) {
+                TvDebugLogger.i("Updates", "fetchLatestAppRelease ok path=$path version=${manifest.versionName} code=${manifest.versionCode}")
+                return manifest
+            }
+            TvDebugLogger.w("Updates", "fetchLatestAppRelease unavailable path=$path")
+        }
+
+        return null
     }
 
     suspend fun fetchHomeContent(forceRefresh: Boolean = false): HomeContent {
