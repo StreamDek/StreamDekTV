@@ -2,7 +2,9 @@ package com.streamdek.tv.nativeapp.ui.account
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,10 +22,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +54,7 @@ import com.streamdek.tv.nativeapp.data.DeviceInfo
 import com.streamdek.tv.nativeapp.data.SessionInfo
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamProfile
+import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -67,6 +71,7 @@ private enum class SettingsSection(val label: String) {
 @Composable
 fun AccountScreen(
     repository: StreamDekRepository,
+    appUpdateManager: AppUpdateManager,
     onBack: () -> Unit,
     onSignIn: () -> Unit,
 ) {
@@ -76,6 +81,7 @@ fun AccountScreen(
     var status by remember { mutableStateOf<String?>(null) }
     var selectedSection by remember { mutableStateOf(SettingsSection.Profile) }
     val firstSectionRequester = remember { FocusRequester() }
+    val appUpdateState by appUpdateManager.uiState.collectAsState()
 
     LaunchedEffect(Unit) {
         bootstrap = repository.refreshBootstrap()
@@ -403,6 +409,57 @@ fun AccountScreen(
 
                 SettingsSection.About -> {
                     item {
+                        CompactCard("App Updates") {
+                            TextLine("Installed", BuildConfig.VERSION_NAME)
+                            TextLine("Status", appUpdateState.statusText ?: appUpdateState.errorMessage ?: "Ready")
+                            PreferenceRow("Automatic Checks", appUpdateState.autoCheckEnabled) {
+                                appUpdateManager.setAutoCheckEnabled(!appUpdateState.autoCheckEnabled)
+                            }
+                            appUpdateState.availableRelease?.let { release ->
+                                TextLine("Available", release.versionName)
+                                release.requiredReason?.takeIf { it.isNotBlank() }?.let { reason ->
+                                    Text(
+                                        text = reason,
+                                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                release.releaseNotes?.takeIf { it.isNotBlank() }?.let { notes ->
+                                    Text(
+                                        text = notes,
+                                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                            ) {
+                                if (appUpdateState.availableRelease != null) {
+                                    Button(
+                                        onClick = { scope.launch { appUpdateManager.startUpdate() } },
+                                        shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                                    ) {
+                                        Text(
+                                            when {
+                                                appUpdateState.blockedByUnknownSources -> "Open Install Settings"
+                                                appUpdateState.downloadProgressPercent != null -> "Downloading ${appUpdateState.downloadProgressPercent}%"
+                                                appUpdateState.isInstalling -> "Preparing Update"
+                                                else -> "Install Update"
+                                            },
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                                OutlinedButton(
+                                    onClick = { scope.launch { appUpdateManager.checkForUpdates(showPromptOnAvailable = false, force = true) } },
+                                    shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                                ) { Text("Check Now") }
+                            }
+                        }
+                    }
+                    item {
                         CompactCard("About") {
                             TextLine("Version", BuildConfig.VERSION_NAME)
                             TextLine("Client", "Android TV")
@@ -547,10 +604,18 @@ private fun SidebarItem(
 
 @Composable
 private fun CompactCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    var focused by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0x9411141B), RoundedCornerShape(20.dp))
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = if (focused) Color(0x66F0BA66) else Color(0x10FFFFFF),
+                shape = RoundedCornerShape(20.dp),
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {

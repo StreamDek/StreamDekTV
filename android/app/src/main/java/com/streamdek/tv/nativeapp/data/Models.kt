@@ -398,3 +398,18 @@ data class PlaybackRequest(
     val selectedStreamKey: String? = null,
     val selectedStreamLabel: String? = null,
 )
+
+data class AppReleaseManifest(
+    val versionCode: Int = 0,
+    val versionName: String = "",
+    val apkUrl: String = "",
+    val releaseNotes: String? = null,
+    val required: Boolean = false,
+    val publishedAt: String? = null,
+    val checksumSha256: String? = null,
+    val minSupportedVersionCode: Int? = null,
+    val requiredReason: String? = null,
+    val packageName: String? = null,
+    val assetName: String? = null,
+    val fileSizeBytes: Long? = null,
+)

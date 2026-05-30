@@ -1,0 +1,208 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  android-release:
+    name: Build signed Android TV APK
+    runs-on: ubuntu-latest
+    concurrency:
+      group: streamdek-tv-release-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          tag_name="${GITHUB_REF_NAME}"
+          version_name="${tag_name#v}"
+          package_version="$(node -e "const pkg=require('./package.json'); if (!pkg.version) process.exit(1); process.stdout.write(pkg.version);")"
+
+          if [ "$package_version" != "$version_name" ]; then
+            echo "Release tag $tag_name does not match package.json version $package_version."
+            exit 1
+          fi
+
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+
+      - name: Write CI environment file
+        shell: bash
+        env:
+          STREAMDEK_API_URL_VAR: ${{ vars.STREAMDEK_API_URL }}
+          STREAMDEK_API_URL_SECRET: ${{ secrets.STREAMDEK_API_URL }}
+          EXPO_PUBLIC_API_BASE_URL_VAR: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
+          EXPO_PUBLIC_API_BASE_URL_SECRET: ${{ secrets.EXPO_PUBLIC_API_BASE_URL }}
+        run: |
+          set -Eeuo pipefail
+
+          api_url="${STREAMDEK_API_URL_VAR:-${STREAMDEK_API_URL_SECRET:-${EXPO_PUBLIC_API_BASE_URL_VAR:-${EXPO_PUBLIC_API_BASE_URL_SECRET:-}}}}"
+
+          if [ -z "$api_url" ]; then
+            echo "STREAMDEK_API_URL repository variable or secret is required."
+            exit 1
+          fi
+
+          {
+            printf 'STREAMDEK_API_URL=%s\n' "$api_url"
+            printf 'EXPO_PUBLIC_API_BASE_URL=%s\n' "$api_url"
+          } > .env
+
+      - name: Decode Android keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          for required_secret in ANDROID_KEYSTORE_BASE64 ANDROID_STORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!required_secret:-}" ]; then
+              echo "$required_secret secret is required."
+              exit 1
+            fi
+          done
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "android/app/streamdek-release.jks"; then
+            echo "ANDROID_KEYSTORE_BASE64 is not valid base64."
+            exit 1
+          fi
+
+      - name: Build release APK
+        working-directory: android
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PATH: streamdek-release.jks
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STREAMDEK_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          STREAMDEK_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -Eeuo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon clean assembleRelease
+
+      - name: Collect APK
+        id: apk
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist
+          apk_path="$(find "android/app/build/outputs/apk/release" -name '*.apk' -print -quit)"
+          if [ -z "${apk_path:-}" ]; then
+            echo "Release APK was not produced."
+            exit 1
+          fi
+          release_apk="dist/streamdek-tv-${{ github.ref_name }}.apk"
+          cp "$apk_path" "$release_apk"
+          echo "apk_path=$release_apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamdek-tv-${{ github.ref_name }}-apk
+          path: ${{ steps.apk.outputs.apk_path }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.apk.outputs.apk_path }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Read generated release notes
+        id: release_meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "$GITHUB_REF_NAME" --json body --jq '.body // ""' > dist/release-notes.txt
+          published_at="$(gh release view "$GITHUB_REF_NAME" --json publishedAt --jq '.publishedAt // ""')"
+          echo "notes_path=dist/release-notes.txt" >> "$GITHUB_OUTPUT"
+          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
+
+      - name: Generate update manifest asset
+        id: manifest
+        shell: bash
+        env:
+          UPDATE_PLATFORM: android-tv
+          UPDATE_PACKAGE_NAME: com.streamdek.tv
+          UPDATE_VERSION_CODE: ${{ github.run_number }}
+          UPDATE_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          UPDATE_ASSET_NAME: streamdek-tv-${{ github.ref_name }}.apk
+          UPDATE_APK_PATH: ${{ steps.apk.outputs.apk_path }}
+          UPDATE_APK_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/streamdek-tv-${{ github.ref_name }}.apk
+          UPDATE_MANIFEST_OUTPUT_PATH: dist/latest.json
+          UPDATE_REQUIRED: "false"
+          UPDATE_RELEASE_NOTES_FILE: ${{ steps.release_meta.outputs.notes_path }}
+          UPDATE_PUBLISHED_AT: ${{ steps.release_meta.outputs.published_at }}
+        run: |
+          set -Eeuo pipefail
+          node ./scripts/generate-update-manifest.js
+          echo "manifest_path=dist/latest.json" >> "$GITHUB_OUTPUT"
+
+      - name: Upload update manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamdek-tv-${{ github.ref_name }}-update-manifest
+          path: ${{ steps.manifest.outputs.manifest_path }}
+          if-no-files-found: error
+
+      - name: Prepare remote manifest directory
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DEPLOY_PATH
+          script_stop: true
+          script: |
+            set -Eeuo pipefail
+            if [ -z "${DEPLOY_PATH:-}" ]; then
+              echo "DEPLOY_PATH secret is required."
+              exit 1
+            fi
+            mkdir -p "$DEPLOY_PATH/release-manifests/android-tv"
+
+      - name: Upload update manifest to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: ${{ steps.manifest.outputs.manifest_path }}
+          target: ${{ secrets.DEPLOY_PATH }}/release-manifests/android-tv
+          strip_components: 1

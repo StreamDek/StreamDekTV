@@ -13,6 +13,10 @@ def streamDekApiUrl = (
         ?: envProperties.getProperty("EXPO_PUBLIC_API_BASE_URL")
         ?: "http://192.168.0.2:3000"
 ).trim()
+def otaManifestPath = (
+    envProperties.getProperty("STREAMDEK_OTA_MANIFEST_PATH")
+        ?: "/app/updates/android-tv/latest"
+).trim()
 def ciVersionName = (findProperty("STREAMDEK_VERSION_NAME") ?: System.getenv("STREAMDEK_VERSION_NAME") ?: "1.0").toString()
 def ciVersionCode = (findProperty("STREAMDEK_VERSION_CODE") ?: System.getenv("STREAMDEK_VERSION_CODE") ?: "1").toString().toInteger()
 def ciStoreFile = System.getenv("ANDROID_KEYSTORE_PATH")
@@ -33,6 +37,7 @@ android {
         versionCode ciVersionCode
         versionName ciVersionName
         buildConfigField "String", "STREAMDEK_API_URL", "\"${streamDekApiUrl}\""
+        buildConfigField "String", "STREAMDEK_OTA_MANIFEST_PATH", "\"${otaManifestPath}\""
         ndk {
             abiFilters "arm64-v8a", "armeabi-v7a"
         }

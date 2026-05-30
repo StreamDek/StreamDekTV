@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.data
 
+import com.streamdek.tv.BuildConfig
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -178,6 +179,13 @@ class StreamDekRepository(
     suspend fun uninstallAddon(id: String) {
         api.delete<Map<String, String>>("/addons/uninstall", mapOf("id" to id))
         refreshBootstrap()
+    }
+
+    suspend fun fetchLatestAppRelease(): AppReleaseManifest? {
+        val rawPath = BuildConfig.STREAMDEK_OTA_MANIFEST_PATH.takeIf { it.isNotBlank() } ?: return null
+        val path = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
+        return api.get<AppReleaseManifest>(path, session = null)
+            ?.takeIf { it.versionCode > 0 && it.versionName.isNotBlank() && it.apkUrl.isNotBlank() }
     }
 
     suspend fun fetchHomeContent(forceRefresh: Boolean = false): HomeContent {

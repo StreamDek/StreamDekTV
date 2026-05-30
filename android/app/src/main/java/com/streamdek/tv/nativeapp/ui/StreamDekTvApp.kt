@@ -4,16 +4,18 @@ import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.core.animateDpAsState
@@ -23,6 +25,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,7 +50,13 @@ import com.streamdek.tv.nativeapp.ui.library.LibraryScreen
 import com.streamdek.tv.nativeapp.ui.network.NetworkBrowseScreen
 import com.streamdek.tv.nativeapp.ui.player.PlayerScreen
 import com.streamdek.tv.nativeapp.ui.search.SearchScreen
+import com.streamdek.tv.nativeapp.update.AppUpdateManager
+import com.streamdek.tv.nativeapp.update.AppUpdateUiState
+import kotlinx.coroutines.launch
+import androidx.tv.material3.Button
+import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 
 private enum class TopLevelDestination(val route: String, val label: String, val icon: String, val width: androidx.compose.ui.unit.Dp) {
@@ -60,8 +69,10 @@ private enum class TopLevelDestination(val route: String, val label: String, val
 @Composable
 fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.repository }) {
     val navController = rememberNavController()
+    val appUpdateManager = remember { AppGraph.appUpdateManager }
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
+    val appUpdateState by appUpdateManager.uiState.collectAsState()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val activeProfile = repository.activeStreamProfile(bootstrap)
@@ -70,6 +81,10 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         if (session != null) {
             repository.refreshBootstrap()
         }
+    }
+
+    LaunchedEffect(Unit) {
+        appUpdateManager.runAutomaticCheck()
     }
 
     StreamDekTvTheme {
@@ -115,6 +130,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 composable(TopLevelDestination.Profile.route) {
                     AccountScreen(
                         repository = repository,
+                        appUpdateManager = appUpdateManager,
                         onBack = {
                             navController.navigate(TopLevelDestination.Home.route) {
                                 popUpTo(TopLevelDestination.Home.route) { inclusive = false }
@@ -192,6 +208,21 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 }
             }
 
+            if (
+                currentRoute != "player" &&
+                currentRoute != "streams" &&
+                appUpdateState.showPrompt &&
+                appUpdateState.availableRelease != null
+            ) {
+                AppUpdatePrompt(
+                    state = appUpdateState,
+                    updateManager = appUpdateManager,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 42.dp),
+                )
+            }
+
             if (currentRoute in TopLevelDestination.entries.map { it.route }) {
                 TvFloatingNav(
                     avatarIndex = activeProfile?.avatarIndex ?: 0,
@@ -209,6 +240,87 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         }
                     },
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppUpdatePrompt(
+    state: AppUpdateUiState,
+    updateManager: AppUpdateManager,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    val release = state.availableRelease ?: return
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xB8000000)),
+    )
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth(0.54f)
+            .clip(RoundedCornerShape(28.dp))
+            .background(Color(0xFF10141B))
+            .border(2.dp, Color(0x66F0BA66), RoundedCornerShape(28.dp))
+            .padding(horizontal = 24.dp, vertical = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(
+            text = "Update Available",
+            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        Text(
+            text = "StreamDek TV ${release.versionName} is ready to install.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.86f),
+        )
+        release.releaseNotes?.takeIf { it.isNotBlank() }?.let { notes ->
+            Text(
+                text = notes,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
+            )
+        }
+        state.statusText?.let { status ->
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFF0BA66),
+            )
+        }
+        state.errorMessage?.let { error ->
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFFF8A80),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = { scope.launch { updateManager.startUpdate() } },
+                enabled = !state.isInstalling,
+                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+            ) {
+                Text(
+                    when {
+                        state.blockedByUnknownSources -> "Open Install Settings"
+                        state.downloadProgressPercent != null -> "Downloading ${state.downloadProgressPercent}%"
+                        state.isInstalling -> "Preparing Update"
+                        else -> "Install Update"
+                    },
+                )
+            }
+            OutlinedButton(
+                onClick = { updateManager.dismissPrompt() },
+                enabled = !release.required,
+                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+            ) {
+                Text("Later")
             }
         }
     }

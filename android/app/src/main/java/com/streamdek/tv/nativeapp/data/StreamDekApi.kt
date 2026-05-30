@@ -102,7 +102,7 @@ class StreamDekApi(
             .header("x-client-platform", "android-tv")
             .header("x-device-name", "Android TV")
             .header("x-device-type", "tv")
-            .header("x-app-version", "1.0.0")
+            .header("x-app-version", BuildConfig.VERSION_NAME)
 
         if (session != null) {
             builder.header("Authorization", "Bearer ${session.user.accessToken}")
