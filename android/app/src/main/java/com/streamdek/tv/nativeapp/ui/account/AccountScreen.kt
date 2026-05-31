@@ -83,6 +83,12 @@ fun AccountScreen(
     var selectedSection by remember { mutableStateOf(SettingsSection.Profile) }
     val firstSectionRequester = remember { FocusRequester() }
     val contentEntryRequester = remember { FocusRequester() }
+    val profileContentRequester = remember { FocusRequester() }
+    val servicesContentRequester = remember { FocusRequester() }
+    val playbackContentRequester = remember { FocusRequester() }
+    val tvContentRequester = remember { FocusRequester() }
+    val devicesContentRequester = remember { FocusRequester() }
+    val aboutContentRequester = remember { FocusRequester() }
     val appUpdateState by appUpdateManager.uiState.collectAsState()
 
     LaunchedEffect(Unit) {
@@ -113,6 +119,14 @@ fun AccountScreen(
             selectedSection = selectedSection,
             firstSectionRequester = firstSectionRequester,
             contentEntryRequester = contentEntryRequester,
+            sectionContentRequester = when (selectedSection) {
+                SettingsSection.Profile -> profileContentRequester
+                SettingsSection.Services -> servicesContentRequester
+                SettingsSection.Playback -> playbackContentRequester
+                SettingsSection.Tv -> tvContentRequester
+                SettingsSection.Devices -> devicesContentRequester
+                SettingsSection.About -> aboutContentRequester
+            },
             onSelectSection = { selectedSection = it },
             onSignIn = onSignIn,
             onSignOut = {
@@ -162,7 +176,7 @@ fun AccountScreen(
                 SettingsSection.Profile -> {
                     item {
                         if (session == null) {
-                            CompactCard("Link Your Account") {
+                            CompactCard("Link Your Account", modifier = Modifier.focusRequester(profileContentRequester)) {
                                 Text(
                                     text = "Sign in to sync profiles, library, addons, and playback settings.",
                                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
@@ -180,7 +194,10 @@ fun AccountScreen(
                         }
                     }
                     item {
-                        CompactCard("Current Profile") {
+                        CompactCard(
+                            "Current Profile",
+                            modifier = if (session != null) Modifier.focusRequester(profileContentRequester) else Modifier,
+                        ) {
                             if (activeProfile != null) {
                                 ProfileSummary(activeProfile)
                             } else {
@@ -216,7 +233,7 @@ fun AccountScreen(
 
                 SettingsSection.Services -> {
                     item {
-                        CompactCard("Account") {
+                        CompactCard("Account", modifier = Modifier.focusRequester(servicesContentRequester)) {
                             TextLine("Email", session?.user?.email ?: "Guest")
                             TextLine("Display Name", bootstrap?.profile?.displayName ?: session?.user?.displayName ?: "Not set")
                             TextLine("Subscription", session?.user?.subscriptionStatus ?: "free")
@@ -288,7 +305,7 @@ fun AccountScreen(
 
                 SettingsSection.Playback -> {
                     item {
-                        CompactCard("Playback Defaults") {
+                        CompactCard("Playback Defaults", modifier = Modifier.focusRequester(playbackContentRequester)) {
                             PreferenceRow("Autoplay Next Episode", playbackPrefs?.autoplayNextEpisode == true) {
                                 scope.launch {
                                     repository.updatePlaybackPreferences(mapOf("autoplayNextEpisode" to !(playbackPrefs?.autoplayNextEpisode == true)))
@@ -331,7 +348,7 @@ fun AccountScreen(
 
                 SettingsSection.Tv -> {
                     item {
-                        CompactCard("TV Interface") {
+                        CompactCard("TV Interface", modifier = Modifier.focusRequester(tvContentRequester)) {
                             ChoiceRow("Theme", appPrefs?.theme ?: "cinema-blue") {
                                 scope.launch {
                                     repository.updateAppPreferences(mapOf("theme" to nextOf(listOf("streamdek", "cinema-blue", "carbon-gold", "frost-neon", "ember-red", "aurora-green", "violet-pulse"), appPrefs?.theme ?: "cinema-blue")))
@@ -374,7 +391,7 @@ fun AccountScreen(
 
                 SettingsSection.Devices -> {
                     item {
-                        CompactCard("Sync Status") {
+                        CompactCard("Sync Status", modifier = Modifier.focusRequester(devicesContentRequester)) {
                             TextLine("Settings Sync", bootstrap?.syncStatus?.lastSettingsSyncAt ?: "Ready")
                             TextLine("Cloud Sync", if (bootstrap?.syncStatus?.cloudSyncEnabled != false) "On" else "Off")
                             TextLine("Playback Sync", if (bootstrap?.syncStatus?.playbackSyncEnabled != false) "On" else "Off")
@@ -418,7 +435,7 @@ fun AccountScreen(
 
                 SettingsSection.About -> {
                     item {
-                        CompactCard("App Updates") {
+                        CompactCard("App Updates", modifier = Modifier.focusRequester(aboutContentRequester)) {
                             TextLine("Installed", BuildConfig.VERSION_NAME)
                             TextLine("Status", appUpdateState.statusText ?: appUpdateState.errorMessage ?: "Ready")
                             PreferenceRow("Automatic Checks", appUpdateState.autoCheckEnabled) {
@@ -498,6 +515,7 @@ private fun SettingsSidebar(
     selectedSection: SettingsSection,
     firstSectionRequester: FocusRequester,
     contentEntryRequester: FocusRequester,
+    sectionContentRequester: FocusRequester,
     onSelectSection: (SettingsSection) -> Unit,
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
@@ -518,7 +536,7 @@ private fun SettingsSidebar(
                 title = section.label,
                 selected = selectedSection == section,
                 requester = if (index == 0) firstSectionRequester else null,
-                rightRequester = contentEntryRequester,
+                rightRequester = if (selectedSection == section) sectionContentRequester else contentEntryRequester,
                 // onFocused does NOT change the section — only onClick does.
                 // This prevents navigation returning from content from jumping to a different section.
                 onFocused = {},
@@ -618,10 +636,14 @@ private fun SidebarItem(
 }
 
 @Composable
-private fun CompactCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+private fun CompactCard(
+    title: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     var focused by remember { mutableStateOf(false) }
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .background(Color(0x9411141B), RoundedCornerShape(20.dp))
             .border(

@@ -36,6 +36,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.tv.material3.Border
 import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Card
@@ -108,7 +109,7 @@ fun NetworkBrowseScreen(
     val visibleResults = results.filter { item ->
         minRating == null || (item.rating ?: 0.0) >= minRating!!.toDouble()
     }
-    val resultRows = visibleResults.chunked(4)
+    val resultRows = visibleResults.chunked(3)
     val yearOptions = remember {
         listOf<String?>(null) + (0..10).map { (Year.now().value - it).toString() }
     }
@@ -292,7 +293,17 @@ private fun FilterDropdown(
             modifier = Modifier.background(Color(0xEE11141B)),
         ) {
             options.forEach { option ->
+                var focused by remember(option.second, selected) { mutableStateOf(false) }
                 DropdownMenuItem(
+                    modifier = Modifier
+                        .background(
+                            when {
+                                focused -> Color(0x55F0BA66)
+                                option.second == selected -> Color(0x331F2834)
+                                else -> Color.Transparent
+                            },
+                        )
+                        .onFocusChanged { focused = it.isFocused },
                     text = {
                         Text(
                             text = option.first,

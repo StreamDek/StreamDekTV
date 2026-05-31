@@ -218,7 +218,7 @@ fun HomeScreen(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(start = 48.dp, top = 56.dp, end = 48.dp)
-                        .fillMaxWidth(0.34f),
+                        .fillMaxWidth(0.43f),
                 )
 
                 Box(
@@ -242,7 +242,7 @@ fun HomeScreen(
                             RailSection(
                                 row = row,
                                 rowState = rowState,
-                                initialFocusIndex = rowFocusIndices[row.id] ?: 0,
+                                anchoredIndex = rowFocusIndices[row.id] ?: 0,
                                 onItemFocused = { index, item ->
                                     rowFocusIndices[row.id] = index
                                     focusedItem = item
@@ -383,6 +383,8 @@ private fun HeroBlock(
                 text = description,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -393,7 +395,7 @@ private fun HeroBlock(
 private fun RailSection(
     row: HomeRail,
     rowState: androidx.compose.foundation.lazy.LazyListState,
-    initialFocusIndex: Int,
+    anchoredIndex: Int,
     onItemFocused: (Int, MediaItem) -> Unit,
     onItemPressed: (MediaItem) -> Unit,
     firstCardRequester: FocusRequester? = null,
@@ -404,6 +406,13 @@ private fun RailSection(
         object : BringIntoViewResponder {
             override fun calculateRectForParent(localRect: Rect): Rect = localRect
             override suspend fun bringChildIntoView(localRect: () -> Rect?) { }
+        }
+    }
+
+    LaunchedEffect(anchoredIndex, row.items.size) {
+        val targetIndex = anchoredIndex.coerceIn(0, (row.items.size - 1).coerceAtLeast(0))
+        if (row.items.isNotEmpty() && rowState.firstVisibleItemIndex != targetIndex) {
+            rowState.scrollToItem(targetIndex)
         }
     }
 

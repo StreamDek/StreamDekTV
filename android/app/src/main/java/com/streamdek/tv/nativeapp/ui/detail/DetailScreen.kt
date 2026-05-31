@@ -244,7 +244,15 @@ fun DetailScreen(
                     item("hero") {
                         // Wrapped in no-op BringIntoViewResponder so focusing Back/CTA/Trailer/Watchlist
                         // doesn't trigger LazyColumn to auto-scroll to center them.
-                        Box(modifier = Modifier.bringIntoViewResponder(noScrollResponder)) {
+                        Box(
+                            modifier = Modifier
+                                .bringIntoViewResponder(noScrollResponder)
+                                .onFocusChanged { state ->
+                                    if (state.hasFocus && detailListState.firstVisibleItemIndex > 0) {
+                                        scope.launch { detailListState.animateScrollToItem(0) }
+                                    }
+                                },
+                        ) {
                             HeroSection(
                                 detail = state.detail,
                                 selectedEpisode = currentEpisodeContext(),
@@ -537,8 +545,8 @@ private fun HeroSection(
                     onClick = { scope.launch { onToggleWatchlist() } },
                     shape = ButtonDefaults.shape(AppPillShape),
                     colors = ButtonDefaults.colors(
-                        containerColor = if (inWatchlist) Color(0xFFF0BA66) else Color(0xCC111317),
-                        focusedContainerColor = if (inWatchlist) Color(0xFFFFD792) else Color(0xFF1C222A),
+                        containerColor = if (inWatchlist) Color(0xFFF0BA66) else Color(0xD62A3442),
+                        focusedContainerColor = if (inWatchlist) Color(0xFFFFD792) else Color(0xFF44566E),
                         contentColor = MaterialTheme.colorScheme.onBackground,
                         focusedContentColor = MaterialTheme.colorScheme.onBackground,
                     ),
