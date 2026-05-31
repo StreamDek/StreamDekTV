@@ -280,6 +280,7 @@ private fun FilterDropdown(
                 containerColor = Color(0x2611141B),
                 contentColor = MaterialTheme.colorScheme.onBackground,
             ),
+            scale = ButtonDefaults.scale(focusedScale = 1f),
         ) {
             Text(
                 text = "$label: $value ▾",
