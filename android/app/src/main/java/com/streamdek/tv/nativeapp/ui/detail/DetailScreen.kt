@@ -118,6 +118,7 @@ fun DetailScreen(
     val castRequester = remember(mediaType, mediaId) { FocusRequester() }
     val similarRequester = remember(mediaType, mediaId) { FocusRequester() }
     val detailListState = rememberLazyListState()
+    var heroSectionHasFocus by remember { mutableStateOf(false) }
     val noScrollResponder = remember {
         object : BringIntoViewResponder {
             override fun calculateRectForParent(localRect: Rect): Rect = localRect
@@ -217,12 +218,27 @@ fun DetailScreen(
         detailListState.scrollToItem(0)
     }
 
-    BoxWithConstraints(
+    // While hero buttons are focused, reactively snap the scroll back to 0 the
+    // moment the TV framework nudges it (e.g. when moving between buttons).
+    // snapshotFlow emits only when the scroll state actually changes, so this is
+    // idle when nothing moves. Cancels automatically when heroSectionHasFocus
+    // becomes false (user scrolls into lower sections).
+    LaunchedEffect(heroSectionHasFocus) {
+        if (!heroSectionHasFocus) return@LaunchedEffect
+        androidx.compose.runtime.snapshotFlow {
+            detailListState.firstVisibleItemIndex to detailListState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            if (index != 0 || offset != 0) {
+                detailListState.scrollToItem(0)
+            }
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        val heroTopInset = maxHeight * 0.15f
         if (!detail?.backdrop.isNullOrBlank()) {
             AsyncImage(
                 model = detail?.backdrop,
@@ -258,18 +274,18 @@ fun DetailScreen(
                 LazyColumn(
                     state = detailListState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 42.dp, top = 36.dp, end = 42.dp, bottom = 88.dp),
+                    contentPadding = PaddingValues(start = 42.dp, end = 42.dp, bottom = 88.dp),
                     verticalArrangement = Arrangement.spacedBy(26.dp),
                 ) {
                     item("hero") {
-                        // Fixed to exactly one visible screen height so that any button within the hero
-                        // is always on-screen. This prevents TV focus navigation from scrolling the
-                        // LazyColumn to bring buttons into view (they already are), which was what caused
-                        // the 30% top spacer to get scrolled off and the logo to snap to the top.
+                        // onFocusChanged tracks whether any hero button is focused.
+                        // The snapshotFlow LaunchedEffect above reacts to that flag and
+                        // immediately corrects any scroll nudge from the TV framework.
                         Box(
                             modifier = Modifier
-                                .height(maxHeight - 36.dp)
-                                .bringIntoViewResponder(noScrollResponder),
+                                .padding(top = 36.dp)
+                                .bringIntoViewResponder(noScrollResponder)
+                                .onFocusChanged { heroSectionHasFocus = it.hasFocus },
                         ) {
                             HeroSection(
                                 detail = state.detail,
@@ -278,20 +294,7 @@ fun DetailScreen(
                                 progressLabel = progressLabel,
                                 inWatchlist = inWatchlist,
                                 playButtonRequester = playButtonRequester,
-                                topInset = heroTopInset,
-                                onHeroControlFocused = {
-                                    scope.launch {
-                                        // Delay lets the TV framework finish its focus-triggered
-                                        // scroll before we check. The guard then prevents
-                                        // unnecessary snaps (and their bounce) when already at 0.
-                                        kotlinx.coroutines.delay(50)
-                                        if (detailListState.firstVisibleItemIndex != 0 ||
-                                            detailListState.firstVisibleItemScrollOffset != 0
-                                        ) {
-                                            detailListState.scrollToItem(0)
-                                        }
-                                    }
-                                },
+                                onHeroControlFocused = {},
                                 onTrailer = {
                                     val trailerUrl = when {
                                         state.detail.trailerKey.isNullOrBlank() -> null
@@ -475,7 +478,6 @@ private fun HeroSection(
     progressLabel: String?,
     inWatchlist: Boolean,
     playButtonRequester: FocusRequester,
-    topInset: androidx.compose.ui.unit.Dp,
     onHeroControlFocused: () -> Unit,
     onTrailer: () -> Unit,
     onToggleWatchlist: suspend () -> Unit,
@@ -492,7 +494,6 @@ private fun HeroSection(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Box(modifier = Modifier.fillMaxWidth().height(topInset))
         detail.rating?.let { rating ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -506,7 +507,7 @@ private fun HeroSection(
         Column(
             modifier = Modifier
                 .fillMaxWidth(0.7f)
-                .padding(top = 14.dp),
+                .padding(top = 40.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
