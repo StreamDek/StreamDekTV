@@ -11,7 +11,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.tv.material3.MaterialTheme
 import androidx.compose.ui.unit.dp
 
-val AppCardShape = RoundedCornerShape(24.dp)
+val AppCardShape = RoundedCornerShape(20.dp)
 val AppPillShape = RoundedCornerShape(999.dp)
 
 fun formatPlaybackClock(seconds: Double?): String {

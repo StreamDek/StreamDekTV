@@ -49,8 +49,9 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
-import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Border
+import androidx.tv.material3.Glow
+import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.imageLoader
@@ -98,12 +99,14 @@ fun SearchScreen(
     }
 
     LaunchedEffect(results) {
-        results.take(16).flatMap { listOfNotNull(it.backdrop, it.poster) }.distinct().forEach { url ->
+        results.take(8).flatMap { listOfNotNull(it.backdrop, it.poster) }.distinct().take(10).forEach { url ->
             context.imageLoader.enqueue(
                 ImageRequest.Builder(context)
                     .data(url)
                     .memoryCacheKey(url)
                     .diskCacheKey(url)
+                    .crossfade(false)
+                    .allowHardware(true)
                     .build(),
             )
         }
@@ -272,9 +275,10 @@ private fun SearchResultCard(
         modifier = modifier
             .size(width = 260.dp, height = 150.dp)
             .onFocusChanged { if (it.isFocused) onFocused() },
+        shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = Color.Transparent,
+            containerColor = Color(0xFF181A1F),
+            focusedContainerColor = Color(0xFF181A1F),
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
@@ -282,13 +286,13 @@ private fun SearchResultCard(
                 shape = AppCardShape,
             ),
         ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = 1.02f),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(AppCardShape)
-                .background(Color(0xFF181A1F)),
+                .clip(AppCardShape),
         ) {
             AsyncImage(
                 model = item.backdrop ?: item.poster,

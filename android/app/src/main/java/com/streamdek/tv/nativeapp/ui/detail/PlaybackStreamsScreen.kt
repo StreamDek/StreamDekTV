@@ -27,16 +27,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -101,7 +98,7 @@ fun PlaybackStreamsScreen(
         buildList {
             ready.detail?.backdrop?.let(::add)
             ready.detail?.poster?.let(::add)
-        }.distinct().forEach { url ->
+        }.distinct().take(6).forEach { url ->
             context.imageLoader.enqueue(
                 ImageRequest.Builder(context)
                     .data(url)
@@ -147,10 +144,7 @@ fun PlaybackStreamsScreen(
             AsyncImage(
                 model = detail?.backdrop,
                 contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { renderEffect = BlurEffect(radiusX = 28f, radiusY = 28f) }
-                    .blur(22.dp),
+                modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
         }

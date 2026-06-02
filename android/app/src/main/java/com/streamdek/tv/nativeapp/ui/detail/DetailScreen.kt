@@ -11,6 +11,7 @@ import androidx.compose.foundation.relocation.BringIntoViewResponder
 import androidx.compose.foundation.relocation.bringIntoViewResponder
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -43,16 +44,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -65,6 +63,7 @@ import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
+import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -84,7 +83,9 @@ import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 
 private sealed interface DetailUiState {
     data object Loading : DetailUiState
@@ -112,7 +113,6 @@ fun DetailScreen(
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
-    var heroHasFocus by remember(mediaType, mediaId) { mutableStateOf(false) }
     val playButtonRequester = remember(mediaType, mediaId) { FocusRequester() }
     val commentsRequester = remember(mediaType, mediaId) { FocusRequester() }
     val castRequester = remember(mediaType, mediaId) { FocusRequester() }
@@ -129,19 +129,39 @@ fun DetailScreen(
 
     LaunchedEffect(mediaType, mediaId) {
         uiState = DetailUiState.Loading
+        comments = emptyList()
+        progressFraction = null
+        progressLabel = null
+        inWatchlist = false
+        resumeEpisodeContext = null
+        val libraryDeferred = supervisorScope {
+            async {
+                runCatching { repository.fetchLibrary() }.getOrNull()
+            }
+        }
         val detail = repository.fetchDetail(mediaId, mediaType)
         if (detail == null) {
             uiState = DetailUiState.Error("Could not load title details")
             return@LaunchedEffect
         }
+        uiState = DetailUiState.Ready(detail)
         selectedSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
         selectedEpisodeIndex = 0
-        selectedSeason = if (mediaType == "tv" && detail.seasons.isNotEmpty()) {
-            repository.fetchSeason(mediaId, selectedSeasonNumber)
-        } else {
-            null
+        selectedSeason = supervisorScope {
+            async {
+                if (mediaType == "tv" && detail.seasons.isNotEmpty()) {
+                    repository.fetchSeason(mediaId, selectedSeasonNumber)
+                } else {
+                    null
+                }
+            }.await()
         }
-        uiState = DetailUiState.Ready(detail)
+        libraryDeferred.await()?.let { library ->
+            inWatchlist = library.watchlist.any { it.id == mediaId && it.type == mediaType }
+            resumeEpisodeContext = library.continueWatching
+                .firstOrNull { it.id == mediaId && it.type == mediaType }
+                ?.episode
+        }
     }
 
     val detail = (uiState as? DetailUiState.Ready)?.detail
@@ -163,13 +183,9 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId) {
-        val library = repository.fetchLibrary()
-        inWatchlist = library.watchlist.any { it.id == mediaId && it.type == mediaType }
-        resumeEpisodeContext = library.continueWatching
-            .firstOrNull { it.id == mediaId && it.type == mediaType }
-            ?.episode
-        comments = repository.fetchTraktComments(mediaId, mediaType)
+    LaunchedEffect(mediaType, mediaId, detail?.id) {
+        if (detail == null) return@LaunchedEffect
+        comments = runCatching { repository.fetchTraktComments(mediaId, mediaType) }.getOrDefault(emptyList())
     }
 
     LaunchedEffect(detail?.id, selectedSeasonNumber, selectedEpisodeIndex) {
@@ -178,13 +194,13 @@ fun DetailScreen(
             detail.backdrop?.let(::add)
             detail.poster?.let(::add)
             detail.titleLogo?.let(::add)
-            detail.cast.take(10).forEach { it.photo?.let(::add) }
-            detail.similarTitles.take(10).forEach {
+            detail.cast.take(4).forEach { it.photo?.let(::add) }
+            detail.similarTitles.take(4).forEach {
                 it.backdrop?.let(::add)
                 it.poster?.let(::add)
             }
-            comments.take(6).forEach { it.avatar?.let(::add) }
-        }.distinct().forEach { url ->
+            comments.take(3).forEach { it.avatar?.let(::add) }
+        }.distinct().take(14).forEach { url ->
             context.imageLoader.enqueue(
                 ImageRequest.Builder(context)
                     .data(url)
@@ -201,19 +217,17 @@ fun DetailScreen(
         detailListState.scrollToItem(0)
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
+        val heroTopInset = maxHeight * 0.15f
         if (!detail?.backdrop.isNullOrBlank()) {
             AsyncImage(
                 model = detail?.backdrop,
                 contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { renderEffect = BlurEffect(radiusX = 34f, radiusY = 34f) }
-                    .blur(28.dp),
+                modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
         }
@@ -244,21 +258,18 @@ fun DetailScreen(
                 LazyColumn(
                     state = detailListState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 42.dp, end = 42.dp, bottom = 88.dp),
+                    contentPadding = PaddingValues(start = 42.dp, top = 36.dp, end = 42.dp, bottom = 88.dp),
                     verticalArrangement = Arrangement.spacedBy(26.dp),
                 ) {
-                    item("top-anchor") {
-                        Box(modifier = Modifier.fillMaxWidth().height(36.dp))
-                    }
                     item("hero") {
-                        // Wrapped in no-op BringIntoViewResponder so focusing Back/CTA/Trailer/Watchlist
-                        // doesn't trigger LazyColumn to auto-scroll to center them.
+                        // Fixed to exactly one visible screen height so that any button within the hero
+                        // is always on-screen. This prevents TV focus navigation from scrolling the
+                        // LazyColumn to bring buttons into view (they already are), which was what caused
+                        // the 30% top spacer to get scrolled off and the logo to snap to the top.
                         Box(
                             modifier = Modifier
-                                .bringIntoViewResponder(noScrollResponder)
-                                .onFocusChanged { state ->
-                                    heroHasFocus = state.hasFocus
-                                },
+                                .height(maxHeight - 36.dp)
+                                .bringIntoViewResponder(noScrollResponder),
                         ) {
                             HeroSection(
                                 detail = state.detail,
@@ -267,6 +278,20 @@ fun DetailScreen(
                                 progressLabel = progressLabel,
                                 inWatchlist = inWatchlist,
                                 playButtonRequester = playButtonRequester,
+                                topInset = heroTopInset,
+                                onHeroControlFocused = {
+                                    scope.launch {
+                                        // Delay lets the TV framework finish its focus-triggered
+                                        // scroll before we check. The guard then prevents
+                                        // unnecessary snaps (and their bounce) when already at 0.
+                                        kotlinx.coroutines.delay(50)
+                                        if (detailListState.firstVisibleItemIndex != 0 ||
+                                            detailListState.firstVisibleItemScrollOffset != 0
+                                        ) {
+                                            detailListState.scrollToItem(0)
+                                        }
+                                    }
+                                },
                                 onTrailer = {
                                     val trailerUrl = when {
                                         state.detail.trailerKey.isNullOrBlank() -> null
@@ -398,26 +423,13 @@ fun DetailScreen(
 
                 LaunchedEffect(state.detail.id) {
                     kotlinx.coroutines.delay(220)
-                    runCatching { playButtonRequester.requestFocus() }
-                    kotlinx.coroutines.delay(50)
+                    // Reset scroll first so the hero spacer is visible, then apply focus.
+                    // With the hero item pinned to screen height, requestFocus() will not
+                    // trigger a compensating scroll.
                     detailListState.scrollToItem(0)
+                    runCatching { playButtonRequester.requestFocus() }
                 }
 
-                LaunchedEffect(
-                    heroHasFocus,
-                    detailListState.firstVisibleItemIndex,
-                    detailListState.firstVisibleItemScrollOffset,
-                ) {
-                    if (
-                        heroHasFocus &&
-                        (
-                            detailListState.firstVisibleItemIndex != 0 ||
-                                detailListState.firstVisibleItemScrollOffset != 0
-                            )
-                    ) {
-                        detailListState.scrollToItem(0, 0)
-                    }
-                }
             }
         }
     }
@@ -463,6 +475,8 @@ private fun HeroSection(
     progressLabel: String?,
     inWatchlist: Boolean,
     playButtonRequester: FocusRequester,
+    topInset: androidx.compose.ui.unit.Dp,
+    onHeroControlFocused: () -> Unit,
     onTrailer: () -> Unit,
     onToggleWatchlist: suspend () -> Unit,
     onPlay: () -> Unit,
@@ -478,6 +492,7 @@ private fun HeroSection(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
+        Box(modifier = Modifier.fillMaxWidth().height(topInset))
         detail.rating?.let { rating ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -499,7 +514,7 @@ private fun HeroSection(
                     model = logo,
                     contentDescription = detail.title,
                     modifier = Modifier
-                        .height(58.dp)
+                        .height(78.dp)
                         .fillMaxWidth(),
                     contentScale = ContentScale.Fit,
                     alignment = Alignment.CenterStart,
@@ -512,15 +527,66 @@ private fun HeroSection(
                 overflow = TextOverflow.Ellipsis,
             )
 
-            Text(
-                text = buildList {
-                    detail.year?.let(::add)
-                    detail.genreNames.take(3).joinToString(" • ").takeIf { it.isNotBlank() }?.let(::add)
-                    selectedEpisode?.let { add("S${it.seasonNumber} E${it.episodeNumber}") }
-                }.joinToString("  •  "),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
-            )
+            // Buttons sit directly below the logo so focusing them never requires
+            // the page to scroll past any text content.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bringIntoViewResponder(noScrollResponder)
+                    .focusGroup(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.Start),
+                verticalAlignment = Alignment.Top,
+            ) {
+                ContinuePlayButton(
+                    detail = detail,
+                    selectedEpisode = selectedEpisode,
+                    progressLabel = progressLabel,
+                    progressFraction = progressFraction,
+                    playButtonRequester = playButtonRequester,
+                    noScrollResponder = noScrollResponder,
+                    onFocused = onHeroControlFocused,
+                    onPlay = onPlay,
+                    modifier = Modifier.width(189.dp),
+                )
+                if (!detail.trailerKey.isNullOrBlank()) {
+                    val trailerContainerColor = Color(0xFFF0BA66)
+                    HeroActionButton(
+                        onClick = onTrailer,
+                        containerColor = trailerContainerColor,
+                        contentColor = Color(0xFF18120A),
+                        noScrollResponder = noScrollResponder,
+                        onFocused = onHeroControlFocused,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(
+                            "Trailer",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                        )
+                    }
+                }
+                val watchlistContainerColor = if (inWatchlist) Color(0xFFF0BA66) else Color(0xD62A3442)
+                HeroActionButton(
+                    onClick = { scope.launch { onToggleWatchlist() } },
+                    containerColor = watchlistContainerColor,
+                    contentColor = if (inWatchlist) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground,
+                    noScrollResponder = noScrollResponder,
+                    onFocused = onHeroControlFocused,
+                ) {
+                    Icon(
+                        imageVector = if (inWatchlist) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        if (inWatchlist) "In Watchlist" else "Watchlist",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                    )
+                }
+            }
 
             detail.tagline?.takeIf { it.isNotBlank() }?.let {
                 Text(
@@ -540,61 +606,15 @@ private fun HeroSection(
                 )
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .bringIntoViewResponder(noScrollResponder)
-                    .focusGroup(),
-                horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.Start),
-                verticalAlignment = Alignment.Top,
-            ) {
-                ContinuePlayButton(
-                    detail = detail,
-                    selectedEpisode = selectedEpisode,
-                    progressLabel = progressLabel,
-                    progressFraction = progressFraction,
-                    playButtonRequester = playButtonRequester,
-                    noScrollResponder = noScrollResponder,
-                    onPlay = onPlay,
-                    modifier = Modifier.width(236.dp),
-                )
-                if (!detail.trailerKey.isNullOrBlank()) {
-                    val trailerContainerColor = Color(0xFFF0BA66)
-                    HeroActionButton(
-                        onClick = onTrailer,
-                        containerColor = trailerContainerColor,
-                        contentColor = Color(0xFF18120A),
-                        noScrollResponder = noScrollResponder,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Text(
-                            "Trailer",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
-                        )
-                    }
-                }
-                val watchlistContainerColor = if (inWatchlist) Color(0xFFF0BA66) else Color(0xD62A3442)
-                HeroActionButton(
-                    onClick = { scope.launch { onToggleWatchlist() } },
-                    containerColor = watchlistContainerColor,
-                    contentColor = if (inWatchlist) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground,
-                    noScrollResponder = noScrollResponder,
-                ) {
-                    Icon(
-                        imageVector = if (inWatchlist) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Text(
-                        if (inWatchlist) "In Watchlist" else "Watchlist",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
-                    )
-                }
-            }
+            Text(
+                text = buildList {
+                    detail.year?.let(::add)
+                    detail.genreNames.take(3).joinToString(" • ").takeIf { it.isNotBlank() }?.let(::add)
+                    selectedEpisode?.let { add("S${it.seasonNumber} E${it.episodeNumber}") }
+                }.joinToString("  •  "),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+            )
         }
     }
 }
@@ -782,6 +802,7 @@ private fun ContinuePlayButton(
     progressFraction: Float?,
     playButtonRequester: FocusRequester,
     noScrollResponder: BringIntoViewResponder,
+    onFocused: () -> Unit,
     onPlay: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -804,13 +825,14 @@ private fun ContinuePlayButton(
         containerColor = containerColor,
         contentColor = Color(0xFF18120A),
         noScrollResponder = noScrollResponder,
+        onFocused = onFocused,
         modifier = modifier
             .focusRequester(playButtonRequester),
     ) {
         Icon(
             Icons.Filled.PlayArrow,
             contentDescription = null,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(16.dp),
         )
         if (subtitle.isNullOrBlank()) {
             Text(
@@ -852,6 +874,7 @@ private fun HeroActionButton(
     contentColor: Color,
     modifier: Modifier = Modifier,
     noScrollResponder: BringIntoViewResponder? = null,
+    onFocused: () -> Unit = {},
     content: @Composable RowScope.() -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -877,19 +900,22 @@ private fun HeroActionButton(
         ),
         scale = ButtonDefaults.scale(focusedScale = 1f),
         modifier = modifier
-            .height(56.dp)
+            .height(45.dp)
             .then(if (noScrollResponder != null) Modifier.bringIntoViewResponder(noScrollResponder) else Modifier)
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused()
+            }
             .border(
                 width = if (focused) 3.dp else 1.dp,
                 color = if (focused) highlightColor else Color.Transparent,
                 shape = AppPillShape,
             ),
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxHeight(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.Start),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
             verticalAlignment = Alignment.CenterVertically,
             content = content,
         )
@@ -1000,19 +1026,19 @@ private fun EpisodeCard(
         modifier = Modifier.size(width = 300.dp, height = 182.dp).onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = Color.Transparent,
+            containerColor = if (selected) Color(0x1EF4EDE2) else Color(0xFF181A1F),
+            focusedContainerColor = if (selected) Color(0x1EF4EDE2) else Color(0xFF181A1F),
         ),
         border = CardDefaults.border(
             focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppCardShape),
         ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = 1.025f),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(AppCardShape)
-                .background(if (selected) Color(0x1EF4EDE2) else Color(0xFF181A1F)),
+                .clip(AppCardShape),
         ) {
             AsyncImage(model = episode.still, contentDescription = episode.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             Box(
@@ -1201,17 +1227,20 @@ private fun SimilarCard(
             .size(width = 220.dp, height = 124.dp)
             .onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppCardShape),
-        colors = CardDefaults.colors(containerColor = Color.Transparent, focusedContainerColor = Color.Transparent),
+        colors = CardDefaults.colors(
+            containerColor = Color(0xFF181A1F),
+            focusedContainerColor = Color(0xFF181A1F),
+        ),
         border = CardDefaults.border(
             focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppCardShape),
         ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = 1.02f),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(AppCardShape)
-                .background(Color(0xFF181A1F)),
+                .clip(AppCardShape),
         ) {
             AsyncImage(model = item.backdrop ?: item.poster, contentDescription = item.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(colors = listOf(Color.Transparent, Color(0xCC000000)))))

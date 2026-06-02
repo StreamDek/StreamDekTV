@@ -104,9 +104,17 @@ fun PlayerScreen(
     var seekBurstCount by remember { mutableIntStateOf(0) }
     var subtitlePreferenceAppliedForSource by remember { mutableStateOf<String?>(null) }
     var traktScrobbledStart by remember { mutableStateOf(false) }
+    var inWatchlist by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
+    var completionThresholdReached by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var watchedMarked by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var watchlistPromptVisible by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var watchlistPromptShown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var completionExitTriggered by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
 
     val errorBackRequester = remember { FocusRequester() }
     val errorSourcesRequester = remember { FocusRequester() }
+    val watchlistPromptKeepRequester = remember { FocusRequester() }
+    val watchlistPromptRemoveRequester = remember { FocusRequester() }
     val playRequester = remember { FocusRequester() }
     val subtitlesRequester = remember { FocusRequester() }
     val audioRequester = remember { FocusRequester() }
@@ -199,6 +207,76 @@ fun PlayerScreen(
         return ((positionSec / durationSec) * 100.0).coerceIn(0.0, 100.0)
     }
 
+    fun currentWatchlistItem(): com.streamdek.tv.nativeapp.data.MediaItem? {
+        val currentDetail = detail ?: return null
+        return com.streamdek.tv.nativeapp.data.MediaItem(
+            id = request.mediaId,
+            tmdbId = currentDetail.tmdbId,
+            title = currentDetail.title,
+            type = request.mediaType,
+            poster = currentDetail.poster,
+            backdrop = currentDetail.backdrop,
+            description = currentDetail.description,
+            rating = currentDetail.rating,
+            year = currentDetail.year,
+            titleLogo = currentDetail.titleLogo,
+            progress = traktProgressPercent(),
+            positionSec = positionSec,
+            durationSec = durationSec,
+            episode = currentEpisode,
+        )
+    }
+
+    suspend fun syncProgressIfEligible() {
+        if (completionThresholdReached) return
+        repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+    }
+
+    suspend fun markWatchedAndClearProgressIfNeeded() {
+        if (watchedMarked) return
+        watchedMarked = true
+        repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+        repository.markWatched(
+            mediaType = request.mediaType,
+            mediaId = request.mediaId,
+            title = detail?.title ?: request.title ?: "",
+            year = detail?.year,
+            episode = currentEpisode,
+            imdbId = request.imdbId,
+        )
+        repository.clearProgress(request.mediaType, request.mediaId, currentEpisode)
+    }
+
+    suspend fun removeFromWatchlistIfNeeded() {
+        if (!inWatchlist) return
+        currentWatchlistItem()?.let { repository.removeFromWatchlist(it) }
+        inWatchlist = false
+    }
+
+    fun completePlaybackAndExit() {
+        if (completionExitTriggered) return
+        completionExitTriggered = true
+        if (traktScrobbledStart) {
+            traktScrobbledStart = false
+            scope.launch {
+                repository.traktScrobble(
+                    action = "stop",
+                    mediaType = request.mediaType,
+                    mediaId = request.mediaId,
+                    title = detail?.title ?: request.title,
+                    year = detail?.year,
+                    progress = traktProgressPercent(),
+                )
+            }
+        }
+        scope.launch {
+            markWatchedAndClearProgressIfNeeded()
+            removeFromWatchlistIfNeeded()
+            TvDebugLogger.i("Player", "completion exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
+            onExitToStreams()
+        }
+    }
+
     fun queueTraktStop() {
         if (!traktScrobbledStart) return
         traktScrobbledStart = false
@@ -220,7 +298,15 @@ fun PlayerScreen(
         loading = true
         controlsVisible = false
         pauseInfoVisible = false
+        watchlistPromptVisible = false
+        watchlistPromptShown = false
+        completionThresholdReached = false
+        watchedMarked = false
+        completionExitTriggered = false
         detail = repository.fetchDetail(request.mediaId, request.mediaType)
+        inWatchlist = runCatching {
+            repository.fetchLibrary().watchlist.any { it.id == request.mediaId && it.type == request.mediaType }
+        }.getOrDefault(false)
         val continueWatchingItem = if (request.mediaType == "tv") {
             repository.fetchContinueWatchingItem(request.mediaType, request.mediaId)
         } else {
@@ -289,12 +375,14 @@ fun PlayerScreen(
         playerView?.setSpeed(speed)
     }
 
-    LaunchedEffect(paused, panel, loading, error) {
+    LaunchedEffect(paused, panel, loading, error, watchlistPromptVisible) {
         playerView?.setPaused(paused)
-        if (paused && panel == null && !loading && error == null) {
+        if (watchlistPromptVisible) {
+            pauseInfoVisible = false
+        } else if (paused && panel == null && !loading && error == null) {
             pauseInfoVisible = false
             delay(2500)
-            if (paused && panel == null && !loading && error == null) {
+            if (paused && panel == null && !loading && error == null && !watchlistPromptVisible) {
                 controlsVisible = false
                 pauseInfoVisible = true
             }
@@ -303,10 +391,10 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(currentSourceUrl, paused) {
-        while (currentSourceUrl != null) {
+    LaunchedEffect(currentSourceUrl, paused, completionThresholdReached) {
+        while (currentSourceUrl != null && !completionThresholdReached) {
             delay(15000)
-            repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+            syncProgressIfEligible()
         }
     }
 
@@ -340,6 +428,26 @@ fun PlayerScreen(
         }
     }
 
+    LaunchedEffect(positionSec, durationSec, loading, error, watchlistPromptVisible) {
+        if (loading || error != null || watchlistPromptVisible) return@LaunchedEffect
+        if (completionThresholdReached || durationSec < 60.0 || positionSec < 120.0) return@LaunchedEffect
+        if (traktProgressPercent() < 98.0) return@LaunchedEffect
+        completionThresholdReached = true
+        TvDebugLogger.i(
+            "Player",
+            "completion threshold reached mediaType=${request.mediaType} mediaId=${request.mediaId} progress=${traktProgressPercent()} inWatchlist=$inWatchlist",
+        )
+        scope.launch {
+            markWatchedAndClearProgressIfNeeded()
+        }
+        if (inWatchlist && !watchlistPromptShown) {
+            watchlistPromptShown = true
+            paused = true
+            controlsVisible = false
+            watchlistPromptVisible = true
+        }
+    }
+
     LaunchedEffect(panel) {
         if (panel != null) {
             delay(80)
@@ -355,26 +463,38 @@ fun PlayerScreen(
         }
     }
 
+    LaunchedEffect(watchlistPromptVisible) {
+        if (watchlistPromptVisible) {
+            delay(80)
+            runCatching { watchlistPromptRemoveRequester.requestFocus() }
+                .onFailure { TvDebugLogger.w("Player", "watchlist prompt focus skipped: ${it.message}") }
+        }
+    }
+
     DisposableEffect(request.mediaId, currentEpisode, currentSourceUrl) {
         onDispose {
             controlsHideJob?.cancel()
             pendingSeekJob?.cancel()
             queueTraktStop()
             scope.launch {
-                repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+                syncProgressIfEligible()
             }
         }
     }
 
     BackHandler {
-        if (panel != null) {
+        if (watchlistPromptVisible) {
+            watchlistPromptVisible = false
+            paused = false
+            scheduleControlsHide()
+        } else if (panel != null) {
             panel = null
             showControls(focusPlay = true)
         } else {
             TvDebugLogger.i("Player", "back exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
             queueTraktStop()
             scope.launch {
-                repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+                syncProgressIfEligible()
             }
             onExitToStreams()
         }
@@ -400,7 +520,7 @@ fun PlayerScreen(
             .background(Color.Black)
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
-                if (!loading && panel == null && !controlsVisible && error == null) {
+                if (!loading && panel == null && !controlsVisible && error == null && !watchlistPromptVisible) {
                     when (event.key) {
                         Key.DirectionLeft, Key.DirectionRight -> {
                             // Reveal controls and land focus on the progress bar for scrubbing
@@ -436,6 +556,10 @@ fun PlayerScreen(
                         }
                     }
                     onLoadCallback = { _, _, _ ->
+                        TvDebugLogger.i(
+                            "Player",
+                            "onLoad mediaType=${request.mediaType} mediaId=${request.mediaId} source=${currentSourceUrl ?: "none"} label=$currentLabel resume=${pendingResumePositionSec ?: 0.0}",
+                        )
                         loading = false
                         error = null
                         lastWorkingSourceUrl = currentSourceUrl
@@ -450,21 +574,15 @@ fun PlayerScreen(
                     onEndCallback = {
                         TvDebugLogger.i(
                             "Player",
-                            "onEnd mediaType=${request.mediaType} mediaId=${request.mediaId} nextEpisode=${nextEpisode != null} position=$positionSec duration=$durationSec",
+                            "onEnd mediaType=${request.mediaType} mediaId=${request.mediaId} nextEpisode=${nextEpisode != null} position=$positionSec duration=$durationSec source=${currentSourceUrl ?: "none"} inWatchlist=$inWatchlist",
                         )
-                        queueTraktStop()
-                        scope.launch {
-                            repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
-                        }
-                        val autoplay = repository.bootstrap.value?.preferences?.playback?.autoplayNextEpisode ?: true
-                        if (autoplay && nextEpisode != null) {
-                            currentEpisode = nextEpisode
-                        } else {
-                            onExitToStreams()
-                        }
+                        completePlaybackAndExit()
                     }
                     onErrorCallback = { message ->
-                        TvDebugLogger.w("Player", "onError mediaType=${request.mediaType} mediaId=${request.mediaId} message=$message")
+                        TvDebugLogger.w(
+                            "Player",
+                            "onError mediaType=${request.mediaType} mediaId=${request.mediaId} source=${currentSourceUrl ?: "none"} label=$currentLabel position=$positionSec duration=$durationSec message=$message",
+                        )
                         error = message
                         loading = false
                         showControls(focusPlay = true)
@@ -565,6 +683,63 @@ fun PlayerScreen(
         }
 
         // Error overlay — shown when playback fails so user always has a clear exit path
+        if (watchlistPromptVisible && !loading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xCC000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                PlayerGlassSurface(
+                    modifier = Modifier.width(560.dp),
+                    contentPadding = PaddingValues(24.dp),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        androidx.tv.material3.Text(
+                            text = "Still in your watchlist",
+                            style = androidx.tv.material3.MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Black),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        androidx.tv.material3.Text(
+                            text = "You've watched 98% of this title. Remove it from your watchlist?",
+                            style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.82f),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.tv.material3.Button(
+                                onClick = {
+                                    scope.launch {
+                                        removeFromWatchlistIfNeeded()
+                                    }
+                                    watchlistPromptVisible = false
+                                    paused = false
+                                    scheduleControlsHide()
+                                },
+                                modifier = Modifier.focusRequester(watchlistPromptRemoveRequester),
+                            ) {
+                                androidx.tv.material3.Text("Remove")
+                            }
+                            androidx.tv.material3.OutlinedButton(
+                                onClick = {
+                                    watchlistPromptVisible = false
+                                    paused = false
+                                    scheduleControlsHide()
+                                },
+                                modifier = Modifier.focusRequester(watchlistPromptKeepRequester),
+                            ) {
+                                androidx.tv.material3.Text("Not Now")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (error != null && !loading) {
             val canResume = lastWorkingSourceUrl != null && lastWorkingSourceUrl != currentSourceUrl
             val hasMultipleStreams = (candidate?.streams?.size ?: 0) > 1
@@ -599,7 +774,7 @@ fun PlayerScreen(
                                 onClick = {
                                     TvDebugLogger.i("Player", "error overlay go back to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
                                     scope.launch {
-                                        repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+                                        syncProgressIfEligible()
                                     }
                                     onExitToStreams()
                                 },

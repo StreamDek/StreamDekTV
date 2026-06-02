@@ -38,6 +38,7 @@ import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
+import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -70,7 +71,7 @@ fun LibraryScreen(
     LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
         error = null
         try {
-            val result = repository.fetchLibrary(forceRefresh = true)
+            val result = repository.fetchLibrary()
             library = result
             TvDebugLogger.i("LibraryUi", "library loaded continue=${result.continueWatching.size} watchlist=${result.watchlist.size}")
         } catch (cancelled: CancellationException) {
@@ -100,12 +101,14 @@ fun LibraryScreen(
                 it.backdrop?.let(::add)
                 it.poster?.let(::add)
             }
-        }.distinct().take(24).forEach { url ->
+        }.distinct().take(12).forEach { url ->
             context.imageLoader.enqueue(
                 ImageRequest.Builder(context)
                     .data(url)
                     .memoryCacheKey(url)
                     .diskCacheKey(url)
+                    .crossfade(false)
+                    .allowHardware(true)
                     .build(),
             )
         }
@@ -251,9 +254,10 @@ private fun LibraryCard(
     Card(
         onClick = onPressed,
         modifier = modifier.size(width = 260.dp, height = 150.dp),
+        shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = Color.Transparent,
+            containerColor = Color(0xFF181A1F),
+            focusedContainerColor = Color(0xFF181A1F),
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
@@ -261,13 +265,13 @@ private fun LibraryCard(
                 shape = AppCardShape,
             ),
         ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = 1.02f),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(AppCardShape)
-                .background(Color(0xFF181A1F)),
+                .clip(AppCardShape),
         ) {
             AsyncImage(
                 model = item.backdrop ?: item.poster,

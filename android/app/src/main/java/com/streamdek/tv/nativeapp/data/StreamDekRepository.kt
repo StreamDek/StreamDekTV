@@ -5,6 +5,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.supervisorScope
+import java.util.LinkedHashMap
 import java.net.URLEncoder
 import java.time.Instant
 
@@ -12,14 +13,14 @@ class StreamDekRepository(
     private val sessionStore: AuthSessionStore,
     private val api: StreamDekApi = StreamDekApi(sessionStore),
 ) {
-    private val detailsCache = mutableMapOf<String, MediaDetail>()
-    private val seasonCache = mutableMapOf<String, SeasonDetail>()
-    private val homeCache = mutableMapOf<String, HomeContent>()
-    private val libraryCache = mutableMapOf<String, LibraryResponse>()
-    private val searchCache = mutableMapOf<String, List<MediaItem>>()
-    private val networkCache = mutableMapOf<String, PagedRailResponse>()
-    private val genreCache = mutableMapOf<String, List<GenreItem>>()
-    private val resolvedPlaybackCache = mutableMapOf<String, ResolvedPlaybackCandidate>()
+    private val detailsCache = lruCache<String, MediaDetail>(48)
+    private val seasonCache = lruCache<String, SeasonDetail>(32)
+    private val homeCache = lruCache<String, HomeContent>(4)
+    private val libraryCache = lruCache<String, LibraryResponse>(4)
+    private val searchCache = lruCache<String, List<MediaItem>>(16)
+    private val networkCache = lruCache<String, PagedRailResponse>(12)
+    private val genreCache = lruCache<String, List<GenreItem>>(8)
+    private val resolvedPlaybackCache = lruCache<String, ResolvedPlaybackCandidate>(16)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
     private var lastPlaybackRequest: PlaybackRequest? = null
 
@@ -417,6 +418,81 @@ class StreamDekRepository(
             else mapOf("movies" to listOf(entry), "shows" to emptyList<Any>()),
         )
         fetchLibrary(forceRefresh = true)
+    }
+
+    suspend fun markWatched(
+        mediaType: String,
+        mediaId: String,
+        title: String,
+        year: String? = null,
+        episode: EpisodeContext? = null,
+        imdbId: String? = null,
+    ): Boolean {
+        val watchedAt = Instant.now().toString()
+        val parsedTmdbId = mediaId.toIntOrNull()
+        val parsedYear = year?.take(4)?.toIntOrNull()
+        val payload = if (mediaType == "tv" && episode != null) {
+            mapOf(
+                "movies" to emptyList<Any>(),
+                "shows" to listOf(
+                    mapOf(
+                        "title" to title,
+                        "ids" to mapOf(
+                            "tmdb" to parsedTmdbId,
+                            "imdb" to imdbId,
+                        ),
+                        "seasons" to listOf(
+                            mapOf(
+                                "number" to episode.seasonNumber,
+                                "episodes" to listOf(
+                                    mapOf(
+                                        "number" to episode.episodeNumber,
+                                        "watched_at" to watchedAt,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        } else {
+            mapOf(
+                "movies" to listOf(
+                    mapOf(
+                        "title" to title,
+                        "year" to parsedYear,
+                        "ids" to mapOf(
+                            "tmdb" to parsedTmdbId,
+                            "imdb" to imdbId,
+                        ),
+                        "watched_at" to watchedAt,
+                    ),
+                ),
+                "shows" to emptyList<Any>(),
+            )
+        }
+
+        return runCatching {
+            api.post<Any>("/trakt/sync/watched", payload) != null
+        }.onFailure {
+            TvDebugLogger.w("Trakt", "markWatched failed mediaType=$mediaType mediaId=$mediaId")
+        }.getOrDefault(false)
+    }
+
+    suspend fun clearProgress(
+        mediaType: String,
+        mediaId: String,
+        episode: EpisodeContext? = null,
+    ) {
+        val path = buildString {
+            append("/sync/progress/$mediaType/$mediaId")
+            buildEpisodeKey(episode)?.let { append("?episodeKey=$it") }
+        }
+        runCatching {
+            api.delete<Any>(path)
+        }.onFailure {
+            TvDebugLogger.w("Playback", "clearProgress failed mediaType=$mediaType mediaId=$mediaId")
+        }
     }
 
     fun activeStreamProfile(): StreamProfile? {
@@ -818,5 +894,13 @@ class StreamDekRepository(
             subscriptionStatus = payload?.subscriptionStatus ?: "free",
             accessToken = token,
         )
+    }
+
+    private fun <K, V> lruCache(maxEntries: Int): MutableMap<K, V> {
+        return object : LinkedHashMap<K, V>(maxEntries, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean {
+                return size > maxEntries
+            }
+        }
     }
 }

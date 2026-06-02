@@ -92,7 +92,10 @@ class MPVView @JvmOverloads constructor(
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
         try {
             isDestroyed = false
-            Log.i(TAG, "onSurfaceTextureAvailable (${width}x${height}) pendingSource=${!pendingSource.isNullOrBlank()}")
+            Log.i(
+                TAG,
+                "onSurfaceTextureAvailable (${width}x${height}) pendingSource=${!pendingSource.isNullOrBlank()} active=${summarizeNullableSource(activeSource)} switching=$isSwitchingSource",
+            )
             keepScreenOn = true
             surface = Surface(surfaceTexture)
             MPVLib.create(context.applicationContext)
@@ -114,7 +117,9 @@ class MPVView @JvmOverloads constructor(
             MPVLib.setPropertyBoolean("pause", paused)
         } catch (error: Exception) {
             Log.e(TAG, "Failed to initialize MPV", error)
-            onErrorCallback?.invoke("Embedded MPV initialization failed: ${error.message}")
+            dispatchOnMain("onErrorCallback(init)") {
+                onErrorCallback?.invoke("Embedded MPV initialization failed: ${error.message}")
+            }
         }
     }
 
@@ -124,6 +129,10 @@ class MPVView @JvmOverloads constructor(
     }
 
     override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+        Log.w(
+            TAG,
+            "onSurfaceTextureDestroyed initialized=$initialized active=${summarizeNullableSource(activeSource)} pending=${summarizeNullableSource(pendingSource)} switching=$isSwitchingSource destroyed=$isDestroyed",
+        )
         isDestroyed = true
         val wasInitialized = initialized
         initialized = false
@@ -234,7 +243,10 @@ class MPVView @JvmOverloads constructor(
 
     private fun loadFile(url: String) {
         if (isDestroyed) return
-        Log.i(TAG, "loadFile called url=${summarizeSource(url)}")
+        Log.i(
+            TAG,
+            "loadFile called url=${summarizeSource(url)} previousActive=${summarizeNullableSource(activeSource)} switching=$isSwitchingSource",
+        )
         // Clear any error message from the outgoing source so it can't bleed
         // into the incoming source's END_FILE handler.
         lastMpvErrorMessage = null
@@ -292,7 +304,10 @@ class MPVView @JvmOverloads constructor(
 
     private fun scheduleLoad(source: String) {
         if (isDestroyed) return
-        Log.i(TAG, "scheduleLoad called (initialized=$initialized, len=${source.length})")
+        Log.i(
+            TAG,
+            "scheduleLoad called initialized=$initialized active=${summarizeNullableSource(activeSource)} pending=${summarizeNullableSource(pendingSource)} len=${source.length}",
+        )
         pendingLoadRunnable?.let {
             removeCallbacks(it)
             pendingLoadRunnable = null
@@ -564,15 +579,31 @@ class MPVView @JvmOverloads constructor(
         Log.i(TAG, "subtitle-state[$reason]: sid=${sid ?: "none"}, sub-visibility=${visibility ?: "unknown"}, track-count=$trackCount")
     }
 
-    private fun dispatchOnMain(action: () -> Unit) {
+    private fun summarizeNullableSource(url: String?): String {
+        return url?.let(::summarizeSource) ?: "none"
+    }
+
+    private fun dispatchOnMain(callbackName: String? = null, action: () -> Unit) {
         if (isDestroyed) return
         if (handler?.looper == android.os.Looper.myLooper()) {
-            action()
+            runCallback(callbackName, action)
         } else {
             post {
-                if (!isDestroyed) action()
+                if (!isDestroyed) runCallback(callbackName, action)
             }
         }
+    }
+
+    private fun runCallback(callbackName: String?, action: () -> Unit) {
+        runCatching { action() }
+            .onFailure { error ->
+                val name = callbackName ?: "callback"
+                Log.e(
+                    TAG,
+                    "$name failed active=${summarizeNullableSource(activeSource)} pending=${summarizeNullableSource(pendingSource)} switching=$isSwitchingSource",
+                    error,
+                )
+            }
     }
 
     override fun eventProperty(property: String) {
@@ -596,13 +627,17 @@ class MPVView @JvmOverloads constructor(
                 val duration = MPVLib.getPropertyDouble("duration/full")
                     ?: MPVLib.getPropertyDouble("duration")
                     ?: 0.0
-                dispatchOnMain { onProgressCallback?.invoke(value, duration) }
+                dispatchOnMain("onProgressCallback") { onProgressCallback?.invoke(value, duration) }
             }
 
             "duration/full", "duration" -> {
                 val width = MPVLib.getPropertyInt("width") ?: 0
                 val height = MPVLib.getPropertyInt("height") ?: 0
-                dispatchOnMain { onLoadCallback?.invoke(value, width, height) }
+                Log.i(
+                    TAG,
+                    "duration event property=$property duration=$value size=${width}x${height} active=${summarizeNullableSource(activeSource)}",
+                )
+                dispatchOnMain("onLoadCallback") { onLoadCallback?.invoke(value, width, height) }
             }
         }
     }
@@ -617,12 +652,16 @@ class MPVView @JvmOverloads constructor(
 
     override fun event(eventId: Int) {
         if (isDestroyed) return
-        Log.i(TAG, "event id=$eventId switching=$isSwitchingSource")
+        Log.i(
+            TAG,
+            "event id=$eventId switching=$isSwitchingSource active=${summarizeNullableSource(activeSource)} pending=${summarizeNullableSource(pendingSource)}",
+        )
         when (eventId) {
             MPV_EVENT_FILE_LOADED -> {
                 // New source has started â€” END_FILE events from here on are genuine
                 isSwitchingSource = false
                 lastMpvErrorMessage = null
+                Log.i(TAG, "FILE_LOADED active=${summarizeNullableSource(activeSource)} paused=$paused")
                 ensureSubtitleVisibility()
                 logSubtitleState("FILE_LOADED")
                 dispatchTracksChanged()
@@ -635,18 +674,22 @@ class MPVView @JvmOverloads constructor(
                 val duration = MPVLib.getPropertyDouble("duration/full")
                     ?: MPVLib.getPropertyDouble("duration")
                     ?: 0.0
+                val timePos = MPVLib.getPropertyDouble("time-pos") ?: 0.0
                 val eofReached = MPVLib.getPropertyBoolean("eof-reached") ?: false
                 val fileError = MPVLib.getPropertyString("file-error")?.trim().orEmpty()
-                Log.i(TAG, "END_FILE duration=$duration eof=$eofReached fileError=${if (fileError.isBlank()) "none" else fileError}")
+                Log.i(
+                    TAG,
+                    "END_FILE duration=$duration position=$timePos eof=$eofReached fileError=${if (fileError.isBlank()) "none" else fileError} lastError=${lastMpvErrorMessage ?: "none"} active=${summarizeNullableSource(activeSource)} switching=$isSwitchingSource",
+                )
                 if (eofReached) {
-                    dispatchOnMain { onEndCallback?.invoke() }
+                    dispatchOnMain("onEndCallback(eof)") { onEndCallback?.invoke() }
                 } else if (fileError.isNotBlank() && !fileError.equals("success", ignoreCase = true)) {
                     // Genuine file-error string â€” always surface this, even during a source switch,
                     // because it means the new source itself failed to open.
                     isSwitchingSource = false
                     val baseMessage = "MPV could not play this source ($fileError)."
                     val detailed = lastMpvErrorMessage?.takeIf { it.isNotBlank() }?.let { "$baseMessage $it" } ?: baseMessage
-                    dispatchOnMain { onErrorCallback?.invoke(detailed) }
+                    dispatchOnMain("onErrorCallback(fileError)") { onErrorCallback?.invoke(detailed) }
                 } else if (isSwitchingSource) {
                     // END_FILE fired for the outgoing source during a loadfile replace.
                     // FILE_LOADED for the incoming source hasn't arrived yet â€” suppress
@@ -656,9 +699,9 @@ class MPVView @JvmOverloads constructor(
                     val fallbackMessage = lastMpvErrorMessage?.takeIf { it.isNotBlank() }?.let {
                         "MPV could not play this source. $it"
                     } ?: "MPV could not play this source."
-                    dispatchOnMain { onErrorCallback?.invoke(fallbackMessage) }
+                    dispatchOnMain("onErrorCallback(shortSource)") { onErrorCallback?.invoke(fallbackMessage) }
                 } else {
-                    dispatchOnMain { onEndCallback?.invoke() }
+                    dispatchOnMain("onEndCallback(default)") { onEndCallback?.invoke() }
                 }
             }
         }

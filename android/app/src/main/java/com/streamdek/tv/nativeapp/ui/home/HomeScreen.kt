@@ -48,31 +48,24 @@ import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
+import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
-import com.streamdek.tv.nativeapp.data.HomeContent
 import com.streamdek.tv.nativeapp.data.HomeRail
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
-import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 private val HomeRailsTop = 360.dp
-
-private sealed interface HomeUiState {
-    data object Loading : HomeUiState
-    data class Ready(val content: HomeContent) : HomeUiState
-    data class Error(val message: String) : HomeUiState
-}
 
 @Composable
 fun HomeScreen(
@@ -82,31 +75,34 @@ fun HomeScreen(
     onOpenNetwork: (String, String) -> Unit,
     onOpenAccount: () -> Unit,
 ) {
+    val homeViewModel: HomeViewModel = viewModel(factory = remember(repository) { HomeViewModelFactory(repository) })
+    val screenState by homeViewModel.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
     val appPrefs = bootstrap?.preferences?.app
     val compactMode = appPrefs?.compactMode == true
     val homeRowCardStyle = if (appPrefs?.homeRowCardStyle == "portrait") "portrait" else "landscape"
-    var uiState by remember { mutableStateOf<HomeUiState>(HomeUiState.Loading) }
     val verticalListState = rememberLazyListState()
     val horizontalListStates = remember { mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>() }
     val rowFocusIndices = remember { mutableStateMapOf<String, Int>() }
     var activeRowIndex by remember { mutableIntStateOf(0) }
+    var rowActivationNonce by remember { mutableIntStateOf(0) }
     var focusedItem by remember { mutableStateOf<MediaItem?>(null) }
-    var heroDetail by remember { mutableStateOf<MediaDetail?>(null) }
+    val heroDetail = screenState.heroDetail
 
-    LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
-        uiState = HomeUiState.Loading
-        try {
-            uiState = HomeUiState.Ready(repository.fetchHomeContent())
-            TvDebugLogger.i("HomeUi", "home loaded")
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            TvDebugLogger.e("HomeUi", "home failed to load", error)
-            uiState = HomeUiState.Error(error.message ?: "Could not load home")
-        }
+    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
+        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}"
+    }
+    LaunchedEffect(loadKey) {
+        homeViewModel.load(loadKey)
+    }
+
+    val content = screenState.content
+    val hero = focusedItem ?: content?.featured ?: content?.rails?.firstOrNull()?.items?.firstOrNull()
+
+    LaunchedEffect(hero?.id, hero?.type) {
+        homeViewModel.setHeroCandidate(hero)
     }
 
     Box(
@@ -114,17 +110,7 @@ fun HomeScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        val content = (uiState as? HomeUiState.Ready)?.content
-        val hero = focusedItem ?: content?.featured ?: content?.rails?.firstOrNull()?.items?.firstOrNull()
         val heroBackdrop = hero?.backdrop ?: hero?.poster
-
-        LaunchedEffect(hero?.id, hero?.type) {
-            heroDetail = if (hero != null && (hero.type == "movie" || hero.type == "tv")) {
-                repository.fetchDetail(hero.id, hero.type)
-            } else {
-                null
-            }
-        }
 
         if (hero?.type == "network") {
             Box(
@@ -170,35 +156,36 @@ fun HomeScreen(
                 },
         )
 
-        when (val state = uiState) {
-            HomeUiState.Loading -> HomeLoading()
-            is HomeUiState.Error -> HomeError(state.message)
-            is HomeUiState.Ready -> {
-                LaunchedEffect(state.content) {
+        when {
+            screenState.isLoading && content == null -> HomeLoading()
+            screenState.error != null && content == null -> HomeError(screenState.error ?: "Could not load home")
+            content != null -> {
+                LaunchedEffect(content) {
                     val preloadUrls = buildList {
-                        state.content.featured?.backdrop?.let(::add)
-                        state.content.featured?.titleLogo?.let(::add)
-                        state.content.rails.forEach { rail ->
-                            rail.items.take(8).forEach { item ->
+                        content.featured?.backdrop?.let(::add)
+                        content.featured?.titleLogo?.let(::add)
+                        content.rails.forEach { rail ->
+                            rail.items.take(4).forEach { item ->
                                 item.backdrop?.let(::add)
                                 item.poster?.let(::add)
-                                item.titleLogo?.let(::add)
                             }
                         }
-                    }.distinct()
+                    }.distinct().take(16)
                     preloadUrls.forEach { url ->
                         context.imageLoader.enqueue(
                             ImageRequest.Builder(context)
                                 .data(url)
                                 .memoryCacheKey(url)
                                 .diskCacheKey(url)
+                                .crossfade(false)
+                                .allowHardware(true)
                                 .build(),
                         )
                     }
                 }
 
-                val rows = remember(state.content.rails) {
-                    val list = state.content.rails.toMutableList()
+                val rows = remember(content.rails) {
+                    val list = content.rails.toMutableList()
                     val netIdx = list.indexOfFirst { rail -> rail.items.any { it.type == "network" } }
                     if (netIdx > 0) {
                         val target = minOf(3, list.size - 1)
@@ -212,7 +199,7 @@ fun HomeScreen(
                 val localHomeFirstCardRequester = remember { FocusRequester() }
                 val homeFirstCardRequester = entryFocusRequester ?: localHomeFirstCardRequester
 
-                LaunchedEffect(state.content) {
+                LaunchedEffect(content) {
                     delay(150)
                     try { homeFirstCardRequester.requestFocus() } catch (_: Exception) { }
                 }
@@ -258,6 +245,7 @@ fun HomeScreen(
                                     focusedItem = item
                                     if (activeRowIndex != rowIndex) {
                                         activeRowIndex = rowIndex
+                                        rowActivationNonce += 1
                                     }
                                 },
                                 onItemPressed = { item ->
@@ -269,9 +257,12 @@ fun HomeScreen(
                                 },
                                 rowCardStyle = homeRowCardStyle,
                                 firstCardRequester = if (rowIndex == 0) homeFirstCardRequester else null,
+                                isActiveRow = activeRowIndex == rowIndex,
+                                rowActivationNonce = rowActivationNonce,
                                 requestVerticalPlacement = {
                                     if (activeRowIndex != rowIndex) {
                                         activeRowIndex = rowIndex
+                                        rowActivationNonce += 1
                                     }
                                 },
                             )
@@ -281,10 +272,16 @@ fun HomeScreen(
 
                 LaunchedEffect(activeRowIndex) {
                     if (rows.isNotEmpty()) {
-                        verticalListState.scrollToItem(activeRowIndex.coerceIn(0, rows.lastIndex))
+                        val targetIndex = activeRowIndex.coerceIn(0, rows.lastIndex)
+                        val firstVisible = verticalListState.firstVisibleItemIndex
+                        val lastVisible = verticalListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: firstVisible
+                        if (targetIndex < firstVisible || targetIndex > lastVisible) {
+                            verticalListState.animateScrollToItem(targetIndex)
+                        }
                     }
                 }
             }
+            else -> HomeLoading()
         }
     }
 }
@@ -410,9 +407,12 @@ private fun RailSection(
     onItemPressed: (MediaItem) -> Unit,
     rowCardStyle: String,
     firstCardRequester: FocusRequester? = null,
+    isActiveRow: Boolean,
+    rowActivationNonce: Int,
     requestVerticalPlacement: () -> Unit,
 ) {
     val requesters = remember(row.id) { mutableMapOf<String, FocusRequester>() }
+    var firstResolvedRequester by remember(row.id) { mutableStateOf<FocusRequester?>(null) }
     val noScrollResponder = remember {
         object : BringIntoViewResponder {
             override fun calculateRectForParent(localRect: Rect): Rect = localRect
@@ -426,6 +426,13 @@ private fun RailSection(
             itemCount = row.items.size,
             leadingItems = 0,
         )
+    }
+
+    LaunchedEffect(isActiveRow, rowActivationNonce) {
+        if (isActiveRow && rowActivationNonce > 0) {
+            rowState.scrollToItem(0)
+            runCatching { firstResolvedRequester?.requestFocus() }
+        }
     }
 
     Column(
@@ -456,6 +463,9 @@ private fun RailSection(
                 val key = "${row.id}:${item.id}"
                 val requester = requesters.getOrPut(key) { FocusRequester() }
                 val effectiveRequester = if (index == 0 && firstCardRequester != null) firstCardRequester else requester
+                if (index == 0) {
+                    firstResolvedRequester = effectiveRequester
+                }
 
                 MediaPosterCard(
                     item = item,
@@ -510,8 +520,8 @@ private fun MediaPosterCard(
             },
         shape = CardDefaults.shape(cardShape),
         colors = CardDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = Color.Transparent,
+            containerColor = networkStyle.background,
+            focusedContainerColor = if (isNetworkCard) networkStyle.background else Color(0xFF181A1F),
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
@@ -519,6 +529,7 @@ private fun MediaPosterCard(
                 shape = cardShape,
             ),
         ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = 1.03f),
     ) {
         Box(

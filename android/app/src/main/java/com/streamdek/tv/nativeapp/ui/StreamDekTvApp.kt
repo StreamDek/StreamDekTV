@@ -66,6 +66,7 @@ import com.streamdek.tv.nativeapp.ui.player.PlayerScreen
 import com.streamdek.tv.nativeapp.ui.search.SearchScreen
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import com.streamdek.tv.nativeapp.update.AppUpdateUiState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
@@ -112,6 +113,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     }
 
     LaunchedEffect(Unit) {
+        // Defer non-critical OTA work until the shell has painted and the user
+        // has had a chance to begin navigating.
+        delay(3500)
         appUpdateManager.runAutomaticCheck()
     }
 
