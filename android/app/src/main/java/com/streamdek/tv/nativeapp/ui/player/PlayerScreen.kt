@@ -57,6 +57,7 @@ import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -68,6 +69,7 @@ fun PlayerScreen(
     repository: StreamDekRepository,
     request: PlaybackRequest,
     onBack: () -> Unit,
+    onExitToStreams: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val view = LocalView.current
@@ -101,6 +103,7 @@ fun PlayerScreen(
     var lastSeekDirection by remember { mutableIntStateOf(0) }
     var seekBurstCount by remember { mutableIntStateOf(0) }
     var subtitlePreferenceAppliedForSource by remember { mutableStateOf<String?>(null) }
+    var traktScrobbledStart by remember { mutableStateOf(false) }
 
     val errorBackRequester = remember { FocusRequester() }
     val errorSourcesRequester = remember { FocusRequester() }
@@ -173,7 +176,8 @@ fun PlayerScreen(
     fun requestPlaybackFocus() {
         scope.launch {
             delay(60)
-            playRequester.requestFocus()
+            runCatching { playRequester.requestFocus() }
+                .onFailure { TvDebugLogger.w("Player", "play focus request skipped: ${it.message}") }
         }
     }
 
@@ -188,6 +192,26 @@ fun PlayerScreen(
         pauseInfoVisible = false
         if (!controlsVisible) controlsVisible = true
         scheduleControlsHide()
+    }
+
+    fun traktProgressPercent(): Double {
+        if (durationSec <= 0.0) return 0.0
+        return ((positionSec / durationSec) * 100.0).coerceIn(0.0, 100.0)
+    }
+
+    fun queueTraktStop() {
+        if (!traktScrobbledStart) return
+        traktScrobbledStart = false
+        scope.launch {
+            repository.traktScrobble(
+                action = "stop",
+                mediaType = request.mediaType,
+                mediaId = request.mediaId,
+                title = detail?.title ?: request.title,
+                year = detail?.year,
+                progress = traktProgressPercent(),
+            )
+        }
     }
 
     suspend fun loadPlayback() {
@@ -286,10 +310,41 @@ fun PlayerScreen(
         }
     }
 
+    LaunchedEffect(currentSourceUrl, paused, loading) {
+        val activeSource = currentSourceUrl
+        if (activeSource.isNullOrBlank() || paused || loading) return@LaunchedEffect
+
+        if (!traktScrobbledStart) {
+            traktScrobbledStart = repository.traktScrobble(
+                action = "start",
+                mediaType = request.mediaType,
+                mediaId = request.mediaId,
+                title = detail?.title ?: request.title,
+                year = detail?.year,
+                progress = 0.0,
+            )
+        }
+
+        while (currentSourceUrl == activeSource && !paused && !loading) {
+            delay(60000)
+            if (currentSourceUrl == activeSource && !paused && !loading) {
+                repository.traktScrobble(
+                    action = "pause",
+                    mediaType = request.mediaType,
+                    mediaId = request.mediaId,
+                    title = detail?.title ?: request.title,
+                    year = detail?.year,
+                    progress = traktProgressPercent(),
+                )
+            }
+        }
+    }
+
     LaunchedEffect(panel) {
         if (panel != null) {
             delay(80)
-            panelFirstItemRequester.requestFocus()
+            runCatching { panelFirstItemRequester.requestFocus() }
+                .onFailure { TvDebugLogger.w("Player", "panel focus request skipped: ${it.message}") }
         }
     }
 
@@ -304,6 +359,7 @@ fun PlayerScreen(
         onDispose {
             controlsHideJob?.cancel()
             pendingSeekJob?.cancel()
+            queueTraktStop()
             scope.launch {
                 repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
             }
@@ -315,10 +371,12 @@ fun PlayerScreen(
             panel = null
             showControls(focusPlay = true)
         } else {
+            TvDebugLogger.i("Player", "back exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
+            queueTraktStop()
             scope.launch {
                 repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
             }
-            onBack()
+            onExitToStreams()
         }
     }
 
@@ -390,6 +448,11 @@ fun PlayerScreen(
                         durationSec = duration
                     }
                     onEndCallback = {
+                        TvDebugLogger.i(
+                            "Player",
+                            "onEnd mediaType=${request.mediaType} mediaId=${request.mediaId} nextEpisode=${nextEpisode != null} position=$positionSec duration=$durationSec",
+                        )
+                        queueTraktStop()
                         scope.launch {
                             repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
                         }
@@ -397,10 +460,11 @@ fun PlayerScreen(
                         if (autoplay && nextEpisode != null) {
                             currentEpisode = nextEpisode
                         } else {
-                            onBack()
+                            onExitToStreams()
                         }
                     }
                     onErrorCallback = { message ->
+                        TvDebugLogger.w("Player", "onError mediaType=${request.mediaType} mediaId=${request.mediaId} message=$message")
                         error = message
                         loading = false
                         showControls(focusPlay = true)
@@ -533,10 +597,11 @@ fun PlayerScreen(
                         ) {
                             androidx.tv.material3.Button(
                                 onClick = {
+                                    TvDebugLogger.i("Player", "error overlay go back to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
                                     scope.launch {
                                         repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
                                     }
-                                    onBack()
+                                    onExitToStreams()
                                 },
                                 modifier = Modifier.focusRequester(errorBackRequester),
                             ) {

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -69,6 +71,8 @@ private enum class SettingsSection(val label: String) {
     About("About"),
 }
 
+private const val SettingsFocusGuardMs = 250L
+
 @Composable
 fun AccountScreen(
     repository: StreamDekRepository,
@@ -84,11 +88,17 @@ fun AccountScreen(
     val firstSectionRequester = remember { FocusRequester() }
     val contentEntryRequester = remember { FocusRequester() }
     val profileContentRequester = remember { FocusRequester() }
+    val profileActionRequester = remember { FocusRequester() }
     val servicesContentRequester = remember { FocusRequester() }
+    val servicesActionRequester = remember { FocusRequester() }
     val playbackContentRequester = remember { FocusRequester() }
+    val playbackActionRequester = remember { FocusRequester() }
     val tvContentRequester = remember { FocusRequester() }
+    val tvActionRequester = remember { FocusRequester() }
     val devicesContentRequester = remember { FocusRequester() }
+    val devicesActionRequester = remember { FocusRequester() }
     val aboutContentRequester = remember { FocusRequester() }
+    val aboutActionRequester = remember { FocusRequester() }
     val appUpdateState by appUpdateManager.uiState.collectAsState()
 
     LaunchedEffect(Unit) {
@@ -120,12 +130,15 @@ fun AccountScreen(
             firstSectionRequester = firstSectionRequester,
             contentEntryRequester = contentEntryRequester,
             sectionContentRequester = when (selectedSection) {
-                SettingsSection.Profile -> profileContentRequester
-                SettingsSection.Services -> servicesContentRequester
-                SettingsSection.Playback -> playbackContentRequester
-                SettingsSection.Tv -> tvContentRequester
-                SettingsSection.Devices -> devicesContentRequester
-                SettingsSection.About -> aboutContentRequester
+                SettingsSection.Profile -> when {
+                    session == null || bootstrap?.streamProfiles?.isNotEmpty() == true -> profileActionRequester
+                    else -> profileContentRequester
+                }
+                SettingsSection.Services -> if (addons.isNotEmpty()) servicesActionRequester else servicesContentRequester
+                SettingsSection.Playback -> playbackActionRequester
+                SettingsSection.Tv -> tvActionRequester
+                SettingsSection.Devices -> devicesActionRequester
+                SettingsSection.About -> aboutActionRequester
             },
             onSelectSection = { selectedSection = it },
             onSignIn = onSignIn,
@@ -183,7 +196,11 @@ fun AccountScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Button(onClick = onSignIn, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) {
+                                    Button(
+                                        onClick = onSignIn,
+                                        modifier = Modifier.focusRequester(profileActionRequester),
+                                        shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                                    ) {
                                         Text("Sign In / Link TV")
                                     }
                                     OutlinedButton(onClick = onSignIn, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) {
@@ -216,6 +233,7 @@ fun AccountScreen(
                                         CompactActionRow(
                                             title = profile.name,
                                             value = if (activeProfile?.id == profile.id) "Active" else if (profile.isDefault) "Default" else null,
+                                            requester = if (profile == bootstrap?.streamProfiles?.firstOrNull()) profileActionRequester else null,
                                             onClick = {
                                                 scope.launch {
                                                     repository.setActiveStreamProfile(profile.id)
@@ -279,6 +297,7 @@ fun AccountScreen(
                                     addons.forEach { addon ->
                                         AddonRow(
                                             addon = addon,
+                                            actionRequester = if (addon == addons.firstOrNull()) servicesActionRequester else null,
                                             onToggle = {
                                                 scope.launch {
                                                     repository.toggleAddon(addon.id, !addon.enabled)
@@ -306,7 +325,11 @@ fun AccountScreen(
                 SettingsSection.Playback -> {
                     item {
                         CompactCard("Playback Defaults", modifier = Modifier.focusRequester(playbackContentRequester)) {
-                            PreferenceRow("Autoplay Next Episode", playbackPrefs?.autoplayNextEpisode == true) {
+                            PreferenceRow(
+                                "Autoplay Next Episode",
+                                playbackPrefs?.autoplayNextEpisode == true,
+                                requester = playbackActionRequester,
+                            ) {
                                 scope.launch {
                                     repository.updatePlaybackPreferences(mapOf("autoplayNextEpisode" to !(playbackPrefs?.autoplayNextEpisode == true)))
                                     bootstrap = repository.bootstrap.value
@@ -330,18 +353,6 @@ fun AccountScreen(
                                     bootstrap = repository.bootstrap.value
                                 }
                             }
-                            ChoiceRow("Subtitle Language", playbackPrefs?.defaultSubtitleLanguage ?: "en") {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("defaultSubtitleLanguage" to nextOf(listOf("off", "en", "es", "pt"), playbackPrefs?.defaultSubtitleLanguage ?: "en")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Audio Language", playbackPrefs?.defaultAudioLanguage ?: "en") {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("defaultAudioLanguage" to nextOf(listOf("en", "es", "pt", "original"), playbackPrefs?.defaultAudioLanguage ?: "en")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
                         }
                     }
                 }
@@ -349,15 +360,9 @@ fun AccountScreen(
                 SettingsSection.Tv -> {
                     item {
                         CompactCard("TV Interface", modifier = Modifier.focusRequester(tvContentRequester)) {
-                            ChoiceRow("Theme", appPrefs?.theme ?: "cinema-blue") {
+                            ChoiceRow("Theme", appPrefs?.theme ?: "cinema-blue", requester = tvActionRequester) {
                                 scope.launch {
                                     repository.updateAppPreferences(mapOf("theme" to nextOf(listOf("streamdek", "cinema-blue", "carbon-gold", "frost-neon", "ember-red", "aurora-green", "violet-pulse"), appPrefs?.theme ?: "cinema-blue")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Color Mode", appPrefs?.colorMode ?: "night") {
-                                scope.launch {
-                                    repository.updateAppPreferences(mapOf("colorMode" to nextOf(listOf("night", "day"), appPrefs?.colorMode ?: "night")))
                                     bootstrap = repository.bootstrap.value
                                 }
                             }
@@ -379,12 +384,6 @@ fun AccountScreen(
                                     bootstrap = repository.bootstrap.value
                                 }
                             }
-                            PreferenceRow("Sync Over Cellular", appPrefs?.syncOverCellular == true) {
-                                scope.launch {
-                                    repository.updateAppPreferences(mapOf("syncOverCellular" to !(appPrefs?.syncOverCellular == true)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
                         }
                     }
                 }
@@ -402,6 +401,7 @@ fun AccountScreen(
                             ) {
                                 OutlinedButton(
                                     onClick = { scope.launch { bootstrap = repository.refreshBootstrap(); status = "Sync status refreshed." } },
+                                    modifier = Modifier.focusRequester(devicesActionRequester),
                                     shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
                                 ) { Text("Refresh") }
                             }
@@ -438,7 +438,7 @@ fun AccountScreen(
                         CompactCard("App Updates", modifier = Modifier.focusRequester(aboutContentRequester)) {
                             TextLine("Installed", BuildConfig.VERSION_NAME)
                             TextLine("Status", appUpdateState.statusText ?: appUpdateState.errorMessage ?: "Ready")
-                            PreferenceRow("Automatic Checks", appUpdateState.autoCheckEnabled) {
+                            PreferenceRow("Automatic Checks", appUpdateState.autoCheckEnabled, requester = aboutActionRequester) {
                                 appUpdateManager.setAutoCheckEnabled(!appUpdateState.autoCheckEnabled)
                             }
                             appUpdateState.availableRelease?.let { release ->
@@ -601,8 +601,8 @@ private fun SidebarItem(
             .height(38.dp)
             .background(
                 color = when {
-                    focused -> Color(0x2CFFFFFF)
-                    selected -> Color(0x1AF4EDE2)
+                    focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                    selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                     else -> Color.Transparent
                 },
                 shape = RoundedCornerShape(10.dp),
@@ -648,7 +648,7 @@ private fun CompactCard(
             .background(Color(0x9411141B), RoundedCornerShape(20.dp))
             .border(
                 width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Color(0x66F0BA66) else Color(0x10FFFFFF),
+                color = if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.66f) else Color(0x10FFFFFF),
                 shape = RoundedCornerShape(20.dp),
             )
             .onFocusChanged { focused = it.isFocused }
@@ -692,10 +692,10 @@ private fun ProfileAvatar(profile: StreamProfile, size: Dp = 34.dp) {
 }
 
 @Composable
-private fun PreferenceRow(label: String, value: Boolean, onToggle: () -> Unit) {
+private fun PreferenceRow(label: String, value: Boolean, requester: FocusRequester? = null, onToggle: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f), style = MaterialTheme.typography.bodyMedium)
-        OutlinedButton(onClick = onToggle, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text(if (value) "On" else "Off") }
+        SettingsActionButton(onClick = onToggle, requester = requester) { Text(if (value) "On" else "Off") }
     }
 }
 
@@ -705,11 +705,53 @@ private fun formatFileSizeGB(raw: String): String = when (raw) {
 }
 
 @Composable
-private fun ChoiceRow(label: String, value: String, onCycle: () -> Unit) {
+private fun ChoiceRow(label: String, value: String, requester: FocusRequester? = null, onCycle: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f), style = MaterialTheme.typography.bodyMedium)
-        OutlinedButton(onClick = onCycle, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text(value) }
+        SettingsActionButton(onClick = onCycle, requester = requester) { Text(value) }
     }
+}
+
+@Composable
+private fun SettingsActionButton(
+    onClick: () -> Unit,
+    requester: FocusRequester? = null,
+    content: @Composable RowScope.() -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var lastFocusedAt by remember { mutableLongStateOf(0L) }
+    OutlinedButton(
+        onClick = {
+            val now = System.currentTimeMillis()
+            if (!focused || now - lastFocusedAt >= SettingsFocusGuardMs) {
+                onClick()
+            }
+        },
+        shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+        colors = ButtonDefaults.colors(
+            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+            focusedContentColor = MaterialTheme.colorScheme.onBackground,
+        ),
+        border = ButtonDefaults.border(
+            border = Border(
+                border = BorderStroke(1.dp, Color(0x30FFFFFF)),
+                shape = RoundedCornerShape(999.dp),
+            ),
+            focusedBorder = Border(
+                border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                shape = RoundedCornerShape(999.dp),
+            ),
+        ),
+        modifier = Modifier
+            .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) {
+                    lastFocusedAt = System.currentTimeMillis()
+                }
+            },
+        content = content,
+    )
 }
 
 @Composable
@@ -721,10 +763,14 @@ private fun TextLine(label: String, value: String) {
 }
 
 @Composable
-private fun CompactActionRow(title: String, value: String?, onClick: () -> Unit) {
+private fun CompactActionRow(title: String, value: String?, requester: FocusRequester? = null, onClick: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(title, color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
-        OutlinedButton(onClick = onClick, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = if (requester != null) Modifier.focusRequester(requester) else Modifier,
+            shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+        ) {
             Text(value ?: "Use")
         }
     }
@@ -776,7 +822,12 @@ private fun EntityRow(title: String, subtitle: String) {
 }
 
 @Composable
-private fun AddonRow(addon: AddonManifest, onToggle: () -> Unit, onRemove: () -> Unit) {
+private fun AddonRow(
+    addon: AddonManifest,
+    actionRequester: FocusRequester? = null,
+    onToggle: () -> Unit,
+    onRemove: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().background(Color(0x5915181D), RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -793,7 +844,11 @@ private fun AddonRow(addon: AddonManifest, onToggle: () -> Unit, onRemove: () ->
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onToggle, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text(if (addon.enabled) "Disable" else "Enable") }
+            OutlinedButton(
+                onClick = onToggle,
+                modifier = if (actionRequester != null) Modifier.focusRequester(actionRequester) else Modifier,
+                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+            ) { Text(if (addon.enabled) "Disable" else "Enable") }
             OutlinedButton(onClick = onRemove, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Remove") }
         }
     }

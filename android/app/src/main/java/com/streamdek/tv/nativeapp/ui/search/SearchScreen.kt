@@ -16,13 +16,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -34,17 +36,21 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.tv.material3.Button
-import androidx.tv.material3.ButtonDefaults
-import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Border
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.imageLoader
@@ -52,6 +58,7 @@ import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import kotlinx.coroutines.delay
 
 @Composable
@@ -59,16 +66,18 @@ fun SearchScreen(
     repository: StreamDekRepository,
     onOpenDetail: (String, String) -> Unit,
 ) {
+    val bootstrap by repository.bootstrap.collectAsState()
+    val compactMode = bootstrap?.preferences?.app?.compactMode == true
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
-    var searchActive by remember { mutableStateOf(false) }
-    val searchFieldRequester = remember { FocusRequester() }
+    var searchEditing by remember { mutableStateOf(false) }
     val searchBoxRequester = remember { FocusRequester() }
     val firstResultRequester = remember { FocusRequester() }
     var anchoredIndex by remember { mutableIntStateOf(0) }
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val focusManager = LocalFocusManager.current
 
     LaunchedEffect(Unit) {
         delay(180)
@@ -100,18 +109,19 @@ fun SearchScreen(
         }
     }
 
-    LaunchedEffect(searchActive) {
-        if (searchActive) {
+    LaunchedEffect(searchEditing) {
+        if (searchEditing) {
             delay(40)
-            searchFieldRequester.requestFocus()
+            searchBoxRequester.requestFocus()
         }
     }
 
     LaunchedEffect(anchoredIndex, results.size) {
-        val targetIndex = anchoredIndex.coerceIn(0, (results.size - 1).coerceAtLeast(0))
-        if (results.isNotEmpty() && rowState.firstVisibleItemIndex != targetIndex) {
-            rowState.scrollToItem(targetIndex)
-        }
+        rowState.animateToAnchoredItem(
+            focusedIndex = anchoredIndex,
+            itemCount = results.size,
+            leadingItems = 1,
+        )
     }
 
     Box(
@@ -122,7 +132,11 @@ fun SearchScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 48.dp, end = 48.dp, top = 48.dp),
+                .padding(
+                    start = if (compactMode) 36.dp else 48.dp,
+                    end = if (compactMode) 36.dp else 48.dp,
+                    top = if (compactMode) 36.dp else 48.dp,
+                ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
@@ -135,79 +149,61 @@ fun SearchScreen(
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
             )
-            if (searchActive) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { androidx.compose.material3.Text("Title, actor, or genre") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(999.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF11141B),
-                        unfocusedContainerColor = Color(0xFF11141B),
-                        focusedIndicatorColor = Color(0xFFF0BA66),
-                        unfocusedIndicatorColor = Color(0x3311161D),
-                        focusedTextColor = Color(0xFFF5F1E8),
-                        unfocusedTextColor = Color(0xFFF5F1E8),
-                        focusedLabelColor = Color(0xFFF0BA66),
-                        unfocusedLabelColor = Color(0xB3F5F1E8),
-                        cursorColor = Color(0xFFF0BA66),
-                    ),
-                    modifier = Modifier
-                        .width(640.dp)
-                        .focusRequester(searchFieldRequester)
-                        .focusProperties {
-                            if (results.isNotEmpty()) down = firstResultRequester
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { androidx.compose.material3.Text("Title, actor, or genre") },
+                singleLine = true,
+                readOnly = !searchEditing,
+                shape = RoundedCornerShape(999.dp),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        searchEditing = false
+                        focusManager.clearFocus(force = true)
+                    },
+                ),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color(0xFF11141B),
+                    unfocusedContainerColor = Color(0xFF11141B),
+                    focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                    unfocusedIndicatorColor = Color(0x3311161D),
+                    focusedTextColor = Color(0xFFF5F1E8),
+                    unfocusedTextColor = Color(0xFFF5F1E8),
+                    focusedLabelColor = MaterialTheme.colorScheme.primary,
+                    unfocusedLabelColor = Color(0xB3F5F1E8),
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                ),
+                modifier = Modifier
+                    .width(640.dp)
+                    .height(56.dp)
+                    .focusRequester(searchBoxRequester)
+                    .focusProperties {
+                        if (results.isNotEmpty()) down = firstResultRequester
+                    }
+                    .onPreviewKeyEvent { event ->
+                        if (
+                            !searchEditing &&
+                            event.type == KeyEventType.KeyUp &&
+                            (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)
+                        ) {
+                            searchEditing = true
+                            true
+                        } else {
+                            false
                         }
-                        .onFocusChanged {
-                            if (!it.isFocused) searchActive = false
-                        },
-                )
-            } else {
-                Button(
-                    onClick = { searchActive = true },
-                    shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
-                    colors = ButtonDefaults.colors(
-                        containerColor = Color(0xFF11141B),
-                        focusedContainerColor = Color(0xFF11141B),
-                        contentColor = Color(0xFFF5F1E8),
-                        focusedContentColor = Color(0xFFF5F1E8),
-                    ),
-                    border = ButtonDefaults.border(
-                        border = Border(
-                            border = androidx.compose.foundation.BorderStroke(2.dp, Color(0x3311161D)),
-                            shape = RoundedCornerShape(999.dp),
-                        ),
-                        focusedBorder = Border(
-                            border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFF0BA66)),
-                            shape = RoundedCornerShape(999.dp),
-                        ),
-                    ),
-                    modifier = Modifier
-                        .width(640.dp)
-                        .height(56.dp)
-                        .focusRequester(searchBoxRequester)
-                        .focusProperties {
-                            if (results.isNotEmpty()) down = firstResultRequester
-                        },
-                    contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp),
-                ) {
-                    Text(
-                        text = query.ifBlank { "Title, actor, or genre" },
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (query.isBlank()) Color(0xB3F5F1E8) else Color(0xFFF5F1E8),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
+                    }
+                    .onFocusChanged {
+                        if (!it.isFocused) {
+                            searchEditing = false
+                        }
+                    },
+            )
         }
 
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 198.dp),
+                .padding(top = if (compactMode) 176.dp else 198.dp),
             contentPadding = PaddingValues(bottom = 180.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
@@ -277,12 +273,12 @@ private fun SearchResultCard(
             .size(width = 260.dp, height = 150.dp)
             .onFocusChanged { if (it.isFocused) onFocused() },
         colors = CardDefaults.colors(
-            containerColor = Color(0xFF181A1F),
-            focusedContainerColor = Color(0xFF181A1F),
+            containerColor = Color.Transparent,
+            focusedContainerColor = Color.Transparent,
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFF0BA66)),
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
                 shape = AppCardShape,
             ),
         ),
@@ -291,7 +287,8 @@ private fun SearchResultCard(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(AppCardShape),
+                .clip(AppCardShape)
+                .background(Color(0xFF181A1F)),
         ) {
             AsyncImage(
                 model = item.backdrop ?: item.poster,
@@ -317,7 +314,7 @@ private fun SearchResultCard(
                 Text(
                     text = if (item.type == "tv") "Series" else "Movie",
                     style = MaterialTheme.typography.labelLarge,
-                    color = Color(0xFFF0BA66),
+                    color = MaterialTheme.colorScheme.primary,
                 )
                 Text(
                     text = item.title,

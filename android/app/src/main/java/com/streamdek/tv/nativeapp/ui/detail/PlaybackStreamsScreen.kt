@@ -300,7 +300,7 @@ private fun SourceTabChip(label: String, selected: Boolean, onClick: () -> Unit)
             focusedContainerColor = Color(0xFF2A2D36),
         ),
         border = CardDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppPillShape),
+            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppPillShape),
         ),
         scale = CardDefaults.scale(focusedScale = 1.02f),
     ) {
@@ -370,7 +370,7 @@ private fun StreamsInfoPanel(detail: MediaDetail?, request: PlaybackRequest, ove
             Text(
                 text = "S${it.seasonNumber} E${it.episodeNumber}${it.title?.let { name -> "  •  $name" } ?: ""}",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                color = Color(0xFFF0BA66),
+                color = MaterialTheme.colorScheme.primary,
             )
         }
 
@@ -450,7 +450,7 @@ private fun StreamOptionCard(
             focusedContainerColor = Color(0xFF181A1F),
         ),
         border = CardDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppCardShape),
+            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppCardShape),
         ),
         scale = CardDefaults.scale(focusedScale = 1.015f),
     ) {
@@ -477,7 +477,7 @@ private fun StreamOptionCard(
                 Text(
                     text = "Play",
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                    color = Color(0xFFF0BA66),
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
             if (chips.isNotEmpty()) {

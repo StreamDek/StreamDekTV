@@ -299,7 +299,7 @@ private fun FilterDropdown(
                     modifier = Modifier
                         .background(
                             when {
-                                focused -> Color(0x55F0BA66)
+                                focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
                                 option.second == selected -> Color(0x331F2834)
                                 else -> Color.Transparent
                             },
@@ -308,7 +308,7 @@ private fun FilterDropdown(
                     text = {
                         Text(
                             text = option.first,
-                            color = if (option.second == selected) Color(0xFFF0BA66) else MaterialTheme.colorScheme.onBackground,
+                            color = if (option.second == selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
                         )
                     },
                     onClick = {
@@ -355,12 +355,12 @@ private fun NetworkCatalogCard(
         onClick = onPressed,
         modifier = modifier.size(width = 260.dp, height = 150.dp),
         colors = CardDefaults.colors(
-            containerColor = Color(0xFF181A1F),
-            focusedContainerColor = Color(0xFF181A1F),
+            containerColor = Color.Transparent,
+            focusedContainerColor = Color.Transparent,
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFF0BA66)),
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
                 shape = AppCardShape,
             ),
         ),
@@ -369,7 +369,8 @@ private fun NetworkCatalogCard(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(AppCardShape),
+                .clip(AppCardShape)
+                .background(Color(0xFF181A1F)),
         ) {
             AsyncImage(
                 model = item.backdrop ?: item.poster,
@@ -395,7 +396,7 @@ private fun NetworkCatalogCard(
                 Text(
                     text = if (item.type == "tv") "Series" else "Movie",
                     style = MaterialTheme.typography.labelLarge,
-                    color = Color(0xFFF0BA66),
+                    color = MaterialTheme.colorScheme.primary,
                 )
                 Text(
                     text = item.title,

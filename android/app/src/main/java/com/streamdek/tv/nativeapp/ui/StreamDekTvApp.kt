@@ -79,6 +79,17 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val activeProfile = repository.activeStreamProfile(bootstrap)
+    val appPrefs = bootstrap?.preferences?.app
+    val homeContentRequester = remember { FocusRequester() }
+    val libraryContentRequester = remember { FocusRequester() }
+    val preferredStartRoute = when (appPrefs?.startScreen) {
+        TopLevelDestination.Library.route,
+        "continue-watching" -> TopLevelDestination.Library.route
+        TopLevelDestination.Search.route -> TopLevelDestination.Search.route
+        TopLevelDestination.Profile.route -> TopLevelDestination.Profile.route
+        else -> TopLevelDestination.Home.route
+    }
+    var startScreenApplied by remember(session?.user?.uid) { mutableStateOf(false) }
 
     LaunchedEffect(session?.user?.uid) {
         if (session != null) {
@@ -90,7 +101,19 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         appUpdateManager.runAutomaticCheck()
     }
 
-    StreamDekTvTheme {
+    LaunchedEffect(preferredStartRoute, currentRoute, startScreenApplied) {
+        if (!startScreenApplied && currentRoute == TopLevelDestination.Home.route) {
+            startScreenApplied = true
+            if (preferredStartRoute != TopLevelDestination.Home.route) {
+                navController.navigate(preferredStartRoute) {
+                    popUpTo(TopLevelDestination.Home.route) { inclusive = true }
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
+
+    StreamDekTvTheme(themeKey = appPrefs?.theme) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -103,6 +126,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 composable(TopLevelDestination.Home.route) {
                     HomeScreen(
                         repository = repository,
+                        entryFocusRequester = homeContentRequester,
                         onOpenDetail = { mediaType, mediaId ->
                             navController.navigate("detail/$mediaType/$mediaId")
                         },
@@ -125,6 +149,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 composable(TopLevelDestination.Library.route) {
                     LibraryScreen(
                         repository = repository,
+                        entryFocusRequester = libraryContentRequester,
                         onOpenDetail = { mediaType, mediaId ->
                             navController.navigate("detail/$mediaType/$mediaId")
                         },
@@ -172,6 +197,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                             repository = repository,
                             request = request,
                             onBack = { navController.popBackStack() },
+                            onExitToStreams = {
+                                if (!navController.popBackStack("streams", inclusive = false)) {
+                                    repository.savePlaybackRequest(request)
+                                    navController.navigate("streams") {
+                                        popUpTo(TopLevelDestination.Home.route) { inclusive = false }
+                                        launchSingleTop = true
+                                    }
+                                }
+                            },
                         )
                     }
                 }
@@ -231,6 +265,10 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     avatarIndex = activeProfile?.avatarIndex ?: 0,
                     avatarLabel = activeProfile?.name ?: "P",
                     currentRoute = currentRoute.orEmpty(),
+                    downRequesters = mapOf(
+                        TopLevelDestination.Home.route to homeContentRequester,
+                        TopLevelDestination.Library.route to libraryContentRequester,
+                    ),
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(top = 34.dp, end = 42.dp),
@@ -348,6 +386,7 @@ private fun TvFloatingNav(
     avatarIndex: Int,
     avatarLabel: String,
     currentRoute: String,
+    downRequesters: Map<String, FocusRequester>,
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
 ) {
@@ -363,7 +402,7 @@ private fun TvFloatingNav(
             .onFocusChanged { navHasFocus = it.hasFocus }
             .border(
                 width = if (navHasFocus) 2.dp else 0.dp,
-                color = if (navHasFocus) Color(0x90F0BA66) else Color.Transparent,
+                color = if (navHasFocus) MaterialTheme.colorScheme.primary.copy(alpha = 0.56f) else Color.Transparent,
                 shape = RoundedCornerShape(999.dp),
             )
             .clip(RoundedCornerShape(999.dp))
@@ -376,7 +415,7 @@ private fun TvFloatingNav(
                 .height(40.dp)
                 .width(slotWidths[activeIndex])
                 .clip(RoundedCornerShape(999.dp))
-                .background(Color(0xFFF4EDE2)),
+                .background(MaterialTheme.colorScheme.primary),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             TopLevelDestination.entries.forEach { destination ->
@@ -387,6 +426,9 @@ private fun TvFloatingNav(
                             .height(40.dp)
                             .width(slotWidths[3])
                             .clip(RoundedCornerShape(999.dp))
+                            .focusProperties {
+                                downRequesters[destination.route]?.let { down = it }
+                            }
                             .onFocusChanged { if (it.isFocused) highlightedRoute = destination.route }
                             .clickable { onNavigate(destination.route) },
                         contentAlignment = Alignment.Center,
@@ -405,6 +447,9 @@ private fun TvFloatingNav(
                             .height(40.dp)
                             .width(destination.width)
                             .clip(RoundedCornerShape(999.dp))
+                            .focusProperties {
+                                downRequesters[destination.route]?.let { down = it }
+                            }
                             .onFocusChanged { if (it.isFocused) highlightedRoute = destination.route }
                             .clickable { onNavigate(destination.route) },
                     )

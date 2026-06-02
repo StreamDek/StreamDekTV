@@ -61,6 +61,7 @@ import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
+import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -76,6 +77,7 @@ private sealed interface HomeUiState {
 @Composable
 fun HomeScreen(
     repository: StreamDekRepository,
+    entryFocusRequester: FocusRequester? = null,
     onOpenDetail: (String, String) -> Unit,
     onOpenNetwork: (String, String) -> Unit,
     onOpenAccount: () -> Unit,
@@ -83,6 +85,9 @@ fun HomeScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
+    val appPrefs = bootstrap?.preferences?.app
+    val compactMode = appPrefs?.compactMode == true
+    val homeRowCardStyle = if (appPrefs?.homeRowCardStyle == "portrait") "portrait" else "landscape"
     var uiState by remember { mutableStateOf<HomeUiState>(HomeUiState.Loading) }
     val verticalListState = rememberLazyListState()
     val horizontalListStates = remember { mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>() }
@@ -204,7 +209,8 @@ fun HomeScreen(
                     }
                     list.toList()
                 }
-                val homeFirstCardRequester = remember { FocusRequester() }
+                val localHomeFirstCardRequester = remember { FocusRequester() }
+                val homeFirstCardRequester = entryFocusRequester ?: localHomeFirstCardRequester
 
                 LaunchedEffect(state.content) {
                     delay(150)
@@ -217,21 +223,25 @@ fun HomeScreen(
                     compact = focusedItem != null,
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(start = 48.dp, top = 56.dp, end = 48.dp)
+                        .padding(
+                            start = if (compactMode) 36.dp else 48.dp,
+                            top = if (compactMode) 42.dp else 56.dp,
+                            end = if (compactMode) 36.dp else 48.dp,
+                        )
                         .fillMaxWidth(0.43f),
                 )
 
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = HomeRailsTop)
+                        .padding(top = if (compactMode) 320.dp else HomeRailsTop)
                         .clipToBounds(),
                 ) {
                     LazyColumn(
                         state = verticalListState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = 120.dp),
-                        verticalArrangement = Arrangement.spacedBy(22.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (compactMode) 18.dp else 22.dp),
                     ) {
                         itemsIndexed(rows, key = { _, row -> row.id }) { rowIndex, row ->
                             val rowState = horizontalListStates.getOrPut(row.id) {
@@ -257,6 +267,7 @@ fun HomeScreen(
                                         onOpenDetail(item.type, item.id)
                                     }
                                 },
+                                rowCardStyle = homeRowCardStyle,
                                 firstCardRequester = if (rowIndex == 0) homeFirstCardRequester else null,
                                 requestVerticalPlacement = {
                                     if (activeRowIndex != rowIndex) {
@@ -270,8 +281,7 @@ fun HomeScreen(
 
                 LaunchedEffect(activeRowIndex) {
                     if (rows.isNotEmpty()) {
-                        delay(40)
-                        verticalListState.animateScrollToItem(activeRowIndex.coerceIn(0, rows.lastIndex))
+                        verticalListState.scrollToItem(activeRowIndex.coerceIn(0, rows.lastIndex))
                     }
                 }
             }
@@ -337,7 +347,7 @@ private fun HeroBlock(
                 else -> "Movie"
             },
             style = MaterialTheme.typography.labelLarge,
-            color = Color(0xFFF0BA66),
+            color = MaterialTheme.colorScheme.primary,
         )
 
         val titleLogo = detail?.titleLogo ?: item.titleLogo
@@ -398,6 +408,7 @@ private fun RailSection(
     anchoredIndex: Int,
     onItemFocused: (Int, MediaItem) -> Unit,
     onItemPressed: (MediaItem) -> Unit,
+    rowCardStyle: String,
     firstCardRequester: FocusRequester? = null,
     requestVerticalPlacement: () -> Unit,
 ) {
@@ -410,14 +421,17 @@ private fun RailSection(
     }
 
     LaunchedEffect(anchoredIndex, row.items.size) {
-        val targetIndex = anchoredIndex.coerceIn(0, (row.items.size - 1).coerceAtLeast(0))
-        if (row.items.isNotEmpty() && rowState.firstVisibleItemIndex != targetIndex) {
-            rowState.scrollToItem(targetIndex)
-        }
+        rowState.animateToAnchoredItem(
+            focusedIndex = anchoredIndex,
+            itemCount = row.items.size,
+            leadingItems = 0,
+        )
     }
 
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .bringIntoViewResponder(noScrollResponder),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
@@ -427,9 +441,9 @@ private fun RailSection(
             modifier = Modifier.padding(start = 52.dp),
         )
 
-        // BringIntoViewResponder no-op stops focus-driven horizontal scroll from
-        // propagating up and causing the LazyColumn to jump to a different row.
-        Box(modifier = Modifier.bringIntoViewResponder(noScrollResponder)) {
+        // Add a little vertical breathing room so focused-scale cards do not get
+        // clipped against the viewport edges while the row stays visually stable.
+        Box(modifier = Modifier.padding(vertical = 6.dp)) {
         LazyRow(
             state = rowState,
             modifier = Modifier
@@ -445,6 +459,7 @@ private fun RailSection(
 
                 MediaPosterCard(
                     item = item,
+                    cardStyle = rowCardStyle,
                     modifier = Modifier.focusRequester(effectiveRequester),
                     onFocused = {
                         requestVerticalPlacement()
@@ -462,6 +477,7 @@ private fun RailSection(
 @Composable
 private fun MediaPosterCard(
     item: MediaItem,
+    cardStyle: String,
     modifier: Modifier = Modifier,
     onFocused: () -> Unit,
     onPressed: () -> Unit,
@@ -470,13 +486,21 @@ private fun MediaPosterCard(
     val isNetworkCard = item.type == "network"
     val networkStyle = remember(item.title) { networkSurfaceStyle(item.title) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val usePortraitCard = cardStyle == "portrait" && !isNetworkCard
+    val cardWidth = when {
+        isNetworkCard -> 226.dp
+        usePortraitCard -> 84.dp
+        else -> 200.dp
+    }
+    val cardHeight = if (usePortraitCard) 126.dp else 118.dp
+    val cardShape = if (usePortraitCard) RoundedCornerShape(16.dp) else AppCardShape
 
     Card(
         onClick = onPressed,
         modifier = modifier
             .size(
-                width = if (isNetworkCard) 226.dp else 200.dp,
-                height = if (isNetworkCard) 118.dp else 118.dp,
+                width = cardWidth,
+                height = cardHeight,
             )
             .onFocusChanged { state ->
                 isFocused = state.isFocused
@@ -484,15 +508,15 @@ private fun MediaPosterCard(
                     onFocused()
                 }
             },
-        shape = CardDefaults.shape(AppCardShape),
+        shape = CardDefaults.shape(cardShape),
         colors = CardDefaults.colors(
-            containerColor = if (isNetworkCard) Color.White else Color(0xFF181A1F),
-            focusedContainerColor = if (isNetworkCard) Color.White else Color(0xFF181A1F),
+            containerColor = Color.Transparent,
+            focusedContainerColor = Color.Transparent,
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFF0BA66)),
-                shape = AppCardShape,
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                shape = cardShape,
             ),
         ),
         scale = CardDefaults.scale(focusedScale = 1.03f),
@@ -500,8 +524,14 @@ private fun MediaPosterCard(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(AppCardShape)
-                .background(if (isNetworkCard && isFocused) networkHeroBrush(item.title) else Brush.linearGradient(listOf(networkStyle.background, networkStyle.background))),
+                .clip(cardShape)
+                .background(
+                    if (isNetworkCard && isFocused) {
+                        networkHeroBrush(item.title)
+                    } else {
+                        Brush.linearGradient(listOf(networkStyle.background, networkStyle.background))
+                    },
+                ),
         ) {
             if (isNetworkCard) {
                 AsyncImage(
@@ -520,7 +550,7 @@ private fun MediaPosterCard(
                 )
             } else {
                 AsyncImage(
-                    model = item.backdrop ?: item.poster,
+                    model = if (usePortraitCard) item.poster ?: item.backdrop else item.backdrop ?: item.poster,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -538,38 +568,40 @@ private fun MediaPosterCard(
                             ),
                         ),
                 )
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text(
-                        text = item.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        maxLines = if (isFocused) 2 else 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    item.year?.let {
+                if (!usePortraitCard) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
                         Text(
-                            text = it,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
+                            text = item.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = if (isFocused) 2 else 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                    }
-                    if ((item.progress ?: 0.0) > 0.0) {
-                        ProgressMeter(
-                            progress = item.progress,
-                            modifier = Modifier
-                                .width(132.dp)
-                                .height(4.dp),
-                        )
-                        Text(
-                            text = formatPlaybackClock(item.positionSec),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
-                        )
+                        item.year?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
+                            )
+                        }
+                        if ((item.progress ?: 0.0) > 0.0) {
+                            ProgressMeter(
+                                progress = item.progress,
+                                modifier = Modifier
+                                    .width(132.dp)
+                                    .height(4.dp),
+                            )
+                            Text(
+                                text = formatPlaybackClock(item.positionSec),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
+                            )
+                        }
                     }
                 }
             }

@@ -55,13 +55,16 @@ import kotlinx.coroutines.CancellationException
 @Composable
 fun LibraryScreen(
     repository: StreamDekRepository,
+    entryFocusRequester: FocusRequester? = null,
     onOpenDetail: (String, String) -> Unit,
 ) {
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
+    val compactMode = bootstrap?.preferences?.app?.compactMode == true
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    val initialCardRequester = remember { FocusRequester() }
+    val localInitialCardRequester = remember { FocusRequester() }
+    val initialCardRequester = entryFocusRequester ?: localInitialCardRequester
     val context = androidx.compose.ui.platform.LocalContext.current
 
     LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
@@ -116,7 +119,11 @@ fun LibraryScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 48.dp, end = 48.dp, top = 48.dp),
+                .padding(
+                    start = if (compactMode) 36.dp else 48.dp,
+                    end = if (compactMode) 36.dp else 48.dp,
+                    top = if (compactMode) 36.dp else 48.dp,
+                ),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
@@ -133,7 +140,7 @@ fun LibraryScreen(
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFFF0BA66),
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }
@@ -141,7 +148,7 @@ fun LibraryScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 168.dp),
+                .padding(top = if (compactMode) 148.dp else 168.dp),
             contentPadding = PaddingValues(bottom = 180.dp),
             verticalArrangement = Arrangement.spacedBy(28.dp),
         ) {
@@ -245,12 +252,12 @@ private fun LibraryCard(
         onClick = onPressed,
         modifier = modifier.size(width = 260.dp, height = 150.dp),
         colors = CardDefaults.colors(
-            containerColor = Color(0xFF181A1F),
-            focusedContainerColor = Color(0xFF181A1F),
+            containerColor = Color.Transparent,
+            focusedContainerColor = Color.Transparent,
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFF0BA66)),
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
                 shape = AppCardShape,
             ),
         ),
@@ -259,7 +266,8 @@ private fun LibraryCard(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(AppCardShape),
+                .clip(AppCardShape)
+                .background(Color(0xFF181A1F)),
         ) {
             AsyncImage(
                 model = item.backdrop ?: item.poster,
@@ -286,7 +294,7 @@ private fun LibraryCard(
                     Text(
                         text = it,
                         style = MaterialTheme.typography.labelLarge,
-                        color = Color(0xFFF0BA66),
+                        color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

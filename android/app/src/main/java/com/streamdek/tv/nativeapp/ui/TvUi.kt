@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.tv.material3.MaterialTheme
 import androidx.compose.ui.unit.dp
 
 val AppCardShape = RoundedCornerShape(24.dp)
@@ -39,7 +40,7 @@ fun ProgressMeter(
             modifier = Modifier
                 .fillMaxWidth(ratio)
                 .height(4.dp)
-                .background(Color(0xFFF0BA66), RoundedCornerShape(999.dp)),
+                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(999.dp)),
         )
     }
 }

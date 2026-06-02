@@ -478,6 +478,52 @@ class StreamDekRepository(
         }
     }
 
+    suspend fun traktScrobble(
+        action: String,
+        mediaType: String,
+        mediaId: String,
+        title: String? = null,
+        year: String? = null,
+        progress: Double = 0.0,
+    ): Boolean {
+        val session = currentSession() ?: return false
+        val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return false
+        val traktConnected = bootstrapState.value?.syncStatus?.traktConnected == true ||
+            bootstrapState.value?.integrations?.trakt?.connected == true
+        if (!traktConnected) return false
+
+        val clampedProgress = progress.coerceIn(0.0, 100.0)
+        val parsedYear = year
+            ?.take(4)
+            ?.toIntOrNull()
+
+        val payload = if (mediaType == "tv") {
+            mapOf(
+                "show" to mapOf(
+                    "title" to (title ?: ""),
+                    "year" to parsedYear,
+                    "ids" to mapOf("tmdb" to (mediaId.toIntOrNull())),
+                ),
+                "progress" to clampedProgress,
+            )
+        } else {
+            mapOf(
+                "movie" to mapOf(
+                    "title" to (title ?: ""),
+                    "year" to parsedYear,
+                    "ids" to mapOf("tmdb" to (mediaId.toIntOrNull())),
+                ),
+                "progress" to clampedProgress,
+            )
+        }
+
+        return runCatching {
+            api.post<Any>("/trakt/scrobble/$action", payload, session) != null
+        }.onFailure {
+            TvDebugLogger.w("Trakt", "scrobble failed action=$action profile=$profileId mediaType=$mediaType mediaId=$mediaId")
+        }.getOrDefault(false)
+    }
+
     suspend fun resolvePlayback(
         mediaType: String,
         mediaId: String,
@@ -547,24 +593,28 @@ class StreamDekRepository(
         val infoHash = stream.infoHash ?: return null
         val filename = stream.behaviorHints?.filename ?: stream.title ?: stream.name
         val magnetLink = buildMagnetLink(infoHash, filename)
-        val debrid = api.post<DebridResolveResponse>(
-            "/debrid/resolve",
-            mapOf(
-                "infoHash" to infoHash,
-                "magnetLink" to magnetLink,
-                "filename" to filename,
-            ),
-        )
-        if (!debrid?.url.isNullOrBlank()) return debrid?.url
-        val torrent = api.post<TorrentResolveResponse>(
-            "/stream/torrent/add",
-            mapOf(
-                "infoHash" to infoHash,
-                "magnetLink" to magnetLink,
-                "filename" to filename,
-            ),
-        )
-        return torrent?.streamUrl
+        return runCatching {
+            val debrid = api.post<DebridResolveResponse>(
+                "/debrid/resolve",
+                mapOf(
+                    "infoHash" to infoHash,
+                    "magnetLink" to magnetLink,
+                    "filename" to filename,
+                ),
+            )
+            if (!debrid?.url.isNullOrBlank()) return@runCatching debrid.url
+            val torrent = api.post<TorrentResolveResponse>(
+                "/stream/torrent/add",
+                mapOf(
+                    "infoHash" to infoHash,
+                    "magnetLink" to magnetLink,
+                    "filename" to filename,
+                ),
+            )
+            torrent?.streamUrl
+        }.onFailure {
+            TvDebugLogger.e("Playback", "resolveStreamToUrl failed infoHash=$infoHash", it)
+        }.getOrNull()
     }
 
     private fun rankStreams(streams: List<AddonStream>, preferredStreamKey: String?): List<AddonStream> {

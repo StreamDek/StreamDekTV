@@ -477,7 +477,14 @@ class MPVView @JvmOverloads constructor(
         val callback = onTracksChangedCallback ?: return
         val trackCount = (MPVLib.getPropertyInt("track-list/count") ?: 0).coerceAtLeast(0)
         if (trackCount <= 0) {
-            callback(emptyList(), emptyList(), MPVLib.getPropertyInt("aid"), normalizeSubtitleTrackId(MPVLib.getPropertyInt("sid")))
+            dispatchOnMain {
+                callback(
+                    emptyList(),
+                    emptyList(),
+                    MPVLib.getPropertyInt("aid"),
+                    normalizeSubtitleTrackId(MPVLib.getPropertyInt("sid")),
+                )
+            }
             return
         }
 
@@ -515,8 +522,9 @@ class MPVView @JvmOverloads constructor(
                 subtitleTracks.add(trackInfo)
             }
         }
-
-        callback(audioTracks, subtitleTracks, selectedAudioTrackId, selectedSubtitleTrackId)
+        dispatchOnMain {
+            callback(audioTracks, subtitleTracks, selectedAudioTrackId, selectedSubtitleTrackId)
+        }
     }
 
     private fun normalizeSubtitleTrackId(trackId: Int?): Int? {
@@ -556,6 +564,17 @@ class MPVView @JvmOverloads constructor(
         Log.i(TAG, "subtitle-state[$reason]: sid=${sid ?: "none"}, sub-visibility=${visibility ?: "unknown"}, track-count=$trackCount")
     }
 
+    private fun dispatchOnMain(action: () -> Unit) {
+        if (isDestroyed) return
+        if (handler?.looper == android.os.Looper.myLooper()) {
+            action()
+        } else {
+            post {
+                if (!isDestroyed) action()
+            }
+        }
+    }
+
     override fun eventProperty(property: String) {
         if (isDestroyed) return
         if (property == "track-list") {
@@ -577,13 +596,13 @@ class MPVView @JvmOverloads constructor(
                 val duration = MPVLib.getPropertyDouble("duration/full")
                     ?: MPVLib.getPropertyDouble("duration")
                     ?: 0.0
-                onProgressCallback?.invoke(value, duration)
+                dispatchOnMain { onProgressCallback?.invoke(value, duration) }
             }
 
             "duration/full", "duration" -> {
                 val width = MPVLib.getPropertyInt("width") ?: 0
                 val height = MPVLib.getPropertyInt("height") ?: 0
-                onLoadCallback?.invoke(value, width, height)
+                dispatchOnMain { onLoadCallback?.invoke(value, width, height) }
             }
         }
     }
@@ -619,13 +638,15 @@ class MPVView @JvmOverloads constructor(
                 val eofReached = MPVLib.getPropertyBoolean("eof-reached") ?: false
                 val fileError = MPVLib.getPropertyString("file-error")?.trim().orEmpty()
                 Log.i(TAG, "END_FILE duration=$duration eof=$eofReached fileError=${if (fileError.isBlank()) "none" else fileError}")
-                if (fileError.isNotBlank() && !fileError.equals("success", ignoreCase = true)) {
+                if (eofReached) {
+                    dispatchOnMain { onEndCallback?.invoke() }
+                } else if (fileError.isNotBlank() && !fileError.equals("success", ignoreCase = true)) {
                     // Genuine file-error string â€” always surface this, even during a source switch,
                     // because it means the new source itself failed to open.
                     isSwitchingSource = false
                     val baseMessage = "MPV could not play this source ($fileError)."
                     val detailed = lastMpvErrorMessage?.takeIf { it.isNotBlank() }?.let { "$baseMessage $it" } ?: baseMessage
-                    onErrorCallback?.invoke(detailed)
+                    dispatchOnMain { onErrorCallback?.invoke(detailed) }
                 } else if (isSwitchingSource) {
                     // END_FILE fired for the outgoing source during a loadfile replace.
                     // FILE_LOADED for the incoming source hasn't arrived yet â€” suppress
@@ -635,9 +656,9 @@ class MPVView @JvmOverloads constructor(
                     val fallbackMessage = lastMpvErrorMessage?.takeIf { it.isNotBlank() }?.let {
                         "MPV could not play this source. $it"
                     } ?: "MPV could not play this source."
-                    onErrorCallback?.invoke(fallbackMessage)
+                    dispatchOnMain { onErrorCallback?.invoke(fallbackMessage) }
                 } else {
-                    onEndCallback?.invoke()
+                    dispatchOnMain { onEndCallback?.invoke() }
                 }
             }
         }
