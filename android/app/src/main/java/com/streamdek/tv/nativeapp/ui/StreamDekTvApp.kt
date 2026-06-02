@@ -10,14 +10,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,10 +37,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -58,6 +69,9 @@ import com.streamdek.tv.nativeapp.update.AppUpdateUiState
 import kotlinx.coroutines.launch
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
+import androidx.tv.material3.Border
+import androidx.tv.material3.Card
+import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
@@ -112,6 +126,12 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             }
         }
     }
+
+    val showUpdatePrompt =
+        currentRoute != "player" &&
+            currentRoute != "streams" &&
+            appUpdateState.showPrompt &&
+            appUpdateState.availableRelease != null
 
     StreamDekTvTheme(themeKey = appPrefs?.theme) {
         Box(
@@ -245,22 +265,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 }
             }
 
-            if (
-                currentRoute != "player" &&
-                currentRoute != "streams" &&
-                appUpdateState.showPrompt &&
-                appUpdateState.availableRelease != null
-            ) {
-                AppUpdatePrompt(
-                    state = appUpdateState,
-                    updateManager = appUpdateManager,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(horizontal = 42.dp),
-                )
-            }
-
-            if (currentRoute in TopLevelDestination.entries.map { it.route }) {
+            if (currentRoute in TopLevelDestination.entries.map { it.route } && !showUpdatePrompt) {
                 TvFloatingNav(
                     avatarIndex = activeProfile?.avatarIndex ?: 0,
                     avatarLabel = activeProfile?.name ?: "P",
@@ -282,6 +287,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     },
                 )
             }
+
+            if (showUpdatePrompt) {
+                AppUpdatePrompt(
+                    state = appUpdateState,
+                    updateManager = appUpdateManager,
+                    modifier = Modifier
+                        .fillMaxSize(),
+                )
+            }
         }
     }
 }
@@ -294,88 +308,223 @@ private fun AppUpdatePrompt(
 ) {
     val scope = rememberCoroutineScope()
     val release = state.availableRelease ?: return
+    val notesRequester = remember(release.versionCode) { FocusRequester() }
     val installRequester = remember(release.versionCode, state.blockedByUnknownSources) { FocusRequester() }
     val laterRequester = remember(release.versionCode) { FocusRequester() }
+    val notesScrollState = rememberScrollState()
+    val scrollStepPx = 180
+    val canDismiss = !release.required
+    var notesHasFocus by remember(release.versionCode) { mutableStateOf(false) }
 
     LaunchedEffect(release.versionCode, state.showPrompt, state.blockedByUnknownSources, state.isInstalling) {
         if (!state.showPrompt) return@LaunchedEffect
         kotlinx.coroutines.delay(80)
-        runCatching { installRequester.requestFocus() }
+        val preferredRequester = if (!release.releaseNotes.isNullOrBlank()) notesRequester else installRequester
+        runCatching { preferredRequester.requestFocus() }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xB8000000)),
-    )
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth(0.54f)
-            .clip(RoundedCornerShape(28.dp))
-            .background(Color(0xFF10141B))
-            .border(2.dp, Color(0x66F0BA66), RoundedCornerShape(28.dp))
-            .padding(horizontal = 24.dp, vertical = 22.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+    Dialog(
+        onDismissRequest = {
+            if (canDismiss) {
+                updateManager.dismissPrompt()
+            }
+        },
+        properties = DialogProperties(
+            dismissOnBackPress = canDismiss,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+        ),
     ) {
-        Text(
-            text = "Update Available",
-            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Text(
-            text = "StreamDek TV ${release.versionName} is ready to install.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.86f),
-        )
-        release.releaseNotes?.takeIf { it.isNotBlank() }?.let { notes ->
-            Text(
-                text = notes,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
-            )
-        }
-        state.statusText?.let { status ->
-            Text(
-                text = status,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFF0BA66),
-            )
-        }
-        state.errorMessage?.let { error ->
-            Text(
-                text = error,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFFF8A80),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(
-                onClick = { scope.launch { updateManager.startUpdate() } },
-                enabled = !state.isInstalling,
-                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color(0xB8000000)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
                 modifier = Modifier
-                    .focusRequester(installRequester)
-                    .focusProperties { right = laterRequester },
+                    .fillMaxWidth(0.58f)
+                    .heightIn(max = 760.dp)
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(Color(0xFF10141B))
+                    .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), RoundedCornerShape(28.dp))
+                    .padding(horizontal = 26.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
-                    when {
-                        state.blockedByUnknownSources -> "Open Install Settings"
-                        state.downloadProgressPercent != null -> "Downloading ${state.downloadProgressPercent}%"
-                        state.isInstalling -> "Preparing Update"
-                        else -> "Install Update"
-                    },
+                    text = "Update Available",
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
+                    color = MaterialTheme.colorScheme.onBackground,
                 )
-            }
-            OutlinedButton(
-                onClick = { updateManager.dismissPrompt() },
-                enabled = !release.required,
-                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
-                modifier = Modifier
-                    .focusRequester(laterRequester)
-                    .focusProperties { left = installRequester },
-            ) {
-                Text("Later")
+
+                release.releaseNotes?.takeIf { it.isNotBlank() }?.let { notes ->
+                    Card(
+                        onClick = {},
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 140.dp, max = 180.dp)
+                            .focusRequester(notesRequester)
+                            .focusProperties {
+                                down = installRequester
+                                up = notesRequester
+                                left = notesRequester
+                                right = notesRequester
+                            }
+                            .onFocusChanged { notesHasFocus = it.isFocused }
+                            .onPreviewKeyEvent { event ->
+                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                when (event.key) {
+                                    Key.DirectionDown -> {
+                                        if (notesScrollState.canScrollForward) {
+                                            scope.launch {
+                                                notesScrollState.animateScrollTo(
+                                                    (notesScrollState.value + scrollStepPx).coerceAtMost(notesScrollState.maxValue),
+                                                )
+                                            }
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                    Key.DirectionUp -> {
+                                        if (notesScrollState.canScrollBackward) {
+                                            scope.launch {
+                                                notesScrollState.animateScrollTo(
+                                                    (notesScrollState.value - scrollStepPx).coerceAtLeast(0),
+                                                )
+                                            }
+                                            true
+                                        } else {
+                                            true
+                                        }
+                                    }
+                                    else -> false
+                                }
+                            },
+                        shape = CardDefaults.shape(RoundedCornerShape(22.dp)),
+                        colors = CardDefaults.colors(
+                            containerColor = Color(0xC8161B24),
+                            focusedContainerColor = Color(0xD21A202B),
+                        ),
+                        border = CardDefaults.border(
+                            border = Border(
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x1FFFFFFF)),
+                                shape = RoundedCornerShape(22.dp),
+                            ),
+                            focusedBorder = Border(
+                                border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                                shape = RoundedCornerShape(22.dp),
+                            ),
+                        ),
+                        scale = CardDefaults.scale(focusedScale = 1f),
+                    ) {
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(notesScrollState)
+                                    .padding(start = 18.dp, top = 18.dp, end = 28.dp, bottom = 18.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Text(
+                                    text = "What's New",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                )
+                                Text(
+                                    text = notes,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+                                )
+                            }
+
+                            val canScroll = notesScrollState.maxValue > 0
+                            if (canScroll) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(vertical = 18.dp, horizontal = 8.dp),
+                                    contentAlignment = Alignment.TopEnd,
+                                ) {
+                                    val thumbRatio = 0.28f
+                                    val trackTravel = 180f
+                                    val progress = if (notesScrollState.maxValue == 0) 0f
+                                    else notesScrollState.value.toFloat() / notesScrollState.maxValue.toFloat()
+                                    Box(
+                                        modifier = Modifier
+                                            .width(4.dp)
+                                            .fillMaxHeight()
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .offset(y = (trackTravel * progress).dp)
+                                            .width(4.dp)
+                                            .fillMaxHeight(thumbRatio)
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.95f)),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                state.statusText?.let { status ->
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                state.errorMessage?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFFF8A80),
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = { scope.launch { updateManager.startUpdate() } },
+                        enabled = !state.isInstalling,
+                        shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                        modifier = Modifier
+                            .focusRequester(installRequester)
+                            .focusProperties {
+                                up = notesRequester
+                                right = if (canDismiss) laterRequester else installRequester
+                                down = installRequester
+                                left = installRequester
+                            },
+                    ) {
+                        Text(
+                            when {
+                                state.blockedByUnknownSources -> "Open Install Settings"
+                                state.downloadProgressPercent != null -> "Downloading ${state.downloadProgressPercent}%"
+                                state.isInstalling -> "Preparing Update"
+                                else -> "Install Update"
+                            },
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { updateManager.dismissPrompt() },
+                        enabled = canDismiss,
+                        shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                        modifier = Modifier
+                            .focusRequester(laterRequester)
+                            .focusProperties {
+                                up = notesRequester
+                                left = installRequester
+                                right = laterRequester
+                                down = laterRequester
+                            },
+                    ) {
+                        Text("Later")
+                    }
+                }
             }
         }
     }
