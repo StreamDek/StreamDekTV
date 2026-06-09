@@ -1,6 +1,7 @@
 package com.streamdek.tv.nativeapp.ui
 
 import androidx.compose.foundation.lazy.LazyListState
+import kotlin.math.abs
 
 /**
  * Keeps the focused item near a consistent leading anchor instead of snapping it
@@ -23,5 +24,9 @@ suspend fun LazyListState.animateToAnchoredItem(
         return
     }
 
-    animateScrollToItem(targetFirstVisible, scrollOffset)
+    if (abs(firstVisibleItemIndex - targetFirstVisible) <= 1) {
+        animateScrollToItem(targetFirstVisible, scrollOffset)
+    } else {
+        scrollToItem(targetFirstVisible, scrollOffset)
+    }
 }

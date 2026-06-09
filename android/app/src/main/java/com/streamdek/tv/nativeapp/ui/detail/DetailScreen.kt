@@ -2,10 +2,12 @@ package com.streamdek.tv.nativeapp.ui.detail
 
 import android.content.Intent
 import android.net.Uri
+import android.graphics.Bitmap
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.relocation.BringIntoViewResponder
 import androidx.compose.foundation.relocation.bringIntoViewResponder
@@ -16,10 +18,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,8 +35,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.CheckCircleOutline
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,16 +56,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.graphics.drawable.toBitmap
+import androidx.palette.graphics.Palette
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
@@ -83,14 +99,45 @@ import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 
 private sealed interface DetailUiState {
     data object Loading : DetailUiState
     data class Ready(val detail: MediaDetail) : DetailUiState
     data class Error(val message: String) : DetailUiState
+}
+
+private data class AmbientBackdropPalette(
+    val leftGlow: Color,
+    val rightGlow: Color,
+    val accentGlow: Color,
+)
+
+private data class ShareSheetState(
+    val title: String,
+    val shareUrl: String,
+    val shareText: String,
+)
+
+private val DetailSectionInset = 42.dp
+private val HeroTopSpacerHeight = 35.dp
+private val HeroContentTopPadding = 0.dp
+private val ClockTopPadding = 22.dp
+private val ClockEndPadding = 26.dp
+
+@OptIn(ExperimentalFoundationApi::class)
+private val HeroActionNoScrollResponder = object : BringIntoViewResponder {
+    override fun calculateRectForParent(localRect: Rect): Rect = localRect
+    override suspend fun bringChildIntoView(localRect: () -> Rect?) {}
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -112,21 +159,26 @@ fun DetailScreen(
     var progressFraction by remember(mediaType, mediaId) { mutableStateOf<Float?>(null) }
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
+    var markedWatched by remember(mediaType, mediaId) { mutableStateOf(false) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
+    var shareSheet by remember(mediaType, mediaId) { mutableStateOf<ShareSheetState?>(null) }
+    val entryFocusRequester = remember(mediaType, mediaId) { FocusRequester() }
     val playButtonRequester = remember(mediaType, mediaId) { FocusRequester() }
     val commentsRequester = remember(mediaType, mediaId) { FocusRequester() }
     val castRequester = remember(mediaType, mediaId) { FocusRequester() }
     val similarRequester = remember(mediaType, mediaId) { FocusRequester() }
     val detailListState = rememberLazyListState()
-    var heroSectionHasFocus by remember { mutableStateOf(false) }
-    val noScrollResponder = remember {
-        object : BringIntoViewResponder {
-            override fun calculateRectForParent(localRect: Rect): Rect = localRect
-            override suspend fun bringChildIntoView(localRect: () -> Rect?) { }
-        }
-    }
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+    var ambientPalette by remember(mediaType, mediaId) {
+        mutableStateOf(
+            AmbientBackdropPalette(
+                leftGlow = Color(0xFF1A2633),
+                rightGlow = Color(0xFF111820),
+                accentGlow = Color(0xFF24384A),
+            ),
+        )
+    }
 
     LaunchedEffect(mediaType, mediaId) {
         uiState = DetailUiState.Loading
@@ -134,6 +186,8 @@ fun DetailScreen(
         progressFraction = null
         progressLabel = null
         inWatchlist = false
+        markedWatched = false
+        shareSheet = null
         resumeEpisodeContext = null
         val libraryDeferred = supervisorScope {
             async {
@@ -189,19 +243,30 @@ fun DetailScreen(
         comments = runCatching { repository.fetchTraktComments(mediaId, mediaType) }.getOrDefault(emptyList())
     }
 
-    LaunchedEffect(detail?.id, selectedSeasonNumber, selectedEpisodeIndex) {
+    LaunchedEffect(detail?.backdrop, detail?.poster) {
+        val artUrl = detail?.backdrop ?: detail?.poster
+        if (artUrl.isNullOrBlank()) return@LaunchedEffect
+        runCatching {
+            extractAmbientPalette(context, artUrl)
+        }.onSuccess { extracted ->
+            ambientPalette = extracted
+        }
+    }
+
+    LaunchedEffect(detail?.id, comments) {
         detail ?: return@LaunchedEffect
+        delay(220)
         buildList {
             detail.backdrop?.let(::add)
             detail.poster?.let(::add)
             detail.titleLogo?.let(::add)
-            detail.cast.take(4).forEach { it.photo?.let(::add) }
-            detail.similarTitles.take(4).forEach {
+            detail.cast.take(3).forEach { it.photo?.let(::add) }
+            detail.similarTitles.take(3).forEach {
                 it.backdrop?.let(::add)
                 it.poster?.let(::add)
             }
-            comments.take(3).forEach { it.avatar?.let(::add) }
-        }.distinct().take(14).forEach { url ->
+            comments.take(2).forEach { it.avatar?.let(::add) }
+        }.distinct().take(8).forEach { url ->
             context.imageLoader.enqueue(
                 ImageRequest.Builder(context)
                     .data(url)
@@ -218,26 +283,12 @@ fun DetailScreen(
         detailListState.scrollToItem(0)
     }
 
-    // While hero buttons are focused, reactively snap the scroll back to 0 the
-    // moment the TV framework nudges it (e.g. when moving between buttons).
-    // snapshotFlow emits only when the scroll state actually changes, so this is
-    // idle when nothing moves. Cancels automatically when heroSectionHasFocus
-    // becomes false (user scrolls into lower sections).
-    LaunchedEffect(heroSectionHasFocus) {
-        if (!heroSectionHasFocus) return@LaunchedEffect
-        androidx.compose.runtime.snapshotFlow {
-            detailListState.firstVisibleItemIndex to detailListState.firstVisibleItemScrollOffset
-        }.collect { (index, offset) ->
-            if (index != 0 || offset != 0) {
-                detailListState.scrollToItem(0)
-            }
-        }
-    }
+    val backgroundColor = MaterialTheme.colorScheme.background
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(backgroundColor),
     ) {
         if (!detail?.backdrop.isNullOrBlank()) {
             AsyncImage(
@@ -253,19 +304,84 @@ fun DetailScreen(
                 .fillMaxSize()
                 .drawWithCache {
                     val leftFade = Brush.horizontalGradient(
-                        colors = listOf(Color(0xF0040404), Color(0xAA040404), Color.Transparent),
-                        endX = size.width * 0.58f,
+                        colors = listOf(
+                            backgroundColor.copy(alpha = 0.90f),
+                            ambientPalette.leftGlow.copy(alpha = 0.68f),
+                            Color.Transparent,
+                        ),
+                        endX = size.width * 0.60f,
                     )
                     val verticalFade = Brush.verticalGradient(
-                        colors = listOf(Color(0x55040404), Color(0xC8040404), Color(0xFF040404)),
-                        startY = size.height * 0.16f,
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Transparent,
+                            backgroundColor.copy(alpha = 0.16f),
+                            backgroundColor.copy(alpha = 0.74f),
+                        ),
+                        startY = size.height * 0.60f,
+                    )
+                    val centerLeftGlow = Brush.radialGradient(
+                        colors = listOf(
+                            ambientPalette.leftGlow.copy(alpha = 0.34f),
+                            ambientPalette.accentGlow.copy(alpha = 0.22f),
+                            Color.Transparent,
+                        ),
+                        center = androidx.compose.ui.geometry.Offset(size.width * 0.34f, size.height * 0.34f),
+                        radius = size.minDimension * 0.52f,
+                    )
+                    val lowerLeftGlow = Brush.radialGradient(
+                        colors = listOf(
+                            ambientPalette.accentGlow.copy(alpha = 0.46f),
+                            Color.Transparent,
+                        ),
+                        center = androidx.compose.ui.geometry.Offset(size.width * 0.31f, size.height * 0.72f),
+                        radius = size.minDimension * 0.56f,
+                    )
+                    val lowerMidGlow = Brush.radialGradient(
+                        colors = listOf(
+                            ambientPalette.rightGlow.copy(alpha = 0.18f),
+                            Color.Transparent,
+                        ),
+                        center = androidx.compose.ui.geometry.Offset(size.width * 0.46f, size.height * 0.82f),
+                        radius = size.minDimension * 0.40f,
+                    )
+                    val bottomFade = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            ambientPalette.rightGlow.copy(alpha = 0.28f),
+                            backgroundColor.copy(alpha = 0.68f),
+                        ),
+                        startY = size.height * 0.72f,
+                    )
+                    val topRightClear = Brush.radialGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Transparent,
+                            backgroundColor.copy(alpha = 0.04f),
+                            Color.Transparent,
+                        ),
+                        center = androidx.compose.ui.geometry.Offset(size.width * 0.86f, size.height * 0.16f),
+                        radius = size.minDimension * 0.38f,
                     )
                     onDrawBehind {
                         drawRect(leftFade)
                         drawRect(verticalFade)
+                        drawRect(centerLeftGlow)
+                        drawRect(lowerLeftGlow)
+                        drawRect(lowerMidGlow)
+                        drawRect(bottomFade)
+                        drawRect(topRightClear)
                     }
                 },
         )
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = ClockTopPadding, end = ClockEndPadding),
+        ) {
+            CurrentTimePill()
+        }
 
         when (val state = uiState) {
             DetailUiState.Loading -> DetailLoading()
@@ -274,40 +390,39 @@ fun DetailScreen(
                 LazyColumn(
                     state = detailListState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 42.dp, end = 42.dp, bottom = 88.dp),
+                    contentPadding = PaddingValues(bottom = 88.dp),
                     verticalArrangement = Arrangement.spacedBy(26.dp),
                 ) {
-                    item("hero") {
-                        // onFocusChanged tracks whether any hero button is focused.
-                        // The snapshotFlow LaunchedEffect above reacts to that flag and
-                        // immediately corrects any scroll nudge from the TV framework.
+                    item("hero_spacer") {
+                        HeroEntrySentinel(
+                            height = HeroTopSpacerHeight,
+                            focusRequester = entryFocusRequester,
+                            downRequester = playButtonRequester,
+                        )
+                    }
+                    item("hero_copy") {
                         Box(
-                            modifier = Modifier
-                                .padding(top = 36.dp)
-                                .bringIntoViewResponder(noScrollResponder)
-                                .onFocusChanged { heroSectionHasFocus = it.hasFocus },
+                            modifier = Modifier.padding(horizontal = DetailSectionInset)
                         ) {
-                            HeroSection(
+                            HeroCopySection(
+                                detail = state.detail,
+                                selectedEpisode = currentEpisodeContext(),
+                            )
+                        }
+                    }
+
+                    item("hero_actions") {
+                        Box(
+                            modifier = Modifier.padding(horizontal = DetailSectionInset),
+                        ) {
+                            HeroActionRow(
                                 detail = state.detail,
                                 selectedEpisode = currentEpisodeContext(),
                                 progressFraction = progressFraction,
                                 progressLabel = progressLabel,
                                 inWatchlist = inWatchlist,
+                                markedWatched = markedWatched,
                                 playButtonRequester = playButtonRequester,
-                                onHeroControlFocused = {},
-                                onTrailer = {
-                                    val trailerUrl = when {
-                                        state.detail.trailerKey.isNullOrBlank() -> null
-                                        state.detail.trailerSite.equals("Vimeo", ignoreCase = true) ->
-                                            "https://player.vimeo.com/video/${state.detail.trailerKey}"
-                                        else -> "https://www.youtube.com/watch?v=${state.detail.trailerKey}"
-                                    }
-                                    trailerUrl?.let {
-                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).apply {
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        })
-                                    }
-                                },
                                 onToggleWatchlist = {
                                     val item = MediaItem(
                                         id = state.detail.id,
@@ -332,14 +447,51 @@ fun DetailScreen(
                                                 mediaId = state.detail.id,
                                                 mediaType = state.detail.type,
                                                 imdbId = state.detail.imdbId,
-                                                episode = if (state.detail.type == "tv" && (progressFraction ?: 0f) > 0f) {
-                                                    resumeEpisodeContext ?: currentEpisodeContext()
-                                                } else {
-                                                    currentEpisodeContext()
-                                                },
+                                                episode = playbackEpisodeContext(
+                                                    detail = state.detail,
+                                                    progressFraction = progressFraction,
+                                                    resumeEpisodeContext = resumeEpisodeContext,
+                                                    selectedEpisode = currentEpisodeContext(),
+                                                ),
                                                 title = state.detail.title,
                                             ),
                                         )
+                                    }
+                                },
+                                onMarkWatched = {
+                                    if (repository.currentSession() == null) {
+                                        onRequireAuth()
+                                    } else {
+                                        val episodeContext = playbackEpisodeContext(
+                                            detail = state.detail,
+                                            progressFraction = progressFraction,
+                                            resumeEpisodeContext = resumeEpisodeContext,
+                                            selectedEpisode = currentEpisodeContext(),
+                                        )
+                                        val ok = repository.markWatched(
+                                            mediaType = state.detail.type,
+                                            mediaId = state.detail.id,
+                                            imdbId = state.detail.imdbId,
+                                            title = state.detail.title,
+                                            year = state.detail.year,
+                                            episode = episodeContext,
+                                        )
+                                        if (ok) {
+                                            markedWatched = true
+                                            repository.clearProgress(state.detail.type, state.detail.id, episodeContext)
+                                            progressFraction = null
+                                            progressLabel = null
+                                        }
+                                    }
+                                },
+                                onShare = {
+                                    shareSheet = buildShareSheetState(state.detail)
+                                },
+                                onTrailer = {
+                                    trailerUrlFor(state.detail)?.let {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        })
                                     }
                                 },
                             )
@@ -347,20 +499,14 @@ fun DetailScreen(
                     }
 
                     item("details") {
-                        Box(modifier = Modifier.bringIntoViewResponder(noScrollResponder)) {
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = DetailSectionInset),
+                        ) {
                             DetailsPanel(
                                 detail = state.detail,
                                 selectedEpisode = selectedEpisode,
                                 progressLabel = progressLabel,
-                            )
-                        }
-                    }
-
-                    if (comments.isNotEmpty()) {
-                        item("comments") {
-                            CommentsSection(
-                                comments = comments,
-                                commentsRequester = commentsRequester,
                             )
                         }
                     }
@@ -413,6 +559,15 @@ fun DetailScreen(
                         }
                     }
 
+                    if (comments.isNotEmpty()) {
+                        item("comments") {
+                            CommentsSection(
+                                comments = comments,
+                                commentsRequester = commentsRequester,
+                            )
+                        }
+                    }
+
                     if (state.detail.similarTitles.isNotEmpty()) {
                         item("similar") {
                             SimilarSection(
@@ -426,14 +581,36 @@ fun DetailScreen(
 
                 LaunchedEffect(state.detail.id) {
                     kotlinx.coroutines.delay(220)
-                    // Reset scroll first so the hero spacer is visible, then apply focus.
-                    // With the hero item pinned to screen height, requestFocus() will not
-                    // trigger a compensating scroll.
                     detailListState.scrollToItem(0)
-                    runCatching { playButtonRequester.requestFocus() }
+                    runCatching { entryFocusRequester.requestFocus() }
                 }
 
             }
+        }
+
+        shareSheet?.let { sheet ->
+            ShareTitleDialog(
+                sheet = sheet,
+                onDismiss = { shareSheet = null },
+                onShareNow = {
+                    context.startActivity(
+                        Intent.createChooser(
+                            Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, sheet.shareText)
+                            },
+                            "Share title",
+                        ).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        },
+                    )
+                },
+                onOpenLink = {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(sheet.shareUrl)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                },
+            )
         }
     }
 }
@@ -469,153 +646,321 @@ internal fun DetailError(message: String) {
     }
 }
 
+@Composable
+private fun HeroEntrySentinel(
+    height: androidx.compose.ui.unit.Dp,
+    focusRequester: FocusRequester,
+    downRequester: FocusRequester,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(height)
+            .focusRequester(focusRequester)
+            .focusProperties {
+                down = downRequester
+            }
+            .focusable(),
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun HeroSection(
+private fun ShareTitleDialog(
+    sheet: ShareSheetState,
+    onDismiss: () -> Unit,
+    onShareNow: () -> Unit,
+    onOpenLink: () -> Unit,
+) {
+    val shareRequester = remember { FocusRequester() }
+    val openRequester = remember { FocusRequester() }
+    val closeRequester = remember { FocusRequester() }
+
+    LaunchedEffect(sheet.shareUrl) {
+        delay(80)
+        runCatching { shareRequester.requestFocus() }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+        ),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xB8000000)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.52f)
+                    .heightIn(max = 520.dp)
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(Color(0xFF10141B))
+                    .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f), RoundedCornerShape(28.dp))
+                    .padding(horizontal = 26.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text(
+                    text = "Share ${sheet.title}",
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "Open the title link or continue to the system share sheet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
+                )
+                Text(
+                    text = sheet.shareUrl,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    HeroActionButton(
+                        onClick = onShareNow,
+                        containerColor = Color(0xFFF4EDE2),
+                        contentColor = Color(0xFF18120A),
+                        modifier = Modifier
+                            .width(156.dp)
+                            .focusRequester(shareRequester),
+                    ) {
+                        Text(
+                            text = "System Share",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                        )
+                    }
+                    HeroActionButton(
+                        onClick = onOpenLink,
+                        containerColor = Color(0xD62A3442),
+                        contentColor = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier
+                            .width(126.dp)
+                            .focusRequester(openRequester),
+                    ) {
+                        Text(
+                            text = "Open Link",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                        )
+                    }
+                    HeroActionButton(
+                        onClick = onDismiss,
+                        containerColor = Color(0xD62A3442),
+                        contentColor = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier
+                            .width(94.dp)
+                            .focusRequester(closeRequester),
+                    ) {
+                        Text(
+                            text = "Close",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun HeroCopySection(
+    detail: MediaDetail,
+    selectedEpisode: EpisodeContext?,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(0.7f),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
+            AsyncImage(
+                model = logo,
+                contentDescription = detail.title,
+                modifier = Modifier
+                    .height(78.dp)
+                    .fillMaxWidth(),
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.CenterStart,
+            )
+        } ?: Text(
+            text = detail.title,
+            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+
+        HeroMetaBlock(
+            detail = detail,
+            selectedEpisode = selectedEpisode,
+        )
+
+        detail.description?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.9f),
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        detail.tagline?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun HeroActionRow(
     detail: MediaDetail,
     selectedEpisode: EpisodeContext?,
     progressFraction: Float?,
     progressLabel: String?,
     inWatchlist: Boolean,
+    markedWatched: Boolean,
     playButtonRequester: FocusRequester,
-    onHeroControlFocused: () -> Unit,
-    onTrailer: () -> Unit,
     onToggleWatchlist: suspend () -> Unit,
     onPlay: () -> Unit,
+    onMarkWatched: suspend () -> Unit,
+    onShare: () -> Unit,
+    onTrailer: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val noScrollResponder = remember {
-        object : BringIntoViewResponder {
-            override fun calculateRectForParent(localRect: Rect): Rect = localRect
-            override suspend fun bringChildIntoView(localRect: () -> Rect?) { }
-        }
-    }
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+    Row(
+        modifier = Modifier
+            .fillMaxWidth(0.7f)
+            .bringIntoViewResponder(HeroActionNoScrollResponder)
+            .focusGroup(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.Start),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        detail.rating?.let { rating ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.Top,
-            ) {
+        ContinuePlayButton(
+            detail = detail,
+            selectedEpisode = selectedEpisode,
+            progressLabel = progressLabel,
+            progressFraction = progressFraction,
+            playButtonRequester = playButtonRequester,
+            onPlay = onPlay,
+            modifier = Modifier.width(176.dp),
+        )
+        HeroIconButton(
+            onClick = { scope.launch { onToggleWatchlist() } },
+            icon = if (inWatchlist) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
+            contentDescription = if (inWatchlist) "Remove from watchlist" else "Add to watchlist",
+            selected = inWatchlist,
+        )
+        HeroIconButton(
+            onClick = { scope.launch { onMarkWatched() } },
+            icon = if (markedWatched) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircleOutline,
+            contentDescription = "Mark as watched",
+            selected = markedWatched,
+        )
+        HeroIconButton(
+            onClick = onShare,
+            icon = Icons.Filled.Share,
+            contentDescription = "Share",
+        )
+        HeroIconButton(
+            onClick = onTrailer,
+            icon = Icons.Filled.LiveTv,
+            contentDescription = "Trailer",
+            enabled = !detail.trailerKey.isNullOrBlank(),
+        )
+    }
+}
+
+private fun playbackEpisodeContext(
+    detail: MediaDetail,
+    progressFraction: Float?,
+    resumeEpisodeContext: EpisodeContext?,
+    selectedEpisode: EpisodeContext?,
+): EpisodeContext? {
+    return if (detail.type == "tv" && (progressFraction ?: 0f) > 0f) {
+        resumeEpisodeContext ?: selectedEpisode
+    } else {
+        selectedEpisode
+    }
+}
+
+private fun buildShareSheetState(detail: MediaDetail): ShareSheetState {
+    val shareUrl = detail.imdbId?.takeIf { it.isNotBlank() }?.let {
+        "https://www.imdb.com/title/$it/"
+    } ?: "https://www.themoviedb.org/${detail.type}/${detail.tmdbId}"
+    val shareText = buildString {
+        append(detail.title)
+        detail.year?.takeIf { it.isNotBlank() }?.let { append(" ($it)") }
+        append("\n")
+        append(shareUrl)
+    }
+    return ShareSheetState(
+        title = detail.title,
+        shareUrl = shareUrl,
+        shareText = shareText,
+    )
+}
+
+private fun trailerUrlFor(detail: MediaDetail): String? {
+    return when {
+        detail.trailerKey.isNullOrBlank() -> null
+        detail.trailerSite.equals("Vimeo", ignoreCase = true) ->
+            "https://player.vimeo.com/video/${detail.trailerKey}"
+        else -> "https://www.youtube.com/watch?v=${detail.trailerKey}"
+    }
+}
+
+@Composable
+private fun HeroMetaBlock(
+    detail: MediaDetail,
+    selectedEpisode: EpisodeContext?,
+) {
+    val metaLine = buildList {
+        detail.year?.takeIf { it.isNotBlank() }?.let(::add)
+        detail.runtime?.takeIf { it > 0 }?.let { add(formatRuntime(it)) }
+        detail.releaseDate?.takeIf { it.isNotBlank() }?.let { add(formatReleaseDate(it)) }
+        selectedEpisode?.let { add("S${it.seasonNumber} E${it.episodeNumber}") }
+    }.joinToString("   ")
+
+    val genreLine = detail.genreNames.take(3).joinToString(", ").takeIf { it.isNotBlank() }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (metaLine.isNotBlank()) {
+            Text(
+                text = metaLine,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.88f),
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.Start),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            genreLine?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
+                )
+            }
+            detail.rating?.let { rating ->
                 ImdbBadge(rating)
             }
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .padding(top = 40.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
-                AsyncImage(
-                    model = logo,
-                    contentDescription = detail.title,
-                    modifier = Modifier
-                        .height(78.dp)
-                        .fillMaxWidth(),
-                    contentScale = ContentScale.Fit,
-                    alignment = Alignment.CenterStart,
-                )
-            } ?: Text(
-                text = detail.title,
-                style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
-                color = MaterialTheme.colorScheme.onBackground,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-
-            // Buttons sit directly below the logo so focusing them never requires
-            // the page to scroll past any text content.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .bringIntoViewResponder(noScrollResponder)
-                    .focusGroup(),
-                horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.Start),
-                verticalAlignment = Alignment.Top,
-            ) {
-                ContinuePlayButton(
-                    detail = detail,
-                    selectedEpisode = selectedEpisode,
-                    progressLabel = progressLabel,
-                    progressFraction = progressFraction,
-                    playButtonRequester = playButtonRequester,
-                    noScrollResponder = noScrollResponder,
-                    onFocused = onHeroControlFocused,
-                    onPlay = onPlay,
-                    modifier = Modifier.width(189.dp),
-                )
-                if (!detail.trailerKey.isNullOrBlank()) {
-                    val trailerContainerColor = Color(0xFFF0BA66)
-                    HeroActionButton(
-                        onClick = onTrailer,
-                        containerColor = trailerContainerColor,
-                        contentColor = Color(0xFF18120A),
-                        noScrollResponder = noScrollResponder,
-                        onFocused = onHeroControlFocused,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Text(
-                            "Trailer",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
-                        )
-                    }
-                }
-                val watchlistContainerColor = if (inWatchlist) Color(0xFFF0BA66) else Color(0xD62A3442)
-                HeroActionButton(
-                    onClick = { scope.launch { onToggleWatchlist() } },
-                    containerColor = watchlistContainerColor,
-                    contentColor = if (inWatchlist) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground,
-                    noScrollResponder = noScrollResponder,
-                    onFocused = onHeroControlFocused,
-                ) {
-                    Icon(
-                        imageVector = if (inWatchlist) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Text(
-                        if (inWatchlist) "In Watchlist" else "Watchlist",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
-                    )
-                }
-            }
-
-            detail.tagline?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            detail.description?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.86f),
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            Text(
-                text = buildList {
-                    detail.year?.let(::add)
-                    detail.genreNames.take(3).joinToString(" • ").takeIf { it.isNotBlank() }?.let(::add)
-                    selectedEpisode?.let { add("S${it.seasonNumber} E${it.episodeNumber}") }
-                }.joinToString("  •  "),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
-            )
         }
     }
 }
@@ -627,15 +972,17 @@ private fun DetailsPanel(
     progressLabel: String?,
 ) {
     val items = buildList<Pair<String, String>> {
-        detail.releaseDate?.takeIf { it.isNotBlank() }?.let { add("Release" to it) }
-        detail.runtime?.takeIf { it > 0 }?.let { add("Runtime" to "$it min") }
+        detail.releaseDate?.takeIf { it.isNotBlank() }?.let { add("Release" to formatReleaseDate(it)) }
+        detail.runtime?.takeIf { it > 0 }?.let { add("Duration" to formatRuntime(it)) }
         detail.status?.takeIf { it.isNotBlank() }?.let { add("Status" to it) }
+        detail.genreNames.take(3).joinToString(", ").takeIf { it.isNotBlank() }?.let { add("Genres" to it) }
         detail.numberOfSeasons?.takeIf { it > 0 }?.let { add("Seasons" to it.toString()) }
         detail.numberOfEpisodes?.takeIf { it > 0 }?.let { add("Episodes" to it.toString()) }
         selectedEpisode?.let { add("Episode" to "E${it.episodeNumber} ${it.name}") }
+        progressLabel?.takeIf { it.isNotBlank() }?.let { add("Progress" to it) }
     }
 
-    if (items.isEmpty() && detail.tagline.isNullOrBlank()) return
+    if (items.isEmpty()) return
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
@@ -691,7 +1038,7 @@ private fun CommentsSection(
         rowState.animateToAnchoredItem(
             focusedIndex = anchoredIndex,
             itemCount = visibleComments.size,
-            leadingItems = 1,
+            leadingItems = 0,
         )
     }
 
@@ -700,13 +1047,14 @@ private fun CommentsSection(
             text = "Trakt Comments",
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(horizontal = DetailSectionInset),
         )
         LazyRow(
             state = rowState,
             modifier = Modifier
                 .fillMaxWidth()
                 .focusGroup(),
-            contentPadding = PaddingValues(horizontal = 4.dp),
+            contentPadding = PaddingValues(start = DetailSectionInset, end = 0.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             itemsIndexed(visibleComments, key = { _, item -> item.id }) { index, comment ->
@@ -802,8 +1150,6 @@ private fun ContinuePlayButton(
     progressLabel: String?,
     progressFraction: Float?,
     playButtonRequester: FocusRequester,
-    noScrollResponder: BringIntoViewResponder,
-    onFocused: () -> Unit,
     onPlay: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -825,8 +1171,7 @@ private fun ContinuePlayButton(
         onClick = onPlay,
         containerColor = containerColor,
         contentColor = Color(0xFF18120A),
-        noScrollResponder = noScrollResponder,
-        onFocused = onFocused,
+        noScrollResponder = HeroActionNoScrollResponder,
         modifier = modifier
             .focusRequester(playButtonRequester),
     ) {
@@ -867,6 +1212,53 @@ private fun ContinuePlayButton(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun HeroIconButton(
+    onClick: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    selected: Boolean = false,
+    enabled: Boolean = true,
+) {
+    HeroActionButton(
+        onClick = onClick,
+        containerColor = if (selected) Color(0xFFF0BA66) else Color(0xD62A3442),
+        contentColor = if (selected) Color(0xFF18120A) else Color.White,
+        noScrollResponder = HeroActionNoScrollResponder,
+        enabled = enabled,
+        iconOnly = true,
+        modifier = Modifier.size(46.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(18.dp),
+            tint = if (selected) Color(0xFF18120A) else Color.White,
+        )
+    }
+}
+
+@Composable
+private fun CurrentTimePill() {
+    var currentTime by remember {
+        mutableStateOf(LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            currentTime = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
+            delay(30_000)
+        }
+    }
+
+    Text(
+        text = currentTime,
+        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.92f),
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalTvMaterial3Api::class)
 @Composable
 private fun HeroActionButton(
@@ -875,48 +1267,51 @@ private fun HeroActionButton(
     contentColor: Color,
     modifier: Modifier = Modifier,
     noScrollResponder: BringIntoViewResponder? = null,
-    onFocused: () -> Unit = {},
+    enabled: Boolean = true,
+    iconOnly: Boolean = false,
     content: @Composable RowScope.() -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val highlightColor = MaterialTheme.colorScheme.primary
     Button(
         onClick = onClick,
-        shape = ButtonDefaults.shape(AppPillShape),
+        enabled = enabled,
+        shape = ButtonDefaults.shape(if (iconOnly) CircleShape else AppPillShape),
         colors = ButtonDefaults.colors(
             containerColor = containerColor,
             focusedContainerColor = containerColor,
             contentColor = contentColor,
             focusedContentColor = contentColor,
+            disabledContainerColor = containerColor.copy(alpha = 0.4f),
+            disabledContentColor = contentColor.copy(alpha = 0.45f),
         ),
         border = ButtonDefaults.border(
             border = Border(
                 border = BorderStroke(2.dp, Color.Transparent),
-                shape = AppPillShape,
+                shape = if (iconOnly) CircleShape else AppPillShape,
             ),
             focusedBorder = Border(
                 border = BorderStroke(2.dp, highlightColor),
-                shape = AppPillShape,
+                shape = if (iconOnly) CircleShape else AppPillShape,
             ),
         ),
         scale = ButtonDefaults.scale(focusedScale = 1f),
         modifier = modifier
-            .height(45.dp)
+            .height(if (iconOnly) 46.dp else 45.dp)
             .then(if (noScrollResponder != null) Modifier.bringIntoViewResponder(noScrollResponder) else Modifier)
             .onFocusChanged {
                 focused = it.isFocused
-                if (it.isFocused) onFocused()
             }
             .border(
-                width = if (focused) 3.dp else 1.dp,
+                width = 3.dp,
                 color = if (focused) highlightColor else Color.Transparent,
-                shape = AppPillShape,
+                shape = if (iconOnly) CircleShape else AppPillShape,
             ),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+        contentPadding = if (iconOnly) PaddingValues(0.dp) else PaddingValues(horizontal = 14.dp, vertical = 0.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxHeight(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
+            modifier = if (iconOnly) Modifier.fillMaxSize() else Modifier.fillMaxHeight(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
             content = content,
         )
@@ -935,13 +1330,23 @@ private fun EpisodesSection(
     onEpisodePressed: (EpisodeContext) -> Unit,
 ) {
     val episodes = seasonDetail?.episodes.orEmpty()
+    val seasonRowState = rememberLazyListState()
     val rowState = rememberLazyListState()
+    val focusedSeasonIndex = seasons.indexOfFirst { it.seasonNumber == selectedSeasonNumber }.coerceAtLeast(0)
+
+    LaunchedEffect(focusedSeasonIndex, seasons.size) {
+        seasonRowState.animateToAnchoredItem(
+            focusedIndex = focusedSeasonIndex,
+            itemCount = seasons.size,
+            leadingItems = 0,
+        )
+    }
 
     LaunchedEffect(selectedEpisodeIndex, episodes.size, selectedSeasonNumber) {
         rowState.animateToAnchoredItem(
             focusedIndex = selectedEpisodeIndex,
             itemCount = episodes.size,
-            leadingItems = 1,
+            leadingItems = 0,
         )
     }
 
@@ -950,10 +1355,12 @@ private fun EpisodesSection(
             text = "Episodes",
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(horizontal = DetailSectionInset),
         )
         LazyRow(
+            state = seasonRowState,
             modifier = Modifier.fillMaxWidth().focusGroup(),
-            contentPadding = PaddingValues(horizontal = 4.dp),
+            contentPadding = PaddingValues(start = DetailSectionInset, end = 0.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             itemsIndexed(seasons, key = { _, season -> season.seasonNumber }) { _, season ->
@@ -968,7 +1375,7 @@ private fun EpisodesSection(
         LazyRow(
             state = rowState,
             modifier = Modifier.fillMaxWidth().focusGroup(),
-            contentPadding = PaddingValues(horizontal = 4.dp),
+            contentPadding = PaddingValues(start = DetailSectionInset, end = 0.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             itemsIndexed(episodes, key = { _, episode -> episode.id }) { index, episode ->
@@ -986,7 +1393,12 @@ private fun EpisodesSection(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun SeasonChip(title: String, selected: Boolean, onFocused: () -> Unit, onPressed: () -> Unit) {
+private fun SeasonChip(
+    title: String,
+    selected: Boolean,
+    onFocused: () -> Unit,
+    onPressed: () -> Unit,
+) {
     var focused by remember { mutableStateOf(false) }
     Card(
         onClick = onPressed,
@@ -1086,7 +1498,7 @@ private fun CastSection(
         rowState.animateToAnchoredItem(
             focusedIndex = anchoredIndex,
             itemCount = cast.size,
-            leadingItems = 2,
+            leadingItems = 0,
         )
     }
 
@@ -1095,11 +1507,12 @@ private fun CastSection(
             text = "Cast",
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(horizontal = DetailSectionInset),
         )
         LazyRow(
             state = rowState,
             modifier = Modifier.fillMaxWidth().focusGroup(),
-            contentPadding = PaddingValues(horizontal = 4.dp),
+            contentPadding = PaddingValues(start = DetailSectionInset, end = 0.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             itemsIndexed(cast, key = { _, member -> member.id }) { index, member ->
@@ -1120,44 +1533,55 @@ private fun CastCard(
     requestFocus: FocusRequester? = null,
     onFocused: () -> Unit = {},
 ) {
-    val cardShape = RoundedCornerShape(14.dp)
+    var focused by remember { mutableStateOf(false) }
     Card(
         onClick = {},
         modifier = Modifier
-            .width(90.dp)
+            .width(124.dp)
             .then(if (requestFocus != null) Modifier.focusRequester(requestFocus) else Modifier)
-            .onFocusChanged { if (it.isFocused) onFocused() },
-        shape = CardDefaults.shape(cardShape),
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused()
+            },
+        shape = CardDefaults.shape(RoundedCornerShape(24.dp)),
         colors = CardDefaults.colors(
-            containerColor = Color(0xFF15181D),
-            focusedContainerColor = Color(0xFF1E2128),
+            containerColor = Color.Transparent,
+            focusedContainerColor = Color.Transparent,
         ),
-        scale = CardDefaults.scale(focusedScale = 1.02f),
         border = CardDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = cardShape),
+            border = Border(BorderStroke(0.dp, Color.Transparent), shape = RoundedCornerShape(24.dp)),
+            focusedBorder = Border(BorderStroke(0.dp, Color.Transparent), shape = RoundedCornerShape(24.dp)),
         ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = 1f),
     ) {
-        Column {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
             AsyncImage(
                 model = member.photo,
                 contentDescription = member.name,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(120.dp)
-                    .clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
-                    .background(Color(0xFF15181D)),
+                    .size(112.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF15181D))
+                    .border(
+                        width = if (focused) 3.dp else 1.dp,
+                        color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.12f),
+                        shape = CircleShape,
+                    ),
                 contentScale = ContentScale.Crop,
             )
             Column(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
                     text = member.name,
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.onBackground,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
                 )
                 member.character?.takeIf { it.isNotBlank() }?.let {
                     Text(
@@ -1166,6 +1590,7 @@ private fun CastCard(
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
                     )
                 }
             }
@@ -1186,7 +1611,7 @@ private fun SimilarSection(
         rowState.animateToAnchoredItem(
             focusedIndex = anchoredIndex,
             itemCount = items.size,
-            leadingItems = 1,
+            leadingItems = 0,
         )
     }
 
@@ -1195,11 +1620,12 @@ private fun SimilarSection(
             text = "More Like This",
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(horizontal = DetailSectionInset),
         )
         LazyRow(
             state = rowState,
             modifier = Modifier.fillMaxWidth().focusGroup(),
-            contentPadding = PaddingValues(horizontal = 4.dp),
+            contentPadding = PaddingValues(start = DetailSectionInset, end = 0.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
@@ -1279,4 +1705,96 @@ private fun formatTime(seconds: Double): String {
     val minutes = (total % 3600) / 60
     val remainder = total % 60
     return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, remainder) else "%d:%02d".format(minutes, remainder)
+}
+
+private fun formatRuntime(minutes: Int): String {
+    val hours = minutes / 60
+    val remainder = minutes % 60
+    return when {
+        hours > 0 && remainder > 0 -> "${hours}h ${remainder}m"
+        hours > 0 -> "${hours}h"
+        else -> "${minutes}m"
+    }
+}
+
+private fun formatReleaseDate(raw: String): String {
+    return try {
+        LocalDate.parse(raw).format(DateTimeFormatter.ofPattern("d MMM yyyy"))
+    } catch (_: DateTimeParseException) {
+        raw
+    }
+}
+
+private suspend fun extractAmbientPalette(
+    context: android.content.Context,
+    imageUrl: String,
+): AmbientBackdropPalette = withContext(Dispatchers.IO) {
+    val request = ImageRequest.Builder(context)
+        .data(imageUrl)
+        .allowHardware(false)
+        .crossfade(false)
+        .size(320, 180)
+        .build()
+    val result = context.imageLoader.execute(request).drawable
+    val bitmap = requireNotNull(result?.toBitmap(config = Bitmap.Config.ARGB_8888)) {
+        "Could not decode ambient artwork"
+    }
+    val palette = Palette.Builder(bitmap)
+        .clearFilters()
+        .maximumColorCount(12)
+        .generate()
+
+    val fallback = Color(0xFF1A2633)
+    val swatches = palette.swatches
+        .sortedByDescending { it.population }
+
+    val primary = swatches.firstOrNull()?.rgb?.let(::Color) ?: fallback
+    val secondary = swatches
+        .drop(1)
+        .firstOrNull { colorDistance(primary, Color(it.rgb)) > 0.12f }
+        ?.rgb
+        ?.let(::Color)
+        ?: swatches.getOrNull(1)?.rgb?.let(::Color)
+        ?: primary
+
+    AmbientBackdropPalette(
+        leftGlow = primary.ambientize(boost = 1.04f),
+        rightGlow = secondary.ambientize(),
+        accentGlow = lerpColor(primary, secondary, 0.5f).ambientize(boost = 1.10f),
+    )
+}
+
+private fun Color.ambientize(boost: Float = 1f): Color {
+    val lightMix = if (luminance() < 0.24f) 0.20f else 0.10f
+    return lerpColor(this, Color.White, lightMix)
+        .let { lerpColor(it, Color.Black, 0.42f) }
+        .copy(alpha = 1f)
+        .saturate(boost)
+}
+
+private fun Color.saturate(factor: Float): Color {
+    val grey = (red + green + blue) / 3f
+    return Color(
+        red = (grey + (red - grey) * factor).coerceIn(0f, 1f),
+        green = (grey + (green - grey) * factor).coerceIn(0f, 1f),
+        blue = (grey + (blue - grey) * factor).coerceIn(0f, 1f),
+        alpha = alpha,
+    )
+}
+
+private fun lerpColor(start: Color, end: Color, fraction: Float): Color {
+    val clamped = fraction.coerceIn(0f, 1f)
+    return Color(
+        red = start.red + (end.red - start.red) * clamped,
+        green = start.green + (end.green - start.green) * clamped,
+        blue = start.blue + (end.blue - start.blue) * clamped,
+        alpha = start.alpha + (end.alpha - start.alpha) * clamped,
+    )
+}
+
+private fun colorDistance(a: Color, b: Color): Float {
+    val dr = a.red - b.red
+    val dg = a.green - b.green
+    val db = a.blue - b.blue
+    return kotlin.math.sqrt((dr * dr + dg * dg + db * db).toDouble()).toFloat()
 }
