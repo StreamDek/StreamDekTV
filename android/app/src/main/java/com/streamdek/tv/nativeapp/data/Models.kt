@@ -216,6 +216,7 @@ data class AppPreferences(
 
 data class PlaybackPreferences(
     val autoplayNextEpisode: Boolean = true,
+    val autoPlayNextEpisodeEnabled: Boolean? = null,
     val preferredQuality: String = "1080p",
     val maxFileSizeGB: String = "2",
     val streamingServer: String = "addon",
@@ -223,13 +224,62 @@ data class PlaybackPreferences(
     val defaultAudioLanguage: String = "en",
     val externalPlayerEnabled: Boolean = false,
     val preferEmbeddedMpvByDefault: Boolean = true,
+    val skipSegmentsEnabled: Boolean? = null,
+    val skipIntroEnabled: Boolean? = null,
+    val introContributionEnabled: Boolean = false,
+    val introDbApiKey: String = "",
+    val preferBingeGroupNextEpisode: Boolean = true,
+    val nextEpisodeThresholdMode: String = "minutes",
+    val nextEpisodeThresholdPercent: Int = 95,
+    val nextEpisodeThresholdMinutes: Int = 2,
     val decoderMode: String = "auto",
     val renderSurface: String = "standard",
+) {
+    fun isAutoPlayNextEpisodeEnabled(): Boolean = autoPlayNextEpisodeEnabled ?: autoplayNextEpisode
+
+    fun areSkipSegmentsEnabled(): Boolean = skipSegmentsEnabled ?: skipIntroEnabled ?: true
+}
+
+data class StreamsPreferences(
+    val fusionBadgesEnabled: Boolean = true,
+    val showSizeBadges: Boolean = true,
+    val badgePosition: String = "bottom",
+    val fusionBadgeUrls: List<String> = listOf(DEFAULT_FUSION_BADGE_URL),
 )
 
 data class PreferencesEnvelope(
     val app: AppPreferences = AppPreferences(),
     val playback: PlaybackPreferences = PlaybackPreferences(),
+    val streams: StreamsPreferences = StreamsPreferences(),
+)
+
+data class FusionBadgeGroup(
+    val id: String = "",
+    val name: String = "",
+    val isExpanded: Boolean? = null,
+    val color: String? = null,
+    val borderColor: String? = null,
+)
+
+data class FusionBadgeFilter(
+    val id: String = "",
+    val groupId: String = "",
+    val name: String = "",
+    val pattern: String = "",
+    val imageURL: String = "",
+    val tagColor: String? = null,
+    val borderColor: String? = null,
+    val textColor: String? = null,
+    val tagStyle: String? = null,
+    val isEnabled: Boolean? = null,
+    val type: String? = null,
+)
+
+data class FusionBadgeSource(
+    val url: String = "",
+    val groups: List<FusionBadgeGroup> = emptyList(),
+    val filters: List<FusionBadgeFilter> = emptyList(),
+    val fetchedAt: String = "",
 )
 
 data class TraktIntegration(
@@ -342,6 +392,37 @@ data class PlaybackProgressRecord(
 
 data class PlaybackProgressResponse(
     val progress: PlaybackProgressRecord? = null,
+)
+
+data class PlaybackSegment(
+    val segmentType: String,
+    val startSec: Double,
+    val endSec: Double,
+)
+
+data class TraktHistoryResponse(
+    val results: List<TraktHistoryItem> = emptyList(),
+)
+
+data class TraktHistoryItem(
+    val type: String? = null,
+    val movie: TraktHistoryMediaRef? = null,
+    val show: TraktHistoryMediaRef? = null,
+    val episode: TraktHistoryEpisodeRef? = null,
+)
+
+data class TraktHistoryMediaRef(
+    val ids: TraktHistoryIds? = null,
+)
+
+data class TraktHistoryEpisodeRef(
+    val season: Int? = null,
+    val number: Int? = null,
+)
+
+data class TraktHistoryIds(
+    val tmdb: Int? = null,
+    val imdb: String? = null,
 )
 
 data class AddonStreamsResponse(

@@ -26,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,8 +60,15 @@ import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+private data class BrowseActionState(
+    val item: MediaItem,
+    val restoreFocusRequester: FocusRequester,
+)
 
 @Composable
 fun SearchScreen(
@@ -73,8 +81,11 @@ fun SearchScreen(
     var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var searchEditing by remember { mutableStateOf(false) }
+    var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
+    val scope = rememberCoroutineScope()
     val searchBoxRequester = remember { FocusRequester() }
     val firstResultRequester = remember { FocusRequester() }
+    val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
     var anchoredIndex by remember { mutableIntStateOf(0) }
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -242,6 +253,8 @@ fun SearchScreen(
                     ) {
                         items(results, key = { "${it.type}:${it.id}" }) { item ->
                             val index = results.indexOf(item)
+                            val key = "${item.type}:${item.id}"
+                            val requester = cardRequesters.getOrPut(key) { FocusRequester() }
                             SearchResultCard(
                                 item = item,
                                 modifier = if (index == 0) {
@@ -249,15 +262,38 @@ fun SearchScreen(
                                         .focusRequester(firstResultRequester)
                                         .focusProperties { up = searchBoxRequester }
                                 } else {
-                                    Modifier
+                                    Modifier.focusRequester(requester)
                                 },
                                 onFocused = { anchoredIndex = index },
                                 onPressed = { onOpenDetail(item.type, item.id) },
+                                onMenuPressed = {
+                                    val restoreRequester = if (index == 0) firstResultRequester else requester
+                                    actionState = BrowseActionState(item, restoreRequester)
+                                },
                             )
                         }
                     }
                 }
             }
+        }
+
+        actionState?.let { state ->
+            BrowseItemActionMenu(
+                repository = repository,
+                item = state.item,
+                onDismiss = {
+                    val restoreRequester = state.restoreFocusRequester
+                    actionState = null
+                    scope.launch {
+                        delay(40)
+                        runCatching { restoreRequester.requestFocus() }
+                    }
+                },
+                onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
+                onChanged = {
+                    results = repository.searchMedia(query.trim(), forceRefresh = true)
+                },
+            )
         }
     }
 }
@@ -269,11 +305,20 @@ private fun SearchResultCard(
     modifier: Modifier = Modifier,
     onFocused: () -> Unit = {},
     onPressed: () -> Unit,
+    onMenuPressed: () -> Unit,
 ) {
     Card(
         onClick = onPressed,
         modifier = modifier
             .size(width = 260.dp, height = 150.dp)
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp && event.key == Key.Menu) {
+                    onMenuPressed()
+                    true
+                } else {
+                    false
+                }
+            }
             .onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(

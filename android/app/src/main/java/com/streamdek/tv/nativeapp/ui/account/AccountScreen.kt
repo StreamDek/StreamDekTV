@@ -16,11 +16,14 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -37,10 +40,12 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
@@ -50,13 +55,21 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
+import coil.compose.AsyncImage
 import com.streamdek.tv.BuildConfig
 import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
 import com.streamdek.tv.nativeapp.data.DeviceInfo
+import com.streamdek.tv.nativeapp.data.FUSION_BADGE_LANGUAGE_GROUP_ID
+import com.streamdek.tv.nativeapp.data.FusionBadgeSource
+import com.streamdek.tv.nativeapp.data.MAX_FUSION_BADGE_URLS
 import com.streamdek.tv.nativeapp.data.SessionInfo
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamProfile
+import com.streamdek.tv.nativeapp.data.StreamsPreferences
+import com.streamdek.tv.nativeapp.data.countEnabledFilters
+import com.streamdek.tv.nativeapp.data.countGroupsWithFilters
+import com.streamdek.tv.nativeapp.data.groupSourceFilters
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import kotlinx.coroutines.delay
@@ -66,6 +79,7 @@ private enum class SettingsSection(val label: String) {
     Profile("Profile"),
     Services("Services"),
     Playback("Playback"),
+    Streams("Streams"),
     Tv("TV Interface"),
     Devices("Devices"),
     About("About"),
@@ -85,6 +99,12 @@ fun AccountScreen(
     var addons by remember { mutableStateOf<List<AddonManifest>>(emptyList()) }
     var status by remember { mutableStateOf<String?>(null) }
     var selectedSection by remember { mutableStateOf(SettingsSection.Profile) }
+    val fusionBadgeSourcesByUrl by repository.fusionBadgeSources.collectAsState()
+    var badgeUrlDraft by remember { mutableStateOf("") }
+    var badgeUrlError by remember { mutableStateOf<String?>(null) }
+    var badgeUrlSubmitting by remember { mutableStateOf(false) }
+    var loadingBadgeUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var previewBadgeUrl by remember { mutableStateOf<String?>(null) }
     val firstSectionRequester = remember { FocusRequester() }
     val contentEntryRequester = remember { FocusRequester() }
     val profileContentRequester = remember { FocusRequester() }
@@ -93,6 +113,8 @@ fun AccountScreen(
     val servicesActionRequester = remember { FocusRequester() }
     val playbackContentRequester = remember { FocusRequester() }
     val playbackActionRequester = remember { FocusRequester() }
+    val streamsContentRequester = remember { FocusRequester() }
+    val streamsActionRequester = remember { FocusRequester() }
     val tvContentRequester = remember { FocusRequester() }
     val tvActionRequester = remember { FocusRequester() }
     val devicesContentRequester = remember { FocusRequester() }
@@ -115,7 +137,14 @@ fun AccountScreen(
     val prefs = bootstrap?.preferences
     val appPrefs = prefs?.app
     val playbackPrefs = prefs?.playback
+    val streamsPrefs = prefs?.streams ?: StreamsPreferences()
     val activeProfile = repository.activeStreamProfile()
+
+    LaunchedEffect(selectedSection, streamsPrefs.fusionBadgesEnabled) {
+        if (selectedSection == SettingsSection.Streams && streamsPrefs.fusionBadgesEnabled) {
+            repository.ensureFusionBadgeSourcesLoaded()
+        }
+    }
 
     Row(
         modifier = Modifier
@@ -136,6 +165,7 @@ fun AccountScreen(
                 }
                 SettingsSection.Services -> if (addons.isNotEmpty()) servicesActionRequester else servicesContentRequester
                 SettingsSection.Playback -> playbackActionRequester
+                SettingsSection.Streams -> streamsActionRequester
                 SettingsSection.Tv -> tvActionRequester
                 SettingsSection.Devices -> devicesActionRequester
                 SettingsSection.About -> aboutActionRequester
@@ -327,11 +357,11 @@ fun AccountScreen(
                         CompactCard("Playback Defaults", modifier = Modifier.focusRequester(playbackContentRequester)) {
                             PreferenceRow(
                                 "Autoplay Next Episode",
-                                playbackPrefs?.autoplayNextEpisode == true,
+                                playbackPrefs?.isAutoPlayNextEpisodeEnabled() == true,
                                 requester = playbackActionRequester,
                             ) {
                                 scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("autoplayNextEpisode" to !(playbackPrefs?.autoplayNextEpisode == true)))
+                                    repository.updatePlaybackPreferences(mapOf("autoplayNextEpisode" to !(playbackPrefs?.isAutoPlayNextEpisodeEnabled() == true)))
                                     bootstrap = repository.bootstrap.value
                                 }
                             }
@@ -351,6 +381,113 @@ fun AccountScreen(
                                 scope.launch {
                                     repository.updatePlaybackPreferences(mapOf("maxFileSizeGB" to nextOf(listOf("0", "2", "5", "10", "20"), playbackPrefs?.maxFileSizeGB ?: "2")))
                                     bootstrap = repository.bootstrap.value
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SettingsSection.Streams -> {
+                    item {
+                        CompactCard("Fusion Style Badges", modifier = Modifier.focusRequester(streamsContentRequester)) {
+                            PreferenceRow(
+                                "Show Fusion Badges",
+                                streamsPrefs.fusionBadgesEnabled,
+                                requester = streamsActionRequester,
+                            ) {
+                                scope.launch {
+                                    repository.updateStreamsPreferences(mapOf("fusionBadgesEnabled" to !streamsPrefs.fusionBadgesEnabled))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            PreferenceRow("Show Size Badges", streamsPrefs.showSizeBadges) {
+                                scope.launch {
+                                    repository.updateStreamsPreferences(mapOf("showSizeBadges" to !streamsPrefs.showSizeBadges))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            ChoiceRow("Badge Position", streamsPrefs.badgePosition) {
+                                scope.launch {
+                                    repository.updateStreamsPreferences(mapOf("badgePosition" to nextOf(listOf("top", "bottom"), streamsPrefs.badgePosition)))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                        }
+                    }
+                    item {
+                        CompactCard("Fusion Badge Sources") {
+                            Text(
+                                text = "Badge sources control the quality, source, and language icons shown on stream cards. Up to $MAX_FUSION_BADGE_URLS sources can be active at once.",
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                streamsPrefs.fusionBadgeUrls.forEach { url ->
+                                    BadgeUrlRow(
+                                        url = url,
+                                        source = fusionBadgeSourcesByUrl[url],
+                                        isLoading = url in loadingBadgeUrls,
+                                        canRemove = streamsPrefs.fusionBadgeUrls.size > 1,
+                                        onRefresh = {
+                                            scope.launch {
+                                                loadingBadgeUrls = loadingBadgeUrls + url
+                                                repository.fetchFusionBadgeSource(url, forceRefresh = true)
+                                                loadingBadgeUrls = loadingBadgeUrls - url
+                                            }
+                                        },
+                                        onPreview = { previewBadgeUrl = url },
+                                        onRemove = {
+                                            scope.launch {
+                                                repository.updateStreamsPreferences(mapOf("fusionBadgeUrls" to streamsPrefs.fusionBadgeUrls.filter { it != url }))
+                                                repository.removeFusionBadgeSource(url)
+                                                bootstrap = repository.bootstrap.value
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                            if (streamsPrefs.fusionBadgeUrls.size < MAX_FUSION_BADGE_URLS) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    BadgeUrlField(
+                                        value = badgeUrlDraft,
+                                        onValueChange = {
+                                            badgeUrlDraft = it
+                                            badgeUrlError = null
+                                        },
+                                    )
+                                    badgeUrlError?.let {
+                                        Text(it, color = Color(0xFFFF7070), style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                        Button(
+                                            onClick = {
+                                                val trimmed = badgeUrlDraft.trim()
+                                                when {
+                                                    !trimmed.startsWith("http://", ignoreCase = true) && !trimmed.startsWith("https://", ignoreCase = true) ->
+                                                        badgeUrlError = "Enter a valid URL starting with https://"
+                                                    streamsPrefs.fusionBadgeUrls.contains(trimmed) ->
+                                                        badgeUrlError = "This source is already added"
+                                                    else -> scope.launch {
+                                                        badgeUrlSubmitting = true
+                                                        badgeUrlError = null
+                                                        val source = repository.fetchFusionBadgeSource(trimmed)
+                                                        if (source == null) {
+                                                            badgeUrlError = "Couldn't load badges from this URL"
+                                                        } else {
+                                                            repository.updateStreamsPreferences(mapOf("fusionBadgeUrls" to streamsPrefs.fusionBadgeUrls + trimmed))
+                                                            bootstrap = repository.bootstrap.value
+                                                            badgeUrlDraft = ""
+                                                        }
+                                                        badgeUrlSubmitting = false
+                                                    }
+                                                }
+                                            },
+                                            enabled = !badgeUrlSubmitting && badgeUrlDraft.isNotBlank(),
+                                            shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                                        ) {
+                                            Text(if (badgeUrlSubmitting) "Adding..." else "Add Source")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -506,6 +643,13 @@ fun AccountScreen(
                 }
             }
         }
+    }
+
+    previewBadgeUrl?.let { url ->
+        FusionBadgePreviewDialog(
+            source = fusionBadgeSourcesByUrl[url],
+            onDismiss = { previewBadgeUrl = null },
+        )
     }
 }
 
@@ -857,4 +1001,135 @@ private fun AddonRow(
 private fun nextOf(values: List<String>, current: String): String {
     val index = values.indexOf(current)
     return if (index < 0 || index == values.lastIndex) values.first() else values[index + 1]
+}
+
+@Composable
+private fun BadgeUrlRow(
+    url: String,
+    source: FusionBadgeSource?,
+    isLoading: Boolean,
+    canRemove: Boolean,
+    onRefresh: () -> Unit,
+    onPreview: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().background(Color(0x5915181D), RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                text = url,
+                color = MaterialTheme.colorScheme.onBackground,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = when {
+                    isLoading -> "Refreshing..."
+                    source != null -> "${countEnabledFilters(source)} badges across ${countGroupsWithFilters(source)} groups"
+                    else -> "Not loaded yet"
+                },
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onPreview, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Preview") }
+            OutlinedButton(onClick = onRefresh, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Refresh") }
+            if (canRemove) {
+                OutlinedButton(onClick = onRemove, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Remove") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BadgeUrlField(value: String, onValueChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { androidx.compose.material3.Text("Add badge source URL") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = Color(0xFF12161F),
+            unfocusedContainerColor = Color(0xFF12161F),
+            focusedTextColor = Color.White,
+            unfocusedTextColor = Color.White,
+        ),
+    )
+}
+
+@Composable
+private fun FusionBadgePreviewDialog(source: FusionBadgeSource?, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .heightIn(max = 560.dp)
+                .background(Color(0xFF11141B), RoundedCornerShape(20.dp))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Badge Preview",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            if (source == null) {
+                Text("Loading badges...", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f))
+            } else {
+                val groups = remember(source) { groupSourceFilters(source) }
+                LazyColumn(
+                    modifier = Modifier.weight(1f, fill = false),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    groups.forEach { groupMatch ->
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = groupMatch.group.name.ifBlank { "Special" },
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                )
+                                groupMatch.badges.chunked(6).forEach { rowBadges ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        rowBadges.forEach { badge ->
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                modifier = Modifier.width(64.dp),
+                                            ) {
+                                                AsyncImage(
+                                                    model = badge.imageURL,
+                                                    contentDescription = badge.name,
+                                                    contentScale = ContentScale.Fit,
+                                                    modifier = Modifier
+                                                        .height(28.dp)
+                                                        .width(if (badge.groupId == FUSION_BADGE_LANGUAGE_GROUP_ID) 28.dp else 56.dp),
+                                                )
+                                                Text(
+                                                    text = badge.name,
+                                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Button(onClick = onDismiss, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Close") }
+            }
+        }
+    }
 }

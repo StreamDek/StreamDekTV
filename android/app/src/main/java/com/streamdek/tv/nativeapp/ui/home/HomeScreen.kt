@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +42,11 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -60,12 +66,24 @@ import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private val HomeRailsTop = 360.dp
+
+private data class BrowseActionState(
+    val item: MediaItem,
+    val restoreFocusRequester: FocusRequester,
+)
+
+private fun mediaItemStableKey(item: MediaItem): String {
+    val episodeSuffix = item.episode?.let { ":s${it.seasonNumber}:e${it.episodeNumber}" }.orEmpty()
+    return "${item.type}:${item.id}$episodeSuffix"
+}
 
 @Composable
 fun HomeScreen(
@@ -86,9 +104,11 @@ fun HomeScreen(
     val verticalListState = rememberLazyListState()
     val horizontalListStates = remember { mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>() }
     val rowFocusIndices = remember { mutableStateMapOf<String, Int>() }
+    val scope = rememberCoroutineScope()
     var activeRowIndex by remember { mutableIntStateOf(0) }
     var rowActivationNonce by remember { mutableIntStateOf(0) }
     var focusedItem by remember { mutableStateOf<MediaItem?>(null) }
+    var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
     val heroDetail = screenState.heroDetail
 
     val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
@@ -255,6 +275,11 @@ fun HomeScreen(
                                         onOpenDetail(item.type, item.id)
                                     }
                                 },
+                                onItemMenu = { item, requester ->
+                                    if (item.type != "network") {
+                                        actionState = BrowseActionState(item, requester)
+                                    }
+                                },
                                 rowCardStyle = homeRowCardStyle,
                                 firstCardRequester = if (rowIndex == 0) homeFirstCardRequester else null,
                                 isActiveRow = activeRowIndex == rowIndex,
@@ -282,6 +307,25 @@ fun HomeScreen(
                 }
             }
             else -> HomeLoading()
+        }
+
+        actionState?.let { state ->
+            BrowseItemActionMenu(
+                repository = repository,
+                item = state.item,
+                onDismiss = {
+                    val restoreRequester = state.restoreFocusRequester
+                    actionState = null
+                    scope.launch {
+                        delay(40)
+                        runCatching { restoreRequester.requestFocus() }
+                    }
+                },
+                onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
+                onChanged = {
+                    homeViewModel.forceRefresh(loadKey)
+                },
+            )
         }
     }
 }
@@ -405,6 +449,7 @@ private fun RailSection(
     anchoredIndex: Int,
     onItemFocused: (Int, MediaItem) -> Unit,
     onItemPressed: (MediaItem) -> Unit,
+    onItemMenu: (MediaItem, FocusRequester) -> Unit,
     rowCardStyle: String,
     firstCardRequester: FocusRequester? = null,
     isActiveRow: Boolean,
@@ -459,8 +504,8 @@ private fun RailSection(
             contentPadding = PaddingValues(horizontal = 52.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            itemsIndexed(row.items, key = { _, item -> "${row.id}:${item.id}" }) { index, item ->
-                val key = "${row.id}:${item.id}"
+            itemsIndexed(row.items, key = { index, item -> "${row.id}:${mediaItemStableKey(item)}:$index" }) { index, item ->
+                val key = "${row.id}:${mediaItemStableKey(item)}:$index"
                 val requester = requesters.getOrPut(key) { FocusRequester() }
                 val effectiveRequester = if (index == 0 && firstCardRequester != null) firstCardRequester else requester
                 if (index == 0) {
@@ -476,6 +521,7 @@ private fun RailSection(
                         onItemFocused(index, item)
                     },
                     onPressed = { onItemPressed(item) },
+                    onMenuPressed = { onItemMenu(item, effectiveRequester) },
                 )
             }
         }
@@ -491,6 +537,7 @@ private fun MediaPosterCard(
     modifier: Modifier = Modifier,
     onFocused: () -> Unit,
     onPressed: () -> Unit,
+    onMenuPressed: () -> Unit,
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val isNetworkCard = item.type == "network"
@@ -512,6 +559,14 @@ private fun MediaPosterCard(
                 width = cardWidth,
                 height = cardHeight,
             )
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp && event.key == Key.Menu) {
+                    onMenuPressed()
+                    true
+                } else {
+                    false
+                }
+            }
             .onFocusChanged { state ->
                 isFocused = state.isFocused
                 if (state.isFocused) {

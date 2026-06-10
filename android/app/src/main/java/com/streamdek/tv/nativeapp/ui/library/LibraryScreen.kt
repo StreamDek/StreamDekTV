@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -22,6 +22,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,6 +31,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,9 +55,21 @@ import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+
+private data class BrowseActionState(
+    val item: MediaItem,
+    val restoreFocusRequester: FocusRequester,
+)
+
+private fun mediaItemStableKey(item: MediaItem): String {
+    val episodeSuffix = item.episode?.let { ":s${it.seasonNumber}:e${it.episodeNumber}" }.orEmpty()
+    return "${item.type}:${item.id}$episodeSuffix"
+}
 
 @Composable
 fun LibraryScreen(
@@ -62,25 +80,31 @@ fun LibraryScreen(
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
     val compactMode = bootstrap?.preferences?.app?.compactMode == true
+    val scope = rememberCoroutineScope()
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
     val localInitialCardRequester = remember { FocusRequester() }
     val initialCardRequester = entryFocusRequester ?: localInitialCardRequester
     val context = androidx.compose.ui.platform.LocalContext.current
 
     LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
-        error = null
-        try {
-            val result = repository.fetchLibrary()
-            library = result
-            TvDebugLogger.i("LibraryUi", "library loaded continue=${result.continueWatching.size} watchlist=${result.watchlist.size}")
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Throwable) {
-            library = null
-            error = failure.message
-            TvDebugLogger.e("LibraryUi", "library failed to load", failure)
+        suspend fun refresh() {
+            error = null
+            try {
+                val result = repository.fetchLibrary(forceRefresh = true)
+                library = result
+                TvDebugLogger.i("LibraryUi", "library loaded continue=${result.continueWatching.size} watchlist=${result.watchlist.size}")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                library = null
+                error = failure.message
+                TvDebugLogger.e("LibraryUi", "library failed to load", failure)
+            }
         }
+        error = null
+        refresh()
     }
 
     LaunchedEffect(library) {
@@ -179,6 +203,7 @@ fun LibraryScreen(
                         items = continueWatching,
                         initialFocusRequester = initialCardRequester,
                         onOpenDetail = onOpenDetail,
+                        onOpenActions = { item, requester -> actionState = BrowseActionState(item, requester) },
                     )
                 }
             }
@@ -191,6 +216,7 @@ fun LibraryScreen(
                         items = watchlist,
                         initialFocusRequester = if (continueWatching.isEmpty()) initialCardRequester else null,
                         onOpenDetail = onOpenDetail,
+                        onOpenActions = { item, requester -> actionState = BrowseActionState(item, requester) },
                     )
                 }
             }
@@ -206,6 +232,26 @@ fun LibraryScreen(
                 }
             }
         }
+
+        actionState?.let { state ->
+            BrowseItemActionMenu(
+                repository = repository,
+                item = state.item,
+                onDismiss = {
+                    val restoreRequester = state.restoreFocusRequester
+                    actionState = null
+                    scope.launch {
+                        kotlinx.coroutines.delay(40)
+                        runCatching { restoreRequester.requestFocus() }
+                    }
+                },
+                onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
+                onChanged = {
+                    val result = repository.fetchLibrary(forceRefresh = true)
+                    library = result
+                },
+            )
+        }
     }
 }
 
@@ -215,7 +261,9 @@ private fun LibraryRow(
     items: List<MediaItem>,
     initialFocusRequester: FocusRequester? = null,
     onOpenDetail: (String, String) -> Unit,
+    onOpenActions: (MediaItem, FocusRequester) -> Unit,
 ) {
+    val requesters = remember(title) { mutableMapOf<String, FocusRequester>() }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -233,11 +281,15 @@ private fun LibraryRow(
             contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            items(items, key = { "${it.type}:${it.id}" }) { item ->
+            itemsIndexed(items, key = { index, item -> "${mediaItemStableKey(item)}:$index" }) { index, item ->
+                val key = "${mediaItemStableKey(item)}:$index"
+                val requester = requesters.getOrPut(key) { FocusRequester() }
+                val effectiveRequester = if (initialFocusRequester != null && item == items.firstOrNull()) initialFocusRequester else requester
                 LibraryCard(
                     item = item,
-                    modifier = if (initialFocusRequester != null && item == items.firstOrNull()) Modifier.focusRequester(initialFocusRequester) else Modifier,
+                    modifier = Modifier.focusRequester(effectiveRequester),
                     onPressed = { onOpenDetail(item.type, item.id) },
+                    onMenuPressed = { onOpenActions(item, effectiveRequester) },
                 )
             }
         }
@@ -250,10 +302,20 @@ private fun LibraryCard(
     item: MediaItem,
     modifier: Modifier = Modifier,
     onPressed: () -> Unit,
+    onMenuPressed: () -> Unit,
 ) {
     Card(
         onClick = onPressed,
-        modifier = modifier.size(width = 260.dp, height = 150.dp),
+        modifier = modifier
+            .size(width = 260.dp, height = 150.dp)
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp && event.key == Key.Menu) {
+                    onMenuPressed()
+                    true
+                } else {
+                    false
+                }
+            },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
             containerColor = Color(0xFF181A1F),

@@ -53,6 +53,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
@@ -160,6 +161,7 @@ fun DetailScreen(
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
     var markedWatched by remember(mediaType, mediaId) { mutableStateOf(false) }
+    var watchedEpisodesInSeason by remember(mediaType, mediaId, selectedSeasonNumber) { mutableStateOf<Set<Int>>(emptySet()) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
     var shareSheet by remember(mediaType, mediaId) { mutableStateOf<ShareSheetState?>(null) }
     val entryFocusRequester = remember(mediaType, mediaId) { FocusRequester() }
@@ -187,8 +189,10 @@ fun DetailScreen(
         progressLabel = null
         inWatchlist = false
         markedWatched = false
+        watchedEpisodesInSeason = emptySet()
         shareSheet = null
         resumeEpisodeContext = null
+        runCatching { repository.refreshBootstrap() }
         val libraryDeferred = supervisorScope {
             async {
                 runCatching { repository.fetchLibrary() }.getOrNull()
@@ -221,8 +225,10 @@ fun DetailScreen(
 
     val detail = (uiState as? DetailUiState.Ready)?.detail
     val selectedEpisode = selectedSeason?.episodes?.getOrNull(selectedEpisodeIndex)
+    val selectedEpisodeContext = selectedEpisode?.toEpisodeContext(selectedSeasonNumber)
+    val seasonFullyWatched = selectedSeason?.episodes?.isNotEmpty() == true &&
+        watchedEpisodesInSeason.size >= selectedSeason?.episodes.orEmpty().size
 
-    fun currentEpisodeContext(): EpisodeContext? = selectedEpisode?.toEpisodeContext(selectedSeasonNumber)
     LaunchedEffect(selectedSeasonNumber, detail?.id) {
         if (detail?.type == "tv") {
             selectedSeason = repository.fetchSeason(detail.id, selectedSeasonNumber)
@@ -230,12 +236,44 @@ fun DetailScreen(
     }
 
     LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedEpisodeIndex, resumeEpisodeContext) {
-        val progressEpisode = if (mediaType == "tv") resumeEpisodeContext ?: currentEpisodeContext() else currentEpisodeContext()
+        val progressEpisode = if (mediaType == "tv") resumeEpisodeContext ?: selectedEpisodeContext else selectedEpisodeContext
         val progress = repository.fetchProgress(mediaType, mediaId, progressEpisode)
         progressFraction = progress?.progress?.div(100.0)?.toFloat()?.coerceIn(0f, 1f)
         progressLabel = progress?.takeIf { it.positionSec > 0 && it.durationSec > 0 }?.let {
             "${formatTime(it.positionSec)} / ${formatTime(it.durationSec)}"
         }
+    }
+
+    LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedSeason?.episodes, detail?.id) {
+        if (mediaType != "tv" || detail == null) {
+            watchedEpisodesInSeason = emptySet()
+            return@LaunchedEffect
+        }
+        val watchedKeys = repository.fetchWatchedKeys(forceRefresh = true)
+        watchedEpisodesInSeason = selectedSeason?.episodes
+            ?.mapNotNull { episode ->
+                episode.episodeNumber.takeIf {
+                    watchedKeys.contains("tv:${detail.id}:s$selectedSeasonNumber:e$it")
+                }
+            }
+            ?.toSet()
+            .orEmpty()
+    }
+
+    LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedEpisodeIndex, resumeEpisodeContext, progressFraction, detail?.id) {
+        val currentDetail = detail ?: return@LaunchedEffect
+        val watchedEpisode = playbackEpisodeContext(
+            detail = currentDetail,
+            progressFraction = progressFraction,
+            resumeEpisodeContext = resumeEpisodeContext,
+            selectedEpisode = selectedEpisodeContext,
+        )
+        markedWatched = repository.isWatched(
+            mediaType = mediaType,
+            mediaId = mediaId,
+            episode = watchedEpisode,
+            forceRefresh = true,
+        )
     }
 
     LaunchedEffect(mediaType, mediaId, detail?.id) {
@@ -406,7 +444,7 @@ fun DetailScreen(
                         ) {
                             HeroCopySection(
                                 detail = state.detail,
-                                selectedEpisode = currentEpisodeContext(),
+                                selectedEpisode = selectedEpisodeContext,
                             )
                         }
                     }
@@ -417,7 +455,7 @@ fun DetailScreen(
                         ) {
                             HeroActionRow(
                                 detail = state.detail,
-                                selectedEpisode = currentEpisodeContext(),
+                                selectedEpisode = selectedEpisodeContext,
                                 progressFraction = progressFraction,
                                 progressLabel = progressLabel,
                                 inWatchlist = inWatchlist,
@@ -451,7 +489,7 @@ fun DetailScreen(
                                                     detail = state.detail,
                                                     progressFraction = progressFraction,
                                                     resumeEpisodeContext = resumeEpisodeContext,
-                                                    selectedEpisode = currentEpisodeContext(),
+                                                    selectedEpisode = selectedEpisodeContext,
                                                 ),
                                                 title = state.detail.title,
                                             ),
@@ -462,12 +500,16 @@ fun DetailScreen(
                                     if (repository.currentSession() == null) {
                                         onRequireAuth()
                                     } else {
-                                        val episodeContext = playbackEpisodeContext(
-                                            detail = state.detail,
-                                            progressFraction = progressFraction,
-                                            resumeEpisodeContext = resumeEpisodeContext,
-                                            selectedEpisode = currentEpisodeContext(),
-                                        )
+                                        val episodeContext = if (state.detail.type == "tv") {
+                                            selectedEpisodeContext
+                                        } else {
+                                            playbackEpisodeContext(
+                                                detail = state.detail,
+                                                progressFraction = progressFraction,
+                                                resumeEpisodeContext = resumeEpisodeContext,
+                                                selectedEpisode = selectedEpisodeContext,
+                                            )
+                                        }
                                         val ok = repository.markWatched(
                                             mediaType = state.detail.type,
                                             mediaId = state.detail.id,
@@ -481,6 +523,9 @@ fun DetailScreen(
                                             repository.clearProgress(state.detail.type, state.detail.id, episodeContext)
                                             progressFraction = null
                                             progressLabel = null
+                                            episodeContext?.takeIf { state.detail.type == "tv" }?.let {
+                                                watchedEpisodesInSeason = watchedEpisodesInSeason + it.episodeNumber
+                                            }
                                         }
                                     }
                                 },
@@ -518,6 +563,8 @@ fun DetailScreen(
                                 selectedSeasonNumber = selectedSeasonNumber,
                                 seasonDetail = selectedSeason,
                                 selectedEpisodeIndex = selectedEpisodeIndex,
+                                watchedEpisodes = watchedEpisodesInSeason,
+                                seasonWatched = seasonFullyWatched,
                                 onSeasonFocused = {
                                     if (selectedSeasonNumber != it) {
                                         selectedSeasonNumber = it
@@ -544,6 +591,30 @@ fun DetailScreen(
                                                 title = state.detail.title,
                                             ),
                                         )
+                                    }
+                                },
+                                onMarkSeasonWatched = {
+                                    if (repository.currentSession() == null) {
+                                        onRequireAuth()
+                                    } else {
+                                        val ok = repository.markSeasonWatched(
+                                            mediaId = state.detail.id,
+                                            title = state.detail.title,
+                                            year = state.detail.year,
+                                            seasonNumber = selectedSeasonNumber,
+                                        )
+                                        if (ok) {
+                                            watchedEpisodesInSeason = selectedSeason?.episodes
+                                                ?.map { it.episodeNumber }
+                                                ?.toSet()
+                                                .orEmpty()
+                                            if (selectedEpisodeContext?.seasonNumber == selectedSeasonNumber) {
+                                                markedWatched = true
+                                                repository.clearProgress(state.detail.type, state.detail.id, selectedEpisodeContext)
+                                                progressFraction = null
+                                                progressLabel = null
+                                            }
+                                        }
                                     }
                                 },
                             )
@@ -869,7 +940,7 @@ private fun HeroActionRow(
         HeroIconButton(
             onClick = { scope.launch { onMarkWatched() } },
             icon = if (markedWatched) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircleOutline,
-            contentDescription = "Mark as watched",
+            contentDescription = if (detail.type == "tv" && selectedEpisode != null) "Mark selected episode as watched" else "Mark as watched",
             selected = markedWatched,
         )
         HeroIconButton(
@@ -1318,21 +1389,26 @@ private fun HeroActionButton(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun EpisodesSection(
     seasons: List<SeasonRef>,
     selectedSeasonNumber: Int,
     seasonDetail: SeasonDetail?,
     selectedEpisodeIndex: Int,
+    watchedEpisodes: Set<Int>,
+    seasonWatched: Boolean,
     onSeasonFocused: (Int) -> Unit,
     onSeasonPressed: (Int) -> Unit,
     onEpisodeFocused: (Int) -> Unit,
     onEpisodePressed: (EpisodeContext) -> Unit,
+    onMarkSeasonWatched: suspend () -> Unit,
 ) {
     val episodes = seasonDetail?.episodes.orEmpty()
     val seasonRowState = rememberLazyListState()
     val rowState = rememberLazyListState()
     val focusedSeasonIndex = seasons.indexOfFirst { it.seasonNumber == selectedSeasonNumber }.coerceAtLeast(0)
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(focusedSeasonIndex, seasons.size) {
         seasonRowState.animateToAnchoredItem(
@@ -1351,12 +1427,40 @@ private fun EpisodesSection(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text(
-            text = "Episodes",
-            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(horizontal = DetailSectionInset),
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = DetailSectionInset),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Episodes",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            if (episodes.isNotEmpty()) {
+                HeroActionButton(
+                    onClick = { scope.launch { onMarkSeasonWatched() } },
+                    containerColor = if (seasonWatched) Color(0xFFF0BA66) else Color(0xD62A3442),
+                    contentColor = if (seasonWatched) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground,
+                    enabled = !seasonWatched,
+                    modifier = Modifier.width(198.dp),
+                ) {
+                    Icon(
+                        imageVector = if (seasonWatched) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircleOutline,
+                        contentDescription = if (seasonWatched) "Season watched" else "Mark season watched",
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = if (seasonWatched) "Season Watched" else "Mark Season Watched",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
         LazyRow(
             state = seasonRowState,
             modifier = Modifier.fillMaxWidth().focusGroup(),
@@ -1382,6 +1486,7 @@ private fun EpisodesSection(
                 EpisodeCard(
                     episode = episode,
                     seasonNumber = selectedSeasonNumber,
+                    watched = watchedEpisodes.contains(episode.episodeNumber),
                     selected = index == selectedEpisodeIndex,
                     onFocused = { onEpisodeFocused(index) },
                     onPressed = { onEpisodePressed(episode.toEpisodeContext(selectedSeasonNumber)) },
@@ -1430,10 +1535,12 @@ private fun SeasonChip(
 private fun EpisodeCard(
     episode: SeasonEpisode,
     seasonNumber: Int,
+    watched: Boolean,
     selected: Boolean,
     onFocused: () -> Unit,
     onPressed: () -> Unit,
 ) {
+    val unreleased = !watched && !isEpisodeReleased(episode.airDate)
     Card(
         onClick = onPressed,
         modifier = Modifier.size(width = 300.dp, height = 182.dp).onFocusChanged { if (it.isFocused) onFocused() },
@@ -1453,10 +1560,23 @@ private fun EpisodeCard(
                 .fillMaxSize()
                 .clip(AppCardShape),
         ) {
-            AsyncImage(model = episode.still, contentDescription = episode.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            AsyncImage(
+                model = episode.still,
+                contentDescription = episode.name,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (unreleased) Modifier.blur(18.dp) else Modifier),
+                contentScale = ContentScale.Crop,
+            )
             Box(
                 modifier = Modifier.fillMaxSize().background(
-                    Brush.verticalGradient(colors = listOf(Color.Transparent, Color(0x30000000), Color(0xE2000000))),
+                    Brush.verticalGradient(
+                        colors = if (unreleased) {
+                            listOf(Color(0x66000000), Color(0x99000000), Color(0xF0000000))
+                        } else {
+                            listOf(Color.Transparent, Color(0x30000000), Color(0xE2000000))
+                        },
+                    ),
                 ),
             )
             Column(
@@ -1464,6 +1584,19 @@ private fun EpisodeCard(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text("S$seasonNumber E${episode.episodeNumber}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                if (unreleased) {
+                    Text(
+                        text = "Unreleased",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color(0xFFFFD38B),
+                    )
+                } else if (watched) {
+                    Text(
+                        text = "Watched",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color(0xFFA6F0B3),
+                    )
+                }
                 Text(
                     text = episode.name,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -1479,6 +1612,24 @@ private fun EpisodeCard(
                         textAlign = TextAlign.Start,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (watched) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xE61A2A1E)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.CheckCircle,
+                        contentDescription = "Watched episode",
+                        tint = Color(0xFFA6F0B3),
+                        modifier = Modifier.size(20.dp),
                     )
                 }
             }
@@ -1697,6 +1848,16 @@ private fun ImdbBadge(rating: Double) {
 
 private fun SeasonEpisode.toEpisodeContext(seasonNumber: Int): EpisodeContext {
     return EpisodeContext(seasonNumber, episodeNumber, name, overview, still, runtime, airDate, id)
+}
+
+private fun isEpisodeReleased(airDate: String?): Boolean {
+    val parsed = airDate
+        ?.takeIf { it.isNotBlank() }
+        ?.let {
+            runCatching { LocalDate.parse(it) }.getOrNull()
+        }
+        ?: return true
+    return !parsed.isAfter(LocalDate.now())
 }
 
 private fun formatTime(seconds: Double): String {

@@ -24,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,6 +33,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,7 +59,14 @@ import com.streamdek.tv.nativeapp.data.GenreItem
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import java.time.Year
+import kotlinx.coroutines.launch
+
+private data class BrowseActionState(
+    val item: MediaItem,
+    val restoreFocusRequester: FocusRequester,
+)
 
 @Composable
 fun NetworkBrowseScreen(
@@ -70,8 +83,10 @@ fun NetworkBrowseScreen(
     var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var genres by remember { mutableStateOf<List<GenreItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val initialCardRequester = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(networkId, mediaType, year, genreId) {
         loading = true
@@ -196,8 +211,35 @@ fun NetworkBrowseScreen(
                     items = rowItems,
                     initialFocusRequester = if (rowItems == resultRows.firstOrNull()) initialCardRequester else null,
                     onOpenDetail = onOpenDetail,
+                    onOpenActions = { item, requester -> actionState = BrowseActionState(item, requester) },
                 )
             }
+        }
+
+        actionState?.let { state ->
+            BrowseItemActionMenu(
+                repository = repository,
+                item = state.item,
+                onDismiss = {
+                    val restoreRequester = state.restoreFocusRequester
+                    actionState = null
+                    scope.launch {
+                        kotlinx.coroutines.delay(40)
+                        runCatching { restoreRequester.requestFocus() }
+                    }
+                },
+                onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
+                onChanged = {
+                    results = repository.fetchNetworkCatalog(
+                        networkId = networkId,
+                        type = mediaType,
+                        year = year,
+                        genreId = genreId,
+                        sort = "year",
+                        forceRefresh = true,
+                    ).results
+                },
+            )
         }
     }
 }
@@ -329,7 +371,9 @@ private fun NetworkResultRow(
     items: List<MediaItem>,
     initialFocusRequester: FocusRequester? = null,
     onOpenDetail: (String, String) -> Unit,
+    onOpenActions: (MediaItem, FocusRequester) -> Unit,
 ) {
+    val requesters = remember(items) { mutableMapOf<String, FocusRequester>() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -338,10 +382,14 @@ private fun NetworkResultRow(
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         items.forEachIndexed { index, item ->
+            val key = "${item.type}:${item.id}"
+            val requester = requesters.getOrPut(key) { FocusRequester() }
+            val effectiveRequester = if (initialFocusRequester != null && index == 0) initialFocusRequester else requester
             NetworkCatalogCard(
                 item = item,
-                modifier = if (initialFocusRequester != null && index == 0) Modifier.focusRequester(initialFocusRequester) else Modifier,
+                modifier = Modifier.focusRequester(effectiveRequester),
                 onPressed = { onOpenDetail(item.type, item.id) },
+                onMenuPressed = { onOpenActions(item, effectiveRequester) },
             )
         }
     }
@@ -353,10 +401,20 @@ private fun NetworkCatalogCard(
     item: MediaItem,
     modifier: Modifier = Modifier,
     onPressed: () -> Unit,
+    onMenuPressed: () -> Unit,
 ) {
     Card(
         onClick = onPressed,
-        modifier = modifier.size(width = 260.dp, height = 150.dp),
+        modifier = modifier
+            .size(width = 260.dp, height = 150.dp)
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp && event.key == Key.Menu) {
+                    onMenuPressed()
+                    true
+                } else {
+                    false
+                }
+            },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
             containerColor = Color(0xFF181A1F),

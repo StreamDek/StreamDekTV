@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.supervisorScope
 import java.util.LinkedHashMap
+import java.util.Locale
 import java.net.URLEncoder
 import java.time.Instant
 
@@ -21,11 +22,14 @@ class StreamDekRepository(
     private val networkCache = lruCache<String, PagedRailResponse>(12)
     private val genreCache = lruCache<String, List<GenreItem>>(8)
     private val resolvedPlaybackCache = lruCache<String, ResolvedPlaybackCandidate>(16)
+    private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
+    private val fusionBadgeSourcesState = MutableStateFlow<Map<String, FusionBadgeSource>>(emptyMap())
     private var lastPlaybackRequest: PlaybackRequest? = null
 
     val session: StateFlow<AuthSession?> = sessionStore.session
     val bootstrap: StateFlow<AccountBootstrap?> = bootstrapState
+    val fusionBadgeSources: StateFlow<Map<String, FusionBadgeSource>> = fusionBadgeSourcesState
 
     fun currentSession(): AuthSession? = sessionStore.currentSession()
 
@@ -84,6 +88,7 @@ class StreamDekRepository(
     fun signOut() {
         sessionStore.clearSession()
         bootstrapState.value = null
+        fusionBadgeSourcesState.value = emptyMap()
         detailsCache.clear()
         seasonCache.clear()
         homeCache.clear()
@@ -92,6 +97,7 @@ class StreamDekRepository(
         networkCache.clear()
         genreCache.clear()
         resolvedPlaybackCache.clear()
+        watchedHistoryCache.clear()
     }
 
     suspend fun refreshBootstrap(): AccountBootstrap? {
@@ -162,6 +168,48 @@ class StreamDekRepository(
             ),
         )
         return refreshBootstrap()
+    }
+
+    suspend fun updateStreamsPreferences(partial: Map<String, Any?>): AccountBootstrap? {
+        val existing = bootstrapState.value?.preferences?.streams ?: StreamsPreferences()
+        patchPreferences(
+            mapOf(
+                "streams" to mapOf(
+                    "fusionBadgesEnabled" to (partial["fusionBadgesEnabled"] ?: existing.fusionBadgesEnabled),
+                    "showSizeBadges" to (partial["showSizeBadges"] ?: existing.showSizeBadges),
+                    "badgePosition" to (partial["badgePosition"] ?: existing.badgePosition),
+                    "fusionBadgeUrls" to (partial["fusionBadgeUrls"] ?: existing.fusionBadgeUrls),
+                ),
+            ),
+        )
+        return refreshBootstrap()
+    }
+
+    suspend fun fetchFusionBadgeSource(url: String, forceRefresh: Boolean = false): FusionBadgeSource? {
+        val encodedUrl = URLEncoder.encode(url, "UTF-8")
+        val path = "/badges/fusion-source?url=$encodedUrl" + if (forceRefresh) "&refresh=true" else ""
+        val source = api.get<FusionBadgeSource>(path) ?: return null
+        fusionBadgeSourcesState.value = fusionBadgeSourcesState.value + (url to source)
+        return source
+    }
+
+    suspend fun ensureFusionBadgeSourcesLoaded(forceRefresh: Boolean = false) {
+        val streamsPrefs = bootstrapState.value?.preferences?.streams ?: StreamsPreferences()
+        if (!streamsPrefs.fusionBadgesEnabled) return
+        val urls = streamsPrefs.fusionBadgeUrls.take(MAX_FUSION_BADGE_URLS).filter { it.isNotBlank() }
+        supervisorScope {
+            urls.map { url ->
+                async {
+                    if (forceRefresh || fusionBadgeSourcesState.value[url] == null) {
+                        runCatching { fetchFusionBadgeSource(url, forceRefresh) }
+                    }
+                }
+            }.forEach { it.await() }
+        }
+    }
+
+    fun removeFusionBadgeSource(url: String) {
+        fusionBadgeSourcesState.value = fusionBadgeSourcesState.value - url
     }
 
     suspend fun fetchAddonManifests(forceRefresh: Boolean = false): List<AddonManifest> {
@@ -473,9 +521,81 @@ class StreamDekRepository(
         }
 
         return runCatching {
-            api.post<Any>("/trakt/sync/watched", payload) != null
+            val ok = api.post<Any>("/trakt/sync/watched", payload) != null
+            if (ok) {
+                invalidatePlaybackDerivedCaches()
+            }
+            ok
         }.onFailure {
             TvDebugLogger.w("Trakt", "markWatched failed mediaType=$mediaType mediaId=$mediaId")
+        }.getOrDefault(false)
+    }
+
+    suspend fun markBrowseItemWatched(item: MediaItem): Boolean {
+        return if (item.type == "tv" && item.episode == null) {
+            markSeriesWatched(
+                mediaId = item.id,
+                title = item.title,
+                year = item.year,
+            )
+        } else {
+            markWatched(
+                mediaType = item.type,
+                mediaId = item.id,
+                title = item.title,
+                year = item.year,
+                episode = item.episode,
+            )
+        }.also { ok ->
+            if (ok) {
+                clearBrowseItemProgress(item)
+            }
+        }
+    }
+
+    suspend fun markSeasonWatched(
+        mediaId: String,
+        title: String,
+        year: String?,
+        seasonNumber: Int,
+    ): Boolean {
+        val detail = fetchDetail(mediaId, "tv") ?: return false
+        val season = fetchSeason(mediaId, seasonNumber) ?: return false
+        if (season.episodes.isEmpty()) return false
+        val watchedAt = Instant.now().toString()
+        val payload = mapOf(
+            "movies" to emptyList<Any>(),
+            "shows" to listOf(
+                mapOf(
+                    "title" to title,
+                    "year" to year?.take(4)?.toIntOrNull(),
+                    "ids" to mapOf(
+                        "tmdb" to mediaId.toIntOrNull(),
+                        "imdb" to detail.imdbId,
+                    ),
+                    "seasons" to listOf(
+                        mapOf(
+                            "number" to seasonNumber,
+                            "episodes" to season.episodes.map {
+                                mapOf(
+                                    "number" to it.episodeNumber,
+                                    "watched_at" to watchedAt,
+                                )
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        )
+        return runCatching {
+            val ok = api.post<Any>("/trakt/sync/watched", payload) != null
+            if (ok) {
+                clearSeasonProgress(mediaId, seasonNumber, season)
+                invalidatePlaybackDerivedCaches()
+            }
+            ok
+        }.onFailure {
+            TvDebugLogger.w("Trakt", "markSeasonWatched failed mediaId=$mediaId season=$seasonNumber")
         }.getOrDefault(false)
     }
 
@@ -490,8 +610,47 @@ class StreamDekRepository(
         }
         runCatching {
             api.delete<Any>(path)
+            invalidatePlaybackDerivedCaches()
         }.onFailure {
             TvDebugLogger.w("Playback", "clearProgress failed mediaType=$mediaType mediaId=$mediaId")
+        }
+    }
+
+    suspend fun clearBrowseItemProgress(item: MediaItem) {
+        if (item.type == "tv" && item.episode == null) {
+            runCatching {
+                val library = fetchLibrary(forceRefresh = true)
+                library.continueWatching
+                    .filter { it.type == "tv" && it.id == item.id && it.episode != null }
+                    .forEach { clearProgress("tv", item.id, it.episode) }
+                clearProgress("tv", item.id, null)
+            }
+        } else {
+            clearProgress(item.type, item.id, item.episode)
+        }
+    }
+
+    suspend fun clearSeasonProgress(
+        mediaId: String,
+        seasonNumber: Int,
+        seasonDetail: SeasonDetail? = null,
+    ) {
+        val season = seasonDetail ?: fetchSeason(mediaId, seasonNumber) ?: return
+        season.episodes.forEach { episode ->
+            clearProgress(
+                mediaType = "tv",
+                mediaId = mediaId,
+                episode = EpisodeContext(
+                    seasonNumber = seasonNumber,
+                    episodeNumber = episode.episodeNumber,
+                    title = episode.name,
+                    overview = episode.overview,
+                    still = episode.still,
+                    runtime = episode.runtime,
+                    airDate = episode.airDate,
+                    tmdbEpisodeId = episode.id,
+                ),
+            )
         }
     }
 
@@ -524,6 +683,32 @@ class StreamDekRepository(
 
     suspend fun fetchContinueWatchingItem(mediaType: String, mediaId: String): ContinueWatchingItem? {
         return fetchLibrary().continueWatching.firstOrNull { it.type == mediaType && it.id == mediaId }
+    }
+
+    suspend fun fetchWatchedKeys(forceRefresh: Boolean = false): Set<String> {
+        val session = currentSession() ?: return emptySet()
+        val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return emptySet()
+        val cacheKey = "${session.user.uid}:$profileId"
+        if (!forceRefresh) {
+            watchedHistoryCache[cacheKey]?.let { return it }
+        }
+        val results = runCatching {
+            api.get<TraktHistoryResponse>("/trakt/sync/history", session)?.results.orEmpty()
+        }.onFailure {
+            TvDebugLogger.e("Trakt", "fetchWatchedKeys failed", it)
+        }.getOrDefault(emptyList())
+        val watchedKeys = results.mapNotNull(::historyItemKey).toSet()
+        watchedHistoryCache[cacheKey] = watchedKeys
+        return watchedKeys
+    }
+
+    suspend fun isWatched(
+        mediaType: String,
+        mediaId: String,
+        episode: EpisodeContext? = null,
+        forceRefresh: Boolean = false,
+    ): Boolean {
+        return fetchWatchedKeys(forceRefresh).contains(watchedHistoryKey(mediaType, mediaId, episode))
     }
 
     suspend fun syncProgress(
@@ -606,19 +791,29 @@ class StreamDekRepository(
         imdbId: String?,
         episode: EpisodeContext? = null,
         preferredStreamKey: String? = null,
+        preferredAddonName: String? = null,
+        preferredQualityGroup: String? = null,
         forceRefresh: Boolean = false,
     ): ResolvedPlaybackCandidate {
         val episodeKey = buildEpisodeKey(episode)
         val effectivePreferredStreamKey = preferredStreamKey
             ?: sessionStore.preferredStreamKey(mediaType, mediaId, episodeKey)
-        val cacheKey = playbackCacheKey(mediaType, mediaId, imdbId, episode, effectivePreferredStreamKey)
+        val cacheKey = playbackCacheKey(
+            mediaType = mediaType,
+            mediaId = mediaId,
+            imdbId = imdbId,
+            episode = episode,
+            preferredStreamKey = effectivePreferredStreamKey,
+            preferredAddonName = preferredAddonName,
+            preferredQualityGroup = preferredQualityGroup,
+        )
         if (!forceRefresh) {
             resolvedPlaybackCache[cacheKey]?.let { return it }
         }
         val lookupType = if (mediaType == "tv") "series" else "movie"
         val videoId = buildStreamVideoId(imdbId ?: mediaId, episode)
         val streams = api.get<AddonStreamsResponse>("/addons/streams/$lookupType/$videoId")?.streams.orEmpty()
-        for (stream in rankStreams(streams, effectivePreferredStreamKey)) {
+        for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {
             val resolvedUrl = resolveStreamToUrl(stream)
             if (!resolvedUrl.isNullOrBlank()) {
                 val resolvedStreamKey = streamSelectionKey(stream)
@@ -649,6 +844,94 @@ class StreamDekRepository(
         episode: EpisodeContext? = null,
     ) {
         resolvePlayback(mediaType, mediaId, imdbId, episode, preferredStreamKey = null, forceRefresh = false)
+    }
+
+    suspend fun resolvePlaybackSource(stream: AddonStream): ResolvedPlaybackSource? {
+        val resolvedUrl = resolveStreamToUrl(stream) ?: return null
+        return ResolvedPlaybackSource(
+            url = resolvedUrl,
+            contentType = guessContentType(resolvedUrl),
+            label = describeStream(stream),
+            filename = stream.behaviorHints?.filename ?: stream.title ?: stream.name,
+        )
+    }
+
+    suspend fun fetchEpisodeSegments(
+        imdbId: String,
+        season: Int,
+        episode: Int,
+    ): List<PlaybackSegment> {
+        val params = "imdb_id=${URLEncoder.encode(imdbId, "UTF-8")}&season=$season&episode=$episode"
+        return runCatching {
+            val request = okhttp3.Request.Builder()
+                .url("https://api.introdb.app/segments?$params")
+                .header("Accept", "application/json")
+                .build()
+            api.client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IllegalStateException("IntroDB fetch failed with status ${response.code}")
+                }
+                val raw = response.body?.string().orEmpty()
+                val segments = parseIntroDbSegments(api.gson.fromJson(raw, Any::class.java)).toMutableList()
+                if (segments.none { it.segmentType == "intro" }) {
+                    parseLegacyIntroSegment(fetchLegacyIntroPayload(imdbId, season, episode))?.let { legacyIntro ->
+                        segments.removeAll { it.segmentType == "intro" }
+                        segments.add(0, legacyIntro)
+                    }
+                }
+                segments.sortedWith(compareBy<PlaybackSegment> { it.startSec }.thenBy { it.endSec }.thenBy { it.segmentType })
+            }
+        }.recoverCatching {
+            parseLegacyIntroSegment(fetchLegacyIntroPayload(imdbId, season, episode))?.let(::listOf) ?: emptyList()
+        }.onFailure {
+            TvDebugLogger.w("Playback", "fetchEpisodeSegments failed imdbId=$imdbId season=$season episode=$episode")
+        }.getOrDefault(emptyList())
+    }
+
+    private suspend fun markSeriesWatched(
+        mediaId: String,
+        title: String,
+        year: String?,
+    ): Boolean {
+        val detail = fetchDetail(mediaId, "tv") ?: return false
+        val watchedAt = Instant.now().toString()
+        val seasonsPayload = detail.seasons.mapNotNull { seasonRef ->
+            val season = fetchSeason(mediaId, seasonRef.seasonNumber) ?: return@mapNotNull null
+            val episodes = season.episodes.map {
+                mapOf(
+                    "number" to it.episodeNumber,
+                    "watched_at" to watchedAt,
+                )
+            }
+            if (episodes.isEmpty()) null else mapOf(
+                "number" to seasonRef.seasonNumber,
+                "episodes" to episodes,
+            )
+        }
+        if (seasonsPayload.isEmpty()) return false
+        val payload = mapOf(
+            "movies" to emptyList<Any>(),
+            "shows" to listOf(
+                mapOf(
+                    "title" to title,
+                    "year" to year?.take(4)?.toIntOrNull(),
+                    "ids" to mapOf(
+                        "tmdb" to mediaId.toIntOrNull(),
+                        "imdb" to detail.imdbId,
+                    ),
+                    "seasons" to seasonsPayload,
+                ),
+            ),
+        )
+        return runCatching {
+            val ok = api.post<Any>("/trakt/sync/watched", payload) != null
+            if (ok) {
+                invalidatePlaybackDerivedCaches()
+            }
+            ok
+        }.onFailure {
+            TvDebugLogger.w("Trakt", "markSeriesWatched failed mediaId=$mediaId")
+        }.getOrDefault(false)
     }
 
     fun streamSelectionKey(stream: AddonStream): String {
@@ -693,10 +976,23 @@ class StreamDekRepository(
         }.getOrNull()
     }
 
-    private fun rankStreams(streams: List<AddonStream>, preferredStreamKey: String?): List<AddonStream> {
+    private fun rankStreams(
+        streams: List<AddonStream>,
+        preferredStreamKey: String?,
+        preferredAddonName: String? = null,
+        preferredQualityGroup: String? = null,
+    ): List<AddonStream> {
         val preferredQuality = bootstrapState.value?.preferences?.playback?.preferredQuality ?: "best"
+        val normalizedPreferredAddon = preferredAddonName?.trim()?.lowercase(Locale.US)
+        val normalizedPreferredQuality = preferredQualityGroup?.trim()?.lowercase(Locale.US)
         return streams.sortedWith(
             compareByDescending<AddonStream> { if (preferredStreamKey != null && streamSelectionKey(it) == preferredStreamKey) 10 else 0 }
+                .thenByDescending {
+                    if (!normalizedPreferredAddon.isNullOrBlank() && it.addonName.trim().lowercase(Locale.US) == normalizedPreferredAddon) 6 else 0
+                }
+                .thenByDescending {
+                    if (!normalizedPreferredQuality.isNullOrBlank() && it.quality?.trim()?.lowercase(Locale.US) == normalizedPreferredQuality) 4 else 0
+                }
                 .thenByDescending { if (!it.url.isNullOrBlank()) 3 else 0 }
                 .thenByDescending { if (it.cachedBy.isNotEmpty()) 2 else 0 }
                 .thenByDescending { if (!it.infoHash.isNullOrBlank()) 1 else 0 }
@@ -776,6 +1072,8 @@ class StreamDekRepository(
         imdbId: String?,
         episode: EpisodeContext?,
         preferredStreamKey: String?,
+        preferredAddonName: String? = null,
+        preferredQualityGroup: String? = null,
     ): String {
         return listOf(
             mediaType,
@@ -783,7 +1081,136 @@ class StreamDekRepository(
             imdbId.orEmpty(),
             buildEpisodeKey(episode).orEmpty(),
             preferredStreamKey.orEmpty(),
+            preferredAddonName.orEmpty(),
+            preferredQualityGroup.orEmpty(),
         ).joinToString(":")
+    }
+
+    private fun invalidatePlaybackDerivedCaches() {
+        libraryCache.clear()
+        homeCache.clear()
+        watchedHistoryCache.clear()
+    }
+
+    private fun watchedHistoryKey(mediaType: String, mediaId: String, episode: EpisodeContext?): String {
+        return if (mediaType == "tv" && episode != null) {
+            "tv:$mediaId:s${episode.seasonNumber}:e${episode.episodeNumber}"
+        } else {
+            "movie:$mediaId"
+        }
+    }
+
+    private fun historyItemKey(item: TraktHistoryItem): String? {
+        return when (item.type?.trim()?.lowercase(Locale.US)) {
+            "movie" -> item.movie?.ids?.tmdb?.let { "movie:$it" }
+            "episode" -> {
+                val showId = item.show?.ids?.tmdb ?: return null
+                val season = item.episode?.season ?: return null
+                val episode = item.episode?.number ?: return null
+                "tv:$showId:s$season:e$episode"
+            }
+            else -> null
+        }
+    }
+
+    private fun parseIntroDbSegments(payload: Any?): List<PlaybackSegment> {
+        val rawSegments = extractRawSegments(payload)
+        val normalized = rawSegments.mapNotNull(::normalizeSegment)
+            .sortedWith(compareBy<PlaybackSegment> { it.startSec }.thenBy { it.endSec }.thenBy { it.segmentType })
+        val hasIntro = normalized.any { it.segmentType == "intro" }
+        return if (hasIntro) normalized else normalized
+    }
+
+    private fun extractRawSegments(payload: Any?): List<Any?> {
+        return when (payload) {
+            is List<*> -> payload
+            is Map<*, *> -> {
+                when {
+                    payload["segments"] is List<*> -> payload["segments"] as List<*>
+                    payload["data"] is List<*> -> payload["data"] as List<*>
+                    else -> listOfNotNull("intro", "recap", "outro", "credits")
+                        .mapNotNull { key ->
+                            val value = payload[key]
+                            if (value is Map<*, *>) {
+                                linkedMapOf<String, Any?>("segment_type" to key).apply {
+                                    putAll(value.mapKeys { it.key.toString() })
+                                }
+                            } else {
+                                null
+                            }
+                        }
+                }
+            }
+            else -> emptyList()
+        }
+    }
+
+    private fun normalizeSegment(raw: Any?): PlaybackSegment? {
+        val map = raw as? Map<*, *> ?: return null
+        val segmentType = normalizeSegmentType(
+            map["segment_type"] ?: map["type"] ?: map["kind"]
+        ) ?: return null
+        val startSec = parseClockOrSeconds(
+            map["start_sec"] ?: map["start"] ?: map["startSeconds"] ?: map["start_seconds"]
+        ) ?: return null
+        val endSec = parseClockOrSeconds(
+            map["end_sec"] ?: map["end"] ?: map["endSeconds"] ?: map["end_seconds"]
+        ) ?: return null
+        if (endSec <= startSec) return null
+        return PlaybackSegment(segmentType = segmentType, startSec = startSec, endSec = endSec)
+    }
+
+    private fun parseLegacyIntroSegment(payload: Any?): PlaybackSegment? {
+        val map = payload as? Map<*, *> ?: return null
+        val startSec = parseClockOrSeconds(map["start_sec"] ?: map["start"] ?: map["intro_start"]) ?: return null
+        val endSec = parseClockOrSeconds(map["end_sec"] ?: map["end"] ?: map["intro_end"]) ?: return null
+        if (endSec <= startSec) return null
+        return PlaybackSegment(segmentType = "intro", startSec = startSec, endSec = endSec)
+    }
+
+    private fun fetchLegacyIntroPayload(imdbId: String, season: Int, episode: Int): Any? {
+        val request = okhttp3.Request.Builder()
+            .url("https://api.introdb.app/intro?imdb=${URLEncoder.encode(imdbId, "UTF-8")}&season=$season&episode=$episode")
+            .header("Accept", "application/json")
+            .build()
+        return api.client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                null
+            } else {
+                api.gson.fromJson(response.body?.string().orEmpty(), Any::class.java)
+            }
+        }
+    }
+
+    private fun normalizeSegmentType(value: Any?): String? {
+        return when (value?.toString()?.trim()?.lowercase(Locale.US)) {
+            "intro" -> "intro"
+            "recap" -> "recap"
+            "outro", "credits", "credit" -> "outro"
+            else -> null
+        }
+    }
+
+    private fun parseClockOrSeconds(value: Any?): Double? {
+        return when (value) {
+            is Number -> value.toDouble().takeIf { it.isFinite() && it >= 0.0 }
+            is String -> {
+                val trimmed = value.trim()
+                trimmed.toDoubleOrNull()?.takeIf { it >= 0.0 } ?: run {
+                    val parts = trimmed.split(":").mapNotNull { it.trim().toDoubleOrNull() }
+                    if (parts.size !in 2..3) {
+                        null
+                    } else if (parts.any { !it.isFinite() || it < 0.0 }) {
+                        null
+                    } else if (parts.size == 2) {
+                        (parts[0] * 60.0) + parts[1]
+                    } else {
+                        (parts[0] * 3600.0) + (parts[1] * 60.0) + parts[2]
+                    }
+                }
+            }
+            else -> null
+        }
     }
 
     private fun buildSyncMetadata(detail: MediaDetail?, episode: EpisodeContext?): Map<String, Any?> {

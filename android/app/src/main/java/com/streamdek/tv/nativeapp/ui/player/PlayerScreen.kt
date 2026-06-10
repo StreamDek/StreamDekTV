@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -54,6 +55,8 @@ import com.streamdek.tv.mpv.MPVView
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.MediaDetail
+import com.streamdek.tv.nativeapp.data.PlaybackPreferences
+import com.streamdek.tv.nativeapp.data.PlaybackSegment
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
@@ -63,6 +66,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val ControlsHideDelayMs = 3000L
+private const val AutoPlayNextEpisodeCountdownSeconds = 5
+
+private data class SegmentAction(
+    val kind: SegmentActionKind,
+    val segmentType: String,
+    val label: String,
+    val targetTimeSec: Double? = null,
+)
+
+private enum class SegmentActionKind {
+    Skip,
+    NextEpisode,
+}
 
 @Composable
 fun PlayerScreen(
@@ -73,6 +89,8 @@ fun PlayerScreen(
 ) {
     val scope = rememberCoroutineScope()
     val view = LocalView.current
+    val bootstrap by repository.bootstrap.collectAsState()
+    val playbackPreferences = bootstrap?.preferences?.playback ?: PlaybackPreferences()
 
     var detail by remember { mutableStateOf<MediaDetail?>(null) }
     var currentEpisode by remember(request) { mutableStateOf(request.episode) }
@@ -110,6 +128,16 @@ fun PlayerScreen(
     var watchlistPromptVisible by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var watchlistPromptShown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var completionExitTriggered by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var segments by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<List<PlaybackSegment>>(emptyList()) }
+    var handledSegmentTypes by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) {
+        mutableStateOf(setOf<String>())
+    }
+    var nextEpisodeDialogVisible by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var nextEpisodeCandidate by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<ResolvedPlaybackCandidate?>(null) }
+    var nextEpisodeLoading by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var nextEpisodeCountdown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<Int?>(null) }
+    var streamKeyOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamKey) }
+    var streamLabelOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamLabel) }
 
     val errorBackRequester = remember { FocusRequester() }
     val errorSourcesRequester = remember { FocusRequester() }
@@ -121,6 +149,7 @@ fun PlayerScreen(
     val sourcesRequester = remember { FocusRequester() }
     val rewindRequester = remember { FocusRequester() }
     val nextRequester = remember { FocusRequester() }
+    val watchedRequester = remember { FocusRequester() }
     val speedRequester = remember { FocusRequester() }
     val progressRequester = remember { FocusRequester() }
     val panelCloseRequester = remember { FocusRequester() }
@@ -207,6 +236,51 @@ fun PlayerScreen(
         return ((positionSec / durationSec) * 100.0).coerceIn(0.0, 100.0)
     }
 
+    fun activeSegmentAction(): SegmentAction? {
+        if (!playbackPreferences.areSkipSegmentsEnabled()) return null
+        val activeSegment = segments
+            .filter { segment ->
+                !handledSegmentTypes.contains(segment.segmentType) &&
+                    positionSec >= segment.startSec &&
+                    positionSec < segment.endSec
+            }
+            .sortedWith(
+                compareBy<PlaybackSegment>(
+                    { segmentPriority(it.segmentType) },
+                    { it.startSec },
+                    { it.endSec },
+                ),
+            )
+            .firstOrNull() ?: return null
+
+        return when (activeSegment.segmentType) {
+            "intro" -> SegmentAction(
+                kind = SegmentActionKind.Skip,
+                segmentType = activeSegment.segmentType,
+                label = "Skip Intro",
+                targetTimeSec = activeSegment.endSec,
+            )
+            "recap" -> SegmentAction(
+                kind = SegmentActionKind.Skip,
+                segmentType = activeSegment.segmentType,
+                label = "Skip Recap",
+                targetTimeSec = activeSegment.endSec,
+            )
+            "outro" -> nextEpisode?.let {
+                SegmentAction(
+                    kind = SegmentActionKind.NextEpisode,
+                    segmentType = activeSegment.segmentType,
+                    label = "Next Episode",
+                )
+            }
+            else -> null
+        }
+    }
+
+    fun markSegmentHandled(segmentType: String) {
+        handledSegmentTypes = handledSegmentTypes + segmentType
+    }
+
     fun currentWatchlistItem(): com.streamdek.tv.nativeapp.data.MediaItem? {
         val currentDetail = detail ?: return null
         return com.streamdek.tv.nativeapp.data.MediaItem(
@@ -251,6 +325,46 @@ fun PlayerScreen(
         if (!inWatchlist) return
         currentWatchlistItem()?.let { repository.removeFromWatchlist(it) }
         inWatchlist = false
+    }
+
+    suspend fun openNextEpisodeDialog() {
+        val targetEpisode = nextEpisode ?: return
+        val currentStream = candidate?.stream
+        val effectiveImdbId = request.imdbId ?: detail?.imdbId
+        markSegmentHandled("outro")
+        paused = true
+        controlsVisible = false
+        nextEpisodeDialogVisible = true
+        nextEpisodeLoading = true
+        nextEpisodeCountdown = null
+        nextEpisodeCandidate = repository.resolvePlayback(
+            mediaType = request.mediaType,
+            mediaId = request.mediaId,
+            imdbId = effectiveImdbId,
+            episode = targetEpisode,
+            preferredAddonName = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.addonName else null,
+            preferredQualityGroup = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.quality else null,
+            forceRefresh = true,
+        )
+        nextEpisodeLoading = false
+        if (nextEpisodeCandidate?.source != null && !nextEpisodeCandidate?.streams.isNullOrEmpty()) {
+            nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
+        }
+    }
+
+    fun beginNextEpisode(streamIndex: Int? = null) {
+        val targetEpisode = nextEpisode ?: return
+        val selectedStream = when {
+            streamIndex != null -> nextEpisodeCandidate?.streams?.getOrNull(streamIndex)
+            else -> nextEpisodeCandidate?.stream ?: nextEpisodeCandidate?.streams?.firstOrNull()
+        } ?: return
+        streamKeyOverride = repository.streamSelectionKey(selectedStream)
+        streamLabelOverride = repository.describeStreamOption(selectedStream)
+        nextEpisodeDialogVisible = false
+        nextEpisodeCountdown = null
+        nextEpisodeCandidate = null
+        paused = false
+        currentEpisode = targetEpisode
     }
 
     fun completePlaybackAndExit() {
@@ -303,7 +417,15 @@ fun PlayerScreen(
         completionThresholdReached = false
         watchedMarked = false
         completionExitTriggered = false
+        nextEpisodeDialogVisible = false
+        nextEpisodeCandidate = null
+        nextEpisodeLoading = false
+        nextEpisodeCountdown = null
+        handledSegmentTypes = emptySet()
+        segments = emptyList()
+        runCatching { repository.refreshBootstrap() }
         detail = repository.fetchDetail(request.mediaId, request.mediaType)
+        val effectiveImdbId = request.imdbId ?: detail?.imdbId
         inWatchlist = runCatching {
             repository.fetchLibrary().watchlist.any { it.id == request.mediaId && it.type == request.mediaType }
         }.getOrDefault(false)
@@ -336,16 +458,39 @@ fun PlayerScreen(
         val resolved = repository.resolvePlayback(
             request.mediaType,
             request.mediaId,
-            request.imdbId,
+            effectiveImdbId,
             currentEpisode,
-            preferredStreamKey = request.selectedStreamKey,
+            preferredStreamKey = streamKeyOverride,
         )
         candidate = resolved
         currentSourceUrl = resolved.source?.url
-        currentLabel = request.selectedStreamLabel ?: resolved.source?.label ?: "No playable stream found"
+        currentLabel = streamLabelOverride ?: resolved.source?.label ?: "No playable stream found"
         positionSec = pendingResumePositionSec ?: 0.0
         durationSec = progress?.durationSec ?: 0.0
         nextEpisode = resolveNextEpisode(repository, request, detail, currentEpisode)
+        if (request.mediaType == "tv" && currentEpisode != null && !effectiveImdbId.isNullOrBlank()) {
+            segments = repository.fetchEpisodeSegments(
+                imdbId = effectiveImdbId,
+                season = currentEpisode!!.seasonNumber,
+                episode = currentEpisode!!.episodeNumber,
+            )
+            TvDebugLogger.i(
+                "Player",
+                "segments loaded mediaId=${request.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId=$effectiveImdbId count=${segments.size}",
+            )
+        } else if (request.mediaType == "tv" && currentEpisode != null) {
+            TvDebugLogger.w(
+                "Player",
+                "segments skipped mediaId=${request.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId missing",
+            )
+        }
+        watchedMarked = repository.isWatched(
+            mediaType = request.mediaType,
+            mediaId = request.mediaId,
+            episode = currentEpisode,
+            forceRefresh = true,
+        )
+        streamLabelOverride = null
         if (resolved.source == null) {
             error = "No playable stream could be resolved"
             loading = false
@@ -431,20 +576,45 @@ fun PlayerScreen(
     LaunchedEffect(positionSec, durationSec, loading, error, watchlistPromptVisible) {
         if (loading || error != null || watchlistPromptVisible) return@LaunchedEffect
         if (completionThresholdReached || durationSec < 60.0 || positionSec < 120.0) return@LaunchedEffect
-        if (traktProgressPercent() < 98.0) return@LaunchedEffect
+        val thresholdReached = traktProgressPercent() >= 95.0 ||
+            (durationSec >= 1200.0 && (durationSec - positionSec) <= 480.0)
+        if (!thresholdReached) return@LaunchedEffect
         completionThresholdReached = true
         TvDebugLogger.i(
             "Player",
-            "completion threshold reached mediaType=${request.mediaType} mediaId=${request.mediaId} progress=${traktProgressPercent()} inWatchlist=$inWatchlist",
+            "completion threshold reached mediaType=${request.mediaType} mediaId=${request.mediaId} progress=${traktProgressPercent()} remaining=${durationSec - positionSec} inWatchlist=$inWatchlist",
         )
         scope.launch {
             markWatchedAndClearProgressIfNeeded()
         }
-        if (inWatchlist && !watchlistPromptShown) {
+        if (inWatchlist && nextEpisode == null && !watchlistPromptShown) {
             watchlistPromptShown = true
             paused = true
             controlsVisible = false
             watchlistPromptVisible = true
+        }
+    }
+
+    LaunchedEffect(positionSec, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, nextEpisode, playbackPreferences.isAutoPlayNextEpisodeEnabled()) {
+        val action = activeSegmentAction()
+        if (!playbackPreferences.isAutoPlayNextEpisodeEnabled() || action?.kind != SegmentActionKind.NextEpisode || nextEpisodeDialogVisible) {
+            return@LaunchedEffect
+        }
+        delay(1200)
+        val refreshedAction = activeSegmentAction()
+        if (playbackPreferences.isAutoPlayNextEpisodeEnabled() && refreshedAction?.kind == SegmentActionKind.NextEpisode && !nextEpisodeDialogVisible) {
+            openNextEpisodeDialog()
+        }
+    }
+
+    LaunchedEffect(nextEpisodeDialogVisible, nextEpisodeCountdown) {
+        val countdown = nextEpisodeCountdown
+        if (!nextEpisodeDialogVisible || countdown == null || countdown <= 0) return@LaunchedEffect
+        delay(1000)
+        if (countdown == 1) {
+            beginNextEpisode()
+        } else {
+            nextEpisodeCountdown = countdown - 1
         }
     }
 
@@ -483,7 +653,12 @@ fun PlayerScreen(
     }
 
     BackHandler {
-        if (watchlistPromptVisible) {
+        if (nextEpisodeDialogVisible) {
+            nextEpisodeDialogVisible = false
+            nextEpisodeCountdown = null
+            paused = false
+            scheduleControlsHide()
+        } else if (watchlistPromptVisible) {
             watchlistPromptVisible = false
             paused = false
             scheduleControlsHide()
@@ -701,7 +876,7 @@ fun PlayerScreen(
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         androidx.tv.material3.Text(
-                            text = "You've watched 98% of this title. Remove it from your watchlist?",
+                            text = "You've finished this title. Remove it from your watchlist?",
                             style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
                             color = Color.White.copy(alpha = 0.82f),
                             maxLines = 3,
@@ -841,6 +1016,7 @@ fun PlayerScreen(
                     sourcesRequester = sourcesRequester,
                     rewindRequester = rewindRequester,
                     nextRequester = nextRequester,
+                    watchedRequester = watchedRequester,
                     speedRequester = speedRequester,
                     progressRequester = progressRequester,
                     onInteract = { registerInteraction() },
@@ -856,6 +1032,12 @@ fun PlayerScreen(
                         nextEpisode?.let { currentEpisode = it }
                         registerInteraction()
                     },
+                    onMarkWatched = {
+                        scope.launch {
+                            markWatchedAndClearProgressIfNeeded()
+                            onExitToStreams()
+                        }
+                    },
                     onSeekRelative = { delta ->
                         scheduleRelativeSeek(delta)
                         registerInteraction()
@@ -869,6 +1051,47 @@ fun PlayerScreen(
         }
 
         // Pause info card — title logo + synopsis, appears 2.5 s after pause
+        if (!loading && error == null && !nextEpisodeDialogVisible && !watchlistPromptVisible) {
+            activeSegmentAction()?.let { action ->
+                PlayerSkipActionChip(
+                    label = action.label,
+                    bottomPadding = if (controlsVisible) 112.dp else 24.dp,
+                    onClick = {
+                        when (action.kind) {
+                            SegmentActionKind.Skip -> {
+                                val target = maxOf(action.targetTimeSec ?: positionSec, positionSec)
+                                scheduleSeek(target)
+                                markSegmentHandled(action.segmentType)
+                                registerInteraction()
+                            }
+                            SegmentActionKind.NextEpisode -> {
+                                scope.launch { openNextEpisodeDialog() }
+                            }
+                        }
+                    },
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                )
+            }
+        }
+
+        if (nextEpisodeDialogVisible && nextEpisode != null) {
+            NextEpisodeDialog(
+                detail = detail,
+                episode = nextEpisode!!,
+                streams = nextEpisodeCandidate?.streams.orEmpty(),
+                loading = nextEpisodeLoading,
+                countdown = nextEpisodeCountdown,
+                onPlayNow = { beginNextEpisode() },
+                onSelectStream = { index -> beginNextEpisode(index) },
+                onCancel = {
+                    nextEpisodeDialogVisible = false
+                    nextEpisodeCountdown = null
+                    paused = false
+                    scheduleControlsHide()
+                },
+            )
+        }
+
         if (pauseInfoVisible && paused && !loading && error == null && panel == null && !controlsVisible) {
             Box(
                 modifier = Modifier
@@ -1069,6 +1292,15 @@ private suspend fun resolveNextEpisode(
         airDate = first.airDate,
         tmdbEpisodeId = first.id,
     )
+}
+
+private fun segmentPriority(segmentType: String): Int {
+    return when (segmentType) {
+        "intro" -> 0
+        "recap" -> 1
+        "outro" -> 2
+        else -> 3
+    }
 }
 
 private fun preferredSubtitleTrack(

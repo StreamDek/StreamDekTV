@@ -35,6 +35,10 @@ class HomeViewModel(
         if (lastLoadKey == loadKey && (_uiState.value.content != null || _uiState.value.error != null)) {
             return
         }
+        forceRefresh(loadKey)
+    }
+
+    fun forceRefresh(loadKey: String) {
         lastLoadKey = loadKey
         viewModelScope.launch {
             val cachedContent = _uiState.value.content
@@ -42,7 +46,7 @@ class HomeViewModel(
                 isLoading = cachedContent == null,
                 error = null,
             )
-            runCatching { repository.fetchHomeContent() }
+            runCatching { repository.fetchHomeContent(forceRefresh = true) }
                 .onSuccess { content ->
                     TvDebugLogger.i("HomeVm", "load ok rails=${content.rails.size}")
                     _uiState.value = _uiState.value.copy(

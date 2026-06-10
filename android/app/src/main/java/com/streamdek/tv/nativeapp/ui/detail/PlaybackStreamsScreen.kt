@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,12 +49,17 @@ import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.AddonStream
+import com.streamdek.tv.nativeapp.data.FusionBadgeSource
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.StreamsPreferences
+import com.streamdek.tv.nativeapp.data.flattenFusionBadges
+import com.streamdek.tv.nativeapp.data.matchFusionBadges
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.FusionBadgeRow
 
 private sealed interface PlaybackStreamsUiState {
     data object Loading : PlaybackStreamsUiState
@@ -72,6 +78,17 @@ fun PlaybackStreamsScreen(
     var detail by remember(request) { mutableStateOf<MediaDetail?>(null) }
     val firstCardRequester = remember(request) { FocusRequester() }
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    val bootstrap by repository.bootstrap.collectAsState()
+    val fusionBadgeSourcesByUrl by repository.fusionBadgeSources.collectAsState()
+    val streamsPrefs = bootstrap?.preferences?.streams ?: StreamsPreferences()
+    val activeFusionBadgeSources = remember(streamsPrefs.fusionBadgeUrls, fusionBadgeSourcesByUrl) {
+        streamsPrefs.fusionBadgeUrls.mapNotNull { fusionBadgeSourcesByUrl[it] }
+    }
+
+    LaunchedEffect(Unit) {
+        repository.ensureFusionBadgeSourcesLoaded()
+    }
 
     LaunchedEffect(request) {
         uiState = PlaybackStreamsUiState.Loading
@@ -262,6 +279,8 @@ fun PlaybackStreamsScreen(
                                         stream = stream,
                                         label = repository.describeStreamOption(stream),
                                         requestFocus = if (index == 0) firstCardRequester else null,
+                                        streamsPrefs = streamsPrefs,
+                                        fusionBadgeSources = activeFusionBadgeSources,
                                         onPressed = {
                                             onPlayRequest(
                                                 request.copy(
@@ -423,13 +442,24 @@ private fun StreamOptionCard(
     stream: AddonStream,
     label: String,
     requestFocus: FocusRequester?,
+    streamsPrefs: StreamsPreferences,
+    fusionBadgeSources: List<FusionBadgeSource>,
     onPressed: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val chips = buildList {
         stream.quality?.takeIf { it.isNotBlank() }?.let(::add)
-        stream.size?.takeIf { it.isNotBlank() }?.let(::add)
+        if (streamsPrefs.showSizeBadges) {
+            stream.size?.takeIf { it.isNotBlank() }?.let(::add)
+        }
         if (stream.cachedBy.isNotEmpty()) add("Cached: ${stream.cachedBy.joinToString()}") else if (!stream.url.isNullOrBlank()) add("Direct")
+    }
+    val fusionBadges = remember(stream, fusionBadgeSources, streamsPrefs.fusionBadgesEnabled) {
+        if (streamsPrefs.fusionBadgesEnabled && fusionBadgeSources.isNotEmpty()) {
+            flattenFusionBadges(matchFusionBadges(stream, fusionBadgeSources))
+        } else {
+            emptyList()
+        }
     }
 
     Card(
@@ -449,6 +479,9 @@ private fun StreamOptionCard(
         scale = CardDefaults.scale(focusedScale = 1.015f),
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (streamsPrefs.badgePosition == "top") {
+                FusionBadgeRow(badges = fusionBadges)
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -491,6 +524,9 @@ private fun StreamOptionCard(
                         }
                     }
                 }
+            }
+            if (streamsPrefs.badgePosition != "top") {
+                FusionBadgeRow(badges = fusionBadges)
             }
         }
     }

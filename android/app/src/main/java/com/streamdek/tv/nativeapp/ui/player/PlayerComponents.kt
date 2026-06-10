@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
@@ -69,6 +70,7 @@ import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.mpv.MpvTrackInfo
+import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
@@ -144,12 +146,14 @@ internal fun PlayerBottomBar(
     sourcesRequester: FocusRequester,
     rewindRequester: FocusRequester,
     nextRequester: FocusRequester,
+    watchedRequester: FocusRequester,
     speedRequester: FocusRequester,
     progressRequester: FocusRequester,
     onInteract: () -> Unit,
     onPlayPause: () -> Unit,
     onRewind: () -> Unit,
     onNext: () -> Unit,
+    onMarkWatched: () -> Unit,
     onSeekRelative: (Double) -> Unit,
     onOpenPanel: (OverlayPanel) -> Unit,
     modifier: Modifier = Modifier,
@@ -261,7 +265,7 @@ internal fun PlayerBottomBar(
                     requester = rewindRequester,
                     upRequester = progressRequester,
                     leftRequester = sourcesRequester,
-                    rightRequester = if (hasNext) nextRequester else speedRequester,
+                    rightRequester = if (hasNext) nextRequester else watchedRequester,
                     onFocused = onInteract,
                     onClick = onRewind,
                 )
@@ -272,18 +276,28 @@ internal fun PlayerBottomBar(
                         requester = nextRequester,
                         upRequester = progressRequester,
                         leftRequester = rewindRequester,
-                        rightRequester = speedRequester,
+                        rightRequester = watchedRequester,
                         onFocused = onInteract,
                         onClick = onNext,
                     )
                 }
+                PlayerControlIconButton(
+                    icon = Icons.Filled.CheckCircle,
+                    label = "Watched",
+                    requester = watchedRequester,
+                    upRequester = progressRequester,
+                    leftRequester = if (hasNext) nextRequester else rewindRequester,
+                    rightRequester = speedRequester,
+                    onFocused = onInteract,
+                    onClick = onMarkWatched,
+                )
                 PlayerControlIconButton(
                     icon = Icons.Filled.Speed,
                     label = "Speed",
                     active = selectedPanel == OverlayPanel.Speed,
                     requester = speedRequester,
                     upRequester = progressRequester,
-                    leftRequester = if (hasNext) nextRequester else rewindRequester,
+                    leftRequester = watchedRequester,
                     onFocused = onInteract,
                     onClick = { onOpenPanel(OverlayPanel.Speed) },
                 )
@@ -638,6 +652,214 @@ internal fun PlayerOptionPanel(
             }
 
             item { Spacer(modifier = Modifier.height(14.dp)) }
+        }
+    }
+}
+
+@Composable
+internal fun PlayerSkipActionChip(
+    label: String,
+    bottomPadding: androidx.compose.ui.unit.Dp,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        shape = ButtonDefaults.shape(AppPillShape),
+        colors = ButtonDefaults.colors(
+            containerColor = Color(0xEE12141C),
+            focusedContainerColor = Color(0xFF1A1E28),
+            contentColor = Color.White,
+            focusedContentColor = Color.White,
+        ),
+        border = ButtonDefaults.border(
+            border = Border(
+                border = BorderStroke(1.dp, Color(0x28FFFFFF)),
+                shape = AppPillShape,
+            ),
+        ),
+        modifier = modifier.padding(end = 24.dp, bottom = bottomPadding),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.SkipNext,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = Color(0xFFF0BA66),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = label,
+            style = androidx.tv.material3.MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+            color = Color.White,
+        )
+    }
+}
+
+@Composable
+internal fun NextEpisodeDialog(
+    detail: MediaDetail?,
+    episode: EpisodeContext,
+    streams: List<AddonStream>,
+    loading: Boolean,
+    countdown: Int?,
+    onPlayNow: () -> Unit,
+    onSelectStream: (Int) -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xB8000000)),
+        contentAlignment = Alignment.Center,
+    ) {
+        PlayerGlassSurface(
+            modifier = Modifier.width(760.dp),
+            contentPadding = PaddingValues(0.dp),
+        ) {
+            Column {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp),
+                ) {
+                    val heroArt = episode.still ?: detail?.backdrop ?: detail?.poster
+                    if (!heroArt.isNullOrBlank()) {
+                        AsyncImage(
+                            model = heroArt,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                        )
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize().background(Color(0xFF1A1E28)))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(Color.Transparent, Color(0xD912141C)),
+                                ),
+                            ),
+                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(horizontal = 24.dp, vertical = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = detail?.title ?: "Next Episode",
+                            style = androidx.tv.material3.MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                            color = Color.White,
+                        )
+                        Text(
+                            text = buildString {
+                                append("S${episode.seasonNumber.toString().padStart(2, '0')}E${episode.episodeNumber.toString().padStart(2, '0')}")
+                                episode.title?.takeIf { it.isNotBlank() }?.let {
+                                    append("  ·  ")
+                                    append(it)
+                                }
+                            },
+                            style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.82f),
+                        )
+                    }
+                }
+
+                if (countdown != null && countdown > 0 && streams.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Auto-playing in ${countdown}s",
+                            style = androidx.tv.material3.MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White.copy(alpha = 0.9f),
+                        )
+                        OutlinedButton(onClick = onCancel) {
+                            Text("Cancel")
+                        }
+                    }
+                }
+
+                when {
+                    loading && streams.isEmpty() -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "Finding streams…",
+                                style = androidx.tv.material3.MaterialTheme.typography.bodyLarge,
+                                color = Color.White.copy(alpha = 0.8f),
+                            )
+                        }
+                    }
+                    streams.isEmpty() -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "No streams found for the next episode.",
+                                style = androidx.tv.material3.MaterialTheme.typography.bodyLarge,
+                                color = Color.White.copy(alpha = 0.8f),
+                            )
+                        }
+                    }
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier.height(320.dp),
+                            verticalArrangement = Arrangement.spacedBy(0.dp),
+                        ) {
+                            itemsIndexed(streams) { index, stream ->
+                                val meta = buildList {
+                                    stream.quality?.takeIf { it.isNotBlank() }?.let(::add)
+                                    stream.size?.takeIf { it.isNotBlank() }?.let(::add)
+                                    stream.addonName.takeIf { it.isNotBlank() }?.let(::add)
+                                }.joinToString(" • ")
+                                OptionButton(
+                                    label = stream.name?.takeIf { it.isNotBlank() }
+                                        ?: stream.title?.takeIf { it.isNotBlank() }
+                                        ?: stream.addonName.takeIf { it.isNotBlank() }
+                                        ?: "Source ${index + 1}",
+                                    subtitle = meta.ifBlank { null },
+                                    active = index == 0,
+                                    activeBadge = if (index == 0) "Auto" else null,
+                                    trailingPill = stream.quality,
+                                    requestFocus = null,
+                                    onInteract = {},
+                                    onClick = { onSelectStream(index) },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedButton(onClick = onCancel) {
+                        Text("Cancel")
+                    }
+                    Button(onClick = onPlayNow, enabled = streams.isNotEmpty()) {
+                        Text("Play Now")
+                    }
+                }
+            }
         }
     }
 }
