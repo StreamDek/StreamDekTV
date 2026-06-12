@@ -71,7 +71,7 @@ class HomeViewModel(
         heroKey = nextKey
         heroDetailJob?.cancel()
 
-        if (item == null || item.type == "network") {
+        if (item == null || item.type == "network" || item.type == "live") {
             _uiState.value = _uiState.value.copy(heroDetail = null)
             return
         }

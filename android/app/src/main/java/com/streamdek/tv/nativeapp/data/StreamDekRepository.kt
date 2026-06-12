@@ -10,6 +10,44 @@ import java.util.Locale
 import java.net.URLEncoder
 import java.time.Instant
 
+// Stremio-native catalog types that represent live content. Native 'tv' means
+// live television channels — series catalogs use 'series'.
+private val LIVE_ADDON_CATALOG_TYPES = setOf(
+    "tv", "channel", "channels", "event", "events", "live", "sport", "sports",
+)
+
+private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
+
+/** Maps a Stremio-native catalog type to the app-internal type, or null when unsupported. */
+fun mapAddonCatalogType(rawType: String): String? = when {
+    rawType == "movie" -> "movie"
+    rawType == "series" -> "tv"
+    rawType in LIVE_ADDON_CATALOG_TYPES -> "live"
+    else -> null
+}
+
+private fun truncateAtWordBoundary(text: String, maxLength: Int): String {
+    if (text.length <= maxLength) return text
+    val cut = text.take(maxLength - 1)
+    val lastSpace = cut.lastIndexOf(' ')
+    val trimmed = if (lastSpace > maxLength / 2) cut.take(lastSpace) else cut
+    return trimmed.trimEnd() + "…"
+}
+
+fun buildAddonRailTitle(addonName: String, catalogName: String?): String {
+    val addon = addonName.trim()
+    val catalog = catalogName?.trim().orEmpty()
+    if (catalog.isBlank()) return truncateAtWordBoundary(addon, MAX_ADDON_RAIL_TITLE_LENGTH)
+    // Skip the addon prefix when the catalog name already identifies it.
+    if (addon.isBlank() || catalog.contains(addon, ignoreCase = true)) {
+        return truncateAtWordBoundary(catalog, MAX_ADDON_RAIL_TITLE_LENGTH)
+    }
+    val combined = "$addon - $catalog"
+    if (combined.length <= MAX_ADDON_RAIL_TITLE_LENGTH) return combined
+    // Prefer the more descriptive catalog name over a truncated combination.
+    return truncateAtWordBoundary(catalog, MAX_ADDON_RAIL_TITLE_LENGTH)
+}
+
 class StreamDekRepository(
     private val sessionStore: AuthSessionStore,
     private val api: StreamDekApi = StreamDekApi(sessionStore),
@@ -179,6 +217,7 @@ class StreamDekRepository(
                     "showSizeBadges" to (partial["showSizeBadges"] ?: existing.showSizeBadges),
                     "badgePosition" to (partial["badgePosition"] ?: existing.badgePosition),
                     "fusionBadgeUrls" to (partial["fusionBadgeUrls"] ?: existing.fusionBadgeUrls),
+                    "activeFusionBadgeUrl" to (if (partial.containsKey("activeFusionBadgeUrl")) partial["activeFusionBadgeUrl"] else existing.activeFusionBadgeUrl),
                 ),
             ),
         )
@@ -230,6 +269,76 @@ class StreamDekRepository(
         refreshBootstrap()
     }
 
+    /**
+     * Builds one home rail per addon catalog. Catalogs are fetched through the
+     * backend proxy with the addon's Stremio-native type ('series' for shows,
+     * 'tv' for live channels, 'events'/'sport' for live events).
+     */
+    suspend fun fetchAddonCatalogRails(): List<HomeRail> {
+        val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
+            .filter { it.enabled }
+            .sortedBy { it.position }
+        if (addons.isEmpty()) return emptyList()
+
+        return supervisorScope {
+            addons.flatMap { addon ->
+                addon.manifest.catalogs.mapIndexedNotNull { index, catalog ->
+                    val rawType = catalog.type.trim().lowercase(Locale.US)
+                    val mappedType = mapAddonCatalogType(rawType) ?: return@mapIndexedNotNull null
+                    val catalogId = catalog.id.trim()
+                    if (catalogId.isBlank()) return@mapIndexedNotNull null
+                    async {
+                        val metas = runCatching {
+                            api.get<AddonCatalogResponse>(
+                                "/addons/${URLEncoder.encode(addon.id, "UTF-8")}/catalog/$rawType/${URLEncoder.encode(catalogId, "UTF-8")}",
+                            )?.metas.orEmpty()
+                        }.onFailure {
+                            TvDebugLogger.w("Home", "addon catalog fetch failed addon=${addon.id} type=$rawType id=$catalogId")
+                        }.getOrDefault(emptyList())
+                        val items = metas.mapNotNull { normalizeAddonCatalogMeta(it, mappedType, rawType) }
+                        if (items.isEmpty()) {
+                            null
+                        } else {
+                            HomeRail(
+                                id = "addon:${addon.id}:$rawType:$catalogId:$index",
+                                title = buildAddonRailTitle(addon.manifest.name, catalog.name),
+                                items = items,
+                            )
+                        }
+                    }
+                }
+            }.mapNotNull { it.await() }
+        }
+    }
+
+    private fun normalizeAddonCatalogMeta(
+        meta: AddonCatalogMetaItem,
+        fallbackType: String,
+        nativeFallbackType: String,
+    ): MediaItem? {
+        val rawId = meta.id?.trim().orEmpty()
+        val tmdbId = meta.movieDbId ?: 0
+        val resolvedId = if (tmdbId > 0) tmdbId.toString() else rawId
+        if (resolvedId.isBlank()) return null
+        val rawNativeType = meta.type?.trim()?.lowercase(Locale.US).orEmpty()
+        val mapped = rawNativeType.takeIf { it.isNotBlank() }?.let { mapAddonCatalogType(it) }
+        val type = mapped ?: fallbackType
+        val nativeType = if (mapped != null) rawNativeType else nativeFallbackType
+        return MediaItem(
+            id = resolvedId,
+            tmdbId = tmdbId,
+            title = meta.name.orEmpty(),
+            type = type,
+            poster = meta.poster,
+            backdrop = meta.background ?: meta.poster,
+            description = meta.description,
+            rating = meta.imdbRating?.toDoubleOrNull(),
+            year = meta.releaseInfo?.take(4)?.takeIf { it.toIntOrNull() != null },
+            titleLogo = meta.logo,
+            streamType = if (type == "live") (nativeType.ifBlank { "tv" }) else null,
+        )
+    }
+
     suspend fun fetchLatestAppRelease(): AppReleaseManifest? {
         val configuredPath = BuildConfig.STREAMDEK_OTA_MANIFEST_PATH.takeIf { it.isNotBlank() }
         val candidatePaths = buildList {
@@ -272,6 +381,7 @@ class StreamDekRepository(
             val recMovie = async { safeResults<RailResponse>("/trakt/recommendations/movies") }
             val recTv = async { safeResults<RailResponse>("/trakt/recommendations/shows") }
             val library = async { runCatching { fetchLibrary() }.getOrDefault(LibraryResponse()) }
+            val addonRails = async { runCatching { fetchAddonCatalogRails() }.getOrDefault(emptyList()) }
 
             val trendingMovies = trendingMovie.await()
             val trendingShows = trendingTv.await()
@@ -321,6 +431,7 @@ class StreamDekRepository(
                         add(HomeRail("networks", "Streaming Services", streamingNetworks))
                     }
                     add(HomeRail("recommended", "Recommended For You", (recommendedMovies + recommendedShows).take(20)))
+                    addAll(addonRails.await())
                 }.filter { it.items.isNotEmpty() }
             )
         }
@@ -794,6 +905,7 @@ class StreamDekRepository(
         preferredAddonName: String? = null,
         preferredQualityGroup: String? = null,
         forceRefresh: Boolean = false,
+        streamType: String? = null,
     ): ResolvedPlaybackCandidate {
         val episodeKey = buildEpisodeKey(episode)
         val effectivePreferredStreamKey = preferredStreamKey
@@ -810,7 +922,17 @@ class StreamDekRepository(
         if (!forceRefresh) {
             resolvedPlaybackCache[cacheKey]?.let { return it }
         }
-        val lookupType = if (mediaType == "tv") "series" else "movie"
+        // Live items request streams with the addon's native type; Stremio-native
+        // 'tv' (live channels) goes out as 'live-tv' so the backend doesn't
+        // confuse it with the app-internal 'tv' (= series).
+        val lookupType = when (mediaType) {
+            "live" -> {
+                val native = streamType?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() } ?: "tv"
+                if (native == "tv") "live-tv" else native
+            }
+            "tv" -> "series"
+            else -> "movie"
+        }
         val videoId = buildStreamVideoId(imdbId ?: mediaId, episode)
         val streams = api.get<AddonStreamsResponse>("/addons/streams/$lookupType/$videoId")?.streams.orEmpty()
         for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {

@@ -91,6 +91,10 @@ fun PlayerScreen(
     val view = LocalView.current
     val bootstrap by repository.bootstrap.collectAsState()
     val playbackPreferences = bootstrap?.preferences?.playback ?: PlaybackPreferences()
+    // Live broadcasts: no detail/progress/watched bookkeeping, no seeking, and
+    // back exits to the previous screen rather than the streams picker.
+    val isLive = request.mediaType == "live"
+    val exitPlayback: () -> Unit = if (isLive) onBack else onExitToStreams
 
     var detail by remember { mutableStateOf<MediaDetail?>(null) }
     var currentEpisode by remember(request) { mutableStateOf(request.episode) }
@@ -302,7 +306,7 @@ fun PlayerScreen(
     }
 
     suspend fun syncProgressIfEligible() {
-        if (completionThresholdReached) return
+        if (isLive || completionThresholdReached) return
         repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
     }
 
@@ -387,7 +391,7 @@ fun PlayerScreen(
             markWatchedAndClearProgressIfNeeded()
             removeFromWatchlistIfNeeded()
             TvDebugLogger.i("Player", "completion exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
-            onExitToStreams()
+            exitPlayback()
         }
     }
 
@@ -424,9 +428,9 @@ fun PlayerScreen(
         handledSegmentTypes = emptySet()
         segments = emptyList()
         runCatching { repository.refreshBootstrap() }
-        detail = repository.fetchDetail(request.mediaId, request.mediaType)
+        detail = if (isLive) null else repository.fetchDetail(request.mediaId, request.mediaType)
         val effectiveImdbId = request.imdbId ?: detail?.imdbId
-        inWatchlist = runCatching {
+        inWatchlist = if (isLive) false else runCatching {
             repository.fetchLibrary().watchlist.any { it.id == request.mediaId && it.type == request.mediaType }
         }.getOrDefault(false)
         val continueWatchingItem = if (request.mediaType == "tv") {
@@ -450,17 +454,22 @@ fun PlayerScreen(
                 )
             }
         }
-        val progress = repository.fetchProgress(request.mediaType, request.mediaId, currentEpisode)
-        pendingResumePositionSec = progress?.positionSec
-            ?.takeIf { it > 0.0 }
-            ?: continueWatchingItem?.positionSec
-            ?: continueWatchingItem?.resumeAt
+        val progress = if (isLive) null else repository.fetchProgress(request.mediaType, request.mediaId, currentEpisode)
+        pendingResumePositionSec = if (isLive) {
+            null
+        } else {
+            progress?.positionSec
+                ?.takeIf { it > 0.0 }
+                ?: continueWatchingItem?.positionSec
+                ?: continueWatchingItem?.resumeAt
+        }
         val resolved = repository.resolvePlayback(
             request.mediaType,
             request.mediaId,
             effectiveImdbId,
             currentEpisode,
             preferredStreamKey = streamKeyOverride,
+            streamType = request.streamType,
         )
         candidate = resolved
         currentSourceUrl = resolved.source?.url
@@ -484,7 +493,9 @@ fun PlayerScreen(
                 "segments skipped mediaId=${request.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId missing",
             )
         }
-        watchedMarked = repository.isWatched(
+        // Live items never participate in watched tracking; marking them watched
+        // here keeps markWatchedAndClearProgressIfNeeded() a no-op for live.
+        watchedMarked = isLive || repository.isWatched(
             mediaType = request.mediaType,
             mediaId = request.mediaId,
             episode = currentEpisode,
@@ -544,6 +555,7 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(currentSourceUrl, paused, loading) {
+        if (isLive) return@LaunchedEffect
         val activeSource = currentSourceUrl
         if (activeSource.isNullOrBlank() || paused || loading) return@LaunchedEffect
 
@@ -574,7 +586,7 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(positionSec, durationSec, loading, error, watchlistPromptVisible) {
-        if (loading || error != null || watchlistPromptVisible) return@LaunchedEffect
+        if (isLive || loading || error != null || watchlistPromptVisible) return@LaunchedEffect
         if (completionThresholdReached || durationSec < 60.0 || positionSec < 120.0) return@LaunchedEffect
         val thresholdReached = traktProgressPercent() >= 95.0 ||
             (durationSec >= 1200.0 && (durationSec - positionSec) <= 480.0)
@@ -671,7 +683,7 @@ fun PlayerScreen(
             scope.launch {
                 syncProgressIfEligible()
             }
-            onExitToStreams()
+            exitPlayback()
         }
     }
 
@@ -698,7 +710,12 @@ fun PlayerScreen(
                 if (!loading && panel == null && !controlsVisible && error == null && !watchlistPromptVisible) {
                     when (event.key) {
                         Key.DirectionLeft, Key.DirectionRight -> {
-                            // Reveal controls and land focus on the progress bar for scrubbing
+                            // Reveal controls and land focus on the progress bar for scrubbing.
+                            // Live streams have no scrubber — focus play/pause instead.
+                            if (isLive) {
+                                showControls(focusPlay = true)
+                                return@onPreviewKeyEvent true
+                            }
                             controlsVisible = true
                             scheduleControlsHide()
                             scope.launch {
@@ -951,7 +968,7 @@ fun PlayerScreen(
                                     scope.launch {
                                         syncProgressIfEligible()
                                     }
-                                    onExitToStreams()
+                                    exitPlayback()
                                 },
                                 modifier = Modifier.focusRequester(errorBackRequester),
                             ) {
@@ -1046,6 +1063,7 @@ fun PlayerScreen(
                         panel = it
                         controlsVisible = true
                     },
+                    isLive = isLive,
                 )
             }
         }
@@ -1157,7 +1175,7 @@ fun PlayerScreen(
                             )
                         }
                         androidx.tv.material3.Text(
-                            text = "${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(positionSec)} / ${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(durationSec)}",
+                            text = if (isLive) "LIVE" else "${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(positionSec)} / ${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(durationSec)}",
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                             color = Color.White.copy(alpha = 0.55f),
                             textAlign = TextAlign.End,
@@ -1212,6 +1230,7 @@ fun PlayerScreen(
                                         currentEpisode,
                                         preferredStreamKey = repository.streamSelectionKey(stream),
                                         forceRefresh = true,
+                                        streamType = request.streamType,
                                     )
                                 } catch (e: Exception) {
                                     error = "Could not load this source: ${e.message ?: "Unknown error"}"

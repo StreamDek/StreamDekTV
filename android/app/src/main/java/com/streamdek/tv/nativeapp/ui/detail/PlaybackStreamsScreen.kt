@@ -82,8 +82,13 @@ fun PlaybackStreamsScreen(
     val bootstrap by repository.bootstrap.collectAsState()
     val fusionBadgeSourcesByUrl by repository.fusionBadgeSources.collectAsState()
     val streamsPrefs = bootstrap?.preferences?.streams ?: StreamsPreferences()
-    val activeFusionBadgeSources = remember(streamsPrefs.fusionBadgeUrls, fusionBadgeSourcesByUrl) {
-        streamsPrefs.fusionBadgeUrls.mapNotNull { fusionBadgeSourcesByUrl[it] }
+    val activeFusionBadgeSources = remember(streamsPrefs.fusionBadgeUrls, streamsPrefs.activeFusionBadgeUrl, fusionBadgeSourcesByUrl) {
+        val urls = streamsPrefs.fusionBadgeUrls
+        val active = streamsPrefs.activeFusionBadgeUrl
+        // When multiple imports exist and one was chosen as active, match badges
+        // against that source only; otherwise merge all configured sources.
+        val effectiveUrls = if (urls.size > 1 && !active.isNullOrBlank() && urls.contains(active)) listOf(active) else urls
+        effectiveUrls.mapNotNull { fusionBadgeSourcesByUrl[it] }
     }
 
     LaunchedEffect(Unit) {

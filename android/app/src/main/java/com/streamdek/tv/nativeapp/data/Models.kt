@@ -58,6 +58,8 @@ data class MediaItem(
     val positionSec: Double? = null,
     val durationSec: Double? = null,
     val episode: EpisodeContext? = null,
+    /** Stremio-native stream type for live addon items (e.g. 'tv', 'events', 'sport'). */
+    val streamType: String? = null,
 )
 
 data class NetworkItem(
@@ -245,6 +247,7 @@ data class StreamsPreferences(
     val showSizeBadges: Boolean = true,
     val badgePosition: String = "bottom",
     val fusionBadgeUrls: List<String> = listOf(DEFAULT_FUSION_BADGE_URL),
+    val activeFusionBadgeUrl: String? = null,
 )
 
 data class PreferencesEnvelope(
@@ -298,18 +301,44 @@ data class DebridIntegration(
     val accounts: List<DebridAccount> = emptyList(),
 )
 
+data class AddonCatalogRef(
+    val type: String = "",
+    val id: String = "",
+    val name: String? = null,
+)
+
 data class AddonManifestMeta(
     val id: String = "",
     val name: String = "",
     val version: String = "",
     val description: String? = null,
+    val catalogs: List<AddonCatalogRef> = emptyList(),
 )
 
 data class AddonManifest(
     val id: String,
     val enabled: Boolean = true,
     val position: Int = 0,
+    val transportUrl: String? = null,
+    val manifestUrl: String? = null,
     val manifest: AddonManifestMeta = AddonManifestMeta(),
+)
+
+data class AddonCatalogMetaItem(
+    val id: String? = null,
+    val type: String? = null,
+    val name: String? = null,
+    val poster: String? = null,
+    val background: String? = null,
+    val logo: String? = null,
+    val description: String? = null,
+    val imdbRating: String? = null,
+    val releaseInfo: String? = null,
+    @SerializedName("moviedb_id") val movieDbId: Int? = null,
+)
+
+data class AddonCatalogResponse(
+    val metas: List<AddonCatalogMetaItem> = emptyList(),
 )
 
 data class AddonsIntegration(
@@ -478,6 +507,8 @@ data class PlaybackRequest(
     val title: String? = null,
     val selectedStreamKey: String? = null,
     val selectedStreamLabel: String? = null,
+    /** Stremio-native stream type for live playback (mediaType == "live"). */
+    val streamType: String? = null,
 )
 
 data class AppReleaseManifest(

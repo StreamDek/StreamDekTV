@@ -157,7 +157,11 @@ internal fun PlayerBottomBar(
     onSeekRelative: (Double) -> Unit,
     onOpenPanel: (OverlayPanel) -> Unit,
     modifier: Modifier = Modifier,
+    isLive: Boolean = false,
 ) {
+    // Live broadcasts have no seekable timeline — the progress bar is replaced
+    // by a LIVE indicator, so focus targets that pointed at it move to Play.
+    val timelineUpRequester = if (isLive) playRequester else progressRequester
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -200,15 +204,35 @@ internal fun PlayerBottomBar(
                 )
             }
 
-            PlayerTimeline(
-                positionSec = positionSec,
-                durationSec = durationSec,
-                requester = progressRequester,
-                downRequester = playRequester,
-                onInteract = onInteract,
-                onSeekRelative = onSeekRelative,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (isLive) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(vertical = 8.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFEF4444)),
+                    )
+                    Text(
+                        text = "LIVE",
+                        style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+                        color = Color.White,
+                    )
+                }
+            } else {
+                PlayerTimeline(
+                    positionSec = positionSec,
+                    durationSec = durationSec,
+                    requester = progressRequester,
+                    downRequester = playRequester,
+                    onInteract = onInteract,
+                    onSeekRelative = onSeekRelative,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -220,7 +244,7 @@ internal fun PlayerBottomBar(
                     label = if (paused) "Play" else "Pause",
                     primary = true,
                     requester = playRequester,
-                    upRequester = progressRequester,
+                    upRequester = timelineUpRequester,
                     rightRequester = subtitlesRequester,
                     onFocused = onInteract,
                     onClick = onPlayPause,
@@ -231,7 +255,7 @@ internal fun PlayerBottomBar(
                     label = "Subtitles",
                     active = selectedPanel == OverlayPanel.Subtitles,
                     requester = subtitlesRequester,
-                    upRequester = progressRequester,
+                    upRequester = timelineUpRequester,
                     leftRequester = playRequester,
                     rightRequester = audioRequester,
                     onFocused = onInteract,
@@ -242,7 +266,7 @@ internal fun PlayerBottomBar(
                     label = "Audio",
                     active = selectedPanel == OverlayPanel.Audio,
                     requester = audioRequester,
-                    upRequester = progressRequester,
+                    upRequester = timelineUpRequester,
                     leftRequester = subtitlesRequester,
                     rightRequester = sourcesRequester,
                     onFocused = onInteract,
@@ -253,54 +277,56 @@ internal fun PlayerBottomBar(
                     label = "Sources",
                     active = selectedPanel == OverlayPanel.Streams,
                     requester = sourcesRequester,
-                    upRequester = progressRequester,
+                    upRequester = timelineUpRequester,
                     leftRequester = audioRequester,
-                    rightRequester = rewindRequester,
+                    rightRequester = if (isLive) sourcesRequester else rewindRequester,
                     onFocused = onInteract,
                     onClick = { onOpenPanel(OverlayPanel.Streams) },
                 )
-                PlayerControlIconButton(
-                    icon = Icons.Filled.Replay10,
-                    label = "Rewind",
-                    requester = rewindRequester,
-                    upRequester = progressRequester,
-                    leftRequester = sourcesRequester,
-                    rightRequester = if (hasNext) nextRequester else watchedRequester,
-                    onFocused = onInteract,
-                    onClick = onRewind,
-                )
-                if (hasNext) {
+                if (!isLive) {
                     PlayerControlIconButton(
-                        icon = Icons.Filled.SkipNext,
-                        label = "Next",
-                        requester = nextRequester,
-                        upRequester = progressRequester,
-                        leftRequester = rewindRequester,
-                        rightRequester = watchedRequester,
+                        icon = Icons.Filled.Replay10,
+                        label = "Rewind",
+                        requester = rewindRequester,
+                        upRequester = timelineUpRequester,
+                        leftRequester = sourcesRequester,
+                        rightRequester = if (hasNext) nextRequester else watchedRequester,
                         onFocused = onInteract,
-                        onClick = onNext,
+                        onClick = onRewind,
+                    )
+                    if (hasNext) {
+                        PlayerControlIconButton(
+                            icon = Icons.Filled.SkipNext,
+                            label = "Next",
+                            requester = nextRequester,
+                            upRequester = timelineUpRequester,
+                            leftRequester = rewindRequester,
+                            rightRequester = watchedRequester,
+                            onFocused = onInteract,
+                            onClick = onNext,
+                        )
+                    }
+                    PlayerControlIconButton(
+                        icon = Icons.Filled.CheckCircle,
+                        label = "Watched",
+                        requester = watchedRequester,
+                        upRequester = timelineUpRequester,
+                        leftRequester = if (hasNext) nextRequester else rewindRequester,
+                        rightRequester = speedRequester,
+                        onFocused = onInteract,
+                        onClick = onMarkWatched,
+                    )
+                    PlayerControlIconButton(
+                        icon = Icons.Filled.Speed,
+                        label = "Speed",
+                        active = selectedPanel == OverlayPanel.Speed,
+                        requester = speedRequester,
+                        upRequester = timelineUpRequester,
+                        leftRequester = watchedRequester,
+                        onFocused = onInteract,
+                        onClick = { onOpenPanel(OverlayPanel.Speed) },
                     )
                 }
-                PlayerControlIconButton(
-                    icon = Icons.Filled.CheckCircle,
-                    label = "Watched",
-                    requester = watchedRequester,
-                    upRequester = progressRequester,
-                    leftRequester = if (hasNext) nextRequester else rewindRequester,
-                    rightRequester = speedRequester,
-                    onFocused = onInteract,
-                    onClick = onMarkWatched,
-                )
-                PlayerControlIconButton(
-                    icon = Icons.Filled.Speed,
-                    label = "Speed",
-                    active = selectedPanel == OverlayPanel.Speed,
-                    requester = speedRequester,
-                    upRequester = progressRequester,
-                    leftRequester = watchedRequester,
-                    onFocused = onInteract,
-                    onClick = { onOpenPanel(OverlayPanel.Speed) },
-                )
 
                 Spacer(Modifier.weight(1f))
             }

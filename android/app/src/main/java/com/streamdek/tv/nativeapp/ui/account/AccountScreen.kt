@@ -417,17 +417,30 @@ fun AccountScreen(
                     item {
                         CompactCard("Fusion Badge Sources") {
                             Text(
-                                text = "Badge sources control the quality, source, and language icons shown on stream cards. Up to $MAX_FUSION_BADGE_URLS sources can be active at once.",
+                                text = "Badge sources control the quality, source, and language icons shown on stream cards. Up to $MAX_FUSION_BADGE_URLS sources can be imported. With multiple imports, pick one as active — or press the active one again to merge all sources.",
                                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                val activeBadgeUrl = streamsPrefs.activeFusionBadgeUrl
+                                    ?.takeIf { streamsPrefs.fusionBadgeUrls.size > 1 && streamsPrefs.fusionBadgeUrls.contains(it) }
                                 streamsPrefs.fusionBadgeUrls.forEach { url ->
                                     BadgeUrlRow(
                                         url = url,
                                         source = fusionBadgeSourcesByUrl[url],
                                         isLoading = url in loadingBadgeUrls,
                                         canRemove = streamsPrefs.fusionBadgeUrls.size > 1,
+                                        showActiveSelector = streamsPrefs.fusionBadgeUrls.size > 1,
+                                        isActive = activeBadgeUrl == url,
+                                        onSetActive = {
+                                            scope.launch {
+                                                // Selecting the already-active source clears the
+                                                // selection so all sources merge again.
+                                                val next = if (activeBadgeUrl == url) null else url
+                                                repository.updateStreamsPreferences(mapOf("activeFusionBadgeUrl" to next))
+                                                bootstrap = repository.bootstrap.value
+                                            }
+                                        },
                                         onRefresh = {
                                             scope.launch {
                                                 loadingBadgeUrls = loadingBadgeUrls + url
@@ -438,7 +451,12 @@ fun AccountScreen(
                                         onPreview = { previewBadgeUrl = url },
                                         onRemove = {
                                             scope.launch {
-                                                repository.updateStreamsPreferences(mapOf("fusionBadgeUrls" to streamsPrefs.fusionBadgeUrls.filter { it != url }))
+                                                repository.updateStreamsPreferences(
+                                                    mapOf(
+                                                        "fusionBadgeUrls" to streamsPrefs.fusionBadgeUrls.filter { it != url },
+                                                        "activeFusionBadgeUrl" to streamsPrefs.activeFusionBadgeUrl?.takeIf { it != url },
+                                                    ),
+                                                )
                                                 repository.removeFusionBadgeSource(url)
                                                 bootstrap = repository.bootstrap.value
                                             }
@@ -1009,6 +1027,9 @@ private fun BadgeUrlRow(
     source: FusionBadgeSource?,
     isLoading: Boolean,
     canRemove: Boolean,
+    showActiveSelector: Boolean = false,
+    isActive: Boolean = false,
+    onSetActive: () -> Unit = {},
     onRefresh: () -> Unit,
     onPreview: () -> Unit,
     onRemove: () -> Unit,
@@ -1029,14 +1050,21 @@ private fun BadgeUrlRow(
             Text(
                 text = when {
                     isLoading -> "Refreshing..."
-                    source != null -> "${countEnabledFilters(source)} badges across ${countGroupsWithFilters(source)} groups"
+                    source != null -> "${countEnabledFilters(source)} badges across ${countGroupsWithFilters(source)} groups" + (if (isActive) " · Active" else "")
                     else -> "Not loaded yet"
                 },
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
                 style = MaterialTheme.typography.bodySmall,
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (showActiveSelector) {
+                if (isActive) {
+                    Button(onClick = onSetActive, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Active") }
+                } else {
+                    OutlinedButton(onClick = onSetActive, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Set Active") }
+                }
+            }
             OutlinedButton(onClick = onPreview, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Preview") }
             OutlinedButton(onClick = onRefresh, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Refresh") }
             if (canRemove) {

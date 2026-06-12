@@ -160,6 +160,17 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         onOpenAccount = {
                             navController.navigate(TopLevelDestination.Profile.route)
                         },
+                        onPlayLive = { item ->
+                            repository.savePlaybackRequest(
+                                PlaybackRequest(
+                                    mediaId = item.id,
+                                    mediaType = "live",
+                                    title = item.title,
+                                    streamType = item.streamType,
+                                ),
+                            )
+                            navController.navigate("player")
+                        },
                     )
                 }
                 composable(TopLevelDestination.Search.route) {

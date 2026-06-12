@@ -92,6 +92,7 @@ fun HomeScreen(
     onOpenDetail: (String, String) -> Unit,
     onOpenNetwork: (String, String) -> Unit,
     onOpenAccount: () -> Unit,
+    onPlayLive: (MediaItem) -> Unit = {},
 ) {
     val homeViewModel: HomeViewModel = viewModel(factory = remember(repository) { HomeViewModelFactory(repository) })
     val screenState by homeViewModel.uiState.collectAsState()
@@ -269,14 +270,15 @@ fun HomeScreen(
                                     }
                                 },
                                 onItemPressed = { item ->
-                                    if (item.type == "network") {
-                                        onOpenNetwork(item.id, item.title)
-                                    } else {
-                                        onOpenDetail(item.type, item.id)
+                                    when (item.type) {
+                                        "network" -> onOpenNetwork(item.id, item.title)
+                                        // Live broadcasts skip the detail screen and play directly.
+                                        "live" -> onPlayLive(item)
+                                        else -> onOpenDetail(item.type, item.id)
                                     }
                                 },
                                 onItemMenu = { item, requester ->
-                                    if (item.type != "network") {
+                                    if (item.type != "network" && item.type != "live") {
                                         actionState = BrowseActionState(item, requester)
                                     }
                                 },
@@ -385,6 +387,7 @@ private fun HeroBlock(
             text = when (item.type) {
                 "tv" -> "Series"
                 "network" -> "Streaming Service"
+                "live" -> "Live"
                 else -> "Movie"
             },
             style = MaterialTheme.typography.labelLarge,
