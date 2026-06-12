@@ -45,6 +45,10 @@ class AppUpdateManager(
     private val _uiState = MutableStateFlow(AppUpdateUiState())
     val uiState: StateFlow<AppUpdateUiState> = _uiState
 
+    // Re-entry guard: pressing Install again (or any second caller) while a
+    // download/install is already in flight must not start a second download.
+    private val updateInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
     init {
         _uiState.value = _uiState.value.copy(
             autoCheckEnabled = preferences.getBoolean(autoCheckEnabledKey, true),
@@ -128,42 +132,47 @@ class AppUpdateManager(
 
     suspend fun startUpdate() {
         val release = _uiState.value.availableRelease ?: return
-        if (!canInstallUnknownApps()) {
+        if (!updateInFlight.compareAndSet(false, true)) return
+        try {
+            if (!canInstallUnknownApps()) {
+                _uiState.value = _uiState.value.copy(
+                    blockedByUnknownSources = true,
+                    showPrompt = true,
+                    statusText = "Allow installs from StreamDek TV to continue.",
+                    errorMessage = null,
+                )
+                openUnknownSourcesSettings()
+                return
+            }
+
             _uiState.value = _uiState.value.copy(
-                blockedByUnknownSources = true,
-                showPrompt = true,
-                statusText = "Allow installs from StreamDek TV to continue.",
+                blockedByUnknownSources = false,
+                isInstalling = true,
                 errorMessage = null,
+                statusText = "Downloading ${release.versionName}...",
             )
-            openUnknownSourcesSettings()
-            return
-        }
 
-        _uiState.value = _uiState.value.copy(
-            blockedByUnknownSources = false,
-            isInstalling = true,
-            errorMessage = null,
-            statusText = "Downloading ${release.versionName}...",
-        )
+            val apkFile = runCatching { downloadReleaseApk(release) }.getOrElse { error ->
+                _uiState.value = _uiState.value.copy(
+                    isInstalling = false,
+                    downloadProgressPercent = null,
+                    errorMessage = error.message ?: "Update download failed.",
+                    statusText = null,
+                )
+                return
+            }
 
-        val apkFile = runCatching { downloadReleaseApk(release) }.getOrElse { error ->
+            launchPackageInstaller(apkFile)
             _uiState.value = _uiState.value.copy(
                 isInstalling = false,
                 downloadProgressPercent = null,
-                errorMessage = error.message ?: "Update download failed.",
-                statusText = null,
+                showPrompt = false,
+                statusText = "Installer opened for ${release.versionName}.",
+                errorMessage = null,
             )
-            return
+        } finally {
+            updateInFlight.set(false)
         }
-
-        launchPackageInstaller(apkFile)
-        _uiState.value = _uiState.value.copy(
-            isInstalling = false,
-            downloadProgressPercent = null,
-            showPrompt = false,
-            statusText = "Installer opened for ${release.versionName}.",
-            errorMessage = null,
-        )
     }
 
     private fun canInstallUnknownApps(): Boolean {
