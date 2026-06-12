@@ -31,8 +31,18 @@ private fun compileFusionBadgePattern(pattern: String): Regex? = try {
 private fun getCompiledFusionBadgePattern(pattern: String): Regex? =
     fusionBadgePatternCache.getOrPut(pattern) { compileFusionBadgePattern(pattern) }
 
+// Cap the searched text — very long stream metadata is the usual trigger for
+// catastrophic backtracking in user-supplied badge patterns.
+private const val MAX_SEARCH_TEXT_LENGTH = 700
+
+// A well-behaved pattern tests in microseconds; anything past this budget is
+// backtracking pathologically and gets disabled for the rest of the session.
+private const val SLOW_PATTERN_BUDGET_MS = 50L
+
 private fun fusionBadgeStreamSearchText(stream: AddonStream): String =
-    listOfNotNull(stream.name, stream.title, stream.behaviorHints?.filename).joinToString(" ")
+    listOfNotNull(stream.name, stream.title, stream.behaviorHints?.filename)
+        .joinToString(" ")
+        .take(MAX_SEARCH_TEXT_LENGTH)
 
 /** Match a stream's metadata against one or more Fusion badge sources, grouped in source group order. */
 fun matchFusionBadges(stream: AddonStream, sources: List<FusionBadgeSource>): List<FusionBadgeGroupMatches> {
@@ -60,7 +70,14 @@ fun matchFusionBadges(stream: AddonStream, sources: List<FusionBadgeSource>): Li
             if (key in seenKeys) continue
 
             val regex = getCompiledFusionBadgePattern(filter.pattern) ?: continue
-            if (!regex.containsMatchIn(text)) continue
+            val startedAt = System.currentTimeMillis()
+            val matched = runCatching { regex.containsMatchIn(text) }.getOrDefault(false)
+            if (System.currentTimeMillis() - startedAt > SLOW_PATTERN_BUDGET_MS) {
+                // Pathological pattern (catastrophic backtracking) — blacklist it
+                // so it can never stall the main thread again this session.
+                fusionBadgePatternCache[filter.pattern] = null
+            }
+            if (!matched) continue
             seenKeys.add(key)
 
             if (!groupMap.containsKey(filter.groupId)) {
