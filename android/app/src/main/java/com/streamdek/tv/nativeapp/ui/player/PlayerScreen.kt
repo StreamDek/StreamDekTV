@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -31,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -66,6 +68,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val ControlsHideDelayMs = 3000L
+private const val LiveControlsHideDelayMs = 2000L
 private const val AutoPlayNextEpisodeCountdownSeconds = 5
 
 private data class SegmentAction(
@@ -207,7 +210,7 @@ fun PlayerScreen(
         controlsHideJob = null
         if (paused || panel != null || loading || error != null) return
         controlsHideJob = scope.launch {
-            delay(ControlsHideDelayMs)
+            delay(if (isLive) LiveControlsHideDelayMs else ControlsHideDelayMs)
             if (!paused && panel == null && !loading && error == null) {
                 controlsVisible = false
             }
@@ -676,7 +679,7 @@ fun PlayerScreen(
             scheduleControlsHide()
         } else if (panel != null) {
             panel = null
-            showControls(focusPlay = true)
+            showControls(focusPlay = !isLive)
         } else {
             TvDebugLogger.i("Player", "back exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
             queueTraktStop()
@@ -713,7 +716,7 @@ fun PlayerScreen(
                             // Reveal controls and land focus on the progress bar for scrubbing.
                             // Live streams have no scrubber — focus play/pause instead.
                             if (isLive) {
-                                showControls(focusPlay = true)
+                                showControls(focusPlay = false)
                                 return@onPreviewKeyEvent true
                             }
                             controlsVisible = true
@@ -726,7 +729,7 @@ fun PlayerScreen(
                         }
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter,
                         Key.DirectionUp, Key.DirectionDown -> {
-                            showControls(focusPlay = true)
+                            showControls(focusPlay = isLive)
                             return@onPreviewKeyEvent true
                         }
                         else -> {}
@@ -756,7 +759,7 @@ fun PlayerScreen(
                         error = null
                         lastWorkingSourceUrl = currentSourceUrl
                         lastWorkingLabel = currentLabel
-                        showControls(focusPlay = true)
+                        showControls(focusPlay = !isLive)
                         pendingResumePositionSec?.takeIf { it > 0.0 }?.let { seekTo(it) }
                     }
                     onProgressCallback = { position, duration ->
@@ -777,7 +780,7 @@ fun PlayerScreen(
                         )
                         error = message
                         loading = false
-                        showControls(focusPlay = true)
+                        showControls(focusPlay = !isLive)
                     }
                     onTracksChangedCallback = { audio, subtitles, selectedAudioTrackId, selectedSubtitleTrackId ->
                         audioTracks = audio
@@ -807,7 +810,7 @@ fun PlayerScreen(
                 playerView = view
                 view.onRemoteCenterCallback = {
                     if (!controlsVisible || panel != null) {
-                        showControls(focusPlay = true)
+                        showControls(focusPlay = !isLive)
                         true
                     } else {
                         false
@@ -1011,6 +1014,14 @@ fun PlayerScreen(
         }
 
         // Playback controls — bottom bar
+        if (isLive && !loading && error == null && panel == null && !controlsVisible) {
+            LiveStatusBadge(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 26.dp, end = 26.dp),
+            )
+        }
+
         if (!loading && error == null) {
             PlayerOverlayVisibility(
                 visible = controlsVisible || panel != null || (paused && !pauseInfoVisible),
@@ -1036,7 +1047,7 @@ fun PlayerScreen(
                     watchedRequester = watchedRequester,
                     speedRequester = speedRequester,
                     progressRequester = progressRequester,
-                    onInteract = { registerInteraction() },
+                    onInteract = { if (!isLive) registerInteraction() },
                     onPlayPause = {
                         paused = !paused
                         if (!paused) scheduleControlsHide()
@@ -1212,9 +1223,9 @@ fun PlayerScreen(
                         firstItemRequester = panelFirstItemRequester,
                         onClose = {
                             panel = null
-                            showControls(focusPlay = true)
+                            showControls(focusPlay = !isLive)
                         },
-                        onInteract = { registerInteraction() },
+                        onInteract = { if (!isLive) registerInteraction() },
                         onSelectStream = { index ->
                             scope.launch {
                                 val stream = candidate?.streams?.getOrNull(index) ?: return@launch
@@ -1252,30 +1263,56 @@ fun PlayerScreen(
                         onSelectAudio = {
                             playerView?.setAudioTrack(it)
                             panel = null
-                            showControls(focusPlay = true)
+                            showControls(focusPlay = !isLive)
                         },
                         onDisableSubtitles = {
                             subtitlePreferenceAppliedForSource = currentSourceUrl
                             playerView?.disableSubtitleTrack()
                             panel = null
-                            showControls(focusPlay = true)
+                            showControls(focusPlay = !isLive)
                         },
                         onSelectSubtitle = {
                             subtitlePreferenceAppliedForSource = currentSourceUrl
                             playerView?.setSubtitleTrack(it)
                             panel = null
-                            showControls(focusPlay = true)
+                            showControls(focusPlay = !isLive)
                         },
                         onSelectSpeed = {
                             speed = it
                             panel = null
-                            showControls(focusPlay = true)
+                            showControls(focusPlay = !isLive)
                         },
                     )
                 }
             }
         }
     }
+
+@Composable
+private fun LiveStatusBadge(
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+            .background(Color(0xD911141B))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(9.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(Color(0xFFEF4444)),
+        )
+        Text(
+            text = "LIVE",
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+            color = Color.White,
+        )
+    }
+}
 
 private suspend fun resolveNextEpisode(
     repository: StreamDekRepository,
@@ -1346,3 +1383,8 @@ private fun subtitleMatchesPreference(track: MpvTrackInfo, preferredLanguage: St
             normalizedTitle.contains(alias)
     }
 }
+
+
+
+
+

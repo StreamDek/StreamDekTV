@@ -18,6 +18,15 @@ private val LIVE_ADDON_CATALOG_TYPES = setOf(
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
 
+private data class AddonCatalogCollection(
+    val addonId: String,
+    val addonName: String,
+    val rawType: String,
+    val catalogId: String,
+    val catalogName: String?,
+    val items: List<MediaItem>,
+)
+
 /** Maps a Stremio-native catalog type to the app-internal type, or null when unsupported. */
 fun mapAddonCatalogType(rawType: String): String? = when {
     rawType == "movie" -> "movie"
@@ -46,6 +55,18 @@ fun buildAddonRailTitle(addonName: String, catalogName: String?): String {
     if (combined.length <= MAX_ADDON_RAIL_TITLE_LENGTH) return combined
     // Prefer the more descriptive catalog name over a truncated combination.
     return truncateAtWordBoundary(catalog, MAX_ADDON_RAIL_TITLE_LENGTH)
+}
+
+private fun buildLiveRailTitle(rawType: String, catalogName: String?): String {
+    val catalog = catalogName?.trim().orEmpty()
+    if (catalog.isNotBlank()) {
+        return truncateAtWordBoundary(catalog, MAX_ADDON_RAIL_TITLE_LENGTH)
+    }
+    return when (rawType) {
+        "sport", "sports" -> "Sports"
+        "event", "events" -> "Live Events"
+        else -> "Live TV"
+    }
 }
 
 class StreamDekRepository(
@@ -269,12 +290,9 @@ class StreamDekRepository(
         refreshBootstrap()
     }
 
-    /**
-     * Builds one home rail per addon catalog. Catalogs are fetched through the
-     * backend proxy with the addon's Stremio-native type ('series' for shows,
-     * 'tv' for live channels, 'events'/'sport' for live events).
-     */
-    suspend fun fetchAddonCatalogRails(): List<HomeRail> {
+    private suspend fun fetchAddonCatalogCollections(
+        includeCatalog: (rawType: String, mappedType: String) -> Boolean = { _, _ -> true },
+    ): List<AddonCatalogCollection> {
         val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
             .filter { it.enabled }
             .sortedBy { it.position }
@@ -282,9 +300,10 @@ class StreamDekRepository(
 
         return supervisorScope {
             addons.flatMap { addon ->
-                addon.manifest.catalogs.mapIndexedNotNull { index, catalog ->
+                addon.manifest.catalogs.mapIndexedNotNull { _, catalog ->
                     val rawType = catalog.type.trim().lowercase(Locale.US)
                     val mappedType = mapAddonCatalogType(rawType) ?: return@mapIndexedNotNull null
+                    if (!includeCatalog(rawType, mappedType)) return@mapIndexedNotNull null
                     val catalogId = catalog.id.trim()
                     if (catalogId.isBlank()) return@mapIndexedNotNull null
                     async {
@@ -299,9 +318,12 @@ class StreamDekRepository(
                         if (items.isEmpty()) {
                             null
                         } else {
-                            HomeRail(
-                                id = "addon:${addon.id}:$rawType:$catalogId:$index",
-                                title = buildAddonRailTitle(addon.manifest.name, catalog.name),
+                            AddonCatalogCollection(
+                                addonId = addon.id,
+                                addonName = addon.manifest.name,
+                                rawType = rawType,
+                                catalogId = catalogId,
+                                catalogName = catalog.name,
                                 items = items,
                             )
                         }
@@ -309,6 +331,40 @@ class StreamDekRepository(
                 }
             }.mapNotNull { it.await() }
         }
+    }
+
+    /**
+     * Builds one home rail per addon catalog. Catalogs are fetched through the
+     * backend proxy with the addon's Stremio-native type ('series' for shows,
+     * 'tv' for live channels, 'events'/'sport' for live events).
+     */
+    suspend fun fetchAddonCatalogRails(): List<HomeRail> {
+        return fetchAddonCatalogCollections().mapIndexed { index, collection ->
+            HomeRail(
+                id = "addon:${collection.addonId}:${collection.rawType}:${collection.catalogId}:$index",
+                title = buildAddonRailTitle(collection.addonName, collection.catalogName),
+                items = collection.items,
+            )
+        }
+    }
+
+    suspend fun fetchLiveCatalogSections(): List<LiveCatalogSection> {
+        return fetchAddonCatalogCollections { _, mappedType -> mappedType == "live" }
+            .groupBy { it.addonId }
+            .map { (addonId, collections) ->
+                LiveCatalogSection(
+                    id = "live:$addonId",
+                    title = collections.firstOrNull()?.addonName.orEmpty(),
+                    rails = collections.mapIndexed { index, collection ->
+                        LiveCatalogRail(
+                            id = "live:${collection.addonId}:${collection.rawType}:${collection.catalogId}:$index",
+                            title = buildLiveRailTitle(collection.rawType, collection.catalogName),
+                            items = collection.items,
+                        )
+                    },
+                )
+            }
+            .filter { section -> section.rails.any { it.items.isNotEmpty() } }
     }
 
     private fun normalizeAddonCatalogMeta(
@@ -1453,3 +1509,4 @@ class StreamDekRepository(
         }
     }
 }
+

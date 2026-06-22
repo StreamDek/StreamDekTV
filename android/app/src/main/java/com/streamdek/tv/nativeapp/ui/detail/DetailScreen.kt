@@ -107,7 +107,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
-import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 
@@ -132,8 +131,6 @@ private data class ShareSheetState(
 private val DetailSectionInset = 42.dp
 private val HeroTopSpacerHeight = 35.dp
 private val HeroContentTopPadding = 0.dp
-private val ClockTopPadding = 22.dp
-private val ClockEndPadding = 26.dp
 
 @OptIn(ExperimentalFoundationApi::class)
 private val HeroActionNoScrollResponder = object : BringIntoViewResponder {
@@ -413,13 +410,6 @@ fun DetailScreen(
                 },
         )
 
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = ClockTopPadding, end = ClockEndPadding),
-        ) {
-            CurrentTimePill()
-        }
 
         when (val state = uiState) {
             DetailUiState.Loading -> DetailLoading()
@@ -1310,26 +1300,6 @@ private fun HeroIconButton(
     }
 }
 
-@Composable
-private fun CurrentTimePill() {
-    var currentTime by remember {
-        mutableStateOf(LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
-    }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            currentTime = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-            delay(30_000)
-        }
-    }
-
-    Text(
-        text = currentTime,
-        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.92f),
-    )
-}
-
 @OptIn(ExperimentalFoundationApi::class, ExperimentalTvMaterial3Api::class)
 @Composable
 private fun HeroActionButton(
@@ -1959,3 +1929,4 @@ private fun colorDistance(a: Color, b: Color): Float {
     val db = a.blue - b.blue
     return kotlin.math.sqrt((dr * dr + dg * dg + db * db).toDouble()).toFloat()
 }
+

@@ -1,6 +1,9 @@
 package com.streamdek.tv.nativeapp.ui
 
+import android.app.Activity
 import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,7 +25,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -37,13 +39,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -52,7 +55,16 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.tv.material3.Border
+import androidx.tv.material3.Button
+import androidx.tv.material3.ButtonDefaults
+import androidx.tv.material3.Card
+import androidx.tv.material3.CardDefaults
+import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.OutlinedButton
+import androidx.tv.material3.Text
 import com.streamdek.tv.nativeapp.AppGraph
+import com.streamdek.tv.nativeapp.data.LiveCatalogSection
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.account.AccountScreen
@@ -61,6 +73,7 @@ import com.streamdek.tv.nativeapp.ui.detail.DetailScreen
 import com.streamdek.tv.nativeapp.ui.detail.PlaybackStreamsScreen
 import com.streamdek.tv.nativeapp.ui.home.HomeScreen
 import com.streamdek.tv.nativeapp.ui.library.LibraryScreen
+import com.streamdek.tv.nativeapp.ui.live.LiveScreen
 import com.streamdek.tv.nativeapp.ui.network.NetworkBrowseScreen
 import com.streamdek.tv.nativeapp.ui.player.PlayerScreen
 import com.streamdek.tv.nativeapp.ui.search.SearchScreen
@@ -68,25 +81,26 @@ import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import com.streamdek.tv.nativeapp.update.AppUpdateUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import androidx.tv.material3.Button
-import androidx.tv.material3.ButtonDefaults
-import androidx.tv.material3.Border
-import androidx.tv.material3.Card
-import androidx.tv.material3.CardDefaults
-import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.OutlinedButton
-import androidx.tv.material3.Text
 
-private enum class TopLevelDestination(val route: String, val label: String, val icon: String, val width: androidx.compose.ui.unit.Dp) {
-    Home("home", "Home", "⌂", 106.dp),
-    Search("search", "Search", "⌕", 112.dp),
-    Library("library", "Library", "▦", 114.dp),
-    Profile("profile", "", "", 52.dp),
+private enum class TopLevelDestination(val route: String, val label: String, val width: androidx.compose.ui.unit.Dp) {
+    Home("home", "Home", 84.dp),
+    Search("search", "Search", 90.dp),
+    Live("live", "Live", 74.dp),
+    Library("library", "Library", 92.dp),
+    Profile("profile", "", 42.dp),
 }
 
+private data class LiveNavigationState(
+    val loading: Boolean = true,
+    val sections: List<LiveCatalogSection> = emptyList(),
+)
+
+private const val ExitBackPressWindowMs = 2500L
 @Composable
 fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.repository }) {
     val navController = rememberNavController()
+    val context = LocalContext.current
+    val activity = context as? Activity
     val appUpdateManager = remember { AppGraph.appUpdateManager }
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
@@ -96,15 +110,50 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val activeProfile = repository.activeStreamProfile(bootstrap)
     val appPrefs = bootstrap?.preferences?.app
     val homeContentRequester = remember { FocusRequester() }
+    val liveContentRequester = remember { FocusRequester() }
     val libraryContentRequester = remember { FocusRequester() }
+    var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
+    val liveAddonKey = remember(bootstrap) {
+        bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
+            "${it.id}:${it.enabled}:${it.position}:${it.manifest.catalogs.size}"
+        }
+    }
+
+    LaunchedEffect(session?.user?.uid, activeProfile?.id, liveAddonKey) {
+        liveNavigationState = liveNavigationState.copy(loading = true)
+        val sections = runCatching { repository.fetchLiveCatalogSections() }.getOrDefault(emptyList())
+        liveNavigationState = LiveNavigationState(
+            loading = false,
+            sections = sections,
+        )
+    }
+
+    val showLiveDestination = liveNavigationState.sections.any { section ->
+        section.rails.any { rail -> rail.items.isNotEmpty() }
+    }
+    val topLevelDestinations = remember(showLiveDestination) {
+        buildList {
+            add(TopLevelDestination.Home)
+            add(TopLevelDestination.Search)
+            if (showLiveDestination) add(TopLevelDestination.Live)
+            add(TopLevelDestination.Library)
+            add(TopLevelDestination.Profile)
+        }
+    }
     val preferredStartRoute = when (appPrefs?.startScreen) {
         TopLevelDestination.Library.route,
         "continue-watching" -> TopLevelDestination.Library.route
         TopLevelDestination.Search.route -> TopLevelDestination.Search.route
+        TopLevelDestination.Live.route -> if (showLiveDestination) TopLevelDestination.Live.route else TopLevelDestination.Home.route
         TopLevelDestination.Profile.route -> TopLevelDestination.Profile.route
         else -> TopLevelDestination.Home.route
     }
     var startScreenApplied by remember(session?.user?.uid) { mutableStateOf(false) }
+    var exitHintVisible by remember { mutableStateOf(false) }
+    var lastExitBackPressAt by remember { mutableStateOf(0L) }
+    var previousRoute by remember { mutableStateOf<String?>(null) }
+    var lastLiveFocusedItemKey by remember { mutableStateOf<String?>(null) }
+    var liveFocusRestoreToken by remember { mutableStateOf(0) }
 
     LaunchedEffect(session?.user?.uid) {
         if (session != null) {
@@ -131,11 +180,72 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         }
     }
 
+    LaunchedEffect(showLiveDestination, currentRoute) {
+        if (!showLiveDestination && currentRoute == TopLevelDestination.Live.route) {
+            navController.navigate(TopLevelDestination.Home.route) {
+                popUpTo(TopLevelDestination.Home.route) { inclusive = false }
+                launchSingleTop = true
+            }
+        }
+    }
+
+    LaunchedEffect(currentRoute) {
+        if (currentRoute == TopLevelDestination.Live.route && previousRoute == "player") {
+            liveFocusRestoreToken += 1
+        }
+        if (exitHintVisible) {
+            exitHintVisible = false
+        }
+        lastExitBackPressAt = 0L
+        previousRoute = currentRoute
+    }
+
+    LaunchedEffect(exitHintVisible) {
+        if (!exitHintVisible) return@LaunchedEffect
+        delay(ExitBackPressWindowMs)
+        exitHintVisible = false
+        lastExitBackPressAt = 0L
+    }
+
     val showUpdatePrompt =
         currentRoute != "player" &&
             currentRoute != "streams" &&
             appUpdateState.showPrompt &&
             appUpdateState.availableRelease != null
+
+    val playLiveItem: (com.streamdek.tv.nativeapp.data.MediaItem) -> Unit = { item ->
+        repository.savePlaybackRequest(
+            PlaybackRequest(
+                mediaId = item.id,
+                mediaType = "live",
+                title = item.title,
+                streamType = item.streamType,
+            ),
+        )
+        navController.navigate("player")
+    }
+
+    BackHandler(enabled = !showUpdatePrompt && currentRoute != "player") {
+        val isTopLevelRoute = currentRoute in topLevelDestinations.map { it.route }
+        when {
+            isTopLevelRoute && currentRoute != TopLevelDestination.Home.route -> {
+                navController.navigate(TopLevelDestination.Home.route) {
+                    popUpTo(TopLevelDestination.Home.route) { inclusive = false }
+                    launchSingleTop = true
+                }
+            }
+            navController.popBackStack() -> Unit
+            else -> {
+                val now = System.currentTimeMillis()
+                if (exitHintVisible && now - lastExitBackPressAt <= ExitBackPressWindowMs) {
+                    activity?.finish()
+                } else {
+                    lastExitBackPressAt = now
+                    exitHintVisible = true
+                }
+            }
+        }
+    }
 
     StreamDekTvTheme(themeKey = appPrefs?.theme) {
         Box(
@@ -160,17 +270,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         onOpenAccount = {
                             navController.navigate(TopLevelDestination.Profile.route)
                         },
-                        onPlayLive = { item ->
-                            repository.savePlaybackRequest(
-                                PlaybackRequest(
-                                    mediaId = item.id,
-                                    mediaType = "live",
-                                    title = item.title,
-                                    streamType = item.streamType,
-                                ),
-                            )
-                            navController.navigate("player")
-                        },
+
+                        onPlayLive = playLiveItem,
+
                     )
                 }
                 composable(TopLevelDestination.Search.route) {
@@ -179,6 +281,20 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         onOpenDetail = { mediaType, mediaId ->
                             navController.navigate("detail/$mediaType/$mediaId")
                         },
+                    )
+                }
+                composable(TopLevelDestination.Live.route) {
+                    LiveScreen(
+                        sections = liveNavigationState.sections,
+                        isLoading = liveNavigationState.loading,
+                        compactMode = appPrefs?.compactMode == true,
+                        entryFocusRequester = liveContentRequester,
+                        restoreFocusedItemKey = lastLiveFocusedItemKey,
+                        restoreFocusToken = liveFocusRestoreToken,
+                        onItemFocused = { key ->
+                            lastLiveFocusedItemKey = key
+                        },
+                        onPlayLive = playLiveItem,
                     )
                 }
                 composable(TopLevelDestination.Library.route) {
@@ -280,18 +396,30 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 }
             }
 
-            if (currentRoute in TopLevelDestination.entries.map { it.route } && !showUpdatePrompt) {
+            CurrentTimePill(
+                modifier = Modifier
+                    .align(if (currentRoute == "player") Alignment.TopStart else Alignment.TopEnd)
+                    .padding(
+                        top = 22.dp,
+                        start = if (currentRoute == "player") 26.dp else 0.dp,
+                        end = if (currentRoute == "player") 0.dp else 26.dp,
+                    ),
+            )
+
+            if (currentRoute in topLevelDestinations.map { it.route } && !showUpdatePrompt) {
                 TvFloatingNav(
+                    destinations = topLevelDestinations,
                     avatarIndex = activeProfile?.avatarIndex ?: 0,
                     avatarLabel = activeProfile?.name ?: "P",
                     currentRoute = currentRoute.orEmpty(),
                     downRequesters = mapOf(
                         TopLevelDestination.Home.route to homeContentRequester,
+                        TopLevelDestination.Live.route to liveContentRequester,
                         TopLevelDestination.Library.route to libraryContentRequester,
                     ),
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 34.dp, end = 42.dp),
+                        .align(Alignment.TopCenter)
+                        .padding(top = 16.dp),
                     onNavigate = { route ->
                         if (route != currentRoute) {
                             navController.navigate(route) {
@@ -311,7 +439,34 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         .fillMaxSize(),
                 )
             }
+
+            if (exitHintVisible) {
+                ExitBackHint(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 34.dp),
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun ExitBackHint(
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color(0xEE10141B))
+            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.36f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+    ) {
+        Text(
+            text = "Press back again to exit StreamDek TV",
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
     }
 }
 
@@ -547,6 +702,7 @@ private fun AppUpdatePrompt(
 
 @Composable
 private fun TvFloatingNav(
+    destinations: List<TopLevelDestination>,
     avatarIndex: Int,
     avatarLabel: String,
     currentRoute: String,
@@ -554,10 +710,14 @@ private fun TvFloatingNav(
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
 ) {
-    val slotWidths = TopLevelDestination.entries.map { it.width }
-    var highlightedRoute by remember(currentRoute) { mutableStateOf(currentRoute) }
-    val activeIndex = TopLevelDestination.entries.indexOfFirst { it.route == highlightedRoute }.coerceAtLeast(0)
-    val activeOffset = slotWidths.take(activeIndex).fold(0.dp) { acc, width -> acc + width + 6.dp }
+    val slotWidths = destinations.map { it.width }
+    var highlightedRoute by remember { mutableStateOf(currentRoute) }
+
+    LaunchedEffect(currentRoute) {
+        highlightedRoute = currentRoute
+    }
+    val activeIndex = destinations.indexOfFirst { it.route == highlightedRoute }.let { if (it >= 0) it else 0 }
+    val activeOffset = slotWidths.take(activeIndex).fold(0.dp) { acc, width -> acc + width + 4.dp }
     val animatedOffset by animateDpAsState(activeOffset, label = "nav-pill-offset")
     var navHasFocus by remember { mutableStateOf(false) }
 
@@ -571,27 +731,31 @@ private fun TvFloatingNav(
             )
             .clip(RoundedCornerShape(999.dp))
             .background(Color(0xE611141B))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(horizontal = 6.dp, vertical = 5.dp),
     ) {
         Box(
             modifier = Modifier
                 .offset(x = animatedOffset)
-                .height(40.dp)
+                .height(34.dp)
                 .width(slotWidths[activeIndex])
                 .clip(RoundedCornerShape(999.dp))
                 .background(MaterialTheme.colorScheme.primary),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            TopLevelDestination.entries.forEach { destination ->
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            destinations.forEach { destination ->
                 val active = destination.route == highlightedRoute
                 if (destination == TopLevelDestination.Profile) {
                     Box(
                         modifier = Modifier
-                            .height(40.dp)
-                            .width(slotWidths[3])
+                            .height(34.dp)
+                            .width(destination.width)
                             .clip(RoundedCornerShape(999.dp))
-                            .focusProperties {
-                                downRequesters[destination.route]?.let { down = it }
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+                                    runCatching { downRequesters[destination.route]?.requestFocus() }.isSuccess
+                                } else {
+                                    false
+                                }
                             }
                             .onFocusChanged { if (it.isFocused) highlightedRoute = destination.route }
                             .clickable { onNavigate(destination.route) },
@@ -600,7 +764,7 @@ private fun TvFloatingNav(
                         ProfileAvatarCircle(
                             avatarIndex = avatarIndex,
                             fallbackLabel = avatarLabel,
-                            size = 28.dp,
+                            size = 24.dp,
                         )
                     }
                 } else {
@@ -608,11 +772,15 @@ private fun TvFloatingNav(
                         destination = destination,
                         active = active,
                         modifier = Modifier
-                            .height(40.dp)
+                            .height(34.dp)
                             .width(destination.width)
                             .clip(RoundedCornerShape(999.dp))
-                            .focusProperties {
-                                downRequesters[destination.route]?.let { down = it }
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+                                    runCatching { downRequesters[destination.route]?.requestFocus() }.isSuccess
+                                } else {
+                                    false
+                                }
                             }
                             .onFocusChanged { if (it.isFocused) highlightedRoute = destination.route }
                             .clickable { onNavigate(destination.route) },
@@ -635,15 +803,32 @@ private fun NavTextItem(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = destination.icon,
-            color = if (active) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground,
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
             destination.label,
             color = if (active) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground,
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
         )
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

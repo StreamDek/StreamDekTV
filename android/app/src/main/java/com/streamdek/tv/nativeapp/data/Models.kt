@@ -168,6 +168,18 @@ data class HomeRail(
     val items: List<MediaItem>,
 )
 
+data class LiveCatalogRail(
+    val id: String,
+    val title: String,
+    val items: List<MediaItem>,
+)
+
+data class LiveCatalogSection(
+    val id: String,
+    val title: String,
+    val rails: List<LiveCatalogRail>,
+)
+
 data class HomeContent(
     val featured: MediaItem?,
     val rails: List<HomeRail>,
@@ -525,3 +537,5 @@ data class AppReleaseManifest(
     val assetName: String? = null,
     val fileSizeBytes: Long? = null,
 )
+
+

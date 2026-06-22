@@ -107,7 +107,6 @@ fun HomeScreen(
     val rowFocusIndices = remember { mutableStateMapOf<String, Int>() }
     val scope = rememberCoroutineScope()
     var activeRowIndex by remember { mutableIntStateOf(0) }
-    var rowActivationNonce by remember { mutableIntStateOf(0) }
     var focusedItem by remember { mutableStateOf<MediaItem?>(null) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
     val heroDetail = screenState.heroDetail
@@ -266,7 +265,6 @@ fun HomeScreen(
                                     focusedItem = item
                                     if (activeRowIndex != rowIndex) {
                                         activeRowIndex = rowIndex
-                                        rowActivationNonce += 1
                                     }
                                 },
                                 onItemPressed = { item ->
@@ -284,14 +282,6 @@ fun HomeScreen(
                                 },
                                 rowCardStyle = homeRowCardStyle,
                                 firstCardRequester = if (rowIndex == 0) homeFirstCardRequester else null,
-                                isActiveRow = activeRowIndex == rowIndex,
-                                rowActivationNonce = rowActivationNonce,
-                                requestVerticalPlacement = {
-                                    if (activeRowIndex != rowIndex) {
-                                        activeRowIndex = rowIndex
-                                        rowActivationNonce += 1
-                                    }
-                                },
                             )
                         }
                     }
@@ -455,12 +445,8 @@ private fun RailSection(
     onItemMenu: (MediaItem, FocusRequester) -> Unit,
     rowCardStyle: String,
     firstCardRequester: FocusRequester? = null,
-    isActiveRow: Boolean,
-    rowActivationNonce: Int,
-    requestVerticalPlacement: () -> Unit,
 ) {
     val requesters = remember(row.id) { mutableMapOf<String, FocusRequester>() }
-    var firstResolvedRequester by remember(row.id) { mutableStateOf<FocusRequester?>(null) }
     val noScrollResponder = remember {
         object : BringIntoViewResponder {
             override fun calculateRectForParent(localRect: Rect): Rect = localRect
@@ -476,12 +462,6 @@ private fun RailSection(
         )
     }
 
-    LaunchedEffect(isActiveRow, rowActivationNonce) {
-        if (isActiveRow && rowActivationNonce > 0) {
-            rowState.scrollToItem(0)
-            runCatching { firstResolvedRequester?.requestFocus() }
-        }
-    }
 
     Column(
         modifier = Modifier
@@ -511,16 +491,12 @@ private fun RailSection(
                 val key = "${row.id}:${mediaItemStableKey(item)}:$index"
                 val requester = requesters.getOrPut(key) { FocusRequester() }
                 val effectiveRequester = if (index == 0 && firstCardRequester != null) firstCardRequester else requester
-                if (index == 0) {
-                    firstResolvedRequester = effectiveRequester
-                }
 
                 MediaPosterCard(
                     item = item,
                     cardStyle = rowCardStyle,
                     modifier = Modifier.focusRequester(effectiveRequester),
                     onFocused = {
-                        requestVerticalPlacement()
                         onItemFocused(index, item)
                     },
                     onPressed = { onItemPressed(item) },
@@ -698,3 +674,5 @@ private fun networkSurfaceStyle(name: String): NetworkSurfaceStyle = NetworkSurf
     background = Color(0xFFFFFFFF),
     logoTint = null,
 )
+
+
