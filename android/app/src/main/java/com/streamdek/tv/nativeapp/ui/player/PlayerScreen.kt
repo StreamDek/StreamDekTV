@@ -69,6 +69,7 @@ import kotlinx.coroutines.launch
 
 private const val ControlsHideDelayMs = 3000L
 private const val LiveControlsHideDelayMs = 2000L
+private const val LiveChannelInfoHideDelayMs = 2000L
 private const val AutoPlayNextEpisodeCountdownSeconds = 5
 
 private data class SegmentAction(
@@ -119,6 +120,8 @@ fun PlayerScreen(
     var loading by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
+    var liveChannelInfoVisible by remember { mutableStateOf(false) }
+    var liveChannelInfoHideJob by remember { mutableStateOf<Job?>(null) }
     var pendingSeekJob by remember { mutableStateOf<Job?>(null) }
     var pendingResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var lastWorkingSourceUrl by remember { mutableStateOf<String?>(null) }
@@ -174,6 +177,16 @@ fun PlayerScreen(
         controlsVisible = false
     }
 
+    fun showLiveChannelInfo() {
+        if (!isLive || loading || error != null) return
+        liveChannelInfoHideJob?.cancel()
+        liveChannelInfoVisible = true
+        liveChannelInfoHideJob = scope.launch {
+            delay(LiveChannelInfoHideDelayMs)
+            liveChannelInfoVisible = false
+        }
+    }
+
     fun scheduleSeek(targetSeconds: Double) {
         val target = targetSeconds
             .coerceAtLeast(0.0)
@@ -226,6 +239,10 @@ fun PlayerScreen(
     }
 
     fun showControls(focusPlay: Boolean = false) {
+        if (isLive) {
+            showLiveChannelInfo()
+            return
+        }
         pauseInfoVisible = false
         controlsVisible = true
         scheduleControlsHide()
@@ -233,6 +250,10 @@ fun PlayerScreen(
     }
 
     fun registerInteraction() {
+        if (isLive) {
+            showLiveChannelInfo()
+            return
+        }
         pauseInfoVisible = false
         if (!controlsVisible) controlsVisible = true
         scheduleControlsHide()
@@ -659,6 +680,7 @@ fun PlayerScreen(
     DisposableEffect(request.mediaId, currentEpisode, currentSourceUrl) {
         onDispose {
             controlsHideJob?.cancel()
+            liveChannelInfoHideJob?.cancel()
             pendingSeekJob?.cancel()
             queueTraktStop()
             scope.launch {
@@ -710,15 +732,14 @@ fun PlayerScreen(
             .background(Color.Black)
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+                if (isLive && !loading && error == null && !watchlistPromptVisible) {
+                    if (event.key == Key.Back) return@onPreviewKeyEvent false
+                    showLiveChannelInfo()
+                    return@onPreviewKeyEvent true
+                }
                 if (!loading && panel == null && !controlsVisible && error == null && !watchlistPromptVisible) {
                     when (event.key) {
                         Key.DirectionLeft, Key.DirectionRight -> {
-                            // Reveal controls and land focus on the progress bar for scrubbing.
-                            // Live streams have no scrubber — focus play/pause instead.
-                            if (isLive) {
-                                showControls(focusPlay = false)
-                                return@onPreviewKeyEvent true
-                            }
                             controlsVisible = true
                             scheduleControlsHide()
                             scope.launch {
@@ -729,7 +750,7 @@ fun PlayerScreen(
                         }
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter,
                         Key.DirectionUp, Key.DirectionDown -> {
-                            showControls(focusPlay = isLive)
+                            showControls(focusPlay = false)
                             return@onPreviewKeyEvent true
                         }
                         else -> {}
@@ -743,7 +764,10 @@ fun PlayerScreen(
                 MPVView(context).apply {
                     setHeaders(mapOf("User-Agent" to "Mozilla/5.0 StreamDekTV"))
                     onRemoteCenterCallback = {
-                        if (!controlsVisible || panel != null) {
+                        if (isLive) {
+                            showLiveChannelInfo()
+                            true
+                        } else if (!controlsVisible || panel != null) {
                             showControls(focusPlay = true)
                             true
                         } else {
@@ -759,7 +783,12 @@ fun PlayerScreen(
                         error = null
                         lastWorkingSourceUrl = currentSourceUrl
                         lastWorkingLabel = currentLabel
-                        showControls(focusPlay = !isLive)
+                        if (isLive) {
+                            controlsVisible = false
+                            showLiveChannelInfo()
+                        } else {
+                            showControls(focusPlay = true)
+                        }
                         pendingResumePositionSec?.takeIf { it > 0.0 }?.let { seekTo(it) }
                     }
                     onProgressCallback = { position, duration ->
@@ -780,7 +809,9 @@ fun PlayerScreen(
                         )
                         error = message
                         loading = false
-                        showControls(focusPlay = !isLive)
+                        if (!isLive) {
+                            showControls(focusPlay = true)
+                        }
                     }
                     onTracksChangedCallback = { audio, subtitles, selectedAudioTrackId, selectedSubtitleTrackId ->
                         audioTracks = audio
@@ -809,8 +840,11 @@ fun PlayerScreen(
             update = { view ->
                 playerView = view
                 view.onRemoteCenterCallback = {
-                    if (!controlsVisible || panel != null) {
-                        showControls(focusPlay = !isLive)
+                    if (isLive) {
+                        showLiveChannelInfo()
+                        true
+                    } else if (!controlsVisible || panel != null) {
+                        showControls(focusPlay = true)
                         true
                     } else {
                         false
@@ -1014,7 +1048,7 @@ fun PlayerScreen(
         }
 
         // Playback controls — bottom bar
-        if (isLive && !loading && error == null && panel == null && !controlsVisible) {
+        if (isLive && !loading && error == null) {
             LiveStatusBadge(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1022,7 +1056,16 @@ fun PlayerScreen(
             )
         }
 
-        if (!loading && error == null) {
+        if (isLive && liveChannelInfoVisible && !loading && error == null) {
+            LiveChannelInfoOverlay(
+                label = currentLabel,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 44.dp),
+            )
+        }
+
+        if (!isLive && !loading && error == null) {
             PlayerOverlayVisibility(
                 visible = controlsVisible || panel != null || (paused && !pauseInfoVisible),
                 modifier = Modifier.align(Alignment.BottomCenter),
@@ -1314,6 +1357,27 @@ private fun LiveStatusBadge(
     }
 }
 
+@Composable
+private fun LiveChannelInfoOverlay(
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+            .background(Color(0xD911141B))
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+            color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 private suspend fun resolveNextEpisode(
     repository: StreamDekRepository,
     request: PlaybackRequest,
@@ -1383,6 +1447,8 @@ private fun subtitleMatchesPreference(track: MpvTrackInfo, preferredLanguage: St
             normalizedTitle.contains(alias)
     }
 }
+
+
 
 
 
