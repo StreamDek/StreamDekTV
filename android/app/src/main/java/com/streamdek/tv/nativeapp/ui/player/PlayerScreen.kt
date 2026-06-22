@@ -1339,19 +1339,19 @@ private fun LiveStatusBadge(
         modifier = modifier
             .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
             .background(Color(0xD911141B))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(9.dp)
+                .size(6.dp)
                 .clip(androidx.compose.foundation.shape.CircleShape)
                 .background(Color(0xFFEF4444)),
         )
         Text(
             text = "LIVE",
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
             color = Color.White,
         )
     }
@@ -1447,6 +1447,7 @@ private fun subtitleMatchesPreference(track: MpvTrackInfo, preferredLanguage: St
             normalizedTitle.contains(alias)
     }
 }
+
 
 
 

@@ -12,10 +12,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,9 +65,13 @@ fun LiveScreen(
     val localInitialCardRequester = remember { FocusRequester() }
     val initialCardRequester = entryFocusRequester ?: localInitialCardRequester
     val hasItems = sections.any { section -> section.rails.any { rail -> rail.items.isNotEmpty() } }
+    val horizontalListStates = remember { mutableMapOf<String, LazyListState>() }
+    val rowFocusIndices = remember { mutableStateMapOf<String, Int>() }
+    var initialFocusApplied by remember { mutableStateOf(false) }
 
-    LaunchedEffect(isLoading, hasItems, sections, restoreFocusToken, restoreFocusedItemKey) {
-        if (!isLoading && hasItems && restoreFocusToken == 0) {
+    LaunchedEffect(isLoading, hasItems, restoreFocusToken) {
+        if (!isLoading && hasItems && restoreFocusToken == 0 && !initialFocusApplied) {
+            initialFocusApplied = true
             kotlinx.coroutines.delay(180)
             runCatching { initialCardRequester.requestFocus() }
         }
@@ -148,13 +159,22 @@ fun LiveScreen(
                         }
                         section.rails.forEachIndexed { railIndex, rail ->
                             item("rail:${rail.id}") {
+                                val rowState = horizontalListStates.getOrPut(rail.id) {
+                                    LazyListState(firstVisibleItemIndex = rowFocusIndices[rail.id] ?: 0)
+                                }
                                 LiveRailRow(
+                                    railId = rail.id,
                                     title = rail.title,
                                     items = rail.items,
+                                    rowState = rowState,
+                                    anchoredIndex = rowFocusIndices[rail.id] ?: 0,
                                     initialFocusRequester = if (sectionIndex == 0 && railIndex == 0 && restoreFocusToken == 0) initialCardRequester else null,
                                     restoreFocusedItemKey = restoreFocusedItemKey,
                                     restoreFocusToken = restoreFocusToken,
-                                    onItemFocused = onItemFocused,
+                                    onItemFocused = { index, key ->
+                                        rowFocusIndices[rail.id] = index
+                                        onItemFocused(key)
+                                    },
                                     onPlayLive = onPlayLive,
                                 )
                             }
@@ -168,25 +188,39 @@ fun LiveScreen(
 
 @Composable
 private fun LiveRailRow(
+    railId: String,
     title: String,
     items: List<MediaItem>,
+    rowState: LazyListState,
+    anchoredIndex: Int,
     initialFocusRequester: FocusRequester? = null,
     restoreFocusedItemKey: String? = null,
     restoreFocusToken: Int = 0,
-    onItemFocused: (String) -> Unit,
+    onItemFocused: (Int, String) -> Unit,
     onPlayLive: (MediaItem) -> Unit,
 ) {
-    val requesters = remember(title) { mutableMapOf<String, FocusRequester>() }
+    val requesters = remember(railId) { mutableMapOf<String, FocusRequester>() }
+    var appliedRestoreToken by remember(railId) { mutableIntStateOf(0) }
 
     LaunchedEffect(restoreFocusToken, restoreFocusedItemKey, items) {
-        if (restoreFocusToken <= 0 || restoreFocusedItemKey.isNullOrBlank()) return@LaunchedEffect
+        if (restoreFocusToken <= 0 || restoreFocusedItemKey.isNullOrBlank() || appliedRestoreToken == restoreFocusToken) {
+            return@LaunchedEffect
+        }
         val restoreIndex = items.indexOfFirst { item ->
             liveItemStableKey(item, items.indexOf(item)) == restoreFocusedItemKey
         }
         if (restoreIndex >= 0) {
+            appliedRestoreToken = restoreFocusToken
+            rowState.scrollToItem(restoreIndex)
             kotlinx.coroutines.delay(180)
             val key = liveItemStableKey(items[restoreIndex], restoreIndex)
             runCatching { requesters[key]?.requestFocus() }
+        }
+    }
+
+    LaunchedEffect(anchoredIndex, items.size) {
+        if (items.isNotEmpty()) {
+            rowState.scrollToItem(anchoredIndex.coerceIn(0, items.lastIndex))
         }
     }
 
@@ -201,6 +235,7 @@ private fun LiveRailRow(
             modifier = Modifier.padding(start = 48.dp, end = 48.dp),
         )
         LazyRow(
+            state = rowState,
             modifier = Modifier
                 .fillMaxWidth()
                 .focusGroup(),
@@ -214,7 +249,7 @@ private fun LiveRailRow(
                 LiveChannelCard(
                     item = item,
                     modifier = Modifier.focusRequester(effectiveRequester),
-                    onFocused = { onItemFocused(key) },
+                    onFocused = { onItemFocused(index, key) },
                     onPressed = { onPlayLive(item) },
                 )
             }
@@ -302,3 +337,5 @@ private fun LiveChannelCard(
         }
     }
 }
+
+
