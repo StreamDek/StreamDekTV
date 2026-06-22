@@ -139,7 +139,15 @@ fun PlaybackStreamsScreen(
 
     val ready = uiState as? PlaybackStreamsUiState.Ready
     val overview = request.episode?.overview ?: detail?.description
-    val streamRows = ready?.candidate?.streams.orEmpty()
+    val streamRows = ready?.candidate?.streams.orEmpty().filter { stream ->
+        val url = stream.url
+        if (url != null && stream.infoHash == null && stream.size == null) {
+            val cleanUrl = url.substringBefore('?').lowercase()
+            !cleanUrl.endsWith(".m3u8")
+        } else {
+            true
+        }
+    }
     val addonNames = remember(streamRows) {
         streamRows.map { it.addonName.ifBlank { "Other" } }.distinct()
     }

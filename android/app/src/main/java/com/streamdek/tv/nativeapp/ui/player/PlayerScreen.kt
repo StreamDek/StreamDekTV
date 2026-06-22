@@ -733,9 +733,21 @@ fun PlayerScreen(
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
                 if (isLive && !loading && error == null && !watchlistPromptVisible) {
-                    if (event.key == Key.Back) return@onPreviewKeyEvent false
-                    showLiveChannelInfo()
-                    return@onPreviewKeyEvent true
+                    when (event.key) {
+                        Key.DirectionLeft,
+                        Key.DirectionRight,
+                        Key.DirectionUp,
+                        Key.DirectionDown,
+                        Key.DirectionCenter,
+                        Key.Enter,
+                        Key.NumPadEnter,
+                        Key.Menu -> {
+                            showLiveChannelInfo()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.Back -> return@onPreviewKeyEvent false
+                        else -> return@onPreviewKeyEvent false
+                    }
                 }
                 if (!loading && panel == null && !controlsVisible && error == null && !watchlistPromptVisible) {
                     when (event.key) {
@@ -750,7 +762,7 @@ fun PlayerScreen(
                         }
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter,
                         Key.DirectionUp, Key.DirectionDown -> {
-                            showControls(focusPlay = false)
+                            showControls(focusPlay = true)
                             return@onPreviewKeyEvent true
                         }
                         else -> {}
@@ -785,7 +797,7 @@ fun PlayerScreen(
                         lastWorkingLabel = currentLabel
                         if (isLive) {
                             controlsVisible = false
-                            showLiveChannelInfo()
+                            liveChannelInfoVisible = false
                         } else {
                             showControls(focusPlay = true)
                         }
@@ -1051,8 +1063,8 @@ fun PlayerScreen(
         if (isLive && !loading && error == null) {
             LiveStatusBadge(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 26.dp, end = 26.dp),
+                    .align(Alignment.BottomStart)
+                    .padding(bottom = 26.dp, start = 26.dp),
             )
         }
 
@@ -1447,6 +1459,9 @@ private fun subtitleMatchesPreference(track: MpvTrackInfo, preferredLanguage: St
             normalizedTitle.contains(alias)
     }
 }
+
+
+
 
 
 
