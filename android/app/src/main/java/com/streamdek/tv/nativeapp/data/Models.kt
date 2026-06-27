@@ -246,8 +246,9 @@ data class PlaybackPreferences(
     val nextEpisodeThresholdMode: String = "minutes",
     val nextEpisodeThresholdPercent: Int = 95,
     val nextEpisodeThresholdMinutes: Int = 2,
-    val decoderMode: String = "auto",
-    val renderSurface: String = "standard",
+    val decoderMode: String = "hardware_plus",
+    val renderSurface: String = "auto",
+    val manualStreamSelectionEnabled: Boolean = true,
 ) {
     fun isAutoPlayNextEpisodeEnabled(): Boolean = autoPlayNextEpisodeEnabled ?: autoplayNextEpisode
 
@@ -521,6 +522,7 @@ data class PlaybackRequest(
     val selectedStreamLabel: String? = null,
     /** Stremio-native stream type for live playback (mediaType == "live"). */
     val streamType: String? = null,
+    val returnToDetailOnBack: Boolean = false,
 )
 
 data class AppReleaseManifest(
@@ -537,5 +539,7 @@ data class AppReleaseManifest(
     val assetName: String? = null,
     val fileSizeBytes: Long? = null,
 )
+
+
 
 

@@ -74,8 +74,14 @@ fun PlaybackStreamsScreen(
     onBack: () -> Unit,
     onPlayRequest: (PlaybackRequest) -> Unit,
 ) {
-    var uiState by remember(request) { mutableStateOf<PlaybackStreamsUiState>(PlaybackStreamsUiState.Loading) }
-    var detail by remember(request) { mutableStateOf<MediaDetail?>(null) }
+    val cachedDetail = remember(request) { repository.peekCachedDetail(request.mediaId, request.mediaType) }
+    val cachedCandidate = remember(request) { repository.peekCachedResolvedPlayback(request) }
+    var uiState by remember(request) {
+        mutableStateOf<PlaybackStreamsUiState>(
+            cachedCandidate?.let { PlaybackStreamsUiState.Ready(cachedDetail, it) } ?: PlaybackStreamsUiState.Loading,
+        )
+    }
+    var detail by remember(request) { mutableStateOf(cachedDetail) }
     val firstCardRequester = remember(request) { FocusRequester() }
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -96,6 +102,14 @@ fun PlaybackStreamsScreen(
     }
 
     LaunchedEffect(request) {
+        cachedCandidate?.let { candidate ->
+            if (detail == null) {
+                detail = repository.fetchDetail(request.mediaId, request.mediaType)
+            }
+            uiState = PlaybackStreamsUiState.Ready(detail, candidate)
+            return@LaunchedEffect
+        }
+
         uiState = PlaybackStreamsUiState.Loading
         detail = repository.fetchDetail(request.mediaId, request.mediaType)
         runCatching {
@@ -544,3 +558,4 @@ private fun StreamOptionCard(
         }
     }
 }
+

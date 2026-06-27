@@ -2,12 +2,11 @@ package com.streamdek.tv.mpv
 
 import android.content.Context
 import android.content.res.AssetManager
-import android.graphics.SurfaceTexture
 import android.util.AttributeSet
 import android.util.Log
 import android.view.KeyEvent
-import android.view.Surface
-import android.view.TextureView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import dev.jdtech.mpv.MPVLib
 import java.io.File
 import java.io.FileOutputStream
@@ -25,7 +24,7 @@ class MPVView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-) : TextureView(context, attrs, defStyleAttr), TextureView.SurfaceTextureListener, MPVLib.EventObserver, MPVLib.LogObserver {
+) : SurfaceView(context, attrs, defStyleAttr), SurfaceHolder.Callback, MPVLib.EventObserver, MPVLib.LogObserver, MpvPlayerController {
 
     companion object {
         private const val TAG = "StreamDekMPVView"
@@ -42,12 +41,12 @@ class MPVView @JvmOverloads constructor(
     private var initialized = false
     private var pendingSource: String? = null
     private var activeSource: String? = null
-    private var paused = false
-    private var surface: Surface? = null
+    private var paused = false
     private var headers: Map<String, String>? = null
     private var lastMpvErrorMessage: String? = null
     private var pendingLoadRunnable: Runnable? = null
     private var subtitleFontsDir: File? = null
+    private var preferredDecoderMode: String = "auto"
     @Volatile private var isDestroyed = false
     /**
      * Set to true when we intentionally call loadfile to switch sources.
@@ -62,16 +61,15 @@ class MPVView @JvmOverloads constructor(
      */
     @Volatile private var isSwitchingSource = false
 
-    var onLoadCallback: ((duration: Double, width: Int, height: Int) -> Unit)? = null
-    var onProgressCallback: ((position: Double, duration: Double) -> Unit)? = null
-    var onEndCallback: (() -> Unit)? = null
-    var onErrorCallback: ((message: String) -> Unit)? = null
-    var onTracksChangedCallback: ((audioTracks: List<MpvTrackInfo>, subtitleTracks: List<MpvTrackInfo>, selectedAudioTrackId: Int?, selectedSubtitleTrackId: Int?) -> Unit)? = null
-    var onRemoteCenterCallback: (() -> Boolean)? = null
+    override var onLoadCallback: ((duration: Double, width: Int, height: Int) -> Unit)? = null
+    override var onProgressCallback: ((position: Double, duration: Double) -> Unit)? = null
+    override var onEndCallback: (() -> Unit)? = null
+    override var onErrorCallback: ((message: String) -> Unit)? = null
+    override var onTracksChangedCallback: ((audioTracks: List<MpvTrackInfo>, subtitleTracks: List<MpvTrackInfo>, selectedAudioTrackId: Int?, selectedSubtitleTrackId: Int?) -> Unit)? = null
+    override var onRemoteCenterCallback: (() -> Boolean)? = null
 
     init {
-        surfaceTextureListener = this
-        isOpaque = false
+        holder.addCallback(this)
         keepScreenOn = true
         isFocusable = true
         isFocusableInTouchMode = true
@@ -89,19 +87,18 @@ class MPVView @JvmOverloads constructor(
         return super.dispatchKeyEvent(event)
     }
 
-    override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+    override fun surfaceCreated(surfaceHolder: SurfaceHolder) {
         try {
             isDestroyed = false
             Log.i(
                 TAG,
-                "onSurfaceTextureAvailable (${width}x${height}) pendingSource=${!pendingSource.isNullOrBlank()} active=${summarizeNullableSource(activeSource)} switching=$isSwitchingSource",
+                "surfaceCreated (${width}x${height}) pendingSource=${!pendingSource.isNullOrBlank()} active=${summarizeNullableSource(activeSource)} switching=$isSwitchingSource",
             )
             keepScreenOn = true
-            surface = Surface(surfaceTexture)
             MPVLib.create(context.applicationContext)
             initOptions()
             MPVLib.init()
-            MPVLib.attachSurface(surface!!)
+            MPVLib.attachSurface(surfaceHolder.surface)
             MPVLib.addObserver(this)
             MPVLib.addLogObserver(this)
             MPVLib.setPropertyString("android-surface-size", "${width}x${height}")
@@ -123,15 +120,15 @@ class MPVView @JvmOverloads constructor(
         }
     }
 
-    override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+    override fun surfaceChanged(surfaceHolder: SurfaceHolder, format: Int, width: Int, height: Int) {
         if (!initialized) return
         MPVLib.setPropertyString("android-surface-size", "${width}x${height}")
     }
 
-    override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+    override fun surfaceDestroyed(surfaceHolder: SurfaceHolder) {
         Log.w(
             TAG,
-            "onSurfaceTextureDestroyed initialized=$initialized active=${summarizeNullableSource(activeSource)} pending=${summarizeNullableSource(pendingSource)} switching=$isSwitchingSource destroyed=$isDestroyed",
+            "surfaceDestroyed initialized=$initialized active=${summarizeNullableSource(activeSource)} pending=${summarizeNullableSource(pendingSource)} switching=$isSwitchingSource destroyed=$isDestroyed",
         )
         isDestroyed = true
         val wasInitialized = initialized
@@ -155,14 +152,7 @@ class MPVView @JvmOverloads constructor(
             MPVLib.detachSurface()
             MPVLib.destroy()
         }
-        surface?.release()
-        surface = null
         keepScreenOn = false
-        return true
-    }
-
-    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
-        // no-op
     }
 
     private fun initOptions() {
@@ -172,7 +162,7 @@ class MPVView @JvmOverloads constructor(
         MPVLib.setOptionString("vo", "gpu")
         MPVLib.setOptionString("gpu-context", "android")
         MPVLib.setOptionString("opengl-es", "yes")
-        MPVLib.setOptionString("hwdec", "auto")
+        MPVLib.setOptionString("hwdec", normalizeHwdecMode(preferredDecoderMode))
         MPVLib.setOptionString("hwdec-codecs", "all")
         MPVLib.setOptionString("ao", "audiotrack,opensles")
         MPVLib.setOptionString("cache", "yes")
@@ -198,6 +188,26 @@ class MPVView @JvmOverloads constructor(
         MPVLib.setOptionString("terminal", "no")
         MPVLib.setOptionString("input-default-bindings", "no")
         MPVLib.setOptionString("osc", "no")
+        MPVLib.setOptionString("vd-lavc-threads", "0")
+        MPVLib.setOptionString("framedrop", "vo")
+    }
+
+    override fun setDecoderMode(mode: String?) {
+        preferredDecoderMode = when (mode?.trim()?.lowercase()) {
+            "hardware", "hw", "mediacodec-copy" -> "hardware"
+            "hardware+", "hw+", "hardware_plus", "mediacodec" -> "hardware_plus"
+            "software", "sw", "none" -> "software"
+            else -> "auto"
+        }
+    }
+
+    private fun normalizeHwdecMode(mode: String): String {
+        return when (mode) {
+            "hardware" -> "mediacodec-copy"
+            "hardware_plus" -> "mediacodec"
+            "software" -> "no"
+            else -> "auto-safe"
+        }
     }
 
     private fun ensureSubtitleFontsDir() {
@@ -330,7 +340,7 @@ class MPVView @JvmOverloads constructor(
         post(runnable)
     }
 
-    fun setSource(url: String?) {
+    override fun setSource(url: String?) {
         if (url.isNullOrBlank() || isDestroyed) return
         if (url == activeSource) {
             Log.i(TAG, "setSource no-op — already active")
@@ -342,27 +352,27 @@ class MPVView @JvmOverloads constructor(
         scheduleLoad(url)
     }
 
-    fun setHeaders(nextHeaders: Map<String, String>?) {
+    override fun setHeaders(nextHeaders: Map<String, String>?) {
         if (isDestroyed) return
         headers = nextHeaders
         Log.i(TAG, "setHeaders keys=${nextHeaders?.keys?.joinToString(",") ?: "none"}")
         if (initialized) applyHeaders()
     }
 
-    fun setPaused(nextPaused: Boolean) {
+    override fun setPaused(nextPaused: Boolean) {
         if (isDestroyed) return
         paused = nextPaused
         if (!initialized) return
         MPVLib.setPropertyBoolean("pause", nextPaused)
     }
 
-    fun seekTo(positionSeconds: Double) {
+    override fun seekTo(positionSeconds: Double) {
         if (!initialized || isDestroyed) return
         Log.i(TAG, "seekTo -> $positionSeconds")
         MPVLib.command(arrayOf("seek", positionSeconds.toString(), "absolute"))
     }
 
-    fun setSpeed(speed: Double) {
+    override fun setSpeed(speed: Double) {
         if (!initialized || isDestroyed) return
         MPVLib.setPropertyDouble("speed", speed)
     }
@@ -392,13 +402,13 @@ class MPVView @JvmOverloads constructor(
         }
     }
 
-    fun setAudioTrack(trackId: Int) {
+    override fun setAudioTrack(trackId: Int) {
         if (!initialized || isDestroyed) return
         MPVLib.setPropertyInt("aid", trackId)
         dispatchTracksChanged()
     }
 
-    fun setSubtitleTrack(trackId: Int) {
+    override fun setSubtitleTrack(trackId: Int) {
         if (!initialized || isDestroyed) return
         ensureSubtitleVisibility()
         MPVLib.command(arrayOf("set", "sid", trackId.toString()))
@@ -409,7 +419,7 @@ class MPVView @JvmOverloads constructor(
         }
     }
 
-    fun disableSubtitleTrack() {
+    override fun disableSubtitleTrack() {
         if (!initialized) return
         MPVLib.command(arrayOf("set", "sid", "no"))
         post {
@@ -746,4 +756,6 @@ class MPVView @JvmOverloads constructor(
         }
     }
 }
+
+
 

@@ -365,6 +365,21 @@ fun AccountScreen(
                                     bootstrap = repository.bootstrap.value
                                 }
                             }
+                            PreferenceRow(
+                                "Choose Stream Before Play",
+                                playbackPrefs?.manualStreamSelectionEnabled != false,
+                            ) {
+                                scope.launch {
+                                    repository.updatePlaybackPreferences(mapOf("manualStreamSelectionEnabled" to (playbackPrefs?.manualStreamSelectionEnabled == false)))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            ChoiceRow("Preferred Audio Language", formatAudioLanguage(playbackPrefs?.defaultAudioLanguage ?: "auto")) {
+                                scope.launch {
+                                    repository.updatePlaybackPreferences(mapOf("defaultAudioLanguage" to nextOf(preferredAudioLanguageOptions(), normalizeAudioLanguagePreference(playbackPrefs?.defaultAudioLanguage))))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
                             ChoiceRow("Preferred Quality", playbackPrefs?.preferredQuality ?: "1080p") {
                                 scope.launch {
                                     repository.updatePlaybackPreferences(mapOf("preferredQuality" to nextOf(listOf("best", "4k", "1080p", "720p"), playbackPrefs?.preferredQuality ?: "1080p")))
@@ -380,6 +395,20 @@ fun AccountScreen(
                             ChoiceRow("Max File Size", formatFileSizeGB(playbackPrefs?.maxFileSizeGB ?: "2")) {
                                 scope.launch {
                                     repository.updatePlaybackPreferences(mapOf("maxFileSizeGB" to nextOf(listOf("0", "2", "5", "10", "20"), playbackPrefs?.maxFileSizeGB ?: "2")))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            ChoiceRow("Render Surface", formatRenderSurface(playbackPrefs?.renderSurface ?: "standard")) {
+                                scope.launch {
+                                    val current = normalizeRenderSurfacePreference(playbackPrefs?.renderSurface)
+                                    repository.updatePlaybackPreferences(mapOf("renderSurface" to nextOf(listOf("auto", "surface", "texture"), current)))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            ChoiceRow("Decoder Mode", formatDecoderMode(playbackPrefs?.decoderMode ?: "auto")) {
+                                scope.launch {
+                                    val current = normalizeDecoderModePreference(playbackPrefs?.decoderMode)
+                                    repository.updatePlaybackPreferences(mapOf("decoderMode" to nextOf(listOf("auto", "hardware", "hardware_plus", "software"), current)))
                                     bootstrap = repository.bootstrap.value
                                 }
                             }
@@ -864,6 +893,85 @@ private fun PreferenceRow(label: String, value: Boolean, requester: FocusRequest
 private fun formatFileSizeGB(raw: String): String = when (raw) {
     "0" -> "Unlimited"
     else -> "$raw GB"
+}
+
+private fun normalizeRenderSurfacePreference(value: String?): String = when (value?.trim()?.lowercase()) {
+    "texture", "textureview" -> "texture"
+    "surface", "surfaceview" -> "surface"
+    "auto", "standard", null, "" -> "auto"
+    else -> "auto"
+}
+
+private fun formatRenderSurface(raw: String): String = when (normalizeRenderSurfacePreference(raw)) {
+    "surface" -> "SurfaceView"
+    "texture" -> "TextureView"
+    else -> "Auto"
+}
+
+private fun normalizeDecoderModePreference(value: String?): String = when (value?.trim()?.lowercase()) {
+    "hardware", "hw", "mediacodec-copy" -> "hardware"
+    "hardware+", "hw+", "hardware_plus", "mediacodec" -> "hardware_plus"
+    "software", "sw", "none" -> "software"
+    else -> "auto"
+}
+
+private fun formatDecoderMode(raw: String): String = when (normalizeDecoderModePreference(raw)) {
+    "hardware" -> "Hardware Decoder (HW)"
+    "hardware_plus" -> "Hardware+ (HW+)"
+    "software" -> "Software Decoder (SW)"
+    else -> "Auto"
+}
+
+private fun preferredAudioLanguageOptions(): List<String> = listOf(
+    "auto",
+    "en",
+    "es",
+    "fr",
+    "de",
+    "it",
+    "pt",
+    "ar",
+    "hi",
+    "ja",
+    "ko",
+    "zh",
+    "ru",
+    "tr",
+)
+
+private fun normalizeAudioLanguagePreference(value: String?): String = when (value?.trim()?.lowercase()) {
+    null, "", "auto" -> "auto"
+    "eng", "english" -> "en"
+    "spa", "spanish", "espanol" -> "es"
+    "fra", "fre", "french" -> "fr"
+    "deu", "ger", "german" -> "de"
+    "ita", "italian" -> "it"
+    "por", "portuguese" -> "pt"
+    "ara", "arabic" -> "ar"
+    "hin", "hindi" -> "hi"
+    "jpn", "japanese" -> "ja"
+    "kor", "korean" -> "ko"
+    "zho", "chi", "chinese", "mandarin", "cantonese" -> "zh"
+    "rus", "russian" -> "ru"
+    "tur", "turkish" -> "tr"
+    else -> value.trim().lowercase()
+}
+
+private fun formatAudioLanguage(raw: String): String = when (normalizeAudioLanguagePreference(raw)) {
+    "en" -> "English"
+    "es" -> "Spanish"
+    "fr" -> "French"
+    "de" -> "German"
+    "it" -> "Italian"
+    "pt" -> "Portuguese"
+    "ar" -> "Arabic"
+    "hi" -> "Hindi"
+    "ja" -> "Japanese"
+    "ko" -> "Korean"
+    "zh" -> "Chinese"
+    "ru" -> "Russian"
+    "tr" -> "Turkish"
+    else -> "Auto"
 }
 
 @Composable

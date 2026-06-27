@@ -386,8 +386,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                             navController.navigate("detail/$mediaType/$mediaId")
                         },
                         onPlay = { request: PlaybackRequest ->
-                            repository.savePlaybackRequest(request)
-                            navController.navigate("streams")
+                            val useAutoSelection = bootstrap?.preferences?.playback?.manualStreamSelectionEnabled == false
+                            repository.savePlaybackRequest(
+                                if (useAutoSelection) request.copy(returnToDetailOnBack = true) else request.copy(returnToDetailOnBack = false)
+                            )
+                            if (useAutoSelection) {
+                                navController.navigate("player")
+                            } else {
+                                navController.navigate("streams")
+                            }
                         },
                         onRequireAuth = {
                             navController.navigate("auth")
@@ -809,6 +816,8 @@ private fun NavTextItem(
         )
     }
 }
+
+
 
 
 

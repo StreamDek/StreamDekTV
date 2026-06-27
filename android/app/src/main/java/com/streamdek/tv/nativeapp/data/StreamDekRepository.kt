@@ -100,6 +100,22 @@ class StreamDekRepository(
 
     fun consumePlaybackRequest(): PlaybackRequest? = lastPlaybackRequest
 
+    fun peekCachedDetail(id: String, type: String): MediaDetail? {
+        val cacheKey = "$type:$id"
+        return detailsCache[cacheKey]
+    }
+
+    fun peekCachedResolvedPlayback(request: PlaybackRequest): ResolvedPlaybackCandidate? {
+        val cacheKey = playbackCacheKey(
+            mediaType = request.mediaType,
+            mediaId = request.mediaId,
+            imdbId = request.imdbId,
+            episode = request.episode,
+            preferredStreamKey = request.selectedStreamKey,
+        )
+        return resolvedPlaybackCache[cacheKey]
+    }
+
     suspend fun signIn(email: String, password: String): AuthSession {
         val response = api.post<AuthResponse>("/auth/login", mapOf("email" to email, "password" to password), session = null)
             ?: error("Sign in failed")
@@ -206,6 +222,7 @@ class StreamDekRepository(
                     "preferEmbeddedMpvByDefault" to (partial["preferEmbeddedMpvByDefault"] ?: existing.preferEmbeddedMpvByDefault),
                     "decoderMode" to (partial["decoderMode"] ?: existing.decoderMode),
                     "renderSurface" to (partial["renderSurface"] ?: existing.renderSurface),
+                    "manualStreamSelectionEnabled" to (partial["manualStreamSelectionEnabled"] ?: existing.manualStreamSelectionEnabled),
                 ),
             ),
         )
@@ -420,7 +437,7 @@ class StreamDekRepository(
     }
 
     suspend fun fetchHomeContent(forceRefresh: Boolean = false): HomeContent {
-        val cacheKey = currentSession()?.user?.uid ?: "guest"
+        val cacheKey = buildSessionProfileCacheKey()
         if (!forceRefresh) {
             homeCache[cacheKey]?.let { return it }
         }
@@ -529,7 +546,7 @@ class StreamDekRepository(
     }
 
     suspend fun fetchLibrary(forceRefresh: Boolean = false): LibraryResponse {
-        val cacheKey = currentSession()?.user?.uid ?: "guest"
+        val cacheKey = buildSessionProfileCacheKey()
         if (!forceRefresh) {
             libraryCache[cacheKey]?.let { return it }
         }
@@ -903,6 +920,7 @@ class StreamDekRepository(
                     ),
                 ),
             )
+            invalidatePlaybackDerivedCaches()
         }
     }
 
@@ -1163,7 +1181,13 @@ class StreamDekRepository(
         val preferredQuality = bootstrapState.value?.preferences?.playback?.preferredQuality ?: "best"
         val normalizedPreferredAddon = preferredAddonName?.trim()?.lowercase(Locale.US)
         val normalizedPreferredQuality = preferredQualityGroup?.trim()?.lowercase(Locale.US)
-        return streams.sortedWith(
+        val autoSelectionLanguage = preferredAudioLanguageForAutoSelection()
+        val candidateStreams = if (preferredStreamKey.isNullOrBlank()) {
+            filterStreamsByPreferredAudioLanguage(streams, autoSelectionLanguage)
+        } else {
+            streams
+        }
+        return candidateStreams.sortedWith(
             compareByDescending<AddonStream> { if (preferredStreamKey != null && streamSelectionKey(it) == preferredStreamKey) 10 else 0 }
                 .thenByDescending {
                     if (!normalizedPreferredAddon.isNullOrBlank() && it.addonName.trim().lowercase(Locale.US) == normalizedPreferredAddon) 6 else 0
@@ -1177,6 +1201,57 @@ class StreamDekRepository(
                 .thenByDescending { preferredQualityScore(it.quality, preferredQuality) }
                 .thenByDescending { parseQualityScore(it.quality) }
         )
+    }
+
+    private fun preferredAudioLanguageForAutoSelection(): String? {
+        val activeProfile = activeStreamProfile(bootstrapState.value)
+        val profileLanguage = activeProfile?.audioLanguage?.trim()?.takeIf { it.isNotBlank() }
+        val playbackLanguage = bootstrapState.value?.preferences?.playback?.defaultAudioLanguage?.trim()?.takeIf { it.isNotBlank() }
+        val preferredLanguage = profileLanguage ?: playbackLanguage
+        return preferredLanguage?.takeUnless { it.equals("auto", ignoreCase = true) }
+    }
+
+    private fun filterStreamsByPreferredAudioLanguage(streams: List<AddonStream>, preferredLanguage: String?): List<AddonStream> {
+        val normalizedPreference = preferredLanguage?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() } ?: return streams
+        val filtered = streams.filter { streamMatchesPreferredAudioLanguage(it, normalizedPreference) }
+        return if (filtered.isNotEmpty()) filtered else streams
+    }
+
+    private fun streamMatchesPreferredAudioLanguage(stream: AddonStream, preferredLanguage: String): Boolean {
+        val aliases = audioLanguageAliases(preferredLanguage)
+        val descriptors = listOfNotNull(
+            stream.behaviorHints?.filename,
+            stream.title,
+            stream.name,
+            stream.quality,
+        )
+            .joinToString(" ")
+            .lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9]+"), " ")
+        if (descriptors.isBlank()) return false
+        return aliases.any { alias ->
+            Regex("(^| )${Regex.escape(alias)}( |$)").containsMatchIn(descriptors)
+        }
+    }
+
+    private fun audioLanguageAliases(preferredLanguage: String): Set<String> {
+        return when (preferredLanguage.trim().lowercase(Locale.US)) {
+            "auto" -> emptySet()
+            "en", "eng", "english" -> setOf("en", "eng", "english")
+            "es", "spa", "spanish", "espanol" -> setOf("es", "spa", "spanish", "espanol")
+            "fr", "fre", "fra", "french" -> setOf("fr", "fre", "fra", "french")
+            "de", "ger", "deu", "german" -> setOf("de", "ger", "deu", "german")
+            "it", "ita", "italian" -> setOf("it", "ita", "italian")
+            "pt", "por", "portuguese" -> setOf("pt", "por", "portuguese")
+            "ar", "ara", "arabic" -> setOf("ar", "ara", "arabic")
+            "hi", "hin", "hindi" -> setOf("hi", "hin", "hindi")
+            "ja", "jpn", "japanese" -> setOf("ja", "jpn", "japanese")
+            "ko", "kor", "korean" -> setOf("ko", "kor", "korean")
+            "zh", "chi", "zho", "chinese", "mandarin", "cantonese" -> setOf("zh", "chi", "zho", "chinese", "mandarin", "cantonese")
+            "ru", "rus", "russian" -> setOf("ru", "rus", "russian")
+            "tr", "tur", "turkish" -> setOf("tr", "tur", "turkish")
+            else -> setOf(preferredLanguage.trim().lowercase(Locale.US))
+        }
     }
 
     private fun preferredQualityScore(quality: String?, preferredQuality: String): Int {
@@ -1268,6 +1343,12 @@ class StreamDekRepository(
         libraryCache.clear()
         homeCache.clear()
         watchedHistoryCache.clear()
+    }
+
+    private fun buildSessionProfileCacheKey(): String {
+        val userId = currentSession()?.user?.uid ?: "guest"
+        val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: "default"
+        return "$userId:$profileId"
     }
 
     private fun watchedHistoryKey(mediaType: String, mediaId: String, episode: EpisodeContext?): String {
@@ -1509,4 +1590,5 @@ class StreamDekRepository(
         }
     }
 }
+
 

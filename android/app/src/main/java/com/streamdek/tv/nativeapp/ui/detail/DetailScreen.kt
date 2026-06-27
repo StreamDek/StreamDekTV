@@ -45,6 +45,7 @@ import androidx.compose.material.icons.outlined.CheckCircleOutline
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -161,6 +162,8 @@ fun DetailScreen(
     var watchedEpisodesInSeason by remember(mediaType, mediaId, selectedSeasonNumber) { mutableStateOf<Set<Int>>(emptySet()) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
     var shareSheet by remember(mediaType, mediaId) { mutableStateOf<ShareSheetState?>(null) }
+    val bootstrap by repository.bootstrap.collectAsState()
+    val preferManualStreamSelection = bootstrap?.preferences?.playback?.manualStreamSelectionEnabled != false
     val entryFocusRequester = remember(mediaType, mediaId) { FocusRequester() }
     val playButtonRequester = remember(mediaType, mediaId) { FocusRequester() }
     val commentsRequester = remember(mediaType, mediaId) { FocusRequester() }
@@ -451,6 +454,7 @@ fun DetailScreen(
                                 inWatchlist = inWatchlist,
                                 markedWatched = markedWatched,
                                 playButtonRequester = playButtonRequester,
+                                preferManualStreamSelection = preferManualStreamSelection,
                                 onToggleWatchlist = {
                                     val item = MediaItem(
                                         id = state.detail.id,
@@ -897,6 +901,7 @@ private fun HeroActionRow(
     inWatchlist: Boolean,
     markedWatched: Boolean,
     playButtonRequester: FocusRequester,
+    preferManualStreamSelection: Boolean,
     onToggleWatchlist: suspend () -> Unit,
     onPlay: () -> Unit,
     onMarkWatched: suspend () -> Unit,
@@ -918,6 +923,7 @@ private fun HeroActionRow(
             progressLabel = progressLabel,
             progressFraction = progressFraction,
             playButtonRequester = playButtonRequester,
+            preferManualStreamSelection = preferManualStreamSelection,
             onPlay = onPlay,
             modifier = Modifier.width(176.dp),
         )
@@ -1211,6 +1217,7 @@ private fun ContinuePlayButton(
     progressLabel: String?,
     progressFraction: Float?,
     playButtonRequester: FocusRequester,
+    preferManualStreamSelection: Boolean,
     onPlay: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1219,8 +1226,7 @@ private fun ContinuePlayButton(
     val subtitleColor = Color(0xAA18120A)
     val title = when {
         hasProgress -> "Continue Watching"
-        detail.type == "tv" && selectedEpisode != null -> "Choose Stream"
-        detail.type == "tv" -> "Choose Stream"
+        preferManualStreamSelection -> "Choose Stream"
         else -> "Play"
     }
     val subtitle = when {

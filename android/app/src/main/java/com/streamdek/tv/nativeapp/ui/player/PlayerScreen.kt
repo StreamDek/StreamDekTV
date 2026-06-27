@@ -23,6 +23,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,7 +54,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import com.streamdek.tv.mpv.MPVTextureView
 import com.streamdek.tv.mpv.MPVView
+import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.MediaDetail
@@ -98,7 +101,8 @@ fun PlayerScreen(
     // Live broadcasts: no detail/progress/watched bookkeeping, no seeking, and
     // back exits to the previous screen rather than the streams picker.
     val isLive = request.mediaType == "live"
-    val exitPlayback: () -> Unit = if (isLive) onBack else onExitToStreams
+    val completePlaybackExit: () -> Unit = if (isLive) onBack else onExitToStreams
+    val backExitPlayback: () -> Unit = if (isLive || request.returnToDetailOnBack) onBack else onExitToStreams
 
     var detail by remember { mutableStateOf<MediaDetail?>(null) }
     var currentEpisode by remember(request) { mutableStateOf(request.episode) }
@@ -116,7 +120,7 @@ fun PlayerScreen(
     var speed by remember { mutableDoubleStateOf(1.0) }
     var panel by remember { mutableStateOf<OverlayPanel?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var playerView: MPVView? by remember { mutableStateOf(null) }
+    var playerView: MpvPlayerController? by remember { mutableStateOf(null) }
     var loading by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
@@ -130,6 +134,7 @@ fun PlayerScreen(
     var lastSeekInputAt by remember { mutableStateOf(0L) }
     var lastSeekDirection by remember { mutableIntStateOf(0) }
     var seekBurstCount by remember { mutableIntStateOf(0) }
+    var audioPreferenceAppliedForSource by remember { mutableStateOf<String?>(null) }
     var subtitlePreferenceAppliedForSource by remember { mutableStateOf<String?>(null) }
     var traktScrobbledStart by remember { mutableStateOf(false) }
     var inWatchlist by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
@@ -148,6 +153,10 @@ fun PlayerScreen(
     var nextEpisodeCountdown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<Int?>(null) }
     var streamKeyOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamKey) }
     var streamLabelOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamLabel) }
+
+    val resolvedRenderSurface = remember(playbackPreferences.renderSurface) {
+        normalizeRenderSurfacePreference(playbackPreferences.renderSurface)
+    }
 
     val errorBackRequester = remember { FocusRequester() }
     val errorSourcesRequester = remember { FocusRequester() }
@@ -415,7 +424,7 @@ fun PlayerScreen(
             markWatchedAndClearProgressIfNeeded()
             removeFromWatchlistIfNeeded()
             TvDebugLogger.i("Player", "completion exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
-            exitPlayback()
+            completePlaybackExit()
         }
     }
 
@@ -451,6 +460,7 @@ fun PlayerScreen(
         nextEpisodeCountdown = null
         handledSegmentTypes = emptySet()
         segments = emptyList()
+        val loadResult = runCatching {
         runCatching { repository.refreshBootstrap() }
         detail = if (isLive) null else repository.fetchDetail(request.mediaId, request.mediaType)
         val effectiveImdbId = request.imdbId ?: detail?.imdbId
@@ -533,6 +543,19 @@ fun PlayerScreen(
         } else {
             error = null
         }
+        }
+        loadResult.onFailure { throwable ->
+            TvDebugLogger.e("Player", "loadPlayback failed mediaType=${request.mediaType} mediaId=${request.mediaId}", throwable)
+            candidate = null
+            currentSourceUrl = null
+            currentLabel = streamLabelOverride ?: "No playable stream found"
+            error = when (throwable) {
+                is java.net.SocketTimeoutException -> "Stream lookup timed out. Please try again or choose another source."
+                else -> throwable.message ?: "Could not prepare playback"
+            }
+            loading = false
+            controlsVisible = true
+        }
     }
 
     LaunchedEffect(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) {
@@ -542,6 +565,7 @@ fun PlayerScreen(
     // Drive MPV state from LaunchedEffect so JNI calls only happen when values change,
     // not on every recomposition triggered by overlay animations.
     LaunchedEffect(currentSourceUrl) {
+        audioPreferenceAppliedForSource = null
         subtitlePreferenceAppliedForSource = null
         if (!currentSourceUrl.isNullOrBlank()) playerView?.setSource(currentSourceUrl)
         val resumeAt = pendingResumePositionSec
@@ -708,7 +732,7 @@ fun PlayerScreen(
             scope.launch {
                 syncProgressIfEligible()
             }
-            exitPlayback()
+            backExitPlayback()
         }
     }
 
@@ -771,9 +795,13 @@ fun PlayerScreen(
                 false
             },
     ) {
-        AndroidView(
+        key(resolvedRenderSurface) {
+            AndroidView(
             factory = { context ->
-                MPVView(context).apply {
+                val player = createPlayerView(context, resolvedRenderSurface)
+                val controller = player as MpvPlayerController
+                controller.apply {
+                    setDecoderMode(playbackPreferences.decoderMode)
                     setHeaders(mapOf("User-Agent" to "Mozilla/5.0 StreamDekTV"))
                     onRemoteCenterCallback = {
                         if (isLive) {
@@ -831,6 +859,24 @@ fun PlayerScreen(
                         selectedAudioId = selectedAudioTrackId ?: -1
                         selectedSubtitleId = selectedSubtitleTrackId ?: -1
                         val currentSource = currentSourceUrl
+                        val currentBootstrap = repository.bootstrap.value
+                        val activeProfile = repository.activeStreamProfile(currentBootstrap)
+                        if (
+                            currentSource != null &&
+                            audioPreferenceAppliedForSource != currentSource
+                        ) {
+                            audioPreferenceAppliedForSource = currentSource
+                            preferredAudioTrack(
+                                audioTracks = audio,
+                                preferredLanguage = activeProfile?.audioLanguage?.takeIf { it.isNotBlank() }
+                                    ?: currentBootstrap?.preferences?.playback?.defaultAudioLanguage
+                                    ?: "en",
+                            )?.let { preferredTrack ->
+                                if (selectedAudioTrackId != preferredTrack.id) {
+                                    setAudioTrack(preferredTrack.id)
+                                }
+                            }
+                        }
                         if (
                             currentSource != null &&
                             subtitlePreferenceAppliedForSource != currentSource
@@ -838,7 +884,9 @@ fun PlayerScreen(
                             subtitlePreferenceAppliedForSource = currentSource
                             preferredSubtitleTrack(
                                 subtitles = subtitles,
-                                preferredLanguage = repository.bootstrap.value?.preferences?.playback?.defaultSubtitleLanguage ?: "en",
+                                preferredLanguage = activeProfile?.subtitleLanguage?.takeIf { it.isNotBlank() }
+                                    ?: currentBootstrap?.preferences?.playback?.defaultSubtitleLanguage
+                                    ?: "en",
                             )?.let { preferredTrack ->
                                 if (selectedSubtitleTrackId != preferredTrack.id) {
                                     setSubtitleTrack(preferredTrack.id)
@@ -848,10 +896,13 @@ fun PlayerScreen(
                     }
                     playerView = this
                 }
+                player
             },
-            update = { view ->
-                playerView = view
-                view.onRemoteCenterCallback = {
+            update = { view: android.view.View ->
+                val controller = view as MpvPlayerController
+                playerView = controller
+                controller.setDecoderMode(playbackPreferences.decoderMode)
+                controller.onRemoteCenterCallback = {
                     if (isLive) {
                         showLiveChannelInfo()
                         true
@@ -865,6 +916,7 @@ fun PlayerScreen(
             },
             modifier = Modifier.fillMaxSize(),
         )
+        }
 
         // Loading screen — backdrop + breathing logo only, no controls
         if (loading) {
@@ -1017,7 +1069,7 @@ fun PlayerScreen(
                                     scope.launch {
                                         syncProgressIfEligible()
                                     }
-                                    exitPlayback()
+                                    backExitPlayback()
                                 },
                                 modifier = Modifier.focusRequester(errorBackRequester),
                             ) {
@@ -1316,6 +1368,7 @@ fun PlayerScreen(
                             }
                         },
                         onSelectAudio = {
+                            audioPreferenceAppliedForSource = currentSourceUrl
                             playerView?.setAudioTrack(it)
                             panel = null
                             showControls(focusPlay = !isLive)
@@ -1435,6 +1488,17 @@ private fun segmentPriority(segmentType: String): Int {
     }
 }
 
+private fun preferredAudioTrack(
+    audioTracks: List<MpvTrackInfo>,
+    preferredLanguage: String,
+): MpvTrackInfo? {
+    val normalizedPreference = preferredLanguage.trim().lowercase()
+    if (normalizedPreference.isBlank() || normalizedPreference == "off") return null
+    return audioTracks.firstOrNull { track ->
+        trackMatchesLanguagePreference(track, normalizedPreference)
+    }
+}
+
 private fun preferredSubtitleTrack(
     subtitles: List<MpvTrackInfo>,
     preferredLanguage: String,
@@ -1442,22 +1506,32 @@ private fun preferredSubtitleTrack(
     val normalizedPreference = preferredLanguage.trim().lowercase()
     if (normalizedPreference.isBlank() || normalizedPreference == "off") return null
     return subtitles.firstOrNull { track ->
-        subtitleMatchesPreference(track, normalizedPreference)
+        trackMatchesLanguagePreference(track, normalizedPreference)
     }
 }
 
-private fun subtitleMatchesPreference(track: MpvTrackInfo, preferredLanguage: String): Boolean {
+private fun trackMatchesLanguagePreference(track: MpvTrackInfo, preferredLanguage: String): Boolean {
     val normalizedLanguage = track.language?.trim()?.lowercase().orEmpty()
     val normalizedTitle = track.title?.trim()?.lowercase().orEmpty()
-    val aliases = when (preferredLanguage) {
-        "en", "eng", "english" -> setOf("en", "eng", "english")
-        else -> setOf(preferredLanguage)
-    }
+    val aliases = languageAliases(preferredLanguage)
     return aliases.any { alias ->
         normalizedLanguage == alias ||
             normalizedLanguage.startsWith("$alias-") ||
-            normalizedTitle.contains(alias)
+            titleMatchesLanguageAlias(normalizedTitle, alias)
     }
+}
+
+private fun languageAliases(preferredLanguage: String): Set<String> {
+    return when (preferredLanguage) {
+        "en", "eng", "english" -> setOf("en", "eng", "english")
+        else -> setOf(preferredLanguage)
+    }
+}
+
+private fun titleMatchesLanguageAlias(title: String, alias: String): Boolean {
+    if (title.isBlank()) return false
+    val tokenizedTitle = title.replace(Regex("[^a-z0-9]+"), " ")
+    return Regex("(^| )${Regex.escape(alias)}( |$)").containsMatchIn(tokenizedTitle)
 }
 
 
@@ -1469,4 +1543,22 @@ private fun subtitleMatchesPreference(track: MpvTrackInfo, preferredLanguage: St
 
 
 
+
+
+
+private fun createPlayerView(context: android.content.Context, renderSurface: String): android.view.View {
+    return when (renderSurface) {
+        "texture" -> MPVTextureView(context)
+        else -> MPVView(context)
+    }
+}
+
+private fun normalizeRenderSurfacePreference(value: String?): String {
+    return when (value?.trim()?.lowercase()) {
+        "texture", "textureview" -> "texture"
+        "surface", "surfaceview" -> "surface"
+        "auto", "standard", null, "" -> "auto"
+        else -> "auto"
+    }
+}
 
