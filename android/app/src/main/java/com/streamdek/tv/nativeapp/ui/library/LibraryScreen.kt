@@ -281,8 +281,8 @@ private fun LibraryRow(
             contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            itemsIndexed(items, key = { index, item -> "${mediaItemStableKey(item)}:$index" }) { index, item ->
-                val key = "${mediaItemStableKey(item)}:$index"
+            itemsIndexed(items, key = { _, item -> mediaItemStableKey(item) }) { _, item ->
+                val key = mediaItemStableKey(item)
                 val requester = requesters.getOrPut(key) { FocusRequester() }
                 val effectiveRequester = if (initialFocusRequester != null && item == items.firstOrNull()) initialFocusRequester else requester
                 LibraryCard(

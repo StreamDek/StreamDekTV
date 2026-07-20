@@ -60,6 +60,12 @@ data class MediaItem(
     val episode: EpisodeContext? = null,
     /** Stremio-native stream type for live addon items (e.g. 'tv', 'events', 'sport'). */
     val streamType: String? = null,
+    val sourceAddonId: String? = null,
+    val sourceAddonName: String? = null,
+    val sourceCatalogId: String? = null,
+    val sourceCatalogName: String? = null,
+    val directStreamUrl: String? = null,
+    val requestHeaders: Map<String, String> = emptyMap(),
 )
 
 data class NetworkItem(
@@ -240,9 +246,12 @@ data class PlaybackPreferences(
     val preferEmbeddedMpvByDefault: Boolean = true,
     val skipSegmentsEnabled: Boolean? = null,
     val skipIntroEnabled: Boolean? = null,
+    val skipRecapEnabled: Boolean? = null,
+    val skipEndingEnabled: Boolean? = null,
     val introContributionEnabled: Boolean = false,
     val introDbApiKey: String = "",
     val preferBingeGroupNextEpisode: Boolean = true,
+    val autoLoadSubtitles: Boolean = true,
     val nextEpisodeThresholdMode: String = "minutes",
     val nextEpisodeThresholdPercent: Int = 95,
     val nextEpisodeThresholdMinutes: Int = 2,
@@ -253,6 +262,26 @@ data class PlaybackPreferences(
     fun isAutoPlayNextEpisodeEnabled(): Boolean = autoPlayNextEpisodeEnabled ?: autoplayNextEpisode
 
     fun areSkipSegmentsEnabled(): Boolean = skipSegmentsEnabled ?: skipIntroEnabled ?: true
+
+    fun isSegmentEnabled(segmentType: String): Boolean {
+        if (!areSkipSegmentsEnabled()) return false
+        return when (segmentType) {
+            "intro" -> skipIntroEnabled ?: true
+            "recap" -> skipRecapEnabled ?: true
+            "outro" -> skipEndingEnabled ?: true
+            else -> false
+        }
+    }
+
+    fun isNextEpisodeThresholdReached(positionSec: Double, durationSec: Double, segmentStartSec: Double? = null): Boolean {
+        if (durationSec <= 0.0) return false
+        val configuredStart = if (nextEpisodeThresholdMode.equals("percent", ignoreCase = true)) {
+            durationSec * (nextEpisodeThresholdPercent.coerceIn(50, 99) / 100.0)
+        } else {
+            (durationSec - nextEpisodeThresholdMinutes.coerceIn(1, 15) * 60.0).coerceAtLeast(0.0)
+        }
+        return positionSec >= maxOf(configuredStart, segmentStartSec ?: 0.0)
+    }
 }
 
 data class StreamsPreferences(
@@ -348,6 +377,10 @@ data class AddonCatalogMetaItem(
     val imdbRating: String? = null,
     val releaseInfo: String? = null,
     @SerializedName("moviedb_id") val movieDbId: Int? = null,
+    val url: Any? = null,
+    val externalUrl: Any? = null,
+    val headers: Map<String, Any?> = emptyMap(),
+    val behaviorHints: Map<String, Any?>? = null,
 )
 
 data class AddonCatalogResponse(
@@ -483,6 +516,7 @@ data class AddonStream(
     val quality: String? = null,
     val size: String? = null,
     val cachedBy: List<String> = emptyList(),
+    val requestHeaders: Map<String, String> = emptyMap(),
 )
 
 data class BehaviorHints(
@@ -504,6 +538,7 @@ data class ResolvedPlaybackSource(
     val contentType: String,
     val label: String,
     val filename: String? = null,
+    val requestHeaders: Map<String, String> = emptyMap(),
 )
 
 data class ResolvedPlaybackCandidate(
@@ -522,6 +557,10 @@ data class PlaybackRequest(
     val selectedStreamLabel: String? = null,
     /** Stremio-native stream type for live playback (mediaType == "live"). */
     val streamType: String? = null,
+    val sourceAddonId: String? = null,
+    val sourceAddonName: String? = null,
+    val directStreamUrl: String? = null,
+    val requestHeaders: Map<String, String> = emptyMap(),
     val returnToDetailOnBack: Boolean = false,
 )
 

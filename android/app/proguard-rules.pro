@@ -18,3 +18,10 @@
 # TMDB/account payloads continue to deserialize after R8 obfuscation.
 -keepattributes Signature,*Annotation*
 -keep class com.streamdek.tv.nativeapp.data.** { *; }
+# Player diagnostics stay available in debug builds; strip verbose/info logging
+# from release so MPV property callbacks do not spend time formatting log lines.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}

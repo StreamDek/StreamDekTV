@@ -10,6 +10,7 @@ interface MpvPlayerController {
 
     fun setHeaders(nextHeaders: Map<String, String>?)
     fun setSource(url: String?)
+    fun reloadSource()
     fun setPaused(nextPaused: Boolean)
     fun seekTo(positionSeconds: Double)
     fun setSpeed(speed: Double)

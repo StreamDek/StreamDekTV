@@ -109,6 +109,8 @@ fun PlayerScreen(
     var nextEpisode by remember { mutableStateOf<EpisodeContext?>(null) }
     var candidate by remember { mutableStateOf<ResolvedPlaybackCandidate?>(null) }
     var currentSourceUrl by remember { mutableStateOf<String?>(null) }
+    val defaultPlaybackHeaders = remember { mapOf("User-Agent" to "Mozilla/5.0 StreamDekTV") }
+    var currentRequestHeaders by remember { mutableStateOf(defaultPlaybackHeaders) }
     var currentLabel by remember { mutableStateOf("Selecting stream…") }
     var paused by remember { mutableStateOf(false) }
     var positionSec by remember { mutableDoubleStateOf(0.0) }
@@ -130,6 +132,9 @@ fun PlayerScreen(
     var pendingResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var lastWorkingSourceUrl by remember { mutableStateOf<String?>(null) }
     var lastWorkingLabel by remember { mutableStateOf<String?>(null) }
+    var lastWorkingRequestHeaders by remember { mutableStateOf(defaultPlaybackHeaders) }
+    var liveReconnectJob by remember { mutableStateOf<Job?>(null) }
+    var liveReconnectAttempt by remember { mutableIntStateOf(0) }
     var pauseInfoVisible by remember { mutableStateOf(false) }
     var lastSeekInputAt by remember { mutableStateOf(0L) }
     var lastSeekDirection by remember { mutableIntStateOf(0) }
@@ -193,6 +198,24 @@ fun PlayerScreen(
         liveChannelInfoHideJob = scope.launch {
             delay(LiveChannelInfoHideDelayMs)
             liveChannelInfoVisible = false
+        }
+    }
+
+    fun scheduleLiveReconnect(message: String) {
+        if (!isLive || liveReconnectJob?.isActive == true) return
+        if (liveReconnectAttempt >= 5) {
+            error = "Live feed unavailable: $message"
+            loading = false
+            return
+        }
+        liveReconnectAttempt += 1
+        error = null
+        loading = true
+        controlsVisible = false
+        currentLabel = "Reconnecting to live feed…"
+        liveReconnectJob = scope.launch {
+            delay((liveReconnectAttempt * 1_000L).coerceAtMost(5_000L))
+            playerView?.reloadSource()
         }
     }
 
@@ -274,10 +297,27 @@ fun PlayerScreen(
     }
 
     fun activeSegmentAction(): SegmentAction? {
-        if (!playbackPreferences.areSkipSegmentsEnabled()) return null
+        val outro = segments.firstOrNull { it.segmentType == "outro" }
+        val nextEpisodeAvailable = nextEpisode != null &&
+            playbackPreferences.isAutoPlayNextEpisodeEnabled() &&
+            !handledSegmentTypes.contains("outro") &&
+            playbackPreferences.isNextEpisodeThresholdReached(
+                positionSec = positionSec,
+                durationSec = durationSec,
+                segmentStartSec = outro?.startSec,
+            )
+        if (nextEpisodeAvailable) {
+            return SegmentAction(
+                kind = SegmentActionKind.NextEpisode,
+                segmentType = "outro",
+                label = "Next Episode",
+            )
+        }
+
         val activeSegment = segments
             .filter { segment ->
-                !handledSegmentTypes.contains(segment.segmentType) &&
+                playbackPreferences.isSegmentEnabled(segment.segmentType) &&
+                    !handledSegmentTypes.contains(segment.segmentType) &&
                     positionSec >= segment.startSec &&
                     positionSec < segment.endSec
             }
@@ -303,13 +343,12 @@ fun PlayerScreen(
                 label = "Skip Recap",
                 targetTimeSec = activeSegment.endSec,
             )
-            "outro" -> nextEpisode?.let {
-                SegmentAction(
-                    kind = SegmentActionKind.NextEpisode,
-                    segmentType = activeSegment.segmentType,
-                    label = "Next Episode",
-                )
-            }
+            "outro" -> SegmentAction(
+                kind = SegmentActionKind.Skip,
+                segmentType = activeSegment.segmentType,
+                label = "Skip Ending",
+                targetTimeSec = activeSegment.endSec,
+            )
             else -> null
         }
     }
@@ -345,16 +384,16 @@ fun PlayerScreen(
 
     suspend fun markWatchedAndClearProgressIfNeeded() {
         if (watchedMarked) return
-        watchedMarked = true
         repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
-        repository.markWatched(
+        val marked = repository.markWatched(
             mediaType = request.mediaType,
             mediaId = request.mediaId,
             title = detail?.title ?: request.title ?: "",
             year = detail?.year,
             episode = currentEpisode,
-            imdbId = request.imdbId,
+            imdbId = request.imdbId ?: detail?.imdbId,
         )
+        watchedMarked = marked
         repository.clearProgress(request.mediaType, request.mediaId, currentEpisode)
     }
 
@@ -381,7 +420,7 @@ fun PlayerScreen(
             episode = targetEpisode,
             preferredAddonName = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.addonName else null,
             preferredQualityGroup = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.quality else null,
-            forceRefresh = true,
+            forceRefresh = false,
         )
         nextEpisodeLoading = false
         if (nextEpisodeCandidate?.source != null && !nextEpisodeCandidate?.streams.isNullOrEmpty()) {
@@ -395,13 +434,28 @@ fun PlayerScreen(
             streamIndex != null -> nextEpisodeCandidate?.streams?.getOrNull(streamIndex)
             else -> nextEpisodeCandidate?.stream ?: nextEpisodeCandidate?.streams?.firstOrNull()
         } ?: return
-        streamKeyOverride = repository.streamSelectionKey(selectedStream)
-        streamLabelOverride = repository.describeStreamOption(selectedStream)
         nextEpisodeDialogVisible = false
         nextEpisodeCountdown = null
-        nextEpisodeCandidate = null
-        paused = false
-        currentEpisode = targetEpisode
+        paused = true
+        scope.launch {
+            markWatchedAndClearProgressIfNeeded()
+            if (traktScrobbledStart) {
+                traktScrobbledStart = false
+                repository.traktScrobble(
+                    action = "stop",
+                    mediaType = request.mediaType,
+                    mediaId = request.mediaId,
+                    title = detail?.title ?: request.title,
+                    year = detail?.year,
+                    progress = traktProgressPercent(),
+                )
+            }
+            streamKeyOverride = repository.streamSelectionKey(selectedStream)
+            streamLabelOverride = repository.describeStreamOption(selectedStream)
+            nextEpisodeCandidate = null
+            paused = false
+            currentEpisode = targetEpisode
+        }
     }
 
     fun completePlaybackAndExit() {
@@ -444,6 +498,9 @@ fun PlayerScreen(
     }
 
     suspend fun loadPlayback() {
+        liveReconnectJob?.cancel()
+        liveReconnectJob = null
+        liveReconnectAttempt = 0
         pendingSeekJob?.cancel()
         pendingSeekJob = null
         loading = true
@@ -504,8 +561,13 @@ fun PlayerScreen(
             currentEpisode,
             preferredStreamKey = streamKeyOverride,
             streamType = request.streamType,
+            directStreamUrl = request.directStreamUrl,
+            requestHeaders = request.requestHeaders,
+            sourceAddonId = request.sourceAddonId,
+            sourceAddonName = request.sourceAddonName,
         )
         candidate = resolved
+        currentRequestHeaders = defaultPlaybackHeaders + resolved.source?.requestHeaders.orEmpty()
         currentSourceUrl = resolved.source?.url
         currentLabel = streamLabelOverride ?: resolved.source?.label ?: "No playable stream found"
         positionSec = pendingResumePositionSec ?: 0.0
@@ -564,9 +626,10 @@ fun PlayerScreen(
 
     // Drive MPV state from LaunchedEffect so JNI calls only happen when values change,
     // not on every recomposition triggered by overlay animations.
-    LaunchedEffect(currentSourceUrl) {
+    LaunchedEffect(currentSourceUrl, currentRequestHeaders) {
         audioPreferenceAppliedForSource = null
         subtitlePreferenceAppliedForSource = null
+        playerView?.setHeaders(currentRequestHeaders)
         if (!currentSourceUrl.isNullOrBlank()) playerView?.setSource(currentSourceUrl)
         val resumeAt = pendingResumePositionSec
         if (resumeAt != null && resumeAt > 0.0) {
@@ -596,9 +659,13 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(currentSourceUrl, paused, completionThresholdReached) {
-        while (currentSourceUrl != null && !completionThresholdReached) {
+        val activeSource = currentSourceUrl
+        if (activeSource.isNullOrBlank() || paused || completionThresholdReached) return@LaunchedEffect
+        while (currentSourceUrl == activeSource && !paused && !completionThresholdReached) {
             delay(15000)
-            syncProgressIfEligible()
+            if (currentSourceUrl == activeSource && !paused && !completionThresholdReached) {
+                syncProgressIfEligible()
+            }
         }
     }
 
@@ -637,7 +704,7 @@ fun PlayerScreen(
         if (isLive || loading || error != null || watchlistPromptVisible) return@LaunchedEffect
         if (completionThresholdReached || durationSec < 60.0 || positionSec < 120.0) return@LaunchedEffect
         val thresholdReached = traktProgressPercent() >= 95.0 ||
-            (durationSec >= 1200.0 && (durationSec - positionSec) <= 480.0)
+            (durationSec - positionSec) <= 60.0
         if (!thresholdReached) return@LaunchedEffect
         completionThresholdReached = true
         TvDebugLogger.i(
@@ -701,10 +768,11 @@ fun PlayerScreen(
         }
     }
 
-    DisposableEffect(request.mediaId, currentEpisode, currentSourceUrl) {
+    DisposableEffect(request.mediaId, request.mediaType) {
         onDispose {
             controlsHideJob?.cancel()
             liveChannelInfoHideJob?.cancel()
+            liveReconnectJob?.cancel()
             pendingSeekJob?.cancel()
             queueTraktStop()
             scope.launch {
@@ -802,7 +870,7 @@ fun PlayerScreen(
                 val controller = player as MpvPlayerController
                 controller.apply {
                     setDecoderMode(playbackPreferences.decoderMode)
-                    setHeaders(mapOf("User-Agent" to "Mozilla/5.0 StreamDekTV"))
+                    setHeaders(currentRequestHeaders)
                     onRemoteCenterCallback = {
                         if (isLive) {
                             showLiveChannelInfo()
@@ -821,8 +889,12 @@ fun PlayerScreen(
                         )
                         loading = false
                         error = null
+                        liveReconnectJob?.cancel()
+                        liveReconnectJob = null
+                        liveReconnectAttempt = 0
                         lastWorkingSourceUrl = currentSourceUrl
                         lastWorkingLabel = currentLabel
+                        lastWorkingRequestHeaders = currentRequestHeaders
                         if (isLive) {
                             controlsVisible = false
                             liveChannelInfoVisible = false
@@ -840,16 +912,24 @@ fun PlayerScreen(
                             "Player",
                             "onEnd mediaType=${request.mediaType} mediaId=${request.mediaId} nextEpisode=${nextEpisode != null} position=$positionSec duration=$durationSec source=${currentSourceUrl ?: "none"} inWatchlist=$inWatchlist",
                         )
-                        completePlaybackAndExit()
+                        if (isLive) {
+                            scheduleLiveReconnect("The feed ended")
+                        } else if (nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled()) {
+                            scope.launch { openNextEpisodeDialog() }
+                        } else {
+                            completePlaybackAndExit()
+                        }
                     }
                     onErrorCallback = { message ->
                         TvDebugLogger.w(
                             "Player",
                             "onError mediaType=${request.mediaType} mediaId=${request.mediaId} source=${currentSourceUrl ?: "none"} label=$currentLabel position=$positionSec duration=$durationSec message=$message",
                         )
-                        error = message
-                        loading = false
-                        if (!isLive) {
+                        if (isLive) {
+                            scheduleLiveReconnect(message)
+                        } else {
+                            error = message
+                            loading = false
                             showControls(focusPlay = true)
                         }
                     }
@@ -1094,6 +1174,7 @@ fun PlayerScreen(
                                         loading = true
                                         controlsVisible = false
                                         pendingResumePositionSec = positionSec.takeIf { it > 0.0 }
+                                        currentRequestHeaders = lastWorkingRequestHeaders
                                         currentSourceUrl = lastWorkingSourceUrl
                                         currentLabel = lastWorkingLabel ?: "Previous source"
                                     },
@@ -1347,8 +1428,12 @@ fun PlayerScreen(
                                         request.imdbId,
                                         currentEpisode,
                                         preferredStreamKey = repository.streamSelectionKey(stream),
-                                        forceRefresh = true,
+                                        forceRefresh = false,
                                         streamType = request.streamType,
+                                        directStreamUrl = request.directStreamUrl,
+                                        requestHeaders = request.requestHeaders,
+                                        sourceAddonId = request.sourceAddonId,
+                                        sourceAddonName = request.sourceAddonName,
                                     )
                                 } catch (e: Exception) {
                                     error = "Could not load this source: ${e.message ?: "Unknown error"}"
@@ -1363,6 +1448,7 @@ fun PlayerScreen(
                                     return@launch
                                 }
                                 candidate = selected
+                                currentRequestHeaders = defaultPlaybackHeaders + selected.source.requestHeaders
                                 currentSourceUrl = selected.source.url
                                 currentLabel = selected.source.label ?: repository.describeStreamOption(stream)
                             }

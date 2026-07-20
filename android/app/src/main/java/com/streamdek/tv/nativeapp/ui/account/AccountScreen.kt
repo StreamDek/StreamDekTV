@@ -365,6 +365,59 @@ fun AccountScreen(
                                     bootstrap = repository.bootstrap.value
                                 }
                             }
+                            PreferenceRow("Skip Intro", playbackPrefs?.isSegmentEnabled("intro") != false) {
+                                scope.launch {
+                                    repository.updatePlaybackPreferences(mapOf("skipIntroEnabled" to !(playbackPrefs?.isSegmentEnabled("intro") != false)))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            PreferenceRow("Skip Recap", playbackPrefs?.isSegmentEnabled("recap") != false) {
+                                scope.launch {
+                                    repository.updatePlaybackPreferences(mapOf("skipRecapEnabled" to !(playbackPrefs?.isSegmentEnabled("recap") != false)))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            PreferenceRow("Skip Ending", playbackPrefs?.isSegmentEnabled("outro") != false) {
+                                scope.launch {
+                                    repository.updatePlaybackPreferences(mapOf("skipEndingEnabled" to !(playbackPrefs?.isSegmentEnabled("outro") != false)))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            PreferenceRow("Prefer Same Addon for Next Episode", playbackPrefs?.preferBingeGroupNextEpisode != false) {
+                                scope.launch {
+                                    repository.updatePlaybackPreferences(mapOf("preferBingeGroupNextEpisode" to (playbackPrefs?.preferBingeGroupNextEpisode == false)))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            ChoiceRow(
+                                "Next Episode Trigger",
+                                if (playbackPrefs?.nextEpisodeThresholdMode == "percent") "Percentage" else "Minutes Remaining",
+                            ) {
+                                scope.launch {
+                                    val nextMode = if (playbackPrefs?.nextEpisodeThresholdMode == "percent") "minutes" else "percent"
+                                    repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdMode" to nextMode))
+                                    bootstrap = repository.bootstrap.value
+                                }
+                            }
+                            if (playbackPrefs?.nextEpisodeThresholdMode == "percent") {
+                                ChoiceRow("Next Episode At", "${playbackPrefs?.nextEpisodeThresholdPercent ?: 95}%") {
+                                    scope.launch {
+                                        val values = listOf("75", "80", "85", "90", "95", "98")
+                                        val nextValue = nextOf(values, (playbackPrefs?.nextEpisodeThresholdPercent ?: 95).toString()).toInt()
+                                        repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdPercent" to nextValue))
+                                        bootstrap = repository.bootstrap.value
+                                    }
+                                }
+                            } else {
+                                ChoiceRow("Next Episode At", "${playbackPrefs?.nextEpisodeThresholdMinutes ?: 2} min remaining") {
+                                    scope.launch {
+                                        val values = listOf("1", "2", "3", "5", "8", "10")
+                                        val nextValue = nextOf(values, (playbackPrefs?.nextEpisodeThresholdMinutes ?: 2).toString()).toInt()
+                                        repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdMinutes" to nextValue))
+                                        bootstrap = repository.bootstrap.value
+                                    }
+                                }
+                            }
                             PreferenceRow(
                                 "Choose Stream Before Play",
                                 playbackPrefs?.manualStreamSelectionEnabled != false,

@@ -41,7 +41,7 @@ class MPVView @JvmOverloads constructor(
     private var initialized = false
     private var pendingSource: String? = null
     private var activeSource: String? = null
-    private var paused = false
+    private var paused = false
     private var headers: Map<String, String>? = null
     private var lastMpvErrorMessage: String? = null
     private var pendingLoadRunnable: Runnable? = null
@@ -350,6 +350,14 @@ class MPVView @JvmOverloads constructor(
         activeSource = url
         pendingSource = url
         scheduleLoad(url)
+    }
+
+    override fun reloadSource() {
+        val source = activeSource ?: pendingSource ?: return
+        activeSource = null
+        pendingSource = source
+        scheduleLoad(source)
+        activeSource = source
     }
 
     override fun setHeaders(nextHeaders: Map<String, String>?) {

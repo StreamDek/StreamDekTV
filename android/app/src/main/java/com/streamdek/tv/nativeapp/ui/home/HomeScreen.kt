@@ -487,8 +487,8 @@ private fun RailSection(
             contentPadding = PaddingValues(horizontal = 52.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            itemsIndexed(row.items, key = { index, item -> "${row.id}:${mediaItemStableKey(item)}:$index" }) { index, item ->
-                val key = "${row.id}:${mediaItemStableKey(item)}:$index"
+            itemsIndexed(row.items, key = { _, item -> "${row.id}:${mediaItemStableKey(item)}" }) { index, item ->
+                val key = "${row.id}:${mediaItemStableKey(item)}"
                 val requester = requesters.getOrPut(key) { FocusRequester() }
                 val effectiveRequester = if (index == 0 && firstCardRequester != null) firstCardRequester else requester
 

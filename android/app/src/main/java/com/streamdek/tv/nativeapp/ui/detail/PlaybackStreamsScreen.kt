@@ -120,6 +120,11 @@ fun PlaybackStreamsScreen(
                 request.episode,
                 preferredStreamKey = request.selectedStreamKey,
                 forceRefresh = false,
+                streamType = request.streamType,
+                directStreamUrl = request.directStreamUrl,
+                requestHeaders = request.requestHeaders,
+                sourceAddonId = request.sourceAddonId,
+                sourceAddonName = request.sourceAddonName,
             )
             PlaybackStreamsUiState.Ready(detail, candidate)
         }.onSuccess {
@@ -154,12 +159,16 @@ fun PlaybackStreamsScreen(
     val ready = uiState as? PlaybackStreamsUiState.Ready
     val overview = request.episode?.overview ?: detail?.description
     val streamRows = ready?.candidate?.streams.orEmpty().filter { stream ->
-        val url = stream.url
-        if (url != null && stream.infoHash == null && stream.size == null) {
-            val cleanUrl = url.substringBefore('?').lowercase()
-            !cleanUrl.endsWith(".m3u8")
-        } else {
+        if (request.mediaType == "live") {
             true
+        } else {
+            val url = stream.url
+            if (url != null && stream.infoHash == null && stream.size == null) {
+                val cleanUrl = url.substringBefore('?').lowercase()
+                !cleanUrl.endsWith(".m3u8")
+            } else {
+                true
+            }
         }
     }
     val addonNames = remember(streamRows) {

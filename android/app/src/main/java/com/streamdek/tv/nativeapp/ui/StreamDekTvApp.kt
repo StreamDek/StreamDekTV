@@ -220,6 +220,10 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 mediaType = "live",
                 title = item.title,
                 streamType = item.streamType,
+                sourceAddonId = item.sourceAddonId,
+                sourceAddonName = item.sourceAddonName,
+                directStreamUrl = item.directStreamUrl,
+                requestHeaders = item.requestHeaders,
             ),
         )
         navController.navigate("player")

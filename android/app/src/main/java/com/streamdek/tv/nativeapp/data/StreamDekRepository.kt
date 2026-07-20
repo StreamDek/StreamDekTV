@@ -1,10 +1,12 @@
 package com.streamdek.tv.nativeapp.data
 
 import com.streamdek.tv.BuildConfig
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
 import java.util.LinkedHashMap
 import java.util.Locale
 import java.net.URLEncoder
@@ -13,7 +15,7 @@ import java.time.Instant
 // Stremio-native catalog types that represent live content. Native 'tv' means
 // live television channels — series catalogs use 'series'.
 private val LIVE_ADDON_CATALOG_TYPES = setOf(
-    "tv", "channel", "channels", "event", "events", "live", "sport", "sports",
+    "tv", "channel", "channels", "event", "events", "live", "sport", "sports", "other",
 )
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
@@ -81,6 +83,7 @@ class StreamDekRepository(
     private val networkCache = lruCache<String, PagedRailResponse>(12)
     private val genreCache = lruCache<String, List<GenreItem>>(8)
     private val resolvedPlaybackCache = lruCache<String, ResolvedPlaybackCandidate>(16)
+    private val episodeSegmentCache = lruCache<String, List<PlaybackSegment>>(32)
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
     private val fusionBadgeSourcesState = MutableStateFlow<Map<String, FusionBadgeSource>>(emptyMap())
@@ -112,6 +115,7 @@ class StreamDekRepository(
             imdbId = request.imdbId,
             episode = request.episode,
             preferredStreamKey = request.selectedStreamKey,
+            streamType = request.streamType,
         )
         return resolvedPlaybackCache[cacheKey]
     }
@@ -220,6 +224,23 @@ class StreamDekRepository(
                     "defaultAudioLanguage" to (partial["defaultAudioLanguage"] ?: existing.defaultAudioLanguage),
                     "externalPlayerEnabled" to (partial["externalPlayerEnabled"] ?: existing.externalPlayerEnabled),
                     "preferEmbeddedMpvByDefault" to (partial["preferEmbeddedMpvByDefault"] ?: existing.preferEmbeddedMpvByDefault),
+                    "skipSegmentsEnabled" to (partial["skipSegmentsEnabled"]
+                        ?: listOf(
+                            partial["skipIntroEnabled"] as? Boolean ?: existing.isSegmentEnabled("intro"),
+                            partial["skipRecapEnabled"] as? Boolean ?: existing.isSegmentEnabled("recap"),
+                            partial["skipEndingEnabled"] as? Boolean ?: existing.isSegmentEnabled("outro"),
+                        ).any { it }),
+                    "skipIntroEnabled" to (partial["skipIntroEnabled"] ?: existing.isSegmentEnabled("intro")),
+                    "skipRecapEnabled" to (partial["skipRecapEnabled"] ?: existing.isSegmentEnabled("recap")),
+                    "skipEndingEnabled" to (partial["skipEndingEnabled"] ?: existing.isSegmentEnabled("outro")),
+                    "autoPlayNextEpisodeEnabled" to (partial["autoPlayNextEpisodeEnabled"]
+                        ?: partial["autoplayNextEpisode"]
+                        ?: existing.isAutoPlayNextEpisodeEnabled()),
+                    "preferBingeGroupNextEpisode" to (partial["preferBingeGroupNextEpisode"] ?: existing.preferBingeGroupNextEpisode),
+                    "autoLoadSubtitles" to (partial["autoLoadSubtitles"] ?: existing.autoLoadSubtitles),
+                    "nextEpisodeThresholdMode" to (partial["nextEpisodeThresholdMode"] ?: existing.nextEpisodeThresholdMode),
+                    "nextEpisodeThresholdPercent" to (partial["nextEpisodeThresholdPercent"] ?: existing.nextEpisodeThresholdPercent),
+                    "nextEpisodeThresholdMinutes" to (partial["nextEpisodeThresholdMinutes"] ?: existing.nextEpisodeThresholdMinutes),
                     "decoderMode" to (partial["decoderMode"] ?: existing.decoderMode),
                     "renderSurface" to (partial["renderSurface"] ?: existing.renderSurface),
                     "manualStreamSelectionEnabled" to (partial["manualStreamSelectionEnabled"] ?: existing.manualStreamSelectionEnabled),
@@ -331,7 +352,17 @@ class StreamDekRepository(
                         }.onFailure {
                             TvDebugLogger.w("Home", "addon catalog fetch failed addon=${addon.id} type=$rawType id=$catalogId")
                         }.getOrDefault(emptyList())
-                        val items = metas.mapNotNull { normalizeAddonCatalogMeta(it, mappedType, rawType) }
+                        val items = metas.mapNotNull {
+                            normalizeAddonCatalogMeta(
+                                meta = it,
+                                fallbackType = mappedType,
+                                nativeFallbackType = rawType,
+                                addonId = addon.id,
+                                addonName = addon.manifest.name,
+                                catalogId = catalogId,
+                                catalogName = catalog.name,
+                            )
+                        }
                         if (items.isEmpty()) {
                             null
                         } else {
@@ -388,6 +419,10 @@ class StreamDekRepository(
         meta: AddonCatalogMetaItem,
         fallbackType: String,
         nativeFallbackType: String,
+        addonId: String,
+        addonName: String,
+        catalogId: String,
+        catalogName: String?,
     ): MediaItem? {
         val rawId = meta.id?.trim().orEmpty()
         val tmdbId = meta.movieDbId ?: 0
@@ -409,8 +444,46 @@ class StreamDekRepository(
             year = meta.releaseInfo?.take(4)?.takeIf { it.toIntOrNull() != null },
             titleLogo = meta.logo,
             streamType = if (type == "live") (nativeType.ifBlank { "tv" }) else null,
+            sourceAddonId = addonId,
+            sourceAddonName = addonName,
+            sourceCatalogId = catalogId,
+            sourceCatalogName = catalogName,
+            directStreamUrl = directMediaUrl(meta),
+            requestHeaders = catalogRequestHeaders(meta),
         )
     }
+
+    private fun directMediaUrl(meta: AddonCatalogMetaItem): String? {
+        val behaviorHints = meta.behaviorHints.orEmpty()
+        return sequenceOf(meta.url, meta.externalUrl, behaviorHints["url"], behaviorHints["externalUrl"])
+            .mapNotNull(::stringUrlValue)
+            .firstOrNull()
+    }
+
+    private fun stringUrlValue(value: Any?): String? {
+        return when (value) {
+            is String -> value.trim().takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+            is Map<*, *> -> sequenceOf(value["url"], value["href"])
+                .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+                .firstOrNull()
+            else -> null
+        }
+    }
+
+    private fun catalogRequestHeaders(meta: AddonCatalogMetaItem): Map<String, String> {
+        val directHeaders = stringMap(meta.headers)
+        val proxyHeaders = (meta.behaviorHints?.get("proxyHeaders") as? Map<*, *>)
+            ?.get("request") as? Map<*, *>
+        return directHeaders + stringMap(proxyHeaders)
+    }
+
+    private fun stringMap(source: Map<*, *>?): Map<String, String> = source.orEmpty()
+        .mapNotNull { (key, value) ->
+            val name = key?.toString()?.trim().orEmpty()
+            val content = value?.toString()?.trim().orEmpty()
+            if (name.isBlank() || content.isBlank()) null else name to content
+        }
+        .toMap()
 
     suspend fun fetchLatestAppRelease(): AppReleaseManifest? {
         val configuredPath = BuildConfig.STREAMDEK_OTA_MANIFEST_PATH.takeIf { it.isNotBlank() }
@@ -980,7 +1053,31 @@ class StreamDekRepository(
         preferredQualityGroup: String? = null,
         forceRefresh: Boolean = false,
         streamType: String? = null,
+        directStreamUrl: String? = null,
+        requestHeaders: Map<String, String> = emptyMap(),
+        sourceAddonId: String? = null,
+        sourceAddonName: String? = null,
     ): ResolvedPlaybackCandidate {
+        if (mediaType == "live" && !directStreamUrl.isNullOrBlank()) {
+            val directStream = AddonStream(
+                addonId = sourceAddonId.orEmpty(),
+                addonName = sourceAddonName ?: "Live source",
+                name = sourceAddonName ?: "Live source",
+                title = "Direct live stream",
+                url = directStreamUrl,
+                requestHeaders = requestHeaders,
+            )
+            return ResolvedPlaybackCandidate(
+                source = ResolvedPlaybackSource(
+                    url = directStreamUrl,
+                    contentType = guessContentType(directStreamUrl),
+                    label = sourceAddonName ?: "Live stream",
+                    requestHeaders = requestHeaders,
+                ),
+                stream = directStream,
+                streams = listOf(directStream),
+            )
+        }
         val episodeKey = buildEpisodeKey(episode)
         val effectivePreferredStreamKey = preferredStreamKey
             ?: sessionStore.preferredStreamKey(mediaType, mediaId, episodeKey)
@@ -992,23 +1089,31 @@ class StreamDekRepository(
             preferredStreamKey = effectivePreferredStreamKey,
             preferredAddonName = preferredAddonName,
             preferredQualityGroup = preferredQualityGroup,
+            streamType = streamType,
         )
         if (!forceRefresh) {
             resolvedPlaybackCache[cacheKey]?.let { return it }
         }
-        // Live items request streams with the addon's native type; Stremio-native
-        // 'tv' (live channels) goes out as 'live-tv' so the backend doesn't
-        // confuse it with the app-internal 'tv' (= series).
-        val lookupType = when (mediaType) {
+        val lookupTypes = when (mediaType) {
             "live" -> {
                 val native = streamType?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() } ?: "tv"
-                if (native == "tv") "live-tv" else native
+                buildList {
+                    add(native)
+                    if (native == "tv") add("live-tv")
+                    if (native == "live-tv") add("tv")
+                    if (native == "sport") add("sports")
+                    if (native == "sports") add("sport")
+                }.distinct()
             }
-            "tv" -> "series"
-            else -> "movie"
+            "tv" -> listOf("series")
+            else -> listOf("movie")
         }
         val videoId = buildStreamVideoId(imdbId ?: mediaId, episode)
-        val streams = api.get<AddonStreamsResponse>("/addons/streams/$lookupType/$videoId")?.streams.orEmpty()
+        val streams = lookupTypes.firstNotNullOfOrNull { lookupType ->
+            api.get<AddonStreamsResponse>("/addons/streams/$lookupType/$videoId")
+                ?.streams
+                ?.takeIf { it.isNotEmpty() }
+        }.orEmpty()
         for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {
             val resolvedUrl = resolveStreamToUrl(stream)
             if (!resolvedUrl.isNullOrBlank()) {
@@ -1019,6 +1124,7 @@ class StreamDekRepository(
                         contentType = guessContentType(resolvedUrl),
                         label = describeStream(stream),
                         filename = stream.behaviorHints?.filename ?: stream.title ?: stream.name,
+                        requestHeaders = stream.requestHeaders,
                     ),
                     stream = stream,
                     streams = streams,
@@ -1049,6 +1155,7 @@ class StreamDekRepository(
             contentType = guessContentType(resolvedUrl),
             label = describeStream(stream),
             filename = stream.behaviorHints?.filename ?: stream.title ?: stream.name,
+            requestHeaders = stream.requestHeaders,
         )
     }
 
@@ -1057,8 +1164,11 @@ class StreamDekRepository(
         season: Int,
         episode: Int,
     ): List<PlaybackSegment> {
+        if (!imdbId.startsWith("tt") || season < 0 || episode <= 0) return emptyList()
+        val cacheKey = "$imdbId:$season:$episode"
+        episodeSegmentCache[cacheKey]?.let { return it }
         val params = "imdb_id=${URLEncoder.encode(imdbId, "UTF-8")}&season=$season&episode=$episode"
-        return runCatching {
+        val result = withContext(Dispatchers.IO) { runCatching {
             val request = okhttp3.Request.Builder()
                 .url("https://api.introdb.app/segments?$params")
                 .header("Accept", "application/json")
@@ -1081,7 +1191,9 @@ class StreamDekRepository(
             parseLegacyIntroSegment(fetchLegacyIntroPayload(imdbId, season, episode))?.let(::listOf) ?: emptyList()
         }.onFailure {
             TvDebugLogger.w("Playback", "fetchEpisodeSegments failed imdbId=$imdbId season=$season episode=$episode")
-        }.getOrDefault(emptyList())
+        }.getOrDefault(emptyList()) }
+        episodeSegmentCache[cacheKey] = result
+        return result
     }
 
     private suspend fun markSeriesWatched(
@@ -1327,6 +1439,7 @@ class StreamDekRepository(
         preferredStreamKey: String?,
         preferredAddonName: String? = null,
         preferredQualityGroup: String? = null,
+        streamType: String? = null,
     ): String {
         return listOf(
             mediaType,
@@ -1336,6 +1449,7 @@ class StreamDekRepository(
             preferredStreamKey.orEmpty(),
             preferredAddonName.orEmpty(),
             preferredQualityGroup.orEmpty(),
+            streamType.orEmpty(),
         ).joinToString(":")
     }
 
@@ -1429,7 +1543,7 @@ class StreamDekRepository(
 
     private fun fetchLegacyIntroPayload(imdbId: String, season: Int, episode: Int): Any? {
         val request = okhttp3.Request.Builder()
-            .url("https://api.introdb.app/intro?imdb=${URLEncoder.encode(imdbId, "UTF-8")}&season=$season&episode=$episode")
+            .url("https://api.introdb.app/intro?imdb=${URLEncoder.encode(imdbId, "UTF-8")}&imdb_id=${URLEncoder.encode(imdbId, "UTF-8")}&season=$season&episode=$episode")
             .header("Accept", "application/json")
             .build()
         return api.client.newCall(request).execute().use { response ->

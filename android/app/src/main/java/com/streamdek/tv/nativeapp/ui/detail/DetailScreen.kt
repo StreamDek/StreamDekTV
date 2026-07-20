@@ -51,6 +51,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -150,9 +151,13 @@ fun DetailScreen(
     onPlay: (PlaybackRequest) -> Unit,
     onRequireAuth: () -> Unit,
 ) {
-    var uiState by remember(mediaType, mediaId) { mutableStateOf<DetailUiState>(DetailUiState.Loading) }
-    var selectedSeasonNumber by remember(mediaType, mediaId) { mutableIntStateOf(1) }
-    var selectedEpisodeIndex by remember(mediaType, mediaId) { mutableIntStateOf(0) }
+    val cachedDetail = remember(mediaType, mediaId) { repository.peekCachedDetail(mediaId, mediaType) }
+    var uiState by remember(mediaType, mediaId) {
+        mutableStateOf<DetailUiState>(cachedDetail?.let(DetailUiState::Ready) ?: DetailUiState.Loading)
+    }
+    var detailRefreshing by remember(mediaType, mediaId) { mutableStateOf(cachedDetail != null) }
+    var selectedSeasonNumber by rememberSaveable(mediaType, mediaId) { mutableIntStateOf(1) }
+    var selectedEpisodeIndex by rememberSaveable(mediaType, mediaId) { mutableIntStateOf(0) }
     var selectedSeason by remember(mediaType, mediaId) { mutableStateOf<SeasonDetail?>(null) }
     var resumeEpisodeContext by remember(mediaType, mediaId) { mutableStateOf<EpisodeContext?>(null) }
     var progressFraction by remember(mediaType, mediaId) { mutableStateOf<Float?>(null) }
@@ -183,7 +188,12 @@ fun DetailScreen(
     }
 
     LaunchedEffect(mediaType, mediaId) {
-        uiState = DetailUiState.Loading
+        val existingDetail = (uiState as? DetailUiState.Ready)?.detail
+        if (existingDetail == null) {
+            uiState = DetailUiState.Loading
+        } else {
+            detailRefreshing = true
+        }
         comments = emptyList()
         progressFraction = null
         progressLabel = null
@@ -200,12 +210,17 @@ fun DetailScreen(
         }
         val detail = repository.fetchDetail(mediaId, mediaType)
         if (detail == null) {
-            uiState = DetailUiState.Error("Could not load title details")
+            if (existingDetail == null) {
+                uiState = DetailUiState.Error("Could not load title details")
+            }
+            detailRefreshing = false
             return@LaunchedEffect
         }
         uiState = DetailUiState.Ready(detail)
-        selectedSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
-        selectedEpisodeIndex = 0
+        if (detail.seasons.none { it.seasonNumber == selectedSeasonNumber }) {
+            selectedSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
+            selectedEpisodeIndex = 0
+        }
         selectedSeason = supervisorScope {
             async {
                 if (mediaType == "tv" && detail.seasons.isNotEmpty()) {
@@ -221,6 +236,7 @@ fun DetailScreen(
                 .firstOrNull { it.id == mediaId && it.type == mediaType }
                 ?.episode
         }
+        detailRefreshing = false
     }
 
     val detail = (uiState as? DetailUiState.Ready)?.detail
@@ -315,10 +331,6 @@ fun DetailScreen(
                     .build(),
             )
         }
-    }
-
-    LaunchedEffect(mediaType, mediaId) {
-        detailListState.scrollToItem(0)
     }
 
     val backgroundColor = MaterialTheme.colorScheme.background
@@ -646,11 +658,24 @@ fun DetailScreen(
 
                 LaunchedEffect(state.detail.id) {
                     kotlinx.coroutines.delay(220)
-                    detailListState.scrollToItem(0)
                     runCatching { entryFocusRequester.requestFocus() }
                 }
 
             }
+        }
+
+        if (detailRefreshing && uiState is DetailUiState.Ready) {
+            Text(
+                text = "Updating…",
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 28.dp, end = 42.dp)
+                    .clip(AppPillShape)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.88f))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
+            )
         }
 
         shareSheet?.let { sheet ->

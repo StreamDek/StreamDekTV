@@ -353,6 +353,14 @@ class MPVTextureView @JvmOverloads constructor(
         scheduleLoad(url)
     }
 
+    override fun reloadSource() {
+        val source = activeSource ?: pendingSource ?: return
+        activeSource = null
+        pendingSource = source
+        scheduleLoad(source)
+        activeSource = source
+    }
+
     override fun setHeaders(nextHeaders: Map<String, String>?) {
         if (isDestroyed) return
         headers = nextHeaders
