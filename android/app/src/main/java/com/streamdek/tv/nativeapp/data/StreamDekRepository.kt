@@ -20,6 +20,12 @@ private val LIVE_ADDON_CATALOG_TYPES = setOf(
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
 
+/**
+ * Resolved playback URLs (debrid links, addon direct links) expire quickly, so cached
+ * candidates are only reused for a short window before being re-resolved.
+ */
+private const val RESOLVED_PLAYBACK_CACHE_TTL_MS = 3 * 60_000L
+
 private data class AddonCatalogCollection(
     val addonId: String,
     val addonName: String,
@@ -83,6 +89,16 @@ class StreamDekRepository(
     private val networkCache = lruCache<String, PagedRailResponse>(12)
     private val genreCache = lruCache<String, List<GenreItem>>(8)
     private val resolvedPlaybackCache = lruCache<String, ResolvedPlaybackCandidate>(16)
+    private val resolvedPlaybackCacheTimes = lruCache<String, Long>(32)
+
+    /**
+     * Client used to talk to Stremio addons directly (bypassing the backend), mirroring the
+     * mobile app's fresh-stream fetch used when a cached addon link has expired.
+     */
+    private val directStreamClient = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
     private val episodeSegmentCache = lruCache<String, List<PlaybackSegment>>(32)
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
@@ -117,7 +133,23 @@ class StreamDekRepository(
             preferredStreamKey = request.selectedStreamKey,
             streamType = request.streamType,
         )
-        return resolvedPlaybackCache[cacheKey]
+        return readResolvedPlaybackCache(cacheKey)
+    }
+
+    private fun readResolvedPlaybackCache(cacheKey: String): ResolvedPlaybackCandidate? {
+        val cached = resolvedPlaybackCache[cacheKey] ?: return null
+        val storedAt = resolvedPlaybackCacheTimes[cacheKey] ?: 0L
+        if (System.currentTimeMillis() - storedAt > RESOLVED_PLAYBACK_CACHE_TTL_MS) {
+            resolvedPlaybackCache.remove(cacheKey)
+            resolvedPlaybackCacheTimes.remove(cacheKey)
+            return null
+        }
+        return cached
+    }
+
+    private fun writeResolvedPlaybackCache(cacheKey: String, candidate: ResolvedPlaybackCandidate) {
+        resolvedPlaybackCache[cacheKey] = candidate
+        resolvedPlaybackCacheTimes[cacheKey] = System.currentTimeMillis()
     }
 
     suspend fun signIn(email: String, password: String): AuthSession {
@@ -176,6 +208,7 @@ class StreamDekRepository(
         networkCache.clear()
         genreCache.clear()
         resolvedPlaybackCache.clear()
+        resolvedPlaybackCacheTimes.clear()
         watchedHistoryCache.clear()
     }
 
@@ -1092,7 +1125,7 @@ class StreamDekRepository(
             streamType = streamType,
         )
         if (!forceRefresh) {
-            resolvedPlaybackCache[cacheKey]?.let { return it }
+            readResolvedPlaybackCache(cacheKey)?.let { return it }
         }
         val lookupTypes = when (mediaType) {
             "live" -> {
@@ -1109,13 +1142,9 @@ class StreamDekRepository(
             else -> listOf("movie")
         }
         val videoId = buildStreamVideoId(imdbId ?: mediaId, episode)
-        val streams = lookupTypes.firstNotNullOfOrNull { lookupType ->
-            api.get<AddonStreamsResponse>("/addons/streams/$lookupType/$videoId")
-                ?.streams
-                ?.takeIf { it.isNotEmpty() }
-        }.orEmpty()
+        val (streamLookupType, streams) = fetchStreamsForPlayback(lookupTypes, videoId, isLive = mediaType == "live")
         for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {
-            val resolvedUrl = resolveStreamToUrl(stream)
+            val resolvedUrl = resolveStreamToUrl(stream, streamLookupType, videoId)
             if (!resolvedUrl.isNullOrBlank()) {
                 val resolvedStreamKey = streamSelectionKey(stream)
                 val candidate = ResolvedPlaybackCandidate(
@@ -1123,21 +1152,138 @@ class StreamDekRepository(
                         url = resolvedUrl,
                         contentType = guessContentType(resolvedUrl),
                         label = describeStream(stream),
-                        filename = stream.behaviorHints?.filename ?: stream.title ?: stream.name,
+                        filename = effectiveFilename(stream),
                         requestHeaders = stream.requestHeaders,
                     ),
                     stream = stream,
                     streams = streams,
                 )
                 sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, resolvedStreamKey)
-                resolvedPlaybackCache[cacheKey] = candidate
+                writeResolvedPlaybackCache(cacheKey, candidate)
                 return candidate
             }
         }
         return ResolvedPlaybackCandidate(null, null, streams).also {
-            resolvedPlaybackCache[cacheKey] = it
+            writeResolvedPlaybackCache(cacheKey, it)
         }
     }
+
+    /**
+     * Fetches candidate streams the same way the mobile app does: ask the backend for each
+     * enabled addon individually (ordered by addon position), fall back to querying the addon
+     * directly for a fresh response, and only then fall back to the aggregated backend route.
+     * Returns the lookup type that produced results together with the de-duplicated streams.
+     */
+    private suspend fun fetchStreamsForPlayback(
+        lookupTypes: List<String>,
+        videoId: String,
+        isLive: Boolean = false,
+    ): Pair<String?, List<AddonStream>> {
+        val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
+            .filter { it.enabled }
+            .sortedBy { it.position }
+        val baseId = videoId.substringBefore(":")
+        for (lookupType in lookupTypes) {
+            val supportingAddons = addons.filter { addonSupportsStreamType(it, lookupType) }
+            if (supportingAddons.isEmpty()) continue
+            val merged = supervisorScope {
+                supportingAddons.map { addon ->
+                    async { fetchStreamsFromSingleAddon(addon, lookupType, videoId, baseId, isLive) }
+                }.map { deferred -> runCatching { deferred.await() }.getOrDefault(emptyList()) }
+            }.flatten()
+            if (merged.isNotEmpty()) {
+                return lookupType to dedupeStreams(merged)
+            }
+        }
+        // Aggregated backend route as the final fallback, matching mobile behavior.
+        for (lookupType in lookupTypes) {
+            val aggregated = runCatching {
+                api.get<AddonStreamsResponse>("/addons/streams/$lookupType/${encodePathSegment(videoId)}")?.streams
+            }.getOrNull().orEmpty()
+            if (aggregated.isNotEmpty()) {
+                return lookupType to dedupeStreams(aggregated)
+            }
+        }
+        return lookupTypes.firstOrNull() to emptyList()
+    }
+
+    private suspend fun fetchStreamsFromSingleAddon(
+        addon: AddonManifest,
+        lookupType: String,
+        videoId: String,
+        baseId: String,
+        isLive: Boolean,
+    ): List<AddonStream> {
+        val viaBackend = runCatching {
+            api.get<AddonStreamsResponse>(
+                "/addons/streams/single/${encodePathSegment(addon.id)}/$lookupType/${encodePathSegment(videoId)}",
+            )?.streams
+        }.getOrNull().orEmpty()
+        if (viaBackend.isNotEmpty()) {
+            return viaBackend.map { it.withAddonIdentity(addon) }
+        }
+        // Direct addon fallback mirrors mobile: only for ids the addon can actually serve.
+        val requiresImdbId = !isLive && (lookupType == "movie" || lookupType == "series" || lookupType == "tv")
+        if (requiresImdbId && !baseId.matches(Regex("^tt\\d+$", RegexOption.IGNORE_CASE))) return emptyList()
+        return fetchFreshStreamsFromAddon(addon, lookupType, videoId)
+    }
+
+    private fun AddonStream.withAddonIdentity(addon: AddonManifest): AddonStream = copy(
+        addonId = addonId.ifBlank { addon.id },
+        addonName = addonName.ifBlank { addon.manifest.name },
+    )
+
+    private fun dedupeStreams(streams: List<AddonStream>): List<AddonStream> = streams.distinctBy {
+        listOf(it.addonId, it.name, it.title, effectiveInfoHash(it), it.url, effectiveFilename(it)).joinToString("|")
+    }
+
+    private fun addonSupportsStreamType(addon: AddonManifest, type: String): Boolean {
+        val resources = addon.manifest.resources.mapNotNull { resource ->
+            when (resource) {
+                is String -> resource.trim().lowercase(Locale.US)
+                is Map<*, *> -> (resource["name"] as? String)?.trim()?.lowercase(Locale.US)
+                else -> null
+            }
+        }
+        if (resources.isNotEmpty() && resources.none { it == "stream" || it == "streams" }) return false
+        val nativeType = type.trim().lowercase(Locale.US)
+        val types = addon.manifest.types.map { it.trim().lowercase(Locale.US) }
+        if (types.isEmpty()) return true
+        return nativeType in types ||
+            (nativeType == "series" && "tv" in types) ||
+            (nativeType == "tv" && "series" in types)
+    }
+
+    /**
+     * Queries a Stremio addon directly for streams, bypassing the backend cache. Used both as
+     * a fetch fallback and to refresh expired direct playback links right before playback.
+     */
+    private suspend fun fetchFreshStreamsFromAddon(
+        addon: AddonManifest,
+        type: String,
+        videoId: String,
+    ): List<AddonStream> = withContext(Dispatchers.IO) {
+        val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: return@withContext emptyList()
+        val addonBaseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl.trimEnd('/'))
+        val streamType = type.trim().lowercase(Locale.US)
+        val request = okhttp3.Request.Builder()
+            .url("$addonBaseUrl/stream/${encodePathSegment(streamType)}/${encodePathSegment(videoId)}.json?_sd=${System.currentTimeMillis()}")
+            .header("User-Agent", "Stremio/4.4.168")
+            .header("Cache-Control", "no-cache")
+            .build()
+        runCatching {
+            directStreamClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use emptyList()
+                val raw = response.body?.string()?.takeIf { it.isNotBlank() } ?: return@use emptyList()
+                val parsed = com.google.gson.Gson().fromJson(raw, AddonStreamsResponse::class.java)
+                parsed?.streams.orEmpty().map { it.withAddonIdentity(addon) }
+            }
+        }.onFailure {
+            TvDebugLogger.w("Playback", "fetchFreshStreamsFromAddon failed addon=${addon.id} type=$streamType id=$videoId")
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodePathSegment(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     suspend fun prefetchPlayback(
         mediaType: String,
@@ -1148,13 +1294,17 @@ class StreamDekRepository(
         resolvePlayback(mediaType, mediaId, imdbId, episode, preferredStreamKey = null, forceRefresh = false)
     }
 
-    suspend fun resolvePlaybackSource(stream: AddonStream): ResolvedPlaybackSource? {
-        val resolvedUrl = resolveStreamToUrl(stream) ?: return null
+    suspend fun resolvePlaybackSource(
+        stream: AddonStream,
+        lookupType: String? = null,
+        videoId: String? = null,
+    ): ResolvedPlaybackSource? {
+        val resolvedUrl = resolveStreamToUrl(stream, lookupType, videoId) ?: return null
         return ResolvedPlaybackSource(
             url = resolvedUrl,
             contentType = guessContentType(resolvedUrl),
             label = describeStream(stream),
-            filename = stream.behaviorHints?.filename ?: stream.title ?: stream.name,
+            filename = effectiveFilename(stream),
             requestHeaders = stream.requestHeaders,
         )
     }
@@ -1255,33 +1405,96 @@ class StreamDekRepository(
 
     fun describeStreamOption(stream: AddonStream): String = describeStream(stream)
 
-    private suspend fun resolveStreamToUrl(stream: AddonStream): String? {
-        stream.url?.let { return it }
-        val infoHash = stream.infoHash ?: return null
-        val filename = stream.behaviorHints?.filename ?: stream.title ?: stream.name
+    private suspend fun resolveStreamToUrl(
+        stream: AddonStream,
+        lookupType: String? = null,
+        videoId: String? = null,
+    ): String? {
+        // Expired direct links (short-lived addon URLs) are refreshed straight from the
+        // source addon before playback, mirroring the mobile app's refresh behavior.
+        val playbackStream = if (!lookupType.isNullOrBlank() && !videoId.isNullOrBlank()) {
+            refreshStreamForPlayback(stream, lookupType, videoId)
+        } else {
+            stream
+        }
+        normalizedDirectUrl(playbackStream)?.let { return it }
+        val infoHash = effectiveInfoHash(playbackStream) ?: return null
+        val filename = effectiveFilename(playbackStream)
         val magnetLink = buildMagnetLink(infoHash, filename)
+        val payload = buildMap<String, Any> {
+            put("infoHash", infoHash)
+            put("magnetLink", magnetLink)
+            filename?.let { put("filename", it) }
+            playbackStream.cachedBy.firstOrNull()?.let { put("providerHint", it) }
+            maxFileSizeBytes()?.let { put("maxSize", it) }
+        }
         return runCatching {
-            val debrid = api.post<DebridResolveResponse>(
-                "/debrid/resolve",
-                mapOf(
-                    "infoHash" to infoHash,
-                    "magnetLink" to magnetLink,
-                    "filename" to filename,
-                ),
-            )
+            val debrid = api.post<DebridResolveResponse>("/debrid/resolve", payload)
             if (!debrid?.url.isNullOrBlank()) return@runCatching debrid.url
-            val torrent = api.post<TorrentResolveResponse>(
-                "/stream/torrent/add",
-                mapOf(
-                    "infoHash" to infoHash,
-                    "magnetLink" to magnetLink,
-                    "filename" to filename,
-                ),
-            )
+            val torrent = api.post<TorrentResolveResponse>("/stream/torrent/add", payload)
             torrent?.streamUrl
         }.onFailure {
             TvDebugLogger.e("Playback", "resolveStreamToUrl failed infoHash=$infoHash", it)
         }.getOrNull()
+    }
+
+    /** Direct playback URL, excluding magnet links which must be resolved via debrid/torrent. */
+    private fun normalizedDirectUrl(stream: AddonStream): String? {
+        val url = stream.url?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) } ?: return null
+        return url.takeUnless { it.startsWith("magnet:", ignoreCase = true) }
+    }
+
+    /** Info hash from the stream, or parsed out of a magnet url when absent. */
+    private fun effectiveInfoHash(stream: AddonStream): String? {
+        stream.infoHash?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        val url = stream.url?.trim().orEmpty()
+        if (!url.startsWith("magnet:?", ignoreCase = true)) return null
+        return Regex("btih:([A-Fa-f0-9]{32,40})").find(url)?.groupValues?.getOrNull(1)
+    }
+
+    private fun effectiveFilename(stream: AddonStream): String? =
+        stream.behaviorHints?.filename?.takeIf { it.isNotBlank() }
+            ?: stream.filename?.takeIf { it.isNotBlank() }
+            ?: stream.title?.takeIf { it.isNotBlank() }
+            ?: stream.name?.takeIf { it.isNotBlank() }
+
+    private fun effectiveBingeGroup(stream: AddonStream): String? =
+        stream.bingeGroup?.takeIf { it.isNotBlank() }
+            ?: stream.behaviorHints?.bingeGroup?.takeIf { it.isNotBlank() }
+
+    /** Addon links served from short-lived direct routes must be re-fetched before playback. */
+    private fun needsFreshPlaybackUrl(stream: AddonStream): Boolean {
+        val url = stream.url ?: return false
+        return runCatching {
+            val uri = java.net.URI(url)
+            uri.host.equals("pengu.uk", ignoreCase = true) && uri.path.orEmpty().startsWith("/direct/")
+        }.getOrDefault(false)
+    }
+
+    private suspend fun refreshStreamForPlayback(
+        stream: AddonStream,
+        lookupType: String,
+        videoId: String,
+    ): AddonStream {
+        if (!needsFreshPlaybackUrl(stream)) return stream
+        val addon = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
+            .firstOrNull { it.id == stream.addonId && it.enabled }
+            ?: return stream
+        val fresh = fetchFreshStreamsFromAddon(addon, lookupType, videoId)
+        if (fresh.isEmpty()) return stream
+        val bingeGroup = effectiveBingeGroup(stream)
+        val filename = effectiveFilename(stream)
+        return fresh.firstOrNull { candidate ->
+            !bingeGroup.isNullOrBlank() && effectiveBingeGroup(candidate) == bingeGroup
+        } ?: fresh.firstOrNull { candidate ->
+            !filename.isNullOrBlank() && effectiveFilename(candidate) == filename && candidate.name == stream.name
+        } ?: stream
+    }
+
+    private fun maxFileSizeBytes(): Long? {
+        val gb = bootstrapState.value?.preferences?.playback?.maxFileSizeGB?.trim()?.toDoubleOrNull() ?: return null
+        if (gb <= 0.0) return null
+        return (gb * 1024.0 * 1024.0 * 1024.0).toLong()
     }
 
     private fun rankStreams(
@@ -1307,9 +1520,9 @@ class StreamDekRepository(
                 .thenByDescending {
                     if (!normalizedPreferredQuality.isNullOrBlank() && it.quality?.trim()?.lowercase(Locale.US) == normalizedPreferredQuality) 4 else 0
                 }
-                .thenByDescending { if (!it.url.isNullOrBlank()) 3 else 0 }
+                .thenByDescending { if (!normalizedDirectUrl(it).isNullOrBlank()) 3 else 0 }
                 .thenByDescending { if (it.cachedBy.isNotEmpty()) 2 else 0 }
-                .thenByDescending { if (!it.infoHash.isNullOrBlank()) 1 else 0 }
+                .thenByDescending { if (!effectiveInfoHash(it).isNullOrBlank()) 1 else 0 }
                 .thenByDescending { preferredQualityScore(it.quality, preferredQuality) }
                 .thenByDescending { parseQualityScore(it.quality) }
         )

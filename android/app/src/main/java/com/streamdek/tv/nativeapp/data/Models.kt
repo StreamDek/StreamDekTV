@@ -355,6 +355,10 @@ data class AddonManifestMeta(
     val version: String = "",
     val description: String? = null,
     val catalogs: List<AddonCatalogRef> = emptyList(),
+    /** Stremio content types this addon serves (e.g. movie, series, tv). Empty means unknown/all. */
+    val types: List<String> = emptyList(),
+    /** Stremio resources this addon exposes; entries may be strings or objects with a name field. */
+    val resources: List<Any> = emptyList(),
 )
 
 data class AddonManifest(
@@ -509,18 +513,23 @@ data class AddonStream(
     val addonName: String = "",
     val name: String? = null,
     val title: String? = null,
+    val description: String? = null,
     val url: String? = null,
     val infoHash: String? = null,
     val fileIdx: Int? = null,
+    val filename: String? = null,
     val behaviorHints: BehaviorHints? = null,
     val quality: String? = null,
     val size: String? = null,
     val cachedBy: List<String> = emptyList(),
+    val bingeGroup: String? = null,
+    val source: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
 )
 
 data class BehaviorHints(
     val filename: String? = null,
+    val bingeGroup: String? = null,
 )
 
 data class DebridResolveResponse(

@@ -657,8 +657,19 @@ fun DetailScreen(
                 }
 
                 LaunchedEffect(state.detail.id) {
-                    kotlinx.coroutines.delay(220)
-                    runCatching { entryFocusRequester.requestFocus() }
+                    // Land the initial highlight directly on the play CTA without scrolling
+                    // the page. The play button suppresses bring-into-view, so focusing it
+                    // never moves the list; the page only scrolls when the user navigates
+                    // down themselves. Retry briefly while the hero row is composing.
+                    var focused = false
+                    repeat(6) { attempt ->
+                        if (focused) return@repeat
+                        kotlinx.coroutines.delay(if (attempt == 0) 120L else 80L)
+                        focused = runCatching { playButtonRequester.requestFocus() }.isSuccess
+                    }
+                    if (!focused) {
+                        runCatching { entryFocusRequester.requestFocus() }
+                    }
                 }
 
             }
@@ -749,6 +760,14 @@ private fun HeroEntrySentinel(
             .focusRequester(focusRequester)
             .focusProperties {
                 down = downRequester
+            }
+            .onFocusChanged { state ->
+                // The sentinel is an invisible entry point; whenever it gains focus,
+                // hand the highlight straight to the play CTA so it never appears
+                // as if focus vanished (e.g. when pressing up from the hero row).
+                if (state.isFocused) {
+                    runCatching { downRequester.requestFocus() }
+                }
             }
             .focusable(),
     )

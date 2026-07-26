@@ -497,7 +497,7 @@ fun PlayerScreen(
         }
     }
 
-    suspend fun loadPlayback() {
+    suspend fun loadPlayback(forceRefresh: Boolean = false) {
         liveReconnectJob?.cancel()
         liveReconnectJob = null
         liveReconnectAttempt = 0
@@ -560,6 +560,7 @@ fun PlayerScreen(
             effectiveImdbId,
             currentEpisode,
             preferredStreamKey = streamKeyOverride,
+            forceRefresh = forceRefresh,
             streamType = request.streamType,
             directStreamUrl = request.directStreamUrl,
             requestHeaders = request.requestHeaders,
@@ -1154,6 +1155,15 @@ fun PlayerScreen(
                                 modifier = Modifier.focusRequester(errorBackRequester),
                             ) {
                                 androidx.tv.material3.Text("Go Back")
+                            }
+                            androidx.tv.material3.OutlinedButton(
+                                onClick = {
+                                    TvDebugLogger.i("Player", "error overlay retry with fresh streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
+                                    error = null
+                                    scope.launch { loadPlayback(forceRefresh = true) }
+                                },
+                            ) {
+                                androidx.tv.material3.Text("Retry")
                             }
                             if (hasMultipleStreams) {
                                 androidx.tv.material3.OutlinedButton(
