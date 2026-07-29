@@ -30,25 +30,31 @@ class HomeViewModel(
     private var lastLoadKey: String? = null
     private var heroKey: String? = null
     private var heroDetailJob: Job? = null
+    private var loadJob: Job? = null
 
     fun load(loadKey: String) {
-        if (lastLoadKey == loadKey && (_uiState.value.content != null || _uiState.value.error != null)) {
+        if (lastLoadKey == loadKey && (loadJob?.isActive == true || _uiState.value.content != null || _uiState.value.error != null)) {
             return
         }
-        forceRefresh(loadKey)
+        loadContent(loadKey, forceRefresh = false)
     }
 
     fun forceRefresh(loadKey: String) {
+        loadContent(loadKey, forceRefresh = true)
+    }
+
+    private fun loadContent(loadKey: String, forceRefresh: Boolean) {
         lastLoadKey = loadKey
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             val cachedContent = _uiState.value.content
             _uiState.value = _uiState.value.copy(
                 isLoading = cachedContent == null,
                 error = null,
             )
-            runCatching { repository.fetchHomeContent(forceRefresh = true) }
+            runCatching { repository.fetchHomeContent(forceRefresh = forceRefresh) }
                 .onSuccess { content ->
-                    TvDebugLogger.i("HomeVm", "load ok rails=${content.rails.size}")
+                    TvDebugLogger.i("HomeVm", "load ok rails=${content.rails.size} forceRefresh=$forceRefresh")
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         content = content,
@@ -56,6 +62,7 @@ class HomeViewModel(
                     )
                 }
                 .onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) return@onFailure
                     TvDebugLogger.e("HomeVm", "load failed", error)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
@@ -64,7 +71,6 @@ class HomeViewModel(
                 }
         }
     }
-
     fun setHeroCandidate(item: MediaItem?) {
         val nextKey = item?.let { "${it.type}:${it.id}" } ?: "none"
         if (nextKey == heroKey) return

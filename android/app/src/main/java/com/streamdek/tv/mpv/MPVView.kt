@@ -71,8 +71,11 @@ class MPVView @JvmOverloads constructor(
     init {
         holder.addCallback(this)
         keepScreenOn = true
-        isFocusable = true
-        isFocusableInTouchMode = true
+        // Keep D-pad focus with the Compose controls; a focusable video surface
+        // swallows left/right presses meant for the progress bar. Remote key
+        // handling lives in the Compose layer instead.
+        isFocusable = false
+        isFocusableInTouchMode = false
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -176,6 +179,14 @@ class MPVView @JvmOverloads constructor(
         MPVLib.setOptionString("demuxer-max-bytes", "100663296")
         MPVLib.setOptionString("demuxer-max-back-bytes", "33554432")
         MPVLib.setOptionString("network-timeout", "60")
+        // Auto-reconnect at the ffmpeg layer keeps live channels alive across upstream
+        // restarts, CDN switches and transient HTTP errors, matching the mobile app.
+        MPVLib.setOptionString(
+            "stream-lavf-o",
+            "reconnect=1,reconnect_streamed=1,reconnect_delay_max=10,reconnect_on_http_error=429",
+        )
+        MPVLib.setOptionString("alang", "eng,en")
+        MPVLib.setOptionString("slang", "eng,en")
         MPVLib.setOptionString("prefetch-playlist", "no")
         MPVLib.setOptionString("sub-auto", "fuzzy")
         MPVLib.setOptionString("sub-visibility", "yes")
@@ -380,6 +391,11 @@ class MPVView @JvmOverloads constructor(
         MPVLib.command(arrayOf("seek", positionSeconds.toString(), "absolute"))
     }
 
+    override fun seekToFast(positionSeconds: Double) {
+        if (!initialized || isDestroyed) return
+        MPVLib.command(arrayOf("seek", positionSeconds.toString(), "absolute+keyframes"))
+    }
+
     override fun setSpeed(speed: Double) {
         if (!initialized || isDestroyed) return
         MPVLib.setPropertyDouble("speed", speed)
@@ -448,7 +464,7 @@ class MPVView @JvmOverloads constructor(
      * @param path A file:// URI or absolute path to the subtitle file on device
      *             storage (e.g. from expo-file-system's cache directory).
      */
-    fun addSubtitleFile(path: String) {
+    override fun addSubtitleFile(path: String) {
         if (!initialized || isDestroyed) {
             Log.w(TAG, "addSubtitleFile called before init; ignoring")
             return

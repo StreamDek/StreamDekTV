@@ -316,36 +316,23 @@ fun AccountScreen(
                         }
                     }
                     item {
-                        CompactCard("Addons") {
+                        CompactCard("Cloud Sources") {
+                            ChoiceRow("Configuration", "Refresh", requester = servicesActionRequester) {
+                                scope.launch {
+                                    bootstrap = repository.refreshBootstrap()
+                                    addons = repository.fetchAddonManifests(forceRefresh = true)
+                                    status = "Cloud configuration refreshed."
+                                }
+                            }
+                            Text(
+                                text = "Add-ons and providers are managed in the mobile app. This TV receives their cloud state.",
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                            )
                             if (addons.isEmpty()) {
-                                Text(
-                                    text = "No synced addons found for this account.",
-                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
-                                )
+                                TextLine("Synced add-ons", "None")
                             } else {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    addons.forEach { addon ->
-                                        AddonRow(
-                                            addon = addon,
-                                            actionRequester = if (addon == addons.firstOrNull()) servicesActionRequester else null,
-                                            onToggle = {
-                                                scope.launch {
-                                                    repository.toggleAddon(addon.id, !addon.enabled)
-                                                    addons = repository.fetchAddonManifests(forceRefresh = true)
-                                                    bootstrap = repository.bootstrap.value
-                                                    status = if (addon.enabled) "${addon.manifest.name} disabled." else "${addon.manifest.name} enabled."
-                                                }
-                                            },
-                                            onRemove = {
-                                                scope.launch {
-                                                    repository.uninstallAddon(addon.id)
-                                                    addons = repository.fetchAddonManifests(forceRefresh = true)
-                                                    bootstrap = repository.bootstrap.value
-                                                    status = "${addon.manifest.name} removed."
-                                                }
-                                            },
-                                        )
-                                    }
+                                addons.forEach { addon ->
+                                    TextLine(addon.manifest.name, if (addon.enabled) "Enabled" else "Disabled")
                                 }
                             }
                         }
@@ -354,242 +341,46 @@ fun AccountScreen(
 
                 SettingsSection.Playback -> {
                     item {
-                        CompactCard("Playback Defaults", modifier = Modifier.focusRequester(playbackContentRequester)) {
-                            PreferenceRow(
-                                "Autoplay Next Episode",
-                                playbackPrefs?.isAutoPlayNextEpisodeEnabled() == true,
-                                requester = playbackActionRequester,
-                            ) {
+                        CompactCard("Cloud Playback Profile", modifier = Modifier.focusRequester(playbackContentRequester)) {
+                            ChoiceRow("Configuration", "Refresh", requester = playbackActionRequester) {
                                 scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("autoplayNextEpisode" to !(playbackPrefs?.isAutoPlayNextEpisodeEnabled() == true)))
-                                    bootstrap = repository.bootstrap.value
+                                    bootstrap = repository.refreshBootstrap()
+                                    status = "Playback settings refreshed from the cloud."
                                 }
                             }
-                            PreferenceRow("Skip Intro", playbackPrefs?.isSegmentEnabled("intro") != false) {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("skipIntroEnabled" to !(playbackPrefs?.isSegmentEnabled("intro") != false)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            PreferenceRow("Skip Recap", playbackPrefs?.isSegmentEnabled("recap") != false) {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("skipRecapEnabled" to !(playbackPrefs?.isSegmentEnabled("recap") != false)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            PreferenceRow("Skip Ending", playbackPrefs?.isSegmentEnabled("outro") != false) {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("skipEndingEnabled" to !(playbackPrefs?.isSegmentEnabled("outro") != false)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            PreferenceRow("Prefer Same Addon for Next Episode", playbackPrefs?.preferBingeGroupNextEpisode != false) {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("preferBingeGroupNextEpisode" to (playbackPrefs?.preferBingeGroupNextEpisode == false)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow(
-                                "Next Episode Trigger",
-                                if (playbackPrefs?.nextEpisodeThresholdMode == "percent") "Percentage" else "Minutes Remaining",
-                            ) {
-                                scope.launch {
-                                    val nextMode = if (playbackPrefs?.nextEpisodeThresholdMode == "percent") "minutes" else "percent"
-                                    repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdMode" to nextMode))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            if (playbackPrefs?.nextEpisodeThresholdMode == "percent") {
-                                ChoiceRow("Next Episode At", "${playbackPrefs?.nextEpisodeThresholdPercent ?: 95}%") {
-                                    scope.launch {
-                                        val values = listOf("75", "80", "85", "90", "95", "98")
-                                        val nextValue = nextOf(values, (playbackPrefs?.nextEpisodeThresholdPercent ?: 95).toString()).toInt()
-                                        repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdPercent" to nextValue))
-                                        bootstrap = repository.bootstrap.value
-                                    }
-                                }
-                            } else {
-                                ChoiceRow("Next Episode At", "${playbackPrefs?.nextEpisodeThresholdMinutes ?: 2} min remaining") {
-                                    scope.launch {
-                                        val values = listOf("1", "2", "3", "5", "8", "10")
-                                        val nextValue = nextOf(values, (playbackPrefs?.nextEpisodeThresholdMinutes ?: 2).toString()).toInt()
-                                        repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdMinutes" to nextValue))
-                                        bootstrap = repository.bootstrap.value
-                                    }
-                                }
-                            }
-                            PreferenceRow(
-                                "Choose Stream Before Play",
-                                playbackPrefs?.manualStreamSelectionEnabled != false,
-                            ) {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("manualStreamSelectionEnabled" to (playbackPrefs?.manualStreamSelectionEnabled == false)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Preferred Audio Language", formatAudioLanguage(playbackPrefs?.defaultAudioLanguage ?: "auto")) {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("defaultAudioLanguage" to nextOf(preferredAudioLanguageOptions(), normalizeAudioLanguagePreference(playbackPrefs?.defaultAudioLanguage))))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Preferred Quality", playbackPrefs?.preferredQuality ?: "1080p") {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("preferredQuality" to nextOf(listOf("best", "4k", "1080p", "720p"), playbackPrefs?.preferredQuality ?: "1080p")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Streaming Server", playbackPrefs?.streamingServer ?: "addon") {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("streamingServer" to nextOf(listOf("addon", "backend"), playbackPrefs?.streamingServer ?: "addon")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Max File Size", formatFileSizeGB(playbackPrefs?.maxFileSizeGB ?: "2")) {
-                                scope.launch {
-                                    repository.updatePlaybackPreferences(mapOf("maxFileSizeGB" to nextOf(listOf("0", "2", "5", "10", "20"), playbackPrefs?.maxFileSizeGB ?: "2")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Render Surface", formatRenderSurface(playbackPrefs?.renderSurface ?: "standard")) {
-                                scope.launch {
-                                    val current = normalizeRenderSurfacePreference(playbackPrefs?.renderSurface)
-                                    repository.updatePlaybackPreferences(mapOf("renderSurface" to nextOf(listOf("auto", "surface", "texture"), current)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Decoder Mode", formatDecoderMode(playbackPrefs?.decoderMode ?: "auto")) {
-                                scope.launch {
-                                    val current = normalizeDecoderModePreference(playbackPrefs?.decoderMode)
-                                    repository.updatePlaybackPreferences(mapOf("decoderMode" to nextOf(listOf("auto", "hardware", "hardware_plus", "software"), current)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
+                            Text(
+                                text = "Change these defaults in StreamDek Mobile. TV applies them automatically.",
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                            )
+                            TextLine("Player", playbackPrefs?.playerEngine ?: "Auto")
+                            TextLine("Decoder", formatDecoderMode(playbackPrefs?.decoderMode ?: "auto"))
+                            TextLine("Render surface", formatRenderSurface(playbackPrefs?.renderSurface ?: "auto"))
+                            TextLine("Preferred quality", playbackPrefs?.preferredQuality ?: "1080p")
+                            TextLine("Preferred audio", formatAudioLanguage(playbackPrefs?.defaultAudioLanguage ?: "auto"))
+                            TextLine("Autoplay next", if (playbackPrefs?.isAutoPlayNextEpisodeEnabled() == true) "On" else "Off")
+                            TextLine("Skip intro", if (playbackPrefs?.isSegmentEnabled("intro") != false) "On" else "Off")
+                            TextLine("Skip recap", if (playbackPrefs?.isSegmentEnabled("recap") != false) "On" else "Off")
+                            TextLine("Skip ending", if (playbackPrefs?.isSegmentEnabled("outro") != false) "On" else "Off")
                         }
                     }
                 }
 
                 SettingsSection.Streams -> {
                     item {
-                        CompactCard("Fusion Style Badges", modifier = Modifier.focusRequester(streamsContentRequester)) {
-                            PreferenceRow(
-                                "Show Fusion Badges",
-                                streamsPrefs.fusionBadgesEnabled,
-                                requester = streamsActionRequester,
-                            ) {
+                        CompactCard("Cloud Stream Display", modifier = Modifier.focusRequester(streamsContentRequester)) {
+                            ChoiceRow("Configuration", "Refresh", requester = streamsActionRequester) {
                                 scope.launch {
-                                    repository.updateStreamsPreferences(mapOf("fusionBadgesEnabled" to !streamsPrefs.fusionBadgesEnabled))
-                                    bootstrap = repository.bootstrap.value
+                                    bootstrap = repository.refreshBootstrap()
+                                    status = "Stream display settings refreshed from the cloud."
                                 }
                             }
-                            PreferenceRow("Show Size Badges", streamsPrefs.showSizeBadges) {
-                                scope.launch {
-                                    repository.updateStreamsPreferences(mapOf("showSizeBadges" to !streamsPrefs.showSizeBadges))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Badge Position", streamsPrefs.badgePosition) {
-                                scope.launch {
-                                    repository.updateStreamsPreferences(mapOf("badgePosition" to nextOf(listOf("top", "bottom"), streamsPrefs.badgePosition)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                        }
-                    }
-                    item {
-                        CompactCard("Fusion Badge Sources") {
                             Text(
-                                text = "Badge sources control the quality, source, and language icons shown on stream cards. Up to $MAX_FUSION_BADGE_URLS sources can be imported. With multiple imports, pick one as active — or press the active one again to merge all sources.",
-                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
-                                style = MaterialTheme.typography.bodySmall,
+                                text = "Configure stream badges and source preferences in StreamDek Mobile.",
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
                             )
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                val activeBadgeUrl = streamsPrefs.activeFusionBadgeUrl
-                                    ?.takeIf { streamsPrefs.fusionBadgeUrls.size > 1 && streamsPrefs.fusionBadgeUrls.contains(it) }
-                                streamsPrefs.fusionBadgeUrls.forEach { url ->
-                                    BadgeUrlRow(
-                                        url = url,
-                                        source = fusionBadgeSourcesByUrl[url],
-                                        isLoading = url in loadingBadgeUrls,
-                                        canRemove = streamsPrefs.fusionBadgeUrls.size > 1,
-                                        showActiveSelector = streamsPrefs.fusionBadgeUrls.size > 1,
-                                        isActive = activeBadgeUrl == url,
-                                        onSetActive = {
-                                            scope.launch {
-                                                // Selecting the already-active source clears the
-                                                // selection so all sources merge again.
-                                                val next = if (activeBadgeUrl == url) null else url
-                                                repository.updateStreamsPreferences(mapOf("activeFusionBadgeUrl" to next))
-                                                bootstrap = repository.bootstrap.value
-                                            }
-                                        },
-                                        onRefresh = {
-                                            scope.launch {
-                                                loadingBadgeUrls = loadingBadgeUrls + url
-                                                repository.fetchFusionBadgeSource(url, forceRefresh = true)
-                                                loadingBadgeUrls = loadingBadgeUrls - url
-                                            }
-                                        },
-                                        onPreview = { previewBadgeUrl = url },
-                                        onRemove = {
-                                            scope.launch {
-                                                repository.updateStreamsPreferences(
-                                                    mapOf(
-                                                        "fusionBadgeUrls" to streamsPrefs.fusionBadgeUrls.filter { it != url },
-                                                        "activeFusionBadgeUrl" to streamsPrefs.activeFusionBadgeUrl?.takeIf { it != url },
-                                                    ),
-                                                )
-                                                repository.removeFusionBadgeSource(url)
-                                                bootstrap = repository.bootstrap.value
-                                            }
-                                        },
-                                    )
-                                }
-                            }
-                            if (streamsPrefs.fusionBadgeUrls.size < MAX_FUSION_BADGE_URLS) {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    BadgeUrlField(
-                                        value = badgeUrlDraft,
-                                        onValueChange = {
-                                            badgeUrlDraft = it
-                                            badgeUrlError = null
-                                        },
-                                    )
-                                    badgeUrlError?.let {
-                                        Text(it, color = Color(0xFFFF7070), style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                        Button(
-                                            onClick = {
-                                                val trimmed = badgeUrlDraft.trim()
-                                                when {
-                                                    !trimmed.startsWith("http://", ignoreCase = true) && !trimmed.startsWith("https://", ignoreCase = true) ->
-                                                        badgeUrlError = "Enter a valid URL starting with https://"
-                                                    streamsPrefs.fusionBadgeUrls.contains(trimmed) ->
-                                                        badgeUrlError = "This source is already added"
-                                                    else -> scope.launch {
-                                                        badgeUrlSubmitting = true
-                                                        badgeUrlError = null
-                                                        val source = repository.fetchFusionBadgeSource(trimmed)
-                                                        if (source == null) {
-                                                            badgeUrlError = "Couldn't load badges from this URL"
-                                                        } else {
-                                                            repository.updateStreamsPreferences(mapOf("fusionBadgeUrls" to streamsPrefs.fusionBadgeUrls + trimmed))
-                                                            bootstrap = repository.bootstrap.value
-                                                            badgeUrlDraft = ""
-                                                        }
-                                                        badgeUrlSubmitting = false
-                                                    }
-                                                }
-                                            },
-                                            enabled = !badgeUrlSubmitting && badgeUrlDraft.isNotBlank(),
-                                            shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
-                                        ) {
-                                            Text(if (badgeUrlSubmitting) "Adding..." else "Add Source")
-                                        }
-                                    }
-                                }
-                            }
+                            TextLine("Fusion badges", if (streamsPrefs.fusionBadgesEnabled) "On" else "Off")
+                            TextLine("Size badges", if (streamsPrefs.showSizeBadges) "On" else "Off")
+                            TextLine("Badge position", streamsPrefs.badgePosition)
                         }
                     }
                 }

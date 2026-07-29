@@ -172,6 +172,8 @@ data class HomeRail(
     val id: String,
     val title: String,
     val items: List<MediaItem>,
+    /** True for addon catalogs that carry live channels, which are grouped together on Home. */
+    val isLive: Boolean = false,
 )
 
 data class LiveCatalogRail(
@@ -234,6 +236,30 @@ data class AppPreferences(
     val syncOverCellular: Boolean = false,
 )
 
+data class SubtitleSourcePreference(
+    val id: String = "",
+    val name: String = "",
+    val baseUrl: String = "",
+    val url: String? = null,
+    val enabled: Boolean = true,
+)
+
+data class ExternalSubtitleTrack(
+    val id: String,
+    val language: String,
+    val label: String,
+    val url: String,
+)
+data class StremioSubtitleItem(
+    val id: String = "",
+    @SerializedName("lang") val language: String = "",
+    @SerializedName("m") val release: String = "",
+    val url: String = "",
+)
+
+data class StremioSubtitlesResponse(
+    val subtitles: List<StremioSubtitleItem> = emptyList(),
+)
 data class PlaybackPreferences(
     val autoplayNextEpisode: Boolean = true,
     val autoPlayNextEpisodeEnabled: Boolean? = null,
@@ -257,6 +283,12 @@ data class PlaybackPreferences(
     val nextEpisodeThresholdMinutes: Int = 2,
     val decoderMode: String = "hardware_plus",
     val renderSurface: String = "auto",
+    /** Mobile-managed cloud setting: Auto starts Media3 and falls back once to libMPV. */
+    val playerEngine: String = "Auto",
+    val rememberLastSource: Boolean = true,
+    /** Mobile-managed subtitle sources mirrored through cloud preferences. */
+    val subtitleSources: List<SubtitleSourcePreference> = emptyList(),
+    val customSubtitleSources: List<SubtitleSourcePreference> = emptyList(),
     val manualStreamSelectionEnabled: Boolean = true,
 ) {
     fun isAutoPlayNextEpisodeEnabled(): Boolean = autoPlayNextEpisodeEnabled ?: autoplayNextEpisode
@@ -556,6 +588,17 @@ data class ResolvedPlaybackCandidate(
     val streams: List<AddonStream>,
 )
 
+/**
+ * Incremental result of a stream lookup. [pendingSources] counts addons that have not
+ * answered yet, so the UI can keep showing a subtle progress hint while already
+ * rendering the streams that have arrived.
+ */
+data class StreamCandidatesProgress(
+    val streams: List<AddonStream>,
+    val pendingSources: Int,
+    val done: Boolean,
+)
+
 data class PlaybackRequest(
     val mediaId: String,
     val mediaType: String,
@@ -564,6 +607,9 @@ data class PlaybackRequest(
     val title: String? = null,
     val selectedStreamKey: String? = null,
     val selectedStreamLabel: String? = null,
+    /** Already-discovered stream selected on the source screen; avoids querying every addon again. */
+    val selectedStream: AddonStream? = null,
+    val availableStreams: List<AddonStream> = emptyList(),
     /** Stremio-native stream type for live playback (mediaType == "live"). */
     val streamType: String? = null,
     val sourceAddonId: String? = null,

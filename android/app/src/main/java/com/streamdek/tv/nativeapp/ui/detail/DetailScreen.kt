@@ -55,18 +55,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -134,6 +133,11 @@ private val DetailSectionInset = 42.dp
 private val HeroTopSpacerHeight = 35.dp
 private val HeroContentTopPadding = 0.dp
 
+/**
+ * Swallows bring-into-view requests coming from the hero area so moving the highlight
+ * between the top sentinel and the play CTA never scrolls the page. Sections below the
+ * CTA have no responder, so navigating past it scrolls normally.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 private val HeroActionNoScrollResponder = object : BringIntoViewResponder {
     override fun calculateRectForParent(localRect: Rect): Rect = localRect
@@ -657,18 +661,15 @@ fun DetailScreen(
                 }
 
                 LaunchedEffect(state.detail.id) {
-                    // Land the initial highlight directly on the play CTA without scrolling
-                    // the page. The play button suppresses bring-into-view, so focusing it
-                    // never moves the list; the page only scrolls when the user navigates
-                    // down themselves. Retry briefly while the hero row is composing.
+                    // Open at the true top of the page. Focus rests on the entry sentinel
+                    // above the hero copy so nothing is scrolled out of view; the viewer
+                    // presses down to reach the play CTA and the rest of the page.
+                    detailListState.scrollToItem(0, 0)
                     var focused = false
                     repeat(6) { attempt ->
                         if (focused) return@repeat
-                        kotlinx.coroutines.delay(if (attempt == 0) 120L else 80L)
-                        focused = runCatching { playButtonRequester.requestFocus() }.isSuccess
-                    }
-                    if (!focused) {
-                        runCatching { entryFocusRequester.requestFocus() }
+                        kotlinx.coroutines.delay(if (attempt == 0) 100L else 80L)
+                        focused = runCatching { entryFocusRequester.requestFocus() }.isSuccess
                     }
                 }
 
@@ -760,14 +761,6 @@ private fun HeroEntrySentinel(
             .focusRequester(focusRequester)
             .focusProperties {
                 down = downRequester
-            }
-            .onFocusChanged { state ->
-                // The sentinel is an invisible entry point; whenever it gains focus,
-                // hand the highlight straight to the play CTA so it never appears
-                // as if focus vanished (e.g. when pressing up from the hero row).
-                if (state.isFocused) {
-                    runCatching { downRequester.requestFocus() }
-                }
             }
             .focusable(),
     )
@@ -1583,9 +1576,7 @@ private fun EpisodeCard(
             AsyncImage(
                 model = episode.still,
                 contentDescription = episode.name,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(if (unreleased) Modifier.blur(18.dp) else Modifier),
+                modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
             Box(

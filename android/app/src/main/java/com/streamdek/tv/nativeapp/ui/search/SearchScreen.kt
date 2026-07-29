@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.OutlinedTextField
@@ -61,6 +63,7 @@ import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -69,6 +72,30 @@ private data class BrowseActionState(
     val item: MediaItem,
     val restoreFocusRequester: FocusRequester,
 )
+
+private data class DiscoverYearOption(val label: String, val value: String?)
+
+/** Which Discover filter picker is open, if any. */
+private enum class DiscoverFilter { Type, Genre, Year }
+
+private val DiscoverTypes = listOf("movie", "tv", "documentary")
+
+private fun discoverTypeLabel(value: String): String = when (value) {
+    "tv" -> "Series"
+    "documentary" -> "Documentaries"
+    else -> "Movies"
+}
+
+private fun buildYearOptions(): List<DiscoverYearOption> {
+    val currentYear = java.time.LocalDate.now().year
+    return buildList {
+        add(DiscoverYearOption("Any Year", null))
+        for (year in currentYear downTo (currentYear - 19)) {
+            add(DiscoverYearOption(year.toString(), year.toString()))
+        }
+        add(DiscoverYearOption("Before 2000", "before:1999"))
+    }
+}
 
 @Composable
 fun SearchScreen(
@@ -90,6 +117,73 @@ fun SearchScreen(
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val focusManager = LocalFocusManager.current
+
+    // Discover: the browse experience shown whenever the query is empty, matching the
+    // mobile app's Search tab.
+    var discoverType by remember { mutableStateOf("movie") }
+    var discoverGenreId by remember { mutableStateOf<Int?>(null) }
+    var discoverYear by remember { mutableStateOf<String?>(null) }
+    var discoverGenres by remember { mutableStateOf<List<com.streamdek.tv.nativeapp.data.GenreItem>>(emptyList()) }
+    var discoverItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var discoverPage by remember { mutableIntStateOf(1) }
+    var discoverTotalPages by remember { mutableIntStateOf(1) }
+    var discoverLoading by remember { mutableStateOf(true) }
+    var discoverLoadingMore by remember { mutableStateOf(false) }
+    var openFilter by remember { mutableStateOf<DiscoverFilter?>(null) }
+    val yearOptions = remember { buildYearOptions() }
+    val discoverGridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    val discoverFirstCardRequester = remember { FocusRequester() }
+    val typeFieldRequester = remember { FocusRequester() }
+    val discoverCardRequesters = remember { mutableMapOf<String, FocusRequester>() }
+
+    val discoverGenreLabel = discoverGenres.firstOrNull { it.id == discoverGenreId }?.name ?: "All Genres"
+    val discoverYearLabel = yearOptions.firstOrNull { it.value == discoverYear }?.label ?: "Any Year"
+    val showDiscover = query.trim().length < 2
+
+    // Documentaries are a fixed genre, so the genre picker does not apply to them.
+    LaunchedEffect(discoverType) {
+        discoverGenreId = null
+        discoverGenres = if (discoverType == "documentary") {
+            emptyList()
+        } else {
+            runCatching { repository.fetchGenres(discoverType) }.getOrDefault(emptyList())
+        }
+    }
+
+    LaunchedEffect(discoverType, discoverGenreId, discoverYear) {
+        discoverLoading = true
+        discoverPage = 1
+        discoverTotalPages = 1
+        val payload = runCatching {
+            repository.fetchDiscover(discoverType, page = 1, genreId = discoverGenreId, year = discoverYear)
+        }.getOrNull()
+        discoverItems = payload?.results.orEmpty().distinctBy { "${it.type}-${it.id}" }
+        discoverPage = payload?.page ?: 1
+        discoverTotalPages = payload?.total_pages ?: 1
+        discoverLoading = false
+    }
+
+    // Endless browse: pull the next page as the viewer nears the end of the grid.
+    LaunchedEffect(discoverGridState, discoverItems.size, discoverPage, discoverTotalPages, showDiscover) {
+        androidx.compose.runtime.snapshotFlow {
+            discoverGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+        }.collect { lastVisible ->
+            if (!showDiscover || discoverLoading || discoverLoadingMore) return@collect
+            if (discoverPage >= discoverTotalPages || discoverItems.isEmpty()) return@collect
+            if (lastVisible < discoverItems.size - 8) return@collect
+            discoverLoadingMore = true
+            val nextPage = discoverPage + 1
+            val payload = runCatching {
+                repository.fetchDiscover(discoverType, page = nextPage, genreId = discoverGenreId, year = discoverYear)
+            }.getOrNull()
+            if (payload != null) {
+                discoverItems = (discoverItems + payload.results).distinctBy { "${it.type}-${it.id}" }
+                discoverPage = payload.page
+                discoverTotalPages = payload.total_pages
+            }
+            discoverLoadingMore = false
+        }
+    }
 
     LaunchedEffect(Unit) {
         delay(180)
@@ -159,7 +253,7 @@ fun SearchScreen(
                 color = MaterialTheme.colorScheme.onBackground,
             )
             Text(
-                text = "Search movies and series.",
+                text = "Search for a title, or browse Discover below.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
             )
@@ -214,23 +308,35 @@ fun SearchScreen(
             )
         }
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = if (compactMode) 176.dp else 198.dp),
-            contentPadding = PaddingValues(bottom = 180.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
-        ) {
-            if (query.trim().length < 2) {
-                item {
-                    Text(
-                        text = "Start typing to search.",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-                        modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-                    )
-                }
-            } else {
+        if (showDiscover) {
+            DiscoverSection(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = if (compactMode) 176.dp else 198.dp),
+                gridState = discoverGridState,
+                items = discoverItems,
+                loading = discoverLoading,
+                loadingMore = discoverLoadingMore,
+                typeLabel = discoverTypeLabel(discoverType),
+                genreLabel = discoverGenreLabel,
+                yearLabel = discoverYearLabel,
+                genreEnabled = discoverType != "documentary" && discoverGenres.isNotEmpty(),
+                typeFieldRequester = typeFieldRequester,
+                firstCardRequester = discoverFirstCardRequester,
+                upRequester = searchBoxRequester,
+                onOpenFilter = { openFilter = it },
+                cardRequesterFor = { key -> discoverCardRequesters.getOrPut(key) { FocusRequester() } },
+                onOpenDetail = onOpenDetail,
+                onItemMenu = { item, requester -> actionState = BrowseActionState(item, requester) },
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = if (compactMode) 176.dp else 198.dp),
+                contentPadding = PaddingValues(bottom = 180.dp),
+                verticalArrangement = Arrangement.spacedBy(24.dp),
+            ) {
                 item {
                     Text(
                         text = if (loading) "Searching..." else "${results.size} results",
@@ -239,41 +345,84 @@ fun SearchScreen(
                         modifier = Modifier.padding(start = 48.dp, end = 48.dp),
                     )
                 }
-            }
 
-            if (results.isNotEmpty()) {
-                item {
-                    LazyRow(
-                        state = rowState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusGroup(),
-                        contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        itemsIndexed(results, key = { _, item -> "${item.type}:${item.id}" }) { index, item ->
-                            val key = "${item.type}:${item.id}"
-                            val requester = cardRequesters.getOrPut(key) { FocusRequester() }
-                            SearchResultCard(
-                                item = item,
-                                modifier = if (index == 0) {
-                                    Modifier
-                                        .focusRequester(firstResultRequester)
-                                        .focusProperties { up = searchBoxRequester }
-                                } else {
-                                    Modifier.focusRequester(requester)
-                                },
-                                onFocused = { anchoredIndex = index },
-                                onPressed = { onOpenDetail(item.type, item.id) },
-                                onMenuPressed = {
-                                    val restoreRequester = if (index == 0) firstResultRequester else requester
-                                    actionState = BrowseActionState(item, restoreRequester)
-                                },
-                            )
+                if (results.isNotEmpty()) {
+                    item {
+                        LazyRow(
+                            state = rowState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusGroup(),
+                            contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            itemsIndexed(results, key = { _, item -> "${item.type}:${item.id}" }) { index, item ->
+                                val key = "${item.type}:${item.id}"
+                                val requester = cardRequesters.getOrPut(key) { FocusRequester() }
+                                SearchResultCard(
+                                    item = item,
+                                    modifier = if (index == 0) {
+                                        Modifier
+                                            .focusRequester(firstResultRequester)
+                                            .focusProperties { up = searchBoxRequester }
+                                    } else {
+                                        Modifier.focusRequester(requester)
+                                    },
+                                    onFocused = { anchoredIndex = index },
+                                    onPressed = { onOpenDetail(item.type, item.id) },
+                                    onMenuPressed = {
+                                        val restoreRequester = if (index == 0) firstResultRequester else requester
+                                        actionState = BrowseActionState(item, restoreRequester)
+                                    },
+                                )
+                            }
                         }
                     }
                 }
             }
+        }
+
+        openFilter?.let { filter ->
+            DiscoverFilterDialog(
+                filter = filter,
+                options = when (filter) {
+                    DiscoverFilter.Type -> DiscoverTypes.map { value ->
+                        DiscoverOption(discoverTypeLabel(value), discoverType == value) {
+                            discoverType = value
+                            openFilter = null
+                        }
+                    }
+                    DiscoverFilter.Genre -> buildList {
+                        add(
+                            DiscoverOption("All Genres", discoverGenreId == null) {
+                                discoverGenreId = null
+                                openFilter = null
+                            },
+                        )
+                        discoverGenres.forEach { genre ->
+                            add(
+                                DiscoverOption(genre.name, genre.id == discoverGenreId) {
+                                    discoverGenreId = genre.id
+                                    openFilter = null
+                                },
+                            )
+                        }
+                    }
+                    DiscoverFilter.Year -> yearOptions.map { option ->
+                        DiscoverOption(option.label, option.value == discoverYear) {
+                            discoverYear = option.value
+                            openFilter = null
+                        }
+                    }
+                },
+                onDismiss = {
+                    openFilter = null
+                    scope.launch {
+                        delay(40)
+                        runCatching { typeFieldRequester.requestFocus() }
+                    }
+                },
+            )
         }
 
         actionState?.let { state ->
@@ -290,7 +439,11 @@ fun SearchScreen(
                 },
                 onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
                 onChanged = {
-                    results = repository.searchMedia(query.trim(), forceRefresh = true)
+                    // Only the active list needs refreshing; in Discover mode the query
+                    // is empty and a search call would be meaningless.
+                    if (!showDiscover) {
+                        results = repository.searchMedia(query.trim(), forceRefresh = true)
+                    }
                 },
             )
         }
@@ -310,14 +463,7 @@ private fun SearchResultCard(
         onClick = onPressed,
         modifier = modifier
             .size(width = 260.dp, height = 150.dp)
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyUp && event.key == Key.Menu) {
-                    onMenuPressed()
-                    true
-                } else {
-                    false
-                }
-            }
+            .tvCardLongPress(onMenuPressed)
             .onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
@@ -370,6 +516,378 @@ private fun SearchResultCard(
                     color = MaterialTheme.colorScheme.onBackground,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+private data class DiscoverOption(
+    val label: String,
+    val selected: Boolean,
+    val onSelect: () -> Unit,
+)
+
+/**
+ * Browse experience shown while the search box is empty: three filter fields over a
+ * paged poster grid, mirroring the mobile app's Discover section.
+ */
+@Composable
+private fun DiscoverSection(
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    items: List<MediaItem>,
+    loading: Boolean,
+    loadingMore: Boolean,
+    typeLabel: String,
+    genreLabel: String,
+    yearLabel: String,
+    genreEnabled: Boolean,
+    typeFieldRequester: FocusRequester,
+    firstCardRequester: FocusRequester,
+    upRequester: FocusRequester,
+    onOpenFilter: (DiscoverFilter) -> Unit,
+    cardRequesterFor: (String) -> FocusRequester,
+    onOpenDetail: (String, String) -> Unit,
+    onItemMenu: (MediaItem, FocusRequester) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(
+            text = "Discover",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(start = 48.dp, end = 48.dp),
+        )
+
+        Row(
+            modifier = Modifier
+                .padding(start = 48.dp, end = 48.dp)
+                .focusGroup(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            DiscoverField(
+                label = "Type",
+                value = typeLabel,
+                onClick = { onOpenFilter(DiscoverFilter.Type) },
+                modifier = Modifier
+                    .focusRequester(typeFieldRequester)
+                    .focusProperties { up = upRequester },
+            )
+            DiscoverField(
+                label = "Genre",
+                value = if (genreEnabled) genreLabel else "—",
+                enabled = genreEnabled,
+                onClick = { onOpenFilter(DiscoverFilter.Genre) },
+                modifier = Modifier.focusProperties { up = upRequester },
+            )
+            DiscoverField(
+                label = "Year",
+                value = yearLabel,
+                onClick = { onOpenFilter(DiscoverFilter.Year) },
+                modifier = Modifier.focusProperties { up = upRequester },
+            )
+        }
+
+        when {
+            loading -> {
+                Text(
+                    text = "Loading titles…",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(start = 48.dp, end = 48.dp),
+                )
+            }
+            items.isEmpty() -> {
+                Text(
+                    text = "No titles match these filters.",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(start = 48.dp, end = 48.dp),
+                )
+            }
+            else -> {
+                androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(6),
+                    state = gridState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .focusGroup(),
+                    contentPadding = PaddingValues(start = 48.dp, end = 48.dp, bottom = 140.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    itemsIndexed(
+                        items,
+                        key = { _, item -> "${item.type}:${item.id}" },
+                    ) { index, item ->
+                        val key = "${item.type}:${item.id}"
+                        val requester = cardRequesterFor(key)
+                        DiscoverPosterCard(
+                            item = item,
+                            modifier = if (index == 0) {
+                                Modifier
+                                    .focusRequester(firstCardRequester)
+                                    .focusProperties { up = typeFieldRequester }
+                            } else {
+                                Modifier
+                                    .focusRequester(requester)
+                                    .then(
+                                        // The top row has no cards above it; send focus
+                                        // back to the filters rather than nowhere.
+                                        if (index < 6) Modifier.focusProperties { up = typeFieldRequester } else Modifier,
+                                    )
+                            },
+                            onPressed = { onOpenDetail(item.type, item.id) },
+                            onMenuPressed = { onItemMenu(item, if (index == 0) firstCardRequester else requester) },
+                        )
+                    }
+                    if (loadingMore) {
+                        item {
+                            Text(
+                                text = "Loading…",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun DiscoverField(
+    label: String,
+    value: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Card(
+        onClick = { if (enabled) onClick() },
+        modifier = modifier
+            .width(240.dp)
+            .height(64.dp)
+            .onFocusChanged { focused = it.isFocused },
+        shape = CardDefaults.shape(RoundedCornerShape(14.dp)),
+        colors = CardDefaults.colors(
+            containerColor = Color(0xFF11141B),
+            contentColor = Color(0xFFF5F1E8),
+            focusedContainerColor = Color(0xFF1B2029),
+            focusedContentColor = Color(0xFFF5F1E8),
+        ),
+        border = CardDefaults.border(
+            border = Border.None,
+            focusedBorder = Border(
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                shape = RoundedCornerShape(14.dp),
+            ),
+        ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = 1.02f),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (enabled) 0.62f else 0.35f),
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = if (focused) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onBackground.copy(alpha = if (enabled) 1f else 0.45f)
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun DiscoverPosterCard(
+    item: MediaItem,
+    modifier: Modifier = Modifier,
+    onPressed: () -> Unit,
+    onMenuPressed: () -> Unit,
+) {
+    Card(
+        onClick = onPressed,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(210.dp)
+            .tvCardLongPress(onMenuPressed),
+        shape = CardDefaults.shape(AppCardShape),
+        colors = CardDefaults.colors(
+            // Transparent container so no light rim can leak at the rounded corners.
+            containerColor = Color.Transparent,
+            contentColor = Color.White,
+            focusedContainerColor = Color.Transparent,
+            focusedContentColor = Color.White,
+        ),
+        border = CardDefaults.border(
+            border = Border.None,
+            focusedBorder = Border(
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                shape = AppCardShape,
+            ),
+        ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = 1.04f),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(AppCardShape)
+                .background(Color(0xFF101216)),
+        ) {
+            AsyncImage(
+                model = item.poster ?: item.backdrop,
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, Color(0x00000000), Color(0xE6000000)),
+                        ),
+                    ),
+            )
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(10.dp),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun DiscoverFilterDialog(
+    filter: DiscoverFilter,
+    options: List<DiscoverOption>,
+    onDismiss: () -> Unit,
+) {
+    val firstOptionRequester = remember(filter) { FocusRequester() }
+
+    LaunchedEffect(filter) {
+        delay(60)
+        runCatching { firstOptionRequester.requestFocus() }
+    }
+
+    androidx.activity.compose.BackHandler { onDismiss() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xCC000000)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(520.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color(0xFF11141B))
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = when (filter) {
+                    DiscoverFilter.Type -> "Type"
+                    DiscoverFilter.Genre -> "Genre"
+                    DiscoverFilter.Year -> "Year"
+                },
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            LazyColumn(
+                modifier = Modifier
+                    .height(360.dp)
+                    .focusGroup(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                itemsIndexed(options) { index, option ->
+                    DiscoverOptionRow(
+                        option = option,
+                        modifier = if (index == 0) Modifier.focusRequester(firstOptionRequester) else Modifier,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun DiscoverOptionRow(
+    option: DiscoverOption,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        onClick = option.onSelect,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(52.dp),
+        shape = CardDefaults.shape(RoundedCornerShape(12.dp)),
+        colors = CardDefaults.colors(
+            containerColor = if (option.selected) Color(0x268B5CF6) else Color(0x10FFFFFF),
+            contentColor = Color.White,
+            focusedContainerColor = if (option.selected) Color(0x338B5CF6) else Color(0x22FFFFFF),
+            focusedContentColor = Color.White,
+        ),
+        border = CardDefaults.border(
+            border = Border.None,
+            focusedBorder = Border(
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                shape = RoundedCornerShape(12.dp),
+            ),
+        ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = 1.02f),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = option.label,
+                style = MaterialTheme.typography.titleSmall,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (option.selected) {
+                Text(
+                    text = "Selected",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }

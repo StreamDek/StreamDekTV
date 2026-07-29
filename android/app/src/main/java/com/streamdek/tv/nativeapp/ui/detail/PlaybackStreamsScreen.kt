@@ -63,7 +63,12 @@ import com.streamdek.tv.nativeapp.ui.FusionBadgeRow
 
 private sealed interface PlaybackStreamsUiState {
     data object Loading : PlaybackStreamsUiState
-    data class Ready(val detail: MediaDetail?, val candidate: ResolvedPlaybackCandidate) : PlaybackStreamsUiState
+    data class Ready(
+        val detail: MediaDetail?,
+        val candidate: ResolvedPlaybackCandidate,
+        /** Addons still to answer; results render while this is above zero. */
+        val pendingSources: Int = 0,
+    ) : PlaybackStreamsUiState
     data class Error(val message: String) : PlaybackStreamsUiState
 }
 
@@ -82,6 +87,7 @@ fun PlaybackStreamsScreen(
         )
     }
     var detail by remember(request) { mutableStateOf(cachedDetail) }
+    var refreshGeneration by remember(request) { mutableStateOf(0) }
     val firstCardRequester = remember(request) { FocusRequester() }
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -101,44 +107,63 @@ fun PlaybackStreamsScreen(
         repository.ensureFusionBadgeSourcesLoaded()
     }
 
+    // Detail metadata loads alongside the stream lookup rather than gating it, so the
+    // first streams can render as soon as any addon answers.
     LaunchedEffect(request) {
-        cachedCandidate?.let { candidate ->
-            if (detail == null) {
-                detail = repository.fetchDetail(request.mediaId, request.mediaType)
-            }
+        if (detail == null) {
+            detail = runCatching { repository.fetchDetail(request.mediaId, request.mediaType) }.getOrNull()
+        }
+    }
+
+    LaunchedEffect(request, refreshGeneration) {
+        cachedCandidate?.takeIf { refreshGeneration == 0 }?.let { candidate ->
             uiState = PlaybackStreamsUiState.Ready(detail, candidate)
             return@LaunchedEffect
         }
 
         uiState = PlaybackStreamsUiState.Loading
-        detail = repository.fetchDetail(request.mediaId, request.mediaType)
         runCatching {
-            val candidate = repository.resolvePlayback(
-                request.mediaType,
-                request.mediaId,
-                request.imdbId,
-                request.episode,
+            repository.streamCandidates(
+                mediaType = request.mediaType,
+                mediaId = request.mediaId,
+                imdbId = request.imdbId,
+                episode = request.episode,
                 preferredStreamKey = request.selectedStreamKey,
-                forceRefresh = false,
                 streamType = request.streamType,
                 directStreamUrl = request.directStreamUrl,
                 requestHeaders = request.requestHeaders,
                 sourceAddonId = request.sourceAddonId,
                 sourceAddonName = request.sourceAddonName,
-            )
-            PlaybackStreamsUiState.Ready(detail, candidate)
-        }.onSuccess {
-            uiState = it
+                forceRefresh = refreshGeneration > 0,
+            ).collect { progress ->
+                // Stay on the loading state only until the first stream arrives.
+                if (progress.streams.isEmpty() && !progress.done) return@collect
+                uiState = PlaybackStreamsUiState.Ready(
+                    detail = detail,
+                    candidate = ResolvedPlaybackCandidate(null, null, progress.streams),
+                    pendingSources = progress.pendingSources,
+                )
+            }
         }.onFailure {
-            uiState = PlaybackStreamsUiState.Error(it.message ?: "Could not load streams")
+            if (uiState !is PlaybackStreamsUiState.Ready) {
+                uiState = PlaybackStreamsUiState.Error(it.message ?: "Could not load streams")
+            }
         }
     }
 
-    LaunchedEffect(uiState) {
-        val ready = uiState as? PlaybackStreamsUiState.Ready ?: return@LaunchedEffect
+    // Keep the detail panel in sync once metadata resolves after the first streams.
+    LaunchedEffect(detail) {
+        (uiState as? PlaybackStreamsUiState.Ready)?.let { ready ->
+            if (ready.detail == null && detail != null) {
+                uiState = ready.copy(detail = detail)
+            }
+        }
+    }
+
+    LaunchedEffect(detail) {
         buildList {
-            ready.detail?.backdrop?.let(::add)
-            ready.detail?.poster?.let(::add)
+            detail?.backdrop?.let(::add)
+            detail?.poster?.let(::add)
         }.distinct().take(6).forEach { url ->
             context.imageLoader.enqueue(
                 ImageRequest.Builder(context)
@@ -150,16 +175,26 @@ fun PlaybackStreamsScreen(
                     .build(),
             )
         }
-        if (ready.candidate.streams.isNotEmpty()) {
-            kotlinx.coroutines.delay(180)
-            firstCardRequester.requestFocus()
+    }
+
+    // Focus the first card once, when results first appear. Later batches must not
+    // yank focus back while the viewer is already browsing the list.
+    var initialFocusApplied by remember(request) { mutableStateOf(false) }
+    val hasStreams = (uiState as? PlaybackStreamsUiState.Ready)?.candidate?.streams?.isNotEmpty() == true
+    LaunchedEffect(hasStreams) {
+        if (hasStreams && !initialFocusApplied) {
+            kotlinx.coroutines.delay(120)
+            runCatching { firstCardRequester.requestFocus() }
+            initialFocusApplied = true
         }
     }
 
     val ready = uiState as? PlaybackStreamsUiState.Ready
     val overview = request.episode?.overview ?: detail?.description
     val streamRows = ready?.candidate?.streams.orEmpty().filter { stream ->
-        if (request.mediaType == "live") {
+        if (!repository.isPlayableStreamOption(stream)) {
+            false
+        } else if (request.mediaType == "live") {
             true
         } else {
             val url = stream.url
@@ -177,14 +212,16 @@ fun PlaybackStreamsScreen(
     val sourceTabs = remember(addonNames) {
         if (addonNames.size <= 1) emptyList() else listOf("All") + addonNames
     }
-    var selectedTab by remember(streamRows) { mutableStateOf("All") }
+    // Keyed to the request, not the stream list: progressive batches must not reset
+    // the viewer's chosen source tab.
+    var selectedTab by remember(request) { mutableStateOf("All") }
     val filteredStreams = if (sourceTabs.isEmpty() || selectedTab == "All") streamRows
         else streamRows.filter { it.addonName.ifBlank { "Other" } == selectedTab }
 
     LaunchedEffect(selectedTab) {
-        if (filteredStreams.isNotEmpty()) {
+        if (filteredStreams.isNotEmpty() && initialFocusApplied) {
             kotlinx.coroutines.delay(80)
-            firstCardRequester.requestFocus()
+            runCatching { firstCardRequester.requestFocus() }
         }
     }
 
@@ -280,11 +317,38 @@ fun PlaybackStreamsScreen(
                             .fillMaxHeight(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Text(
-                            text = if (filteredStreams.isEmpty() && sourceTabs.isEmpty()) "No streams found" else "Streams",
-                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
-                            color = MaterialTheme.colorScheme.onBackground,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = when {
+                                    filteredStreams.isNotEmpty() -> "Streams"
+                                    state.pendingSources > 0 -> "Searching sources…"
+                                    else -> "No streams found"
+                                },
+                                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                                color = MaterialTheme.colorScheme.onBackground,
+                            )
+                            ReloadSourcesButton(
+                                loading = state.pendingSources > 0,
+                                onClick = {
+                                    selectedTab = "All"
+                                    initialFocusApplied = false
+                                    uiState = PlaybackStreamsUiState.Loading
+                                    refreshGeneration += 1
+                                },
+                            )
+                            // Non-blocking hint: results keep filling in behind it.
+                            if (state.pendingSources > 0) {
+                                Text(
+                                    text = "${state.pendingSources} source${if (state.pendingSources == 1) "" else "s"} still loading",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                )
+                            }
+                        }
                         if (sourceTabs.isNotEmpty()) {
                             LazyRow(
                                 modifier = Modifier.fillMaxWidth().focusGroup(),
@@ -308,7 +372,12 @@ fun PlaybackStreamsScreen(
                             verticalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
                             if (filteredStreams.isEmpty()) {
-                                item("empty") { EmptyStreamsMessage() }
+                                // Only declare "nothing found" once every source has replied.
+                                if (state.pendingSources > 0) {
+                                    item("loading") { LoadingStreamsCard() }
+                                } else {
+                                    item("empty") { EmptyStreamsMessage() }
+                                }
                             } else {
                                 itemsIndexed(filteredStreams, key = { index, stream -> "${repository.streamSelectionKey(stream)}:$index:$selectedTab" }) { index, stream ->
                                     StreamOptionCard(
@@ -322,6 +391,8 @@ fun PlaybackStreamsScreen(
                                                 request.copy(
                                                     selectedStreamKey = repository.streamSelectionKey(stream),
                                                     selectedStreamLabel = repository.describeStreamOption(stream),
+                                                    selectedStream = stream,
+                                                    availableStreams = streamRows,
                                                 ),
                                             )
                                         },
@@ -336,6 +407,29 @@ fun PlaybackStreamsScreen(
     }
 }
 
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun ReloadSourcesButton(loading: Boolean, onClick: () -> Unit) {
+    Card(
+        onClick = { if (!loading) onClick() },
+        shape = CardDefaults.shape(AppPillShape),
+        colors = CardDefaults.colors(
+            containerColor = Color(0x18191D22),
+            focusedContainerColor = Color(0xFF2A2D36),
+        ),
+        border = CardDefaults.border(
+            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppPillShape),
+        ),
+        scale = CardDefaults.scale(focusedScale = 1.02f),
+    ) {
+        Text(
+            text = if (loading) "Reloading..." else "Reload Sources",
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (loading) 0.5f else 0.9f),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+        )
+    }
+}
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun SourceTabChip(label: String, selected: Boolean, onClick: () -> Unit) {

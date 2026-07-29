@@ -7,6 +7,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -59,6 +61,7 @@ import com.streamdek.tv.mpv.MPVView
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.EpisodeContext
+import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
@@ -75,6 +78,13 @@ private const val LiveControlsHideDelayMs = 2000L
 private const val LiveChannelInfoHideDelayMs = 2000L
 private const val AutoPlayNextEpisodeCountdownSeconds = 5
 
+/**
+ * Live feeds drop out routinely (upstream restarts, ad breaks, CDN switches). Mobile retries
+ * indefinitely; the TV app uses a bounded retry budget before surfacing a manual retry so a broken
+ * outage never dumps the viewer out of the channel.
+ */
+private const val LiveReconnectMaxAttempts = 5
+
 private data class SegmentAction(
     val kind: SegmentActionKind,
     val segmentType: String,
@@ -87,6 +97,25 @@ private enum class SegmentActionKind {
     NextEpisode,
 }
 
+internal enum class ActivePlaybackEngine { Media3, MPV }
+
+internal fun normalizePlayerEngineSetting(raw: String?): String = when (raw?.trim()?.lowercase()) {
+    "media3", "exo", "exoplayer" -> "Media3"
+    "mpv" -> "MPV"
+    else -> "Auto"
+}
+
+internal fun initialPlaybackEngine(preference: String?): ActivePlaybackEngine =
+    if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
+
+internal fun shouldAutoFallbackToMpv(
+    preference: String?,
+    activeEngine: ActivePlaybackEngine,
+    fallbackUsed: Boolean,
+): Boolean = preference.equals("Auto", ignoreCase = true) &&
+    activeEngine == ActivePlaybackEngine.Media3 &&
+    !fallbackUsed
+
 @Composable
 fun PlayerScreen(
     repository: StreamDekRepository,
@@ -95,6 +124,7 @@ fun PlayerScreen(
     onExitToStreams: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val view = LocalView.current
     val bootstrap by repository.bootstrap.collectAsState()
     val playbackPreferences = bootstrap?.preferences?.playback ?: PlaybackPreferences()
@@ -117,12 +147,21 @@ fun PlayerScreen(
     var durationSec by remember { mutableDoubleStateOf(0.0) }
     var audioTracks by remember { mutableStateOf<List<MpvTrackInfo>>(emptyList()) }
     var subtitleTracks by remember { mutableStateOf<List<MpvTrackInfo>>(emptyList()) }
+    var externalSubtitles by remember { mutableStateOf<List<ExternalSubtitleTrack>>(emptyList()) }
+    var subtitlesLoading by remember { mutableStateOf(false) }
+    var selectedExternalSubtitleId by remember { mutableStateOf<String?>(null) }
+    var externalSubtitleAppliedKey by remember { mutableStateOf<String?>(null) }
     var selectedAudioId by remember { mutableIntStateOf(-1) }
     var selectedSubtitleId by remember { mutableIntStateOf(-1) }
     var speed by remember { mutableDoubleStateOf(1.0) }
     var panel by remember { mutableStateOf<OverlayPanel?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var playerView: MpvPlayerController? by remember { mutableStateOf(null) }
+    var activePlaybackEngine by remember(currentSourceUrl, playbackPreferences.playerEngine) {
+        mutableStateOf(initialPlaybackEngine(playbackPreferences.playerEngine))
+    }
+    var autoEngineFallbackUsed by remember(currentSourceUrl, playbackPreferences.playerEngine) { mutableStateOf(false) }
+    var pendingEngineResumePositionSec by remember(currentSourceUrl) { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
@@ -139,6 +178,16 @@ fun PlayerScreen(
     var lastSeekInputAt by remember { mutableStateOf(0L) }
     var lastSeekDirection by remember { mutableIntStateOf(0) }
     var seekBurstCount by remember { mutableIntStateOf(0) }
+    // Scrub state: while a seek is in flight, MPV progress events still report the old
+    // position; seekTargetSec pins the UI position until the seek settles so the bar
+    // never snaps backwards mid-scrub.
+    var seekTargetSec by remember { mutableStateOf<Double?>(null) }
+    var seekIssuedAtMs by remember { mutableStateOf(0L) }
+    var lastSeekCommandAtMs by remember { mutableStateOf(0L) }
+    // Guards against ghost clicks landing on the play/pause button right after an
+    // option panel closes (tv-material fires onClick on KeyUp, so a selection's key
+    // release can reach the newly focused control).
+    var panelClosedAtMs by remember { mutableStateOf(0L) }
     var audioPreferenceAppliedForSource by remember { mutableStateOf<String?>(null) }
     var subtitlePreferenceAppliedForSource by remember { mutableStateOf<String?>(null) }
     var traktScrobbledStart by remember { mutableStateOf(false) }
@@ -178,6 +227,7 @@ fun PlayerScreen(
     val progressRequester = remember { FocusRequester() }
     val panelCloseRequester = remember { FocusRequester() }
     val panelFirstItemRequester = remember { FocusRequester() }
+    val playerRootRequester = remember { FocusRequester() }
 
     // Keep screen on while the player is active
     DisposableEffect(Unit) {
@@ -203,30 +253,51 @@ fun PlayerScreen(
 
     fun scheduleLiveReconnect(message: String) {
         if (!isLive || liveReconnectJob?.isActive == true) return
-        if (liveReconnectAttempt >= 5) {
+        if (liveReconnectAttempt >= LiveReconnectMaxAttempts) {
             error = "Live feed unavailable: $message"
             loading = false
+            controlsVisible = true
             return
         }
         liveReconnectAttempt += 1
         error = null
         loading = true
         controlsVisible = false
-        currentLabel = "Reconnecting to live feed…"
+        currentLabel = if (liveReconnectAttempt <= 1) {
+            "Reconnecting to live feed…"
+        } else {
+            "Reconnecting to live feed… (attempt $liveReconnectAttempt)"
+        }
         liveReconnectJob = scope.launch {
-            delay((liveReconnectAttempt * 1_000L).coerceAtMost(5_000L))
+            // Short first retry like mobile, then backoff so a longer outage does not
+            // hammer the source. Playback is explicitly resumed after each reload.
+            delay((liveReconnectAttempt * 400L).coerceIn(300L, 5_000L))
             playerView?.reloadSource()
+            playerView?.setPaused(false)
         }
     }
 
-    fun scheduleSeek(targetSeconds: Double) {
+    fun scheduleSeek(targetSeconds: Double, fast: Boolean = false) {
         val target = targetSeconds
             .coerceAtLeast(0.0)
             .coerceAtMost(durationSec.takeIf { it > 0.0 } ?: targetSeconds)
+        seekTargetSec = target
+        seekIssuedAtMs = System.currentTimeMillis()
         positionSec = target
         pendingSeekJob?.cancel()
+        val now = System.currentTimeMillis()
+        if (now - lastSeekCommandAtMs >= 350L) {
+            // Throttled immediate seek keeps held-button scrubbing responsive
+            // instead of waiting for the key repeats to stop.
+            lastSeekCommandAtMs = now
+            if (fast) playerView?.seekToFast(target) else playerView?.seekTo(target)
+        }
+        // Always schedule a trailing settle so the final resting position is exact,
+        // including the last step of a held scrub.
         pendingSeekJob = scope.launch {
-            delay(180)
+            delay(if (fast) 220 else 160)
+            lastSeekCommandAtMs = System.currentTimeMillis()
+            seekIssuedAtMs = lastSeekCommandAtMs
             playerView?.seekTo(target)
         }
     }
@@ -247,7 +318,9 @@ fun PlayerScreen(
             seekBurstCount >= 3 -> 2.0
             else -> 1.0
         }
-        scheduleSeek(positionSec + (baseDeltaSeconds * multiplier))
+        // Base the next step on the in-flight scrub target, not the (stale) playback
+        // position, so consecutive presses always accumulate in the scrub direction.
+        scheduleSeek((seekTargetSec ?: positionSec) + (baseDeltaSeconds * multiplier), fast = true)
     }
 
     fun scheduleControlsHide() {
@@ -503,6 +576,7 @@ fun PlayerScreen(
         liveReconnectAttempt = 0
         pendingSeekJob?.cancel()
         pendingSeekJob = null
+        seekTargetSec = null
         loading = true
         controlsVisible = false
         pauseInfoVisible = false
@@ -517,8 +591,28 @@ fun PlayerScreen(
         nextEpisodeCountdown = null
         handledSegmentTypes = emptySet()
         segments = emptyList()
+        val loadStartedAt = android.os.SystemClock.elapsedRealtime()
         val loadResult = runCatching {
-        runCatching { repository.refreshBootstrap() }
+        val selectedStream = request.selectedStream?.takeIf {
+            currentEpisode == request.episode && streamKeyOverride == request.selectedStreamKey
+        }
+        var resolvedCandidate = selectedStream?.let {
+            repository.resolveSelectedPlayback(
+                request = request.copy(episode = currentEpisode),
+                stream = it,
+                streams = request.availableStreams,
+                forceRefresh = forceRefresh,
+            )
+        }
+        // Start the player as soon as the chosen source resolves. Detail, library, resume,
+        // IntroDB, and watched metadata can continue loading without blocking decoder startup.
+        resolvedCandidate?.source?.let { source ->
+            candidate = resolvedCandidate
+            currentRequestHeaders = defaultPlaybackHeaders + source.requestHeaders
+            currentSourceUrl = source.url
+            currentLabel = streamLabelOverride ?: source.label
+            TvDebugLogger.i("Player", "source ready addon=${resolvedCandidate?.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}")
+        }
         detail = if (isLive) null else repository.fetchDetail(request.mediaId, request.mediaType)
         val effectiveImdbId = request.imdbId ?: detail?.imdbId
         inWatchlist = if (isLive) false else runCatching {
@@ -554,7 +648,7 @@ fun PlayerScreen(
                 ?: continueWatchingItem?.positionSec
                 ?: continueWatchingItem?.resumeAt
         }
-        val resolved = repository.resolvePlayback(
+        val resolved = resolvedCandidate ?: repository.resolvePlayback(
             request.mediaType,
             request.mediaId,
             effectiveImdbId,
@@ -566,8 +660,9 @@ fun PlayerScreen(
             requestHeaders = request.requestHeaders,
             sourceAddonId = request.sourceAddonId,
             sourceAddonName = request.sourceAddonName,
-        )
+        ).also { resolvedCandidate = it }
         candidate = resolved
+        TvDebugLogger.i("Player", "playback load complete addon=${resolved.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}")
         currentRequestHeaders = defaultPlaybackHeaders + resolved.source?.requestHeaders.orEmpty()
         currentSourceUrl = resolved.source?.url
         currentLabel = streamLabelOverride ?: resolved.source?.label ?: "No playable stream found"
@@ -627,9 +722,10 @@ fun PlayerScreen(
 
     // Drive MPV state from LaunchedEffect so JNI calls only happen when values change,
     // not on every recomposition triggered by overlay animations.
-    LaunchedEffect(currentSourceUrl, currentRequestHeaders) {
+    LaunchedEffect(currentSourceUrl, currentRequestHeaders, activePlaybackEngine) {
         audioPreferenceAppliedForSource = null
         subtitlePreferenceAppliedForSource = null
+        seekTargetSec = null
         playerView?.setHeaders(currentRequestHeaders)
         if (!currentSourceUrl.isNullOrBlank()) playerView?.setSource(currentSourceUrl)
         val resumeAt = pendingResumePositionSec
@@ -639,7 +735,57 @@ fun PlayerScreen(
         }
     }
 
+
+    LaunchedEffect(currentSourceUrl, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, detail?.imdbId) {
+        externalSubtitles = emptyList()
+        selectedExternalSubtitleId = null
+        externalSubtitleAppliedKey = null
+        subtitlesLoading = false
+        val source = currentSourceUrl
+        if (isLive || source.isNullOrBlank()) return@LaunchedEffect
+        subtitlesLoading = true
+        val results = repository.fetchExternalSubtitles(
+            request.copy(
+                imdbId = request.imdbId ?: detail?.imdbId,
+                episode = currentEpisode,
+            ),
+        )
+        if (currentSourceUrl != source) return@LaunchedEffect
+        externalSubtitles = results
+        subtitlesLoading = false
+        if (playbackPreferences.autoLoadSubtitles && selectedSubtitleId < 0 && selectedExternalSubtitleId == null) {
+            val preferredLanguage = repository.activeStreamProfile(repository.bootstrap.value)?.subtitleLanguage
+                ?.takeIf { it.isNotBlank() }
+                ?: playbackPreferences.defaultSubtitleLanguage
+            val preferred = results.firstOrNull { it.language.equals(preferredLanguage, ignoreCase = true) }
+                ?: results.firstOrNull { it.language == "en" }
+            if (preferred != null) {
+                while (loading && currentSourceUrl == source) delay(100)
+                val localPath = repository.downloadSubtitleToCache(preferred.url, context.cacheDir)
+                if (localPath != null && currentSourceUrl == source && selectedSubtitleId < 0) {
+                    selectedExternalSubtitleId = preferred.id
+                    playerView?.addSubtitleFile(localPath)
+                    externalSubtitleAppliedKey = "${activePlaybackEngine.name}:$source:${preferred.id}"
+                    TvDebugLogger.i("Subtitles", "auto-loaded ${preferred.label}")
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(activePlaybackEngine, loading, selectedExternalSubtitleId, currentSourceUrl) {
+        val selected = externalSubtitles.firstOrNull { it.id == selectedExternalSubtitleId } ?: return@LaunchedEffect
+        val source = currentSourceUrl ?: return@LaunchedEffect
+        if (loading) return@LaunchedEffect
+        val key = "${activePlaybackEngine.name}:$source:${selected.id}"
+        if (externalSubtitleAppliedKey == key) return@LaunchedEffect
+        val localPath = repository.downloadSubtitleToCache(selected.url, context.cacheDir) ?: return@LaunchedEffect
+        if (currentSourceUrl == source && selectedExternalSubtitleId == selected.id) {
+            playerView?.addSubtitleFile(localPath)
+            externalSubtitleAppliedKey = key
+        }
+    }
     LaunchedEffect(speed) {
+
         playerView?.setSpeed(speed)
     }
 
@@ -819,10 +965,22 @@ fun PlayerScreen(
         label = "logo-alpha",
     )
 
+    // The video surface deliberately does not take focus, so the player root holds it
+    // whenever no control is focused. Without this, D-pad presses while the controls
+    // are hidden would not reach any key handler at all.
+    LaunchedEffect(controlsVisible, panel, loading, error, isLive, watchlistPromptVisible, nextEpisodeDialogVisible) {
+        if (!controlsVisible && panel == null && error == null && !watchlistPromptVisible && !nextEpisodeDialogVisible) {
+            delay(40)
+            runCatching { playerRootRequester.requestFocus() }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .focusRequester(playerRootRequester)
+            .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
                 if (isLive && !loading && error == null && !watchlistPromptVisible) {
@@ -864,10 +1022,10 @@ fun PlayerScreen(
                 false
             },
     ) {
-        key(resolvedRenderSurface) {
+        key(resolvedRenderSurface, activePlaybackEngine) {
             AndroidView(
             factory = { context ->
-                val player = createPlayerView(context, resolvedRenderSurface)
+                val player = createPlayerView(context, resolvedRenderSurface, activePlaybackEngine)
                 val controller = player as MpvPlayerController
                 controller.apply {
                     setDecoderMode(playbackPreferences.decoderMode)
@@ -902,11 +1060,29 @@ fun PlayerScreen(
                         } else {
                             showControls(focusPlay = true)
                         }
-                        pendingResumePositionSec?.takeIf { it > 0.0 }?.let { seekTo(it) }
+                        (pendingEngineResumePositionSec ?: pendingResumePositionSec)?.takeIf { it > 0.0 }?.let { resumeAt ->
+                            pendingEngineResumePositionSec = null
+                            pendingResumePositionSec = null
+                            seekTo(resumeAt)
+                        }
                     }
                     onProgressCallback = { position, duration ->
-                        positionSec = position
                         durationSec = duration
+                        val pendingTarget = seekTargetSec
+                        if (pendingTarget == null) {
+                            positionSec = position
+                        } else {
+                            val settled = kotlin.math.abs(position - pendingTarget) <= 1.5
+                            val timedOut = System.currentTimeMillis() - seekIssuedAtMs > 4000L
+                            if (settled || timedOut) {
+                                // Seek landed (or MPV never confirmed it) — resume
+                                // following real playback progress.
+                                seekTargetSec = null
+                                positionSec = position
+                            }
+                            // Otherwise keep the UI pinned to the scrub target so the
+                            // progress bar does not jump back to the pre-seek position.
+                        }
                     }
                     onEndCallback = {
                         TvDebugLogger.i(
@@ -926,7 +1102,16 @@ fun PlayerScreen(
                             "Player",
                             "onError mediaType=${request.mediaType} mediaId=${request.mediaId} source=${currentSourceUrl ?: "none"} label=$currentLabel position=$positionSec duration=$durationSec message=$message",
                         )
-                        if (isLive) {
+                        if (shouldAutoFallbackToMpv(playbackPreferences.playerEngine, activePlaybackEngine, autoEngineFallbackUsed)) {
+                            autoEngineFallbackUsed = true
+                            pendingEngineResumePositionSec = positionSec.takeIf { it > 0.0 }
+                            loading = true
+                            error = null
+                            audioTracks = emptyList()
+                            subtitleTracks = emptyList()
+                            TvDebugLogger.w("Player", "Media3 failed; falling back to libMPV at ${positionSec}s: $message")
+                            activePlaybackEngine = ActivePlaybackEngine.MPV
+                        } else if (isLive) {
                             scheduleLiveReconnect(message)
                         } else {
                             error = message
@@ -960,6 +1145,8 @@ fun PlayerScreen(
                         }
                         if (
                             currentSource != null &&
+                            playbackPreferences.autoLoadSubtitles &&
+                            selectedExternalSubtitleId == null &&
                             subtitlePreferenceAppliedForSource != currentSource
                         ) {
                             subtitlePreferenceAppliedForSource = currentSource
@@ -1247,8 +1434,14 @@ fun PlayerScreen(
                     progressRequester = progressRequester,
                     onInteract = { if (!isLive) registerInteraction() },
                     onPlayPause = {
-                        paused = !paused
-                        if (!paused) scheduleControlsHide()
+                        // tv-material fires onClick on key-up without requiring the
+                        // matching key-down, so the release that confirmed a panel
+                        // selection can land on the freshly focused play button and
+                        // pause playback. Ignore toggles immediately after a panel closes.
+                        if (System.currentTimeMillis() - panelClosedAtMs > 450L) {
+                            paused = !paused
+                            if (!paused) scheduleControlsHide()
+                        }
                     },
                     onRewind = {
                         scheduleSeek(positionSec - 10.0)
@@ -1414,13 +1607,17 @@ fun PlayerScreen(
                         candidate = candidate,
                         audioTracks = audioTracks,
                         subtitleTracks = subtitleTracks,
+                        externalSubtitles = externalSubtitles,
+                        subtitlesLoading = subtitlesLoading,
                         selectedAudioId = selectedAudioId,
                         selectedSubtitleId = selectedSubtitleId,
+                        selectedExternalSubtitleId = selectedExternalSubtitleId,
                         currentSpeed = speed,
                         closeRequester = panelCloseRequester,
                         firstItemRequester = panelFirstItemRequester,
                         onClose = {
                             panel = null
+                            panelClosedAtMs = System.currentTimeMillis()
                             showControls(focusPlay = !isLive)
                         },
                         onInteract = { if (!isLive) registerInteraction() },
@@ -1428,22 +1625,19 @@ fun PlayerScreen(
                             scope.launch {
                                 val stream = candidate?.streams?.getOrNull(index) ?: return@launch
                                 panel = null
+                                panelClosedAtMs = System.currentTimeMillis()
                                 loading = true
                                 controlsVisible = false
                                 pendingResumePositionSec = positionSec.takeIf { it > 0.0 }
                                 val selected = try {
-                                    repository.resolvePlayback(
-                                        request.mediaType,
-                                        request.mediaId,
-                                        request.imdbId,
-                                        currentEpisode,
-                                        preferredStreamKey = repository.streamSelectionKey(stream),
-                                        forceRefresh = false,
-                                        streamType = request.streamType,
-                                        directStreamUrl = request.directStreamUrl,
-                                        requestHeaders = request.requestHeaders,
-                                        sourceAddonId = request.sourceAddonId,
-                                        sourceAddonName = request.sourceAddonName,
+                                    repository.resolveSelectedPlayback(
+                                        request = request.copy(
+                                            episode = currentEpisode,
+                                            selectedStreamKey = repository.streamSelectionKey(stream),
+                                            selectedStream = stream,
+                                        ),
+                                        stream = stream,
+                                        streams = candidate?.streams.orEmpty(),
                                     )
                                 } catch (e: Exception) {
                                     error = "Could not load this source: ${e.message ?: "Unknown error"}"
@@ -1467,23 +1661,57 @@ fun PlayerScreen(
                             audioPreferenceAppliedForSource = currentSourceUrl
                             playerView?.setAudioTrack(it)
                             panel = null
+                            panelClosedAtMs = System.currentTimeMillis()
+                            playerView?.setPaused(paused)
                             showControls(focusPlay = !isLive)
                         },
                         onDisableSubtitles = {
+                            selectedExternalSubtitleId = null
+                            externalSubtitleAppliedKey = null
                             subtitlePreferenceAppliedForSource = currentSourceUrl
                             playerView?.disableSubtitleTrack()
                             panel = null
+                            panelClosedAtMs = System.currentTimeMillis()
+                            playerView?.setPaused(paused)
                             showControls(focusPlay = !isLive)
                         },
                         onSelectSubtitle = {
+                            selectedExternalSubtitleId = null
+                            externalSubtitleAppliedKey = null
                             subtitlePreferenceAppliedForSource = currentSourceUrl
                             playerView?.setSubtitleTrack(it)
                             panel = null
+                            panelClosedAtMs = System.currentTimeMillis()
+                            // Track switches must never interrupt playback: re-assert the
+                            // intended pause state after mpv reconfigures its track chain.
+                            playerView?.setPaused(paused)
                             showControls(focusPlay = !isLive)
+                        },
+                        onSelectExternalSubtitle = { subtitle ->
+                            scope.launch {
+                                val source = currentSourceUrl ?: return@launch
+                                selectedExternalSubtitleId = subtitle.id
+                                subtitlePreferenceAppliedForSource = source
+                                val localPath = repository.downloadSubtitleToCache(subtitle.url, context.cacheDir)
+                                if (localPath == null) {
+                                    error = "Could not download this subtitle."
+                                    selectedExternalSubtitleId = null
+                                    return@launch
+                                }
+                                if (currentSourceUrl != source || selectedExternalSubtitleId != subtitle.id) return@launch
+                                selectedSubtitleId = -1
+                                playerView?.addSubtitleFile(localPath)
+                                externalSubtitleAppliedKey = "${activePlaybackEngine.name}:$source:${subtitle.id}"
+                                panel = null
+                                panelClosedAtMs = System.currentTimeMillis()
+                                playerView?.setPaused(paused)
+                                showControls(focusPlay = !isLive)
+                            }
                         },
                         onSelectSpeed = {
                             speed = it
                             panel = null
+                            panelClosedAtMs = System.currentTimeMillis()
                             showControls(focusPlay = !isLive)
                         },
                     )
@@ -1642,7 +1870,12 @@ private fun titleMatchesLanguageAlias(title: String, alias: String): Boolean {
 
 
 
-private fun createPlayerView(context: android.content.Context, renderSurface: String): android.view.View {
+private fun createPlayerView(
+    context: android.content.Context,
+    renderSurface: String,
+    engine: ActivePlaybackEngine,
+): android.view.View {
+    if (engine == ActivePlaybackEngine.Media3) return ExoPlaybackView(context)
     return when (renderSurface) {
         "texture" -> MPVTextureView(context)
         else -> MPVView(context)

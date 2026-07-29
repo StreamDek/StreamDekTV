@@ -5,8 +5,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.LinkedHashMap
 import java.util.Locale
 import java.net.URLEncoder
@@ -25,6 +29,12 @@ private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
  * candidates are only reused for a short window before being re-resolved.
  */
 private const val RESOLVED_PLAYBACK_CACHE_TTL_MS = 3 * 60_000L
+internal fun effectiveRememberedStreamKey(
+    explicitKey: String?,
+    storedKey: String?,
+    rememberLastSource: Boolean,
+): String? = explicitKey ?: storedKey.takeIf { rememberLastSource }
+
 
 private data class AddonCatalogCollection(
     val addonId: String,
@@ -276,6 +286,8 @@ class StreamDekRepository(
                     "nextEpisodeThresholdMinutes" to (partial["nextEpisodeThresholdMinutes"] ?: existing.nextEpisodeThresholdMinutes),
                     "decoderMode" to (partial["decoderMode"] ?: existing.decoderMode),
                     "renderSurface" to (partial["renderSurface"] ?: existing.renderSurface),
+                    "playerEngine" to (partial["playerEngine"] ?: existing.playerEngine),
+                    "rememberLastSource" to (partial["rememberLastSource"] ?: existing.rememberLastSource),
                     "manualStreamSelectionEnabled" to (partial["manualStreamSelectionEnabled"] ?: existing.manualStreamSelectionEnabled),
                 ),
             ),
@@ -424,7 +436,8 @@ class StreamDekRepository(
             HomeRail(
                 id = "addon:${collection.addonId}:${collection.rawType}:${collection.catalogId}:$index",
                 title = buildAddonRailTitle(collection.addonName, collection.catalogName),
-                items = collection.items,
+                items = collection.items.take(80),
+                isLive = mapAddonCatalogType(collection.rawType.lowercase(Locale.US)) == "live",
             )
         }
     }
@@ -610,7 +623,22 @@ class StreamDekRepository(
                         add(HomeRail("networks", "Streaming Services", streamingNetworks))
                     }
                     add(HomeRail("recommended", "Recommended For You", (recommendedMovies + recommendedShows).take(20)))
-                    addAll(addonRails.await())
+                }.let { baseRails ->
+                    // Match the mobile app's ordering: live TV addon rows sit directly
+                    // below Streaming Services, other addon catalogs stay at the end.
+                    val allAddonRails = addonRails.await()
+                    val (liveAddonRails, otherAddonRails) = allAddonRails.partition { it.isLive }
+                    val ordered = baseRails.toMutableList()
+                    val networksIndex = ordered.indexOfFirst { it.id == "networks" }
+                    if (liveAddonRails.isNotEmpty()) {
+                        if (networksIndex >= 0) {
+                            ordered.addAll(networksIndex + 1, liveAddonRails)
+                        } else {
+                            ordered.addAll(liveAddonRails)
+                        }
+                    }
+                    ordered.addAll(otherAddonRails)
+                    ordered
                 }.filter { it.items.isNotEmpty() }
             )
         }
@@ -703,6 +731,51 @@ class StreamDekRepository(
         val genres = api.get<GenreResponse>("/tmdb/genres/$normalized")?.genres.orEmpty()
         genreCache[normalized] = genres
         return genres
+    }
+
+    /**
+     * Discover browse used by the Search screen, mirroring the mobile app's Discover
+     * section. "documentary" is a movie query pinned to TMDB's documentary genre, and a
+     * "before:YYYY" year filter becomes a release-date cutoff rather than an exact year.
+     */
+    suspend fun fetchDiscover(
+        type: String,
+        page: Int = 1,
+        genreId: Int? = null,
+        year: String? = null,
+        forceRefresh: Boolean = false,
+    ): PagedRailResponse {
+        val requestedType = type.trim().lowercase(Locale.US)
+        val isDocumentary = requestedType == "documentary"
+        val effectiveType = if (isDocumentary) "movie" else if (requestedType == "tv") "tv" else "movie"
+        val params = mutableListOf("type=$effectiveType", "page=$page")
+        when {
+            isDocumentary -> params += "genre_id=99"
+            genreId != null -> params += "genre_id=$genreId"
+        }
+        if (!year.isNullOrBlank()) {
+            if (year.startsWith("before:")) {
+                val cutoff = year.removePrefix("before:").trim()
+                if (cutoff.isNotBlank()) {
+                    val encodedCutoff = URLEncoder.encode("$cutoff-12-31", "UTF-8")
+                    params += if (effectiveType == "tv") {
+                        "first_air_date.lte=$encodedCutoff"
+                    } else {
+                        "primary_release_date.lte=$encodedCutoff"
+                    }
+                }
+            } else {
+                params += "year=${URLEncoder.encode(year, "UTF-8")}"
+            }
+        }
+        val query = "/tmdb/discover?${params.joinToString("&")}"
+        val cacheKey = "discover:$query"
+        if (!forceRefresh) {
+            networkCache[cacheKey]?.let { return it }
+        }
+        val response = api.get<PagedRailResponse>(query) ?: PagedRailResponse()
+        networkCache[cacheKey] = response
+        return response
     }
 
     suspend fun fetchNetworkCatalog(
@@ -1112,8 +1185,11 @@ class StreamDekRepository(
             )
         }
         val episodeKey = buildEpisodeKey(episode)
-        val effectivePreferredStreamKey = preferredStreamKey
-            ?: sessionStore.preferredStreamKey(mediaType, mediaId, episodeKey)
+        val effectivePreferredStreamKey = effectiveRememberedStreamKey(
+            explicitKey = preferredStreamKey,
+            storedKey = sessionStore.preferredStreamKey(mediaType, mediaId, episodeKey),
+            rememberLastSource = rememberLastSourceEnabled(),
+        )
         val cacheKey = playbackCacheKey(
             mediaType = mediaType,
             mediaId = mediaId,
@@ -1127,22 +1203,25 @@ class StreamDekRepository(
         if (!forceRefresh) {
             readResolvedPlaybackCache(cacheKey)?.let { return it }
         }
-        val lookupTypes = when (mediaType) {
-            "live" -> {
-                val native = streamType?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() } ?: "tv"
-                buildList {
-                    add(native)
-                    if (native == "tv") add("live-tv")
-                    if (native == "live-tv") add("tv")
-                    if (native == "sport") add("sports")
-                    if (native == "sports") add("sport")
-                }.distinct()
-            }
-            "tv" -> listOf("series")
-            else -> listOf("movie")
-        }
+        // Mirrors the mobile app's live type fallbacks: addons publish live channels
+        // under a wide range of Stremio-native type names.
+        val lookupTypes = streamLookupTypes(mediaType, streamType)
         val videoId = buildStreamVideoId(imdbId ?: mediaId, episode)
-        val (streamLookupType, streams) = fetchStreamsForPlayback(lookupTypes, videoId, isLive = mediaType == "live")
+        val rememberedAddonId = effectivePreferredStreamKey
+            ?.substringBefore('|')
+            ?.takeIf { it.isNotBlank() }
+        val targetedAddonId = sourceAddonId?.takeIf { it.isNotBlank() } ?: rememberedAddonId
+        val targetedStreams = targetedAddonId?.let { addonId ->
+            fetchStreamsFromOwningAddon(
+                addonId = addonId,
+                lookupTypes = lookupTypes,
+                videoId = videoId,
+                isLive = mediaType == "live",
+                forceRefresh = mediaType == "live",
+            )
+        }
+        val (streamLookupType, streams) = targetedStreams
+            ?: fetchStreamsForPlayback(lookupTypes, videoId, isLive = mediaType == "live")
         for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {
             val resolvedUrl = resolveStreamToUrl(stream, streamLookupType, videoId)
             if (!resolvedUrl.isNullOrBlank()) {
@@ -1158,7 +1237,9 @@ class StreamDekRepository(
                     stream = stream,
                     streams = streams,
                 )
-                sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, resolvedStreamKey)
+                if (rememberLastSourceEnabled()) {
+                    sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, resolvedStreamKey)
+                }
                 writeResolvedPlaybackCache(cacheKey, candidate)
                 return candidate
             }
@@ -1174,6 +1255,31 @@ class StreamDekRepository(
      * directly for a fresh response, and only then fall back to the aggregated backend route.
      * Returns the lookup type that produced results together with the de-duplicated streams.
      */
+    private suspend fun fetchStreamsFromOwningAddon(
+        addonId: String,
+        lookupTypes: List<String>,
+        videoId: String,
+        isLive: Boolean,
+        forceRefresh: Boolean,
+    ): Pair<String?, List<AddonStream>>? {
+        val addon = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
+            .firstOrNull { it.enabled && it.id == addonId }
+            ?: return null
+        val baseId = videoId.substringBefore(":")
+        for (lookupType in lookupTypes) {
+            if (!addonSupportsStreamType(addon, lookupType)) continue
+            val streams = fetchStreamsFromSingleAddon(
+                addon = addon,
+                lookupType = lookupType,
+                videoId = videoId,
+                baseId = baseId,
+                isLive = isLive,
+                forceRefresh = forceRefresh,
+            )
+            if (streams.isNotEmpty()) return lookupType to streams
+        }
+        return null
+    }
     private suspend fun fetchStreamsForPlayback(
         lookupTypes: List<String>,
         videoId: String,
@@ -1213,7 +1319,12 @@ class StreamDekRepository(
         videoId: String,
         baseId: String,
         isLive: Boolean,
+        forceRefresh: Boolean = false,
     ): List<AddonStream> {
+        if (forceRefresh) {
+            val direct = fetchFreshStreamsFromAddon(addon, lookupType, videoId)
+            if (direct.isNotEmpty()) return direct
+        }
         val viaBackend = runCatching {
             api.get<AddonStreamsResponse>(
                 "/addons/streams/single/${encodePathSegment(addon.id)}/$lookupType/${encodePathSegment(videoId)}",
@@ -1285,13 +1396,353 @@ class StreamDekRepository(
 
     private fun encodePathSegment(value: String): String = URLEncoder.encode(value, "UTF-8")
 
+    /**
+     * Streams the addon results for a title as they arrive instead of waiting for every
+     * addon to answer. Each emission carries the ranked streams gathered so far plus how
+     * many sources are still outstanding, so the UI can render the first results
+     * immediately and fill in the rest.
+     */
+    fun streamCandidates(
+        mediaType: String,
+        mediaId: String,
+        imdbId: String?,
+        episode: EpisodeContext? = null,
+        preferredStreamKey: String? = null,
+        streamType: String? = null,
+        directStreamUrl: String? = null,
+        requestHeaders: Map<String, String> = emptyMap(),
+        sourceAddonId: String? = null,
+        sourceAddonName: String? = null,
+        forceRefresh: Boolean = false,
+    ): kotlinx.coroutines.flow.Flow<StreamCandidatesProgress> = kotlinx.coroutines.flow.channelFlow {
+        val isLive = mediaType == "live"
+        if (isLive && !directStreamUrl.isNullOrBlank()) {
+            val directStream = AddonStream(
+                addonId = sourceAddonId.orEmpty(),
+                addonName = sourceAddonName ?: "Live source",
+                name = sourceAddonName ?: "Live source",
+                title = "Direct live stream",
+                url = directStreamUrl,
+                requestHeaders = requestHeaders,
+            )
+            send(StreamCandidatesProgress(listOf(directStream), pendingSources = 0, done = true))
+            return@channelFlow
+        }
+
+        val episodeKey = buildEpisodeKey(episode)
+        val effectivePreferredStreamKey = effectiveRememberedStreamKey(
+            explicitKey = preferredStreamKey,
+            storedKey = sessionStore.preferredStreamKey(mediaType, mediaId, episodeKey),
+            rememberLastSource = rememberLastSourceEnabled(),
+        )
+        val lookupTypes = streamLookupTypes(mediaType, streamType)
+        val videoId = buildStreamVideoId(imdbId ?: mediaId, episode)
+        val baseId = videoId.substringBefore(":")
+
+        val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
+            .filter { it.enabled }
+            .sortedBy { it.position }
+
+        // Only the first lookup type that any addon claims to support is fanned out;
+        // the remaining types stay available as a sequential fallback below.
+        val primaryType = lookupTypes.firstOrNull { type -> addons.any { addonSupportsStreamType(it, type) } }
+        val supportingAddons = primaryType?.let { type ->
+            addons.filter { addon ->
+                addonSupportsStreamType(addon, type) &&
+                    (sourceAddonId.isNullOrBlank() || addon.id == sourceAddonId)
+            }
+        }.orEmpty()
+
+        if (primaryType == null || supportingAddons.isEmpty()) {
+            val (_, fallback) = fetchStreamsForPlayback(lookupTypes, videoId, isLive)
+            send(
+                StreamCandidatesProgress(
+                    rankStreams(fallback, effectivePreferredStreamKey),
+                    pendingSources = 0,
+                    done = true,
+                ),
+            )
+            return@channelFlow
+        }
+
+        val merged = java.util.concurrent.ConcurrentHashMap<String, AddonStream>()
+        val order = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size)
+        val mutex = kotlinx.coroutines.sync.Mutex()
+        // Cap concurrent addon requests so a large addon list cannot saturate the
+        // TV's limited network stack and slow down the first results.
+        val gate = kotlinx.coroutines.sync.Semaphore(4)
+
+        suspend fun publish(done: Boolean) {
+            val snapshot = mutex.withLock { order.mapNotNull { merged[it] } }
+            send(
+                StreamCandidatesProgress(
+                    streams = rankStreams(snapshot, effectivePreferredStreamKey),
+                    pendingSources = remaining.get().coerceAtLeast(0),
+                    done = done,
+                ),
+            )
+        }
+
+        send(StreamCandidatesProgress(emptyList(), pendingSources = supportingAddons.size, done = false))
+
+        supervisorScope {
+            supportingAddons.forEach { addon ->
+                launch {
+                    val streams = runCatching {
+                        gate.withPermit { fetchStreamsFromSingleAddon(addon, primaryType, videoId, baseId, isLive, forceRefresh) }
+                    }.getOrDefault(emptyList())
+                    mutex.withLock {
+                        streams.forEach { stream ->
+                            val key = streamMergeKey(stream)
+                            if (merged.putIfAbsent(key, stream) == null) order.add(key)
+                        }
+                    }
+                    remaining.decrementAndGet()
+                    publish(done = false)
+                }
+            }
+        }
+
+        remaining.set(0)
+        if (merged.isEmpty()) {
+            // Nothing from the per-addon fan-out — fall back to the aggregated route
+            // and any remaining lookup types before declaring the list empty.
+            val (_, fallback) = fetchStreamsForPlayback(lookupTypes, videoId, isLive)
+            fallback.forEach { stream ->
+                val key = streamMergeKey(stream)
+                if (merged.putIfAbsent(key, stream) == null) order.add(key)
+            }
+        }
+        publish(done = true)
+    }
+
+    private fun streamMergeKey(stream: AddonStream): String = listOf(
+        stream.addonId,
+        stream.addonName,
+        stream.name,
+        stream.title,
+        effectiveInfoHash(stream),
+        stream.url,
+        effectiveFilename(stream),
+        stream.quality,
+        stream.size,
+    ).joinToString("|")
+
+    private fun streamLookupTypes(mediaType: String, streamType: String?): List<String> = when (mediaType) {
+        "live" -> {
+            val native = streamType?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() } ?: "tv"
+            buildList {
+                add(native)
+                if (native == "tv") add("live-tv")
+                if (native == "live-tv") add("tv")
+                if (native == "sport") add("sports")
+                if (native == "sports") add("sport")
+                addAll(listOf("live", "channel", "channels", "tv", "sport", "sports", "event", "events", "other"))
+            }.distinct()
+        }
+        "tv" -> listOf("series")
+        else -> listOf("movie")
+    }
+
+
+    private fun rememberLastSourceEnabled(): Boolean =
+        bootstrapState.value?.preferences?.playback?.rememberLastSource ?: true
+
+    /** Searches OpenSubtitles, installed subtitle addons, and mobile-managed cloud sources. */
+    suspend fun fetchExternalSubtitles(request: PlaybackRequest): List<ExternalSubtitleTrack> = withContext(Dispatchers.IO) {
+        val imdbId = request.imdbId?.takeIf { it.startsWith("tt") } ?: return@withContext emptyList()
+        val isSeries = request.mediaType == "tv" || request.mediaType == "series"
+        val videoId = if (isSeries) {
+            val episode = request.episode ?: return@withContext emptyList()
+            "$imdbId:${episode.seasonNumber}:${episode.episodeNumber}"
+        } else {
+            imdbId
+        }
+        val type = if (isSeries) "series" else "movie"
+        val preferences = bootstrapState.value?.preferences?.playback ?: PlaybackPreferences()
+        val cloudSources = (preferences.subtitleSources + preferences.customSubtitleSources)
+            .filter { it.enabled }
+            .mapNotNull { source ->
+                val baseUrl = source.baseUrl.ifBlank { source.url.orEmpty() }.trimEnd('/')
+                baseUrl.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                    ?.let { SubtitleSourcePreference(source.id, source.name, it, enabled = true) }
+            }
+        val addonSources = bootstrapState.value?.integrations?.addons?.items.orEmpty()
+            .filter { addon ->
+                addon.enabled && addon.manifest.resources.any { resource ->
+                    when (resource) {
+                        is String -> resource.trim().equals("subtitles", ignoreCase = true)
+                        is Map<*, *> -> resource["name"]?.toString()?.trim()?.equals("subtitles", ignoreCase = true) == true
+                        else -> false
+                    }
+                }
+            }
+            .mapNotNull { addon ->
+                val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: return@mapNotNull null
+                val baseUrl = manifestUrl.substringBeforeLast("/manifest.json", manifestUrl).trimEnd('/')
+                baseUrl.takeIf { it.isNotBlank() }?.let {
+                    SubtitleSourcePreference("addon:${addon.id}", addon.manifest.name.ifBlank { addon.id }, it)
+                }
+            }
+        val sources = (listOf(SubtitleSourcePreference("opensubtitles", "OpenSubtitles", "https://opensubtitles-v3.strem.io")) +
+            cloudSources + addonSources).distinctBy { it.baseUrl.lowercase(Locale.US) }
+
+        supervisorScope {
+            sources.map { source ->
+                async {
+                    runCatching {
+                        val endpoint = "${source.baseUrl.trimEnd('/')}/subtitles/$type/${encodePathSegment(videoId)}.json"
+                        val httpRequest = okhttp3.Request.Builder()
+                            .url(endpoint)
+                            .header("Accept", "application/json")
+                            .header("User-Agent", "Stremio/4.4.168")
+                            .build()
+                        api.client.newCall(httpRequest).execute().use { response ->
+                            if (!response.isSuccessful) return@use emptyList()
+                            val payload = api.gson.fromJson(response.body?.charStream(), StremioSubtitlesResponse::class.java)
+                                ?: return@use emptyList()
+                            payload.subtitles.mapNotNull { subtitle ->
+                                val language = normalizeSubtitleLanguage(subtitle.language)
+                                if (subtitle.id.isBlank() || subtitle.url.isBlank() || language.isBlank()) return@mapNotNull null
+                                ExternalSubtitleTrack(
+                                    id = "${source.id}:${subtitle.id}",
+                                    language = language,
+                                    label = listOf(language.uppercase(Locale.US), subtitle.release, source.name.ifBlank { "Subtitle addon" })
+                                        .filter { it.isNotBlank() }.joinToString(" - "),
+                                    url = subtitle.url,
+                                )
+                            }
+                        }
+                    }.onFailure { TvDebugLogger.w("Subtitles", "lookup failed source=${source.name}: ${it.message}") }
+                        .getOrDefault(emptyList())
+                }
+            }.map { it.await() }
+                .flatten()
+                .distinctBy { it.url }
+                .sortedWith(compareBy<ExternalSubtitleTrack> {
+                    when (it.language) {
+                        normalizeSubtitleLanguage(activeStreamProfile(bootstrapState.value)?.subtitleLanguage
+                            ?: preferences.defaultSubtitleLanguage) -> 0
+                        "en" -> 1
+                        else -> 2
+                    }
+                }.thenBy { it.label })
+                .take(80)
+        }
+    }
+
+    suspend fun downloadSubtitleToCache(url: String, cacheDir: File): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0 StreamDekTV").build()
+            api.client.newCall(request).execute().use { response ->
+                check(response.isSuccessful) { "Subtitle download failed: ${response.code}" }
+                val extensionFromUrl = response.request.url.encodedPath.substringAfterLast('.', "").lowercase(Locale.US)
+                    .takeIf { it in setOf("srt", "vtt", "ass", "ssa", "ttml", "xml") }
+                val extension = extensionFromUrl ?: when {
+                    response.body?.contentType()?.subtype?.contains("vtt", ignoreCase = true) == true -> "vtt"
+                    response.body?.contentType()?.subtype?.contains("ttml", ignoreCase = true) == true -> "ttml"
+                    else -> "srt"
+                }
+                val directory = File(cacheDir, "subtitles").apply { mkdirs() }
+                val target = File(directory, "${url.hashCode().toUInt()}.$extension")
+                if (target.exists() && target.length() > 0L) return@use target.absolutePath
+                response.body?.byteStream()?.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+                    ?: error("Empty subtitle response")
+                check(target.length() > 0L) { "Empty subtitle response" }
+                target.absolutePath
+            }
+        }.onFailure { TvDebugLogger.w("Subtitles", "download failed: ${it.message}") }.getOrNull()
+    }
+
+    private fun normalizeSubtitleLanguage(raw: String?): String {
+        val value = raw?.trim()?.lowercase(Locale.US).orEmpty()
+        return when (value) {
+            "eng", "en-us", "en-gb" -> "en"
+            "spa" -> "es"
+            "fra", "fre" -> "fr"
+            "deu", "ger" -> "de"
+            "ita" -> "it"
+            "por" -> "pt"
+            "jpn" -> "ja"
+            else -> value.substringBefore('-')
+        }
+    }
     suspend fun prefetchPlayback(
+
         mediaType: String,
         mediaId: String,
         imdbId: String?,
         episode: EpisodeContext? = null,
     ) {
         resolvePlayback(mediaType, mediaId, imdbId, episode, preferredStreamKey = null, forceRefresh = false)
+    }
+
+    /**
+     * Resolves a stream that the source picker already discovered. This is the latency-critical
+     * path: do not query every enabled addon again after the viewer has selected one.
+     */
+    suspend fun resolveSelectedPlayback(
+        request: PlaybackRequest,
+        stream: AddonStream,
+        streams: List<AddonStream> = emptyList(),
+        forceRefresh: Boolean = false,
+    ): ResolvedPlaybackCandidate {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        val selectedKey = streamSelectionKey(stream)
+        val cacheKey = playbackCacheKey(
+            mediaType = request.mediaType,
+            mediaId = request.mediaId,
+            imdbId = request.imdbId,
+            episode = request.episode,
+            preferredStreamKey = selectedKey,
+            streamType = request.streamType,
+        )
+        if (!forceRefresh) {
+            readResolvedPlaybackCache(cacheKey)?.let { cached ->
+                if (cached.source != null && rememberLastSourceEnabled()) {
+                    sessionStore.savePreferredStreamKey(request.mediaType, request.mediaId, buildEpisodeKey(request.episode), selectedKey)
+                }
+                TvDebugLogger.i("Playback", "selected-source cache hit addon=${stream.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
+                return cached.copy(streams = streams.ifEmpty { cached.streams })
+            }
+        }
+
+        val lookupType = streamLookupTypes(request.mediaType, request.streamType).firstOrNull()
+        val videoId = buildStreamVideoId(request.imdbId ?: request.mediaId, request.episode)
+        val playbackStream = if (!lookupType.isNullOrBlank()) {
+            refreshStreamForPlayback(stream, lookupType, videoId)
+        } else {
+            stream
+        }
+        val resolvedUrl = resolveStreamToUrl(playbackStream)
+        val allStreams = streams.ifEmpty { listOf(stream) }
+        val candidate = if (resolvedUrl.isNullOrBlank()) {
+            ResolvedPlaybackCandidate(null, null, allStreams)
+        } else {
+            ResolvedPlaybackCandidate(
+                source = ResolvedPlaybackSource(
+                    url = resolvedUrl,
+                    contentType = guessContentType(resolvedUrl),
+                    label = describeStream(playbackStream),
+                    filename = effectiveFilename(playbackStream),
+                    requestHeaders = playbackStream.requestHeaders,
+                ),
+                stream = playbackStream,
+                streams = allStreams,
+            )
+        }
+        if (candidate.source != null) {
+            if (rememberLastSourceEnabled()) {
+                sessionStore.savePreferredStreamKey(request.mediaType, request.mediaId, buildEpisodeKey(request.episode), selectedKey)
+            }
+        }
+        writeResolvedPlaybackCache(cacheKey, candidate)
+        TvDebugLogger.i(
+            "Playback",
+            "selected-source resolved addon=${stream.addonName} direct=${normalizedDirectUrl(playbackStream) != null} elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}",
+        )
+        return candidate
     }
 
     suspend fun resolvePlaybackSource(
@@ -1417,6 +1868,7 @@ class StreamDekRepository(
         } else {
             stream
         }
+        if (!isPlayableStreamOption(playbackStream)) return null
         normalizedDirectUrl(playbackStream)?.let { return it }
         val infoHash = effectiveInfoHash(playbackStream) ?: return null
         val filename = effectiveFilename(playbackStream)
@@ -1436,6 +1888,21 @@ class StreamDekRepository(
         }.onFailure {
             TvDebugLogger.e("Playback", "resolveStreamToUrl failed infoHash=$infoHash", it)
         }.getOrNull()
+    }
+
+    /** Reject archive/download payloads that addons occasionally mislabel as playable videos. */
+    fun isPlayableStreamOption(stream: AddonStream): Boolean {
+        if (!effectiveInfoHash(stream).isNullOrBlank()) return true
+        val url = normalizedDirectUrl(stream) ?: return false
+        val decodedUrl = runCatching { java.net.URLDecoder.decode(url, "UTF-8") }.getOrDefault(url)
+        val evidence = listOfNotNull(
+            decodedUrl,
+            stream.filename,
+            stream.behaviorHints?.filename,
+            stream.title,
+            stream.name,
+        ).joinToString(" ").lowercase(Locale.US)
+        return !Regex("\\.(zip|rar|7z|tar|gz)(?:$|[?&#\\\" ]|\\.)").containsMatchIn(evidence)
     }
 
     /** Direct playback URL, excluding magnet links which must be resolved via debrid/torrent. */

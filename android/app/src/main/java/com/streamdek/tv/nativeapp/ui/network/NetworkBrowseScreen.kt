@@ -60,6 +60,7 @@ import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import java.time.Year
 import kotlinx.coroutines.launch
 
@@ -407,14 +408,7 @@ private fun NetworkCatalogCard(
         onClick = onPressed,
         modifier = modifier
             .size(width = 260.dp, height = 150.dp)
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyUp && event.key == Key.Menu) {
-                    onMenuPressed()
-                    true
-                } else {
-                    false
-                }
-            },
+            .tvCardLongPress(onMenuPressed),
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
             containerColor = Color(0xFF181A1F),

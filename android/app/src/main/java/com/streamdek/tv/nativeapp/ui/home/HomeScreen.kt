@@ -67,13 +67,18 @@ import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val HomeRailsTop = 360.dp
+// Where the rails viewport begins. Sized so the hero (including its synopsis) has clear
+// breathing room above, while the remaining height still fits the active row plus about
+// a third of the row beneath it as a scroll affordance.
+private val HomeRailsTop = 322.dp
+private val HomeRailsTopCompact = 292.dp
 
 private data class BrowseActionState(
     val item: MediaItem,
@@ -93,6 +98,14 @@ fun HomeScreen(
     onOpenNetwork: (String, String) -> Unit,
     onOpenAccount: () -> Unit,
     onPlayLive: (MediaItem) -> Unit = {},
+    onResumePlayback: (MediaItem) -> Unit = {},
+    /** Rail the viewer last had highlighted, restored when they come back to Home. */
+    restoreRowId: String? = null,
+    /** Card within [restoreRowId] that was last highlighted. */
+    restoreItemKey: String? = null,
+    /** Bumped by the host to request a position restore. */
+    restoreToken: Int = 0,
+    onPositionChanged: (rowId: String, itemKey: String) -> Unit = { _, _ -> },
 ) {
     val homeViewModel: HomeViewModel = viewModel(factory = remember(repository) { HomeViewModelFactory(repository) })
     val screenState by homeViewModel.uiState.collectAsState()
@@ -208,18 +221,53 @@ fun HomeScreen(
                     val list = content.rails.toMutableList()
                     val netIdx = list.indexOfFirst { rail -> rail.items.any { it.type == "network" } }
                     if (netIdx > 0) {
-                        val target = minOf(3, list.size - 1)
-                        if (netIdx != target) {
-                            val netRail = list.removeAt(netIdx)
-                            list.add(target, netRail)
-                        }
+                        // The networks rail and the live addon rails that follow it move
+                        // as one block, so live TV keeps sitting directly beneath
+                        // Streaming Services exactly as it does on mobile.
+                        var end = netIdx + 1
+                        while (end < list.size && list[end].isLive) end++
+                        val block = List(end - netIdx) { list.removeAt(netIdx) }
+                        val target = minOf(3, list.size)
+                        list.addAll(target, block)
                     }
                     list.toList()
                 }
                 val localHomeFirstCardRequester = remember { FocusRequester() }
                 val homeFirstCardRequester = entryFocusRequester ?: localHomeFirstCardRequester
 
-                LaunchedEffect(content) {
+                // Full key ("rowId:itemKey") of the card that should take focus once the
+                // rails compose, used when returning to Home from another screen.
+                var pendingRestoreKey by remember { mutableStateOf<String?>(null) }
+                var restoreHandledToken by remember { mutableIntStateOf(0) }
+                // Once a position has been restored, the first-card grab must never run
+                // again for this composition or it would steal focus back.
+                var restoreApplied by remember { mutableStateOf(false) }
+
+                val canRestore = restoreToken > 0 &&
+                    restoreToken != restoreHandledToken &&
+                    !restoreRowId.isNullOrBlank() &&
+                    !restoreItemKey.isNullOrBlank() &&
+                    rows.any { it.id == restoreRowId }
+
+                LaunchedEffect(restoreToken, rows) {
+                    if (!canRestore) return@LaunchedEffect
+                    restoreHandledToken = restoreToken
+                    restoreApplied = true
+                    val rowIndex = rows.indexOfFirst { it.id == restoreRowId }
+                    if (rowIndex < 0) return@LaunchedEffect
+                    val row = rows[rowIndex]
+                    val itemIndex = row.items.indexOfFirst { mediaItemStableKey(it) == restoreItemKey }
+                        .takeIf { it >= 0 } ?: 0
+                    activeRowIndex = rowIndex
+                    rowFocusIndices[row.id] = itemIndex
+                    focusedItem = row.items.getOrNull(itemIndex)
+                    verticalListState.scrollToItem(rowIndex)
+                    pendingRestoreKey = "${row.id}:${mediaItemStableKey(row.items[itemIndex])}"
+                }
+
+                LaunchedEffect(content, canRestore) {
+                    // Only grab the first card when there is no saved position to return to.
+                    if (canRestore || restoreApplied || pendingRestoreKey != null) return@LaunchedEffect
                     delay(150)
                     try { homeFirstCardRequester.requestFocus() } catch (_: Exception) { }
                 }
@@ -235,13 +283,13 @@ fun HomeScreen(
                             top = if (compactMode) 42.dp else 56.dp,
                             end = if (compactMode) 36.dp else 48.dp,
                         )
-                        .fillMaxWidth(0.43f),
+                        .fillMaxWidth(0.52f),
                 )
 
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = if (compactMode) 320.dp else HomeRailsTop)
+                        .padding(top = if (compactMode) HomeRailsTopCompact else HomeRailsTop)
                         .clipToBounds(),
                 ) {
                     LazyColumn(
@@ -266,13 +314,19 @@ fun HomeScreen(
                                     if (activeRowIndex != rowIndex) {
                                         activeRowIndex = rowIndex
                                     }
+                                    // Report upward so the position survives navigation away.
+                                    onPositionChanged(row.id, mediaItemStableKey(item))
                                 },
                                 onItemPressed = { item ->
                                     when (item.type) {
                                         "network" -> onOpenNetwork(item.id, item.title)
                                         // Live broadcasts skip the detail screen and play directly.
                                         "live" -> onPlayLive(item)
-                                        else -> onOpenDetail(item.type, item.id)
+                                        else -> if (row.id == "continue-watching") {
+                                            onResumePlayback(item)
+                                        } else {
+                                            onOpenDetail(item.type, item.id)
+                                        }
                                     }
                                 },
                                 onItemMenu = { item, requester ->
@@ -282,6 +336,8 @@ fun HomeScreen(
                                 },
                                 rowCardStyle = homeRowCardStyle,
                                 firstCardRequester = if (rowIndex == 0) homeFirstCardRequester else null,
+                                focusItemKey = pendingRestoreKey?.takeIf { it.startsWith("${row.id}:") },
+                                onFocusItemHandled = { pendingRestoreKey = null },
                             )
                         }
                     }
@@ -290,9 +346,12 @@ fun HomeScreen(
                 LaunchedEffect(activeRowIndex) {
                     if (rows.isNotEmpty()) {
                         val targetIndex = activeRowIndex.coerceIn(0, rows.lastIndex)
-                        val firstVisible = verticalListState.firstVisibleItemIndex
-                        val lastVisible = verticalListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: firstVisible
-                        if (targetIndex < firstVisible || targetIndex > lastVisible) {
+                        // Pin the active row to the top of the rails viewport so the row
+                        // beneath it is always partially visible, instead of only
+                        // scrolling once the active row falls off-screen.
+                        if (verticalListState.firstVisibleItemIndex != targetIndex ||
+                            verticalListState.firstVisibleItemScrollOffset != 0
+                        ) {
                             verticalListState.animateScrollToItem(targetIndex)
                         }
                     }
@@ -389,7 +448,7 @@ private fun HeroBlock(
             AsyncImage(
                 model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
                     .data(titleLogo)
-                    .crossfade(300)
+                    .crossfade(false)
                     .build(),
                 contentDescription = item.title,
                 modifier = Modifier
@@ -423,12 +482,17 @@ private fun HeroBlock(
         }
 
         (detail?.description ?: item.description)?.takeIf { it.isNotBlank() }?.let { description ->
+            // Smaller and shorter than the mobile hero: the reclaimed vertical space is
+            // what lets the row below the active row peek into view.
             Text(
                 text = description,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
-                maxLines = 4,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
+                // Guarantees clear separation from the first content row even when the
+                // synopsis runs to its full three lines.
+                modifier = Modifier.padding(bottom = 14.dp),
             )
         }
     }
@@ -445,8 +509,26 @@ private fun RailSection(
     onItemMenu: (MediaItem, FocusRequester) -> Unit,
     rowCardStyle: String,
     firstCardRequester: FocusRequester? = null,
+    /** Full "rowId:itemKey" of a card that should take focus, or null. */
+    focusItemKey: String? = null,
+    onFocusItemHandled: () -> Unit = {},
 ) {
     val requesters = remember(row.id) { mutableMapOf<String, FocusRequester>() }
+
+    // Cards register their requesters as they compose, so retry briefly until the
+    // target card exists rather than dropping the restore.
+    LaunchedEffect(focusItemKey, row.items.size) {
+        val target = focusItemKey ?: return@LaunchedEffect
+        repeat(8) {
+            val requester = requesters[target]
+            if (requester != null && runCatching { requester.requestFocus() }.isSuccess) {
+                onFocusItemHandled()
+                return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(60)
+        }
+        onFocusItemHandled()
+    }
     val noScrollResponder = remember {
         object : BringIntoViewResponder {
             override fun calculateRectForParent(localRect: Rect): Rect = localRect
@@ -523,13 +605,20 @@ private fun MediaPosterCard(
     val networkStyle = remember(item.title) { networkSurfaceStyle(item.title) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val usePortraitCard = cardStyle == "portrait" && !isNetworkCard
+    // Cards are deliberately compact: the height reclaimed here is what gives the hero
+    // room to breathe above the rails while still leaving the next row peeking below.
     val cardWidth = when {
-        isNetworkCard -> 226.dp
-        usePortraitCard -> 84.dp
-        else -> 200.dp
+        isNetworkCard -> 196.dp
+        usePortraitCard -> 74.dp
+        else -> 174.dp
     }
-    val cardHeight = if (usePortraitCard) 126.dp else 118.dp
+    val cardHeight = if (usePortraitCard) 111.dp else 103.dp
     val cardShape = if (usePortraitCard) RoundedCornerShape(16.dp) else AppCardShape
+    // Only network tiles use a light surface. Poster/backdrop cards keep a transparent
+    // container so the card surface can never bleed a light rim past the artwork at the
+    // antialiased rounded corners; the clipped inner Box supplies the placeholder fill.
+    val cardContainerColor = if (isNetworkCard) networkStyle.background else Color.Transparent
+    val cardPlaceholderColor = if (isNetworkCard) networkStyle.background else Color(0xFF101216)
 
     Card(
         onClick = onPressed,
@@ -538,14 +627,7 @@ private fun MediaPosterCard(
                 width = cardWidth,
                 height = cardHeight,
             )
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyUp && event.key == Key.Menu) {
-                    onMenuPressed()
-                    true
-                } else {
-                    false
-                }
-            }
+            .tvCardLongPress(onMenuPressed)
             .onFocusChanged { state ->
                 isFocused = state.isFocused
                 if (state.isFocused) {
@@ -554,14 +636,21 @@ private fun MediaPosterCard(
             },
         shape = CardDefaults.shape(cardShape),
         colors = CardDefaults.colors(
-            containerColor = networkStyle.background,
-            focusedContainerColor = if (isNetworkCard) networkStyle.background else Color(0xFF181A1F),
+            containerColor = cardContainerColor,
+            contentColor = Color.White,
+            focusedContainerColor = cardContainerColor,
+            focusedContentColor = Color.White,
+            pressedContainerColor = cardContainerColor,
+            pressedContentColor = Color.White,
         ),
         border = CardDefaults.border(
+            // Explicitly borderless unless focused, so no state can paint a stray rim.
+            border = Border.None,
             focusedBorder = Border(
                 androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
                 shape = cardShape,
             ),
+            pressedBorder = Border.None,
         ),
         glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = 1.03f),
@@ -569,12 +658,14 @@ private fun MediaPosterCard(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // Clip first, then fill: everything drawn inside is bounded by the card
+                // shape, so no fill or artwork edge can spill into the corners.
                 .clip(cardShape)
-                .background(
+                .then(
                     if (isNetworkCard && isFocused) {
-                        networkHeroBrush(item.title)
+                        Modifier.background(networkHeroBrush(item.title))
                     } else {
-                        Brush.linearGradient(listOf(networkStyle.background, networkStyle.background))
+                        Modifier.background(cardPlaceholderColor)
                     },
                 ),
         ) {
@@ -583,7 +674,7 @@ private fun MediaPosterCard(
                     model = ImageRequest.Builder(context)
                         .data(item.titleLogo ?: item.poster)
                         .allowRgb565(false)
-                        .crossfade(200)
+                        .crossfade(false)
                         .build(),
                     contentDescription = item.title,
                     modifier = Modifier

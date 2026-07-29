@@ -65,6 +65,7 @@ import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import com.streamdek.tv.nativeapp.AppGraph
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
+import com.streamdek.tv.nativeapp.data.mapAddonCatalogType
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.account.AccountScreen
@@ -113,24 +114,44 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val liveContentRequester = remember { FocusRequester() }
     val libraryContentRequester = remember { FocusRequester() }
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
+    var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
     val liveAddonKey = remember(bootstrap) {
         bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
             "${it.id}:${it.enabled}:${it.position}:${it.manifest.catalogs.size}"
         }
     }
 
-    LaunchedEffect(session?.user?.uid, activeProfile?.id, liveAddonKey) {
+    LaunchedEffect(session?.user?.uid, activeProfile?.id, liveAddonKey, currentRoute) {
+        if (currentRoute != TopLevelDestination.Live.route || session == null || bootstrap == null) {
+            return@LaunchedEffect
+        }
+        val catalogKey = "${session?.user?.uid}:${activeProfile?.id}:$liveAddonKey"
+        if (loadedLiveCatalogKey == catalogKey && liveNavigationState.sections.isNotEmpty()) {
+            return@LaunchedEffect
+        }
         liveNavigationState = liveNavigationState.copy(loading = true)
         val sections = runCatching { repository.fetchLiveCatalogSections() }.getOrDefault(emptyList())
+        loadedLiveCatalogKey = catalogKey
         liveNavigationState = LiveNavigationState(
             loading = false,
             sections = sections,
         )
     }
 
-    val showLiveDestination = liveNavigationState.sections.any { section ->
+    // An enabled addon that publishes a live catalog is enough to surface the Live tab.
+    // Waiting for catalog items to load made the tab appear late, or not at all when a
+    // single catalog request failed.
+    val hasEnabledLiveAddon = remember(bootstrap) {
+        bootstrap?.integrations?.addons?.items.orEmpty().any { addon ->
+            addon.enabled && addon.manifest.catalogs.any { catalog ->
+                mapAddonCatalogType(catalog.type.trim().lowercase(java.util.Locale.US)) == "live"
+            }
+        }
+    }
+    val hasLoadedLiveContent = liveNavigationState.sections.any { section ->
         section.rails.any { rail -> rail.items.isNotEmpty() }
     }
+    val showLiveDestination = hasEnabledLiveAddon || hasLoadedLiveContent
     val topLevelDestinations = remember(showLiveDestination) {
         buildList {
             add(TopLevelDestination.Home)
@@ -154,6 +175,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     var previousRoute by remember { mutableStateOf<String?>(null) }
     var lastLiveFocusedItemKey by remember { mutableStateOf<String?>(null) }
     var liveFocusRestoreToken by remember { mutableStateOf(0) }
+    // Home position is held here, above the NavHost, so it survives the Home
+    // destination being disposed while the viewer is on another screen.
+    var lastHomeRowId by remember { mutableStateOf<String?>(null) }
+    var lastHomeItemKey by remember { mutableStateOf<String?>(null) }
+    var homeFocusRestoreToken by remember { mutableStateOf(0) }
 
     LaunchedEffect(session?.user?.uid) {
         if (session != null) {
@@ -180,8 +206,14 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         }
     }
 
-    LaunchedEffect(showLiveDestination, currentRoute) {
-        if (!showLiveDestination && currentRoute == TopLevelDestination.Live.route) {
+    LaunchedEffect(showLiveDestination, liveNavigationState.loading, currentRoute) {
+        // Only evict the viewer from the Live tab once loading has settled and there is
+        // genuinely no live content. Bouncing on a transient empty result used to throw
+        // the viewer back to Home mid-browse.
+        if (!showLiveDestination &&
+            !liveNavigationState.loading &&
+            currentRoute == TopLevelDestination.Live.route
+        ) {
             navController.navigate(TopLevelDestination.Home.route) {
                 popUpTo(TopLevelDestination.Home.route) { inclusive = false }
                 launchSingleTop = true
@@ -192,6 +224,14 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     LaunchedEffect(currentRoute) {
         if (currentRoute == TopLevelDestination.Live.route && previousRoute == "player") {
             liveFocusRestoreToken += 1
+        }
+        // Returning to Home from anywhere else restores the last highlighted card.
+        if (currentRoute == TopLevelDestination.Home.route &&
+            previousRoute != null &&
+            previousRoute != TopLevelDestination.Home.route &&
+            lastHomeRowId != null
+        ) {
+            homeFocusRestoreToken += 1
         }
         if (exitHintVisible) {
             exitHintVisible = false
@@ -229,6 +269,18 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         navController.navigate("player")
     }
 
+    val resumeContinueWatching: (com.streamdek.tv.nativeapp.data.MediaItem) -> Unit = { item ->
+        repository.savePlaybackRequest(
+            PlaybackRequest(
+                mediaId = item.id,
+                mediaType = item.type,
+                episode = item.episode,
+                title = item.title,
+                returnToDetailOnBack = true,
+            ),
+        )
+        navController.navigate("player")
+    }
     BackHandler(enabled = !showUpdatePrompt && currentRoute != "player") {
         val isTopLevelRoute = currentRoute in topLevelDestinations.map { it.route }
         when {
@@ -276,7 +328,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         },
 
                         onPlayLive = playLiveItem,
+                        onResumePlayback = resumeContinueWatching,
 
+                        restoreRowId = lastHomeRowId,
+                        restoreItemKey = lastHomeItemKey,
+                        restoreToken = homeFocusRestoreToken,
+                        onPositionChanged = { rowId, itemKey ->
+                            lastHomeRowId = rowId
+                            lastHomeItemKey = itemKey
+                        },
                     )
                 }
                 composable(TopLevelDestination.Search.route) {

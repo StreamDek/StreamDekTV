@@ -72,6 +72,7 @@ import coil.compose.AsyncImage
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.EpisodeContext
+import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.ui.AppPillShape
@@ -431,21 +432,16 @@ internal fun PlayerTimeline(
             }
             .onPreviewKeyEvent { event ->
                 when (event.key) {
+                    // Both edges are consumed so a held button keeps repeating into
+                    // the scrubber instead of leaking to focus traversal, which
+                    // previously moved focus off the bar mid-scrub.
                     Key.DirectionLeft -> {
-                        if (event.type == KeyEventType.KeyDown) {
-                            onSeekRelative(-seekStepSeconds)
-                            true
-                        } else {
-                            false
-                        }
+                        if (event.type == KeyEventType.KeyDown) onSeekRelative(-seekStepSeconds)
+                        true
                     }
                     Key.DirectionRight -> {
-                        if (event.type == KeyEventType.KeyDown) {
-                            onSeekRelative(seekStepSeconds)
-                            true
-                        } else {
-                            false
-                        }
+                        if (event.type == KeyEventType.KeyDown) onSeekRelative(seekStepSeconds)
+                        true
                     }
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                         if (event.type == KeyEventType.KeyUp) {
@@ -524,8 +520,11 @@ internal fun PlayerOptionPanel(
     candidate: ResolvedPlaybackCandidate?,
     audioTracks: List<MpvTrackInfo>,
     subtitleTracks: List<MpvTrackInfo>,
+    externalSubtitles: List<ExternalSubtitleTrack>,
+    subtitlesLoading: Boolean,
     selectedAudioId: Int,
     selectedSubtitleId: Int,
+    selectedExternalSubtitleId: String?,
     currentSpeed: Double,
     closeRequester: FocusRequester,
     firstItemRequester: FocusRequester,
@@ -535,6 +534,7 @@ internal fun PlayerOptionPanel(
     onSelectAudio: (Int) -> Unit,
     onDisableSubtitles: () -> Unit,
     onSelectSubtitle: (Int) -> Unit,
+    onSelectExternalSubtitle: (ExternalSubtitleTrack) -> Unit,
     onSelectSpeed: (Double) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -635,8 +635,8 @@ internal fun PlayerOptionPanel(
                         OptionButton(
                             label = "Subtitles Off",
                             subtitle = "Disable subtitles for this stream",
-                            active = selectedSubtitleId < 0,
-                            activeBadge = if (selectedSubtitleId < 0) "Selected" else null,
+                            active = selectedSubtitleId < 0 && selectedExternalSubtitleId == null,
+                            activeBadge = if (selectedSubtitleId < 0 && selectedExternalSubtitleId == null) "Selected" else null,
                             requestFocus = firstItemRequester,
                             onInteract = onInteract,
                             onClick = onDisableSubtitles,
@@ -646,11 +646,32 @@ internal fun PlayerOptionPanel(
                         OptionButton(
                             label = track.title ?: track.language ?: "Subtitle ${track.id}",
                             subtitle = listOfNotNull(track.language, track.codec).joinToString(" • ").ifBlank { null },
-                            active = selectedSubtitleId == track.id,
-                            activeBadge = if (selectedSubtitleId == track.id) "Selected" else null,
+                            active = selectedExternalSubtitleId == null && selectedSubtitleId == track.id,
+                            activeBadge = if (selectedExternalSubtitleId == null && selectedSubtitleId == track.id) "Selected" else null,
                             requestFocus = if (index == 0 && subtitleTracks.isEmpty()) firstItemRequester else null,
                             onInteract = onInteract,
                             onClick = { onSelectSubtitle(track.id) },
+                        )
+                    }
+                    if (subtitlesLoading) {
+                        item {
+                            OptionButton(
+                                label = "Searching subtitle add-ons...",
+                                subtitle = "OpenSubtitles and installed add-ons",
+                                active = false,
+                                onInteract = onInteract,
+                                onClick = {},
+                            )
+                        }
+                    }
+                    itemsIndexed(externalSubtitles) { _, subtitle ->
+                        OptionButton(
+                            label = subtitle.label,
+                            subtitle = "Add-on subtitle - ${subtitle.language.uppercase()}",
+                            active = selectedExternalSubtitleId == subtitle.id,
+                            activeBadge = if (selectedExternalSubtitleId == subtitle.id) "Selected" else null,
+                            onInteract = onInteract,
+                            onClick = { onSelectExternalSubtitle(subtitle) },
                         )
                     }
                 }

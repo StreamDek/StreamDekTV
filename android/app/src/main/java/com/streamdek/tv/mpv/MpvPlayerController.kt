@@ -13,9 +13,16 @@ interface MpvPlayerController {
     fun reloadSource()
     fun setPaused(nextPaused: Boolean)
     fun seekTo(positionSeconds: Double)
+
+    /**
+     * Seek intended for interactive scrubbing. Snapping to the nearest keyframe makes
+     * held-button scrubbing responsive; [seekTo] stays exact for resume/skip jumps.
+     */
+    fun seekToFast(positionSeconds: Double) = seekTo(positionSeconds)
     fun setSpeed(speed: Double)
     fun setAudioTrack(trackId: Int)
     fun setSubtitleTrack(trackId: Int)
     fun disableSubtitleTrack()
+    fun addSubtitleFile(path: String)
     fun setDecoderMode(mode: String?)
 }
