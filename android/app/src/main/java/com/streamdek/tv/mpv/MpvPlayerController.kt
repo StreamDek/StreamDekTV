@@ -7,6 +7,7 @@ interface MpvPlayerController {
     var onErrorCallback: ((message: String) -> Unit)?
     var onTracksChangedCallback: ((audioTracks: List<MpvTrackInfo>, subtitleTracks: List<MpvTrackInfo>, selectedAudioTrackId: Int?, selectedSubtitleTrackId: Int?) -> Unit)?
     var onRemoteCenterCallback: (() -> Boolean)?
+    var onRemoteDownCallback: (() -> Boolean)?
 
     fun setHeaders(nextHeaders: Map<String, String>?)
     fun setSource(url: String?)

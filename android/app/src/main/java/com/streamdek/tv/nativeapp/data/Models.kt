@@ -614,6 +614,8 @@ data class PlaybackRequest(
     val streamType: String? = null,
     val sourceAddonId: String? = null,
     val sourceAddonName: String? = null,
+    val sourceCatalogId: String? = null,
+    val sourceCatalogName: String? = null,
     val directStreamUrl: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
     val returnToDetailOnBack: Boolean = false,

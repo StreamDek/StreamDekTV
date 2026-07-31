@@ -61,6 +61,7 @@ class MPVTextureView @JvmOverloads constructor(
     override var onErrorCallback: ((message: String) -> Unit)? = null
     override var onTracksChangedCallback: ((audioTracks: List<MpvTrackInfo>, subtitleTracks: List<MpvTrackInfo>, selectedAudioTrackId: Int?, selectedSubtitleTrackId: Int?) -> Unit)? = null
     override var onRemoteCenterCallback: (() -> Boolean)? = null
+    override var onRemoteDownCallback: (() -> Boolean)? = null
 
     init {
         surfaceTextureListener = this
@@ -75,12 +76,11 @@ class MPVTextureView @JvmOverloads constructor(
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (
-            event.action == KeyEvent.ACTION_UP &&
-            (event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == KeyEvent.KEYCODE_ENTER)
-        ) {
-            if (onRemoteCenterCallback?.invoke() == true) {
-                return true
+        if (event.action == KeyEvent.ACTION_UP) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_DOWN -> if (onRemoteDownCallback?.invoke() == true) return true
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER -> if (onRemoteCenterCallback?.invoke() == true) return true
             }
         }
         return super.dispatchKeyEvent(event)
@@ -146,6 +146,7 @@ class MPVTextureView @JvmOverloads constructor(
         onErrorCallback = null
         onTracksChangedCallback = null
         onRemoteCenterCallback = null
+        onRemoteDownCallback = null
         if (wasInitialized) {
             MPVLib.removeObserver(this)
             MPVLib.removeLogObserver(this)

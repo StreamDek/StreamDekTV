@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.util.AttributeSet
 import android.util.Log
+import android.view.KeyEvent
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -49,6 +50,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   override var onTracksChangedCallback: ((List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit)? = null
   var onStallChangedCallback: ((Boolean) -> Unit)? = null
   override var onRemoteCenterCallback: (() -> Boolean)? = null
+  override var onRemoteDownCallback: (() -> Boolean)? = null
 
   private var exoPlayer: ExoPlayer? = null
   private var source: String? = null
@@ -84,6 +86,16 @@ class ExoPlaybackView @JvmOverloads constructor(
     source?.let(::prepareSource)
   }
 
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (event.action == KeyEvent.ACTION_UP) {
+      when (event.keyCode) {
+        KeyEvent.KEYCODE_DPAD_DOWN -> if (onRemoteDownCallback?.invoke() == true) return true
+        KeyEvent.KEYCODE_DPAD_CENTER,
+        KeyEvent.KEYCODE_ENTER -> if (onRemoteCenterCallback?.invoke() == true) return true
+      }
+    }
+    return super.dispatchKeyEvent(event)
+  }
   override fun onDetachedFromWindow() {
     removeCallbacks(progressTicker)
     releasePlayer()
@@ -316,6 +328,8 @@ class ExoPlaybackView @JvmOverloads constructor(
     onEndCallback = null
     onErrorCallback = null
     onTracksChangedCallback = null
+    onRemoteCenterCallback = null
+    onRemoteDownCallback = null
     onStallChangedCallback = null
   }
 

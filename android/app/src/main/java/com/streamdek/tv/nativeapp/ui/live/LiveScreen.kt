@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -35,17 +37,22 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.Icon
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 
 private fun liveItemStableKey(item: MediaItem, index: Int): String {
     return "${item.type}:${item.id}:${item.streamType.orEmpty()}:$index"
@@ -59,7 +66,10 @@ fun LiveScreen(
     entryFocusRequester: FocusRequester? = null,
     restoreFocusedItemKey: String? = null,
     restoreFocusToken: Int = 0,
+    favouriteKeys: Set<String> = emptySet(),
     onItemFocused: (String) -> Unit = {},
+    onToggleFavourite: (MediaItem) -> Unit = {},
+    onViewAll: (String?, String?) -> Unit = { _, _ -> },
     onPlayLive: (MediaItem) -> Unit,
 ) {
     val localInitialCardRequester = remember { FocusRequester() }
@@ -67,6 +77,19 @@ fun LiveScreen(
     val hasItems = sections.any { section -> section.rails.any { rail -> rail.items.isNotEmpty() } }
     val horizontalListStates = remember { mutableMapOf<String, LazyListState>() }
     val rowFocusIndices = remember { mutableStateMapOf<String, Int>() }
+    val verticalListState = rememberLazyListState()
+    val railColumnIndices = remember(sections) {
+        buildMap {
+            var columnIndex = 0
+            sections.forEach { section ->
+                columnIndex += 1 // section heading
+                section.rails.forEach { rail ->
+                    put(rail.id, columnIndex)
+                    columnIndex += 1
+                }
+            }
+        }
+    }
     var initialFocusApplied by remember { mutableStateOf(false) }
 
     LaunchedEffect(isLoading, hasItems, restoreFocusToken) {
@@ -77,6 +100,13 @@ fun LiveScreen(
         }
     }
 
+    LaunchedEffect(restoreFocusToken, restoreFocusedItemKey, sections) {
+        if (restoreFocusToken <= 0 || restoreFocusedItemKey.isNullOrBlank()) return@LaunchedEffect
+        val rail = sections.asSequence().flatMap { it.rails.asSequence() }.firstOrNull { candidate ->
+            candidate.items.withIndex().any { (index, item) -> liveItemStableKey(item, index) == restoreFocusedItemKey }
+        } ?: return@LaunchedEffect
+        railColumnIndices[rail.id]?.let { verticalListState.scrollToItem(it) }
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -141,6 +171,7 @@ fun LiveScreen(
             }
             else -> {
                 LazyColumn(
+                    state = verticalListState,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(top = if (compactMode) 148.dp else 168.dp),
@@ -171,10 +202,13 @@ fun LiveScreen(
                                     initialFocusRequester = if (sectionIndex == 0 && railIndex == 0 && restoreFocusToken == 0) initialCardRequester else null,
                                     restoreFocusedItemKey = restoreFocusedItemKey,
                                     restoreFocusToken = restoreFocusToken,
+                                    favouriteKeys = favouriteKeys,
                                     onItemFocused = { index, key ->
                                         rowFocusIndices[rail.id] = index
                                         onItemFocused(key)
                                     },
+                                    onToggleFavourite = onToggleFavourite,
+                                    onViewAll = { onViewAll(section.id.removePrefix("live:"), rail.id) },
                                     onPlayLive = onPlayLive,
                                 )
                             }
@@ -196,7 +230,10 @@ private fun LiveRailRow(
     initialFocusRequester: FocusRequester? = null,
     restoreFocusedItemKey: String? = null,
     restoreFocusToken: Int = 0,
+    favouriteKeys: Set<String>,
     onItemFocused: (Int, String) -> Unit,
+    onToggleFavourite: (MediaItem) -> Unit,
+    onViewAll: () -> Unit,
     onPlayLive: (MediaItem) -> Unit,
 ) {
     val requesters = remember(railId) { mutableMapOf<String, FocusRequester>() }
@@ -228,12 +265,18 @@ private fun LiveRailRow(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 48.dp, end = 48.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            OutlinedButton(onClick = onViewAll) { Text("View All") }
+        }
         LazyRow(
             state = rowState,
             modifier = Modifier
@@ -248,8 +291,10 @@ private fun LiveRailRow(
                 val effectiveRequester = if (initialFocusRequester != null && index == 0) initialFocusRequester else requester
                 LiveChannelCard(
                     item = item,
+                    favourite = "${item.sourceAddonId}:${item.sourceCatalogId}:${item.id}" in favouriteKeys,
                     modifier = Modifier.focusRequester(effectiveRequester),
                     onFocused = { onItemFocused(index, key) },
+                    onLongPress = { onToggleFavourite(item) },
                     onPressed = { onPlayLive(item) },
                 )
             }
@@ -261,14 +306,17 @@ private fun LiveRailRow(
 @Composable
 private fun LiveChannelCard(
     item: MediaItem,
+    favourite: Boolean,
     modifier: Modifier = Modifier,
     onFocused: () -> Unit,
+    onLongPress: () -> Unit,
     onPressed: () -> Unit,
 ) {
     Card(
         onClick = onPressed,
         modifier = modifier
             .size(width = 260.dp, height = 146.dp)
+            .tvCardLongPress(onLongPress)
             .onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
@@ -304,6 +352,14 @@ private fun LiveChannelCard(
                         ),
                     ),
             )
+            if (favourite) {
+                Icon(
+                    imageVector = Icons.Filled.Star,
+                    contentDescription = "Favourite channel",
+                    tint = Color(0xFFFACC15),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(22.dp),
+                )
+            }
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)

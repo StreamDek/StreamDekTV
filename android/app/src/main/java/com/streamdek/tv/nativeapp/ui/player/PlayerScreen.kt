@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.player
 
+import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -8,6 +9,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,10 +17,17 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -53,9 +62,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.tv.material3.Border
+import androidx.tv.material3.Card
+import androidx.tv.material3.CardDefaults
+import androidx.tv.material3.ExperimentalTvMaterial3Api
+import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.Icon
 import coil.compose.AsyncImage
+import com.streamdek.tv.TvRemoteKeyRouter
 import com.streamdek.tv.mpv.MPVTextureView
 import com.streamdek.tv.mpv.MPVView
 import com.streamdek.tv.mpv.MpvPlayerController
@@ -63,19 +84,22 @@ import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.MediaDetail
+import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
+import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val ControlsHideDelayMs = 3000L
 private const val LiveControlsHideDelayMs = 2000L
-private const val LiveChannelInfoHideDelayMs = 2000L
+private const val LiveChannelInfoHideDelayMs = 5000L
 private const val AutoPlayNextEpisodeCountdownSeconds = 5
 
 /**
@@ -83,7 +107,8 @@ private const val AutoPlayNextEpisodeCountdownSeconds = 5
  * indefinitely; the TV app uses a bounded retry budget before surfacing a manual retry so a broken
  * outage never dumps the viewer out of the channel.
  */
-private const val LiveReconnectMaxAttempts = 5
+private const val LiveReconnectMaxAttempts = 6
+private const val LiveStallTimeoutMs = 15_000L
 
 private data class SegmentAction(
     val kind: SegmentActionKind,
@@ -98,6 +123,14 @@ private enum class SegmentActionKind {
 }
 
 internal enum class ActivePlaybackEngine { Media3, MPV }
+
+internal enum class LiveRetryAction { Reload, Refetch, GiveUp }
+
+internal fun liveRetryAction(attempt: Int): LiveRetryAction = when (attempt) {
+    in 1..2 -> LiveRetryAction.Reload
+    in 3..LiveReconnectMaxAttempts -> LiveRetryAction.Refetch
+    else -> LiveRetryAction.GiveUp
+}
 
 internal fun normalizePlayerEngineSetting(raw: String?): String = when (raw?.trim()?.lowercase()) {
     "media3", "exo", "exoplayer" -> "Media3"
@@ -131,6 +164,14 @@ fun PlayerScreen(
     // Live broadcasts: no detail/progress/watched bookkeeping, no seeking, and
     // back exits to the previous screen rather than the streams picker.
     val isLive = request.mediaType == "live"
+    var activeLiveRequest by remember(request) { mutableStateOf<PlaybackRequest?>(null) }
+    val playbackRequest = activeLiveRequest ?: request
+    val favouriteChannels by repository.favouriteChannels.collectAsState()
+    val liveAddonFavourites = favouriteChannels.filter { favourite ->
+        isLive && !playbackRequest.sourceAddonId.isNullOrBlank() && favourite.sourceAddonId == playbackRequest.sourceAddonId
+    }
+    val favouriteChannelKeys = favouriteChannels.mapTo(linkedSetOf()) { "${it.sourceAddonId}:${it.id}" }
+    val currentChannelTitle = playbackRequest.title?.takeIf { it.isNotBlank() } ?: "Live TV"
     val completePlaybackExit: () -> Unit = if (isLive) onBack else onExitToStreams
     val backExitPlayback: () -> Unit = if (isLive || request.returnToDetailOnBack) onBack else onExitToStreams
 
@@ -167,6 +208,13 @@ fun PlayerScreen(
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
     var liveChannelInfoVisible by remember { mutableStateOf(false) }
     var liveChannelInfoHideJob by remember { mutableStateOf<Job?>(null) }
+    var liveChannels by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var liveChannelsLoading by remember { mutableStateOf(false) }
+    var liveChannelRowVisible by remember { mutableStateOf(false) }
+    var liveFavouritesDrawerVisible by remember { mutableStateOf(false) }
+    var liveRefetchGeneration by remember { mutableIntStateOf(0) }
+    var lastLiveProgressAtMs by remember { mutableStateOf(0L) }
+    var lastLiveProgressPositionSec by remember { mutableDoubleStateOf(-1.0) }
     var pendingSeekJob by remember { mutableStateOf<Job?>(null) }
     var pendingResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var lastWorkingSourceUrl by remember { mutableStateOf<String?>(null) }
@@ -228,6 +276,10 @@ fun PlayerScreen(
     val panelCloseRequester = remember { FocusRequester() }
     val panelFirstItemRequester = remember { FocusRequester() }
     val playerRootRequester = remember { FocusRequester() }
+    val liveChannelFirstRequester = remember { FocusRequester() }
+    val liveChannelListState = rememberLazyListState()
+    val liveFavouriteFirstRequester = remember { FocusRequester() }
+    val liveFavouriteListState = rememberLazyListState()
 
     // Keep screen on while the player is active
     DisposableEffect(Unit) {
@@ -251,32 +303,99 @@ fun PlayerScreen(
         }
     }
 
+    fun showLiveChannelRow() {
+        if (!isLive || liveChannels.size <= 1 || loading || error != null) {
+            showLiveChannelInfo()
+            return
+        }
+        liveChannelInfoHideJob?.cancel()
+        liveChannelInfoVisible = false
+        liveChannelRowVisible = true
+        scope.launch {
+            val currentIndex = liveChannels.indexOfFirst { it.id == playbackRequest.mediaId }.coerceAtLeast(0)
+            liveChannelListState.scrollToItem(currentIndex)
+            delay(100)
+            runCatching { liveChannelFirstRequester.requestFocus() }
+        }
+    }
+
+    fun showLiveFavouritesDrawer() {
+        if (!isLive || liveAddonFavourites.isEmpty() || loading || error != null) return
+        liveChannelInfoHideJob?.cancel()
+        liveChannelInfoVisible = false
+        liveChannelRowVisible = false
+        liveFavouritesDrawerVisible = true
+        scope.launch {
+            val currentIndex = liveAddonFavourites.indexOfFirst { it.id == playbackRequest.mediaId }.coerceAtLeast(0)
+            liveFavouriteListState.scrollToItem(currentIndex)
+            delay(100)
+            runCatching { liveFavouriteFirstRequester.requestFocus() }
+        }
+    }
+    fun selectLiveChannel(item: MediaItem) {
+        if (!isLive || (item.id == playbackRequest.mediaId && item.sourceAddonId == playbackRequest.sourceAddonId)) {
+            liveChannelRowVisible = false
+            scope.launch { runCatching { playerRootRequester.requestFocus() } }
+            return
+        }
+        val nextRequest = PlaybackRequest(
+            mediaId = item.id,
+            mediaType = "live",
+            title = item.title,
+            streamType = item.streamType,
+            sourceAddonId = item.sourceAddonId,
+            sourceAddonName = item.sourceAddonName,
+            sourceCatalogId = item.sourceCatalogId,
+            sourceCatalogName = item.sourceCatalogName,
+            directStreamUrl = item.directStreamUrl,
+            requestHeaders = item.requestHeaders,
+        )
+        TvDebugLogger.i("Player", "switch live channel from=${playbackRequest.mediaId} to=${item.id} addon=${item.sourceAddonName}")
+        repository.savePlaybackRequest(nextRequest)
+        loading = true
+        error = null
+        currentLabel = "Loading ${item.title}…"
+        liveChannelRowVisible = false
+        liveFavouritesDrawerVisible = false
+        liveReconnectAttempt = 0
+        liveRefetchGeneration = 0
+        streamKeyOverride = null
+        streamLabelOverride = null
+        activeLiveRequest = nextRequest
+    }
+
     fun scheduleLiveReconnect(message: String) {
         if (!isLive || liveReconnectJob?.isActive == true) return
-        if (liveReconnectAttempt >= LiveReconnectMaxAttempts) {
-            error = "Live feed unavailable: $message"
+        val attempt = liveReconnectAttempt + 1
+        val retryAction = liveRetryAction(attempt)
+        if (retryAction == LiveRetryAction.GiveUp) {
+            error = "Live feed unavailable after $LiveReconnectMaxAttempts retries: $message"
             loading = false
             controlsVisible = true
             return
         }
-        liveReconnectAttempt += 1
+        liveReconnectAttempt = attempt
         error = null
         loading = true
+        liveChannelRowVisible = false
         controlsVisible = false
-        currentLabel = if (liveReconnectAttempt <= 1) {
-            "Reconnecting to live feed…"
+        currentLabel = if (retryAction == LiveRetryAction.Reload) {
+            "Reloading live feed…"
         } else {
-            "Reconnecting to live feed… (attempt $liveReconnectAttempt)"
+            "Refreshing live source… (attempt $attempt)"
         }
+        TvDebugLogger.w("Player", "live retry attempt=$attempt mediaId=${playbackRequest.mediaId} reason=$message")
         liveReconnectJob = scope.launch {
-            // Short first retry like mobile, then backoff so a longer outage does not
-            // hammer the source. Playback is explicitly resumed after each reload.
-            delay((liveReconnectAttempt * 400L).coerceIn(300L, 5_000L))
-            playerView?.reloadSource()
-            playerView?.setPaused(false)
+            delay((attempt * 500L).coerceIn(500L, 5_000L))
+            if (retryAction == LiveRetryAction.Reload && !currentSourceUrl.isNullOrBlank()) {
+                playerView?.reloadSource()
+                playerView?.setPaused(false)
+            } else {
+                liveReconnectJob = null
+                liveRefetchGeneration += 1
+            }
         }
     }
-
     fun scheduleSeek(targetSeconds: Double, fast: Boolean = false) {
         val target = targetSeconds
             .coerceAtLeast(0.0)
@@ -570,10 +689,10 @@ fun PlayerScreen(
         }
     }
 
-    suspend fun loadPlayback(forceRefresh: Boolean = false) {
+    suspend fun loadPlayback(forceRefresh: Boolean = false, resetReconnectBudget: Boolean = true) {
         liveReconnectJob?.cancel()
         liveReconnectJob = null
-        liveReconnectAttempt = 0
+        if (resetReconnectBudget) liveReconnectAttempt = 0
         pendingSeekJob?.cancel()
         pendingSeekJob = null
         seekTargetSec = null
@@ -592,15 +711,16 @@ fun PlayerScreen(
         handledSegmentTypes = emptySet()
         segments = emptyList()
         val loadStartedAt = android.os.SystemClock.elapsedRealtime()
+        val activeRequest = playbackRequest
         val loadResult = runCatching {
-        val selectedStream = request.selectedStream?.takeIf {
-            currentEpisode == request.episode && streamKeyOverride == request.selectedStreamKey
+        val selectedStream = activeRequest.selectedStream?.takeIf {
+            currentEpisode == activeRequest.episode && streamKeyOverride == activeRequest.selectedStreamKey
         }
         var resolvedCandidate = selectedStream?.let {
             repository.resolveSelectedPlayback(
-                request = request.copy(episode = currentEpisode),
+                request = activeRequest.copy(episode = currentEpisode),
                 stream = it,
-                streams = request.availableStreams,
+                streams = activeRequest.availableStreams,
                 forceRefresh = forceRefresh,
             )
         }
@@ -613,19 +733,19 @@ fun PlayerScreen(
             currentLabel = streamLabelOverride ?: source.label
             TvDebugLogger.i("Player", "source ready addon=${resolvedCandidate?.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}")
         }
-        detail = if (isLive) null else repository.fetchDetail(request.mediaId, request.mediaType)
-        val effectiveImdbId = request.imdbId ?: detail?.imdbId
+        detail = if (isLive) null else repository.fetchDetail(activeRequest.mediaId, activeRequest.mediaType)
+        val effectiveImdbId = activeRequest.imdbId ?: detail?.imdbId
         inWatchlist = if (isLive) false else runCatching {
-            repository.fetchLibrary().watchlist.any { it.id == request.mediaId && it.type == request.mediaType }
+            repository.fetchLibrary().watchlist.any { it.id == activeRequest.mediaId && it.type == activeRequest.mediaType }
         }.getOrDefault(false)
-        val continueWatchingItem = if (request.mediaType == "tv") {
-            repository.fetchContinueWatchingItem(request.mediaType, request.mediaId)
+        val continueWatchingItem = if (activeRequest.mediaType == "tv") {
+            repository.fetchContinueWatchingItem(activeRequest.mediaType, activeRequest.mediaId)
         } else {
             null
         }
-        if (request.mediaType == "tv" && currentEpisode == null) {
+        if (activeRequest.mediaType == "tv" && currentEpisode == null) {
             val firstSeason = detail?.seasons?.firstOrNull()?.seasonNumber
-            val season = firstSeason?.let { repository.fetchSeason(request.mediaId, it) }
+            val season = firstSeason?.let { repository.fetchSeason(activeRequest.mediaId, it) }
             currentEpisode = continueWatchingItem?.episode ?: season?.episodes?.firstOrNull()?.let {
                 EpisodeContext(
                     seasonNumber = season.seasonNumber,
@@ -639,7 +759,7 @@ fun PlayerScreen(
                 )
             }
         }
-        val progress = if (isLive) null else repository.fetchProgress(request.mediaType, request.mediaId, currentEpisode)
+        val progress = if (isLive) null else repository.fetchProgress(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
         pendingResumePositionSec = if (isLive) {
             null
         } else {
@@ -649,17 +769,17 @@ fun PlayerScreen(
                 ?: continueWatchingItem?.resumeAt
         }
         val resolved = resolvedCandidate ?: repository.resolvePlayback(
-            request.mediaType,
-            request.mediaId,
+            activeRequest.mediaType,
+            activeRequest.mediaId,
             effectiveImdbId,
             currentEpisode,
             preferredStreamKey = streamKeyOverride,
             forceRefresh = forceRefresh,
-            streamType = request.streamType,
-            directStreamUrl = request.directStreamUrl,
-            requestHeaders = request.requestHeaders,
-            sourceAddonId = request.sourceAddonId,
-            sourceAddonName = request.sourceAddonName,
+            streamType = activeRequest.streamType,
+            directStreamUrl = activeRequest.directStreamUrl,
+            requestHeaders = activeRequest.requestHeaders,
+            sourceAddonId = activeRequest.sourceAddonId,
+            sourceAddonName = activeRequest.sourceAddonName,
         ).also { resolvedCandidate = it }
         candidate = resolved
         TvDebugLogger.i("Player", "playback load complete addon=${resolved.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}")
@@ -668,8 +788,8 @@ fun PlayerScreen(
         currentLabel = streamLabelOverride ?: resolved.source?.label ?: "No playable stream found"
         positionSec = pendingResumePositionSec ?: 0.0
         durationSec = progress?.durationSec ?: 0.0
-        nextEpisode = resolveNextEpisode(repository, request, detail, currentEpisode)
-        if (request.mediaType == "tv" && currentEpisode != null && !effectiveImdbId.isNullOrBlank()) {
+        nextEpisode = resolveNextEpisode(repository, activeRequest, detail, currentEpisode)
+        if (activeRequest.mediaType == "tv" && currentEpisode != null && !effectiveImdbId.isNullOrBlank()) {
             segments = repository.fetchEpisodeSegments(
                 imdbId = effectiveImdbId,
                 season = currentEpisode!!.seasonNumber,
@@ -677,19 +797,19 @@ fun PlayerScreen(
             )
             TvDebugLogger.i(
                 "Player",
-                "segments loaded mediaId=${request.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId=$effectiveImdbId count=${segments.size}",
+                "segments loaded mediaId=${activeRequest.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId=$effectiveImdbId count=${segments.size}",
             )
-        } else if (request.mediaType == "tv" && currentEpisode != null) {
+        } else if (activeRequest.mediaType == "tv" && currentEpisode != null) {
             TvDebugLogger.w(
                 "Player",
-                "segments skipped mediaId=${request.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId missing",
+                "segments skipped mediaId=${activeRequest.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId missing",
             )
         }
         // Live items never participate in watched tracking; marking them watched
         // here keeps markWatchedAndClearProgressIfNeeded() a no-op for live.
         watchedMarked = isLive || repository.isWatched(
-            mediaType = request.mediaType,
-            mediaId = request.mediaId,
+            mediaType = activeRequest.mediaType,
+            mediaId = activeRequest.mediaId,
             episode = currentEpisode,
             forceRefresh = true,
         )
@@ -703,7 +823,7 @@ fun PlayerScreen(
         }
         }
         loadResult.onFailure { throwable ->
-            TvDebugLogger.e("Player", "loadPlayback failed mediaType=${request.mediaType} mediaId=${request.mediaId}", throwable)
+            TvDebugLogger.e("Player", "loadPlayback failed mediaType=${activeRequest.mediaType} mediaId=${activeRequest.mediaId}", throwable)
             candidate = null
             currentSourceUrl = null
             currentLabel = streamLabelOverride ?: "No playable stream found"
@@ -716,10 +836,41 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) {
-        loadPlayback()
+    LaunchedEffect(playbackRequest.mediaId, playbackRequest.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, liveRefetchGeneration) {
+        val reconnectRefetch = isLive && liveRefetchGeneration > 0
+        loadPlayback(forceRefresh = reconnectRefetch, resetReconnectBudget = !reconnectRefetch)
     }
 
+LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCatalogId) {
+        if (!isLive || playbackRequest.sourceAddonId.isNullOrBlank()) {
+            liveChannels = emptyList()
+            liveChannelsLoading = false
+            return@LaunchedEffect
+        }
+        liveChannelsLoading = true
+        liveChannels = runCatching {
+            repository.fetchRelatedLiveChannels(
+                addonId = playbackRequest.sourceAddonId,
+                catalogId = playbackRequest.sourceCatalogId,
+            )
+        }.onFailure {
+            TvDebugLogger.w("Player", "live channel row unavailable addon=${playbackRequest.sourceAddonId}: ${it.message}")
+        }.getOrDefault(emptyList())
+        liveChannelsLoading = false
+        TvDebugLogger.i("Player", "live channel row loaded addon=${playbackRequest.sourceAddonId} count=${liveChannels.size}")
+    }
+
+    LaunchedEffect(isLive, currentSourceUrl, loading, error) {
+        if (!isLive || currentSourceUrl.isNullOrBlank() || loading || error != null) return@LaunchedEffect
+        lastLiveProgressAtMs = System.currentTimeMillis()
+        while (isLive && !loading && error == null && !currentSourceUrl.isNullOrBlank()) {
+            delay(5_000L)
+            if (System.currentTimeMillis() - lastLiveProgressAtMs >= LiveStallTimeoutMs) {
+                scheduleLiveReconnect("The live feed stalled")
+                break
+            }
+        }
+    }
     // Drive MPV state from LaunchedEffect so JNI calls only happen when values change,
     // not on every recomposition triggered by overlay animations.
     LaunchedEffect(currentSourceUrl, currentRequestHeaders, activePlaybackEngine) {
@@ -915,6 +1066,47 @@ fun PlayerScreen(
         }
     }
 
+    DisposableEffect(
+        isLive,
+        liveChannelRowVisible,
+        liveFavouritesDrawerVisible,
+        liveChannels.size,
+        liveAddonFavourites.size,
+        loading,
+        error,
+        playbackRequest.mediaId,
+    ) {
+        TvRemoteKeyRouter.onKeyUp = { keyCode ->
+            when (keyCode) {
+                AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (isLive && !liveChannelRowVisible) {
+                        showLiveChannelRow()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (isLive && !liveChannelRowVisible && !liveFavouritesDrawerVisible && liveAddonFavourites.isNotEmpty()) {
+                        showLiveFavouritesDrawer()
+                        true
+                    } else {
+                        false
+                    }
+                }                AndroidKeyEvent.KEYCODE_DPAD_CENTER,
+                AndroidKeyEvent.KEYCODE_ENTER -> {
+                    if (isLive && !liveChannelRowVisible) {
+                        showLiveChannelInfo()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                else -> false
+            }
+        }
+        onDispose { TvRemoteKeyRouter.onKeyUp = null }
+    }
     DisposableEffect(request.mediaId, request.mediaType) {
         onDispose {
             controlsHideJob?.cancel()
@@ -929,7 +1121,13 @@ fun PlayerScreen(
     }
 
     BackHandler {
-        if (nextEpisodeDialogVisible) {
+        if (liveFavouritesDrawerVisible) {
+            liveFavouritesDrawerVisible = false
+            scope.launch { runCatching { playerRootRequester.requestFocus() } }
+        } else if (liveChannelRowVisible) {
+            liveChannelRowVisible = false
+            scope.launch { runCatching { playerRootRequester.requestFocus() } }
+        } else if (nextEpisodeDialogVisible) {
             nextEpisodeDialogVisible = false
             nextEpisodeCountdown = null
             paused = false
@@ -964,6 +1162,12 @@ fun PlayerScreen(
         animationSpec = infiniteRepeatable(animation = tween(1600), repeatMode = RepeatMode.Reverse),
         label = "logo-alpha",
     )
+    val liveCaretOffset by breathing.animateFloat(
+        initialValue = 0f,
+        targetValue = 5f,
+        animationSpec = infiniteRepeatable(animation = tween(850), repeatMode = RepeatMode.Reverse),
+        label = "live-channel-caret",
+    )
 
     // The video surface deliberately does not take focus, so the player root holds it
     // whenever no control is focused. Without this, D-pad presses while the controls
@@ -984,15 +1188,17 @@ fun PlayerScreen(
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
                 if (isLive && !loading && error == null && !watchlistPromptVisible) {
+                    if (liveChannelRowVisible) return@onPreviewKeyEvent false
                     when (event.key) {
-                        Key.DirectionLeft,
-                        Key.DirectionRight,
-                        Key.DirectionUp,
-                        Key.DirectionDown,
-                        Key.DirectionCenter,
-                        Key.Enter,
-                        Key.NumPadEnter,
-                        Key.Menu -> {
+                        Key.DirectionDown -> {
+                            showLiveChannelRow()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.DirectionCenter, Key.Enter, Key.NumPadEnter, Key.Menu -> {
+                            showLiveChannelInfo()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp -> {
                             showLiveChannelInfo()
                             return@onPreviewKeyEvent true
                         }
@@ -1041,6 +1247,14 @@ fun PlayerScreen(
                             false
                         }
                     }
+                    onRemoteDownCallback = {
+                        if (isLive) {
+                            showLiveChannelRow()
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     onLoadCallback = { _, _, _ ->
                         TvDebugLogger.i(
                             "Player",
@@ -1055,6 +1269,8 @@ fun PlayerScreen(
                         lastWorkingLabel = currentLabel
                         lastWorkingRequestHeaders = currentRequestHeaders
                         if (isLive) {
+                            lastLiveProgressAtMs = System.currentTimeMillis()
+                            lastLiveProgressPositionSec = positionSec
                             controlsVisible = false
                             liveChannelInfoVisible = false
                         } else {
@@ -1068,6 +1284,10 @@ fun PlayerScreen(
                     }
                     onProgressCallback = { position, duration ->
                         durationSec = duration
+                        if (isLive && kotlin.math.abs(position - lastLiveProgressPositionSec) >= 0.25) {
+                            lastLiveProgressPositionSec = position
+                            lastLiveProgressAtMs = System.currentTimeMillis()
+                        }
                         val pendingTarget = seekTargetSec
                         if (pendingTarget == null) {
                             positionSec = position
@@ -1181,6 +1401,14 @@ fun PlayerScreen(
                         false
                     }
                 }
+                controller.onRemoteDownCallback = {
+                    if (isLive) {
+                        showLiveChannelRow()
+                        true
+                    } else {
+                        false
+                    }
+                }
             },
             modifier = Modifier.fillMaxSize(),
         )
@@ -1223,7 +1451,7 @@ fun PlayerScreen(
                         contentScale = ContentScale.Fit,
                     )
                 } ?: Text(
-                    text = detail?.title ?: request.title ?: "Loading",
+                    text = if (isLive) currentChannelTitle else detail?.title ?: request.title ?: "Loading",
                     style = MaterialTheme.typography.displayMedium.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.scale(logoScale).alpha(logoAlpha),
@@ -1400,10 +1628,61 @@ fun PlayerScreen(
 
         if (isLive && liveChannelInfoVisible && !loading && error == null) {
             LiveChannelInfoOverlay(
-                label = currentLabel,
+                channelTitle = currentChannelTitle,
+                sourceName = playbackRequest.sourceAddonName ?: currentLabel,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 78.dp, start = 26.dp),
+            )
+        }
+
+        if (isLive && liveChannels.size > 1 && !liveChannelRowVisible && !loading && error == null) {
+            LiveChannelDownHint(
+                offsetY = liveCaretOffset,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 44.dp),
+                    .padding(bottom = 24.dp),
+            )
+        }
+
+        if (isLive && liveAddonFavourites.isNotEmpty() && !liveFavouritesDrawerVisible && !loading && error == null) {
+            LiveFavouritesRightHint(
+                offsetX = liveCaretOffset,
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 18.dp),
+            )
+        }
+
+        if (isLive && liveFavouritesDrawerVisible && liveAddonFavourites.isNotEmpty() && !loading && error == null) {
+            LiveFavouritesDrawer(
+                channels = liveAddonFavourites,
+                currentChannelId = playbackRequest.mediaId,
+                listState = liveFavouriteListState,
+                initialFocusRequester = liveFavouriteFirstRequester,
+                onSelect = ::selectLiveChannel,
+                onToggleFavourite = repository::toggleFavouriteChannel,
+                onDismiss = {
+                    liveFavouritesDrawerVisible = false
+                    scope.launch { runCatching { playerRootRequester.requestFocus() } }
+                },
+                modifier = Modifier.align(Alignment.CenterEnd),
+            )
+        }
+        if (isLive && liveChannelRowVisible && liveChannels.size > 1 && !loading && error == null) {
+            val currentChannelIndex = liveChannels.indexOfFirst { it.id == playbackRequest.mediaId }.coerceAtLeast(0)
+            LiveChannelCarousel(
+                channels = liveChannels,
+                currentChannelId = playbackRequest.mediaId,
+                listState = liveChannelListState,
+                initialFocusIndex = currentChannelIndex,
+                initialFocusRequester = liveChannelFirstRequester,
+                favouriteKeys = favouriteChannelKeys,
+                onSelect = ::selectLiveChannel,
+                onToggleFavourite = repository::toggleFavouriteChannel,
+                onDismiss = {
+                    liveChannelRowVisible = false
+                    scope.launch { runCatching { playerRootRequester.requestFocus() } }
+                },
+                modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
 
@@ -1748,25 +2027,291 @@ private fun LiveStatusBadge(
 
 @Composable
 private fun LiveChannelInfoOverlay(
-    label: String,
+    channelTitle: String,
+    sourceName: String,
     modifier: Modifier = Modifier,
 ) {
-    Box(
+    Column(
         modifier = modifier
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
             .background(Color(0xD911141B))
             .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+            text = channelTitle,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
             color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = sourceName,
+            style = MaterialTheme.typography.labelMedium,
+            color = Color.White.copy(alpha = 0.7f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
+@Composable
+private fun LiveChannelDownHint(
+    offsetY: Float,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.alpha(0.78f),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(0.dp),
+    ) {
+        Text(
+            text = "Channels",
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = Color.White,
+        )
+        Icon(
+            imageVector = Icons.Default.KeyboardArrowDown,
+            contentDescription = "Press down for live channels",
+            tint = Color.White,
+            modifier = Modifier
+                .size(24.dp)
+                .offset(y = offsetY.dp),
+        )
+    }
+}
+
+@Composable
+private fun LiveFavouritesRightHint(
+    offsetX: Float,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.alpha(0.82f),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = "Favourites",
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = Color.White,
+        )
+        Icon(
+            imageVector = Icons.Default.KeyboardArrowRight,
+            contentDescription = "Press right for favourite channels",
+            tint = Color.White,
+            modifier = Modifier.size(26.dp).offset(x = offsetX.dp),
+        )
+    }
+}
+
+@Composable
+private fun LiveFavouritesDrawer(
+    channels: List<MediaItem>,
+    currentChannelId: String,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    initialFocusRequester: FocusRequester,
+    onSelect: (MediaItem) -> Unit,
+    onToggleFavourite: (MediaItem) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val focusedIndex = channels.indexOfFirst { it.id == currentChannelId }.coerceAtLeast(0)
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(340.dp)
+            .background(
+                Brush.horizontalGradient(
+                    colors = listOf(Color(0xB8000000), Color(0xF2050505), Color(0xFF050505)),
+                ),
+            )
+            .padding(start = 28.dp, end = 22.dp, top = 96.dp, bottom = 34.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "${channels.firstOrNull()?.sourceAddonName ?: "Live"} favourites",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+            color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = "Hold OK to remove",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = 0.62f),
+        )
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().focusGroup().onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp && event.key == Key.DirectionLeft) {
+                    onDismiss()
+                    true
+                } else false
+            },
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 36.dp),
+        ) {
+            items(channels, key = { "${it.sourceAddonId}:${it.id}" }) { item ->
+                val index = channels.indexOf(item)
+                LivePlayerChannelCard(
+                    item = item,
+                    selected = item.id == currentChannelId,
+                    favourite = true,
+                    modifier = if (index == focusedIndex) Modifier.focusRequester(initialFocusRequester) else Modifier,
+                    onLongPress = { onToggleFavourite(item) },
+                    onClick = { onSelect(item) },
+                )
+            }
+        }
+    }
+}
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun LiveChannelCarousel(
+    channels: List<MediaItem>,
+    currentChannelId: String,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    initialFocusIndex: Int,
+    initialFocusRequester: FocusRequester,
+    favouriteKeys: Set<String>,
+    onSelect: (MediaItem) -> Unit,
+    onToggleFavourite: (MediaItem) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color.Transparent, Color(0xE6000000), Color(0xFF050505)),
+                ),
+            )
+            .padding(top = 34.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = "Live channels",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+            color = Color.White,
+            modifier = Modifier.padding(horizontal = 36.dp),
+        )
+        LazyRow(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusGroup()
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyUp && event.key == Key.DirectionUp) {
+                        onDismiss()
+                        true
+                    } else {
+                        false
+                    }
+                },
+            contentPadding = PaddingValues(horizontal = 36.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            itemsIndexed(
+                items = channels,
+                key = { index, item -> "${item.sourceAddonId}:${item.streamType}:${item.id}:$index" },
+            ) { index, item ->
+                LivePlayerChannelCard(
+                    item = item,
+                    selected = item.id == currentChannelId,
+                    favourite = "${item.sourceAddonId}:${item.id}" in favouriteKeys,
+                    modifier = if (index == initialFocusIndex) {
+                        Modifier.focusRequester(initialFocusRequester)
+                    } else {
+                        Modifier
+                    },
+                    onLongPress = { onToggleFavourite(item) },
+                    onClick = { onSelect(item) },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun LivePlayerChannelCard(
+    item: MediaItem,
+    selected: Boolean,
+    favourite: Boolean = false,
+    modifier: Modifier = Modifier,
+    onLongPress: () -> Unit = {},
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Card(
+        onClick = onClick,
+        modifier = modifier
+            .width(240.dp)
+            .height(135.dp)
+            .tvCardLongPress(onLongPress)
+            .onFocusChanged { focused = it.isFocused },
+        shape = CardDefaults.shape(AppCardShape),
+        colors = CardDefaults.colors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.24f) else Color(0xFF181A1F),
+            focusedContainerColor = Color(0xFF20232A),
+        ),
+        border = CardDefaults.border(
+            focusedBorder = Border(
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                shape = AppCardShape,
+            ),
+        ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = 1.035f),
+    ) {
+        Box(modifier = Modifier.fillMaxSize().clip(AppCardShape)) {
+            AsyncImage(
+                model = item.backdrop ?: item.poster,
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0x10000000), Color(0x44000000), Color(0xEE000000)),
+                        ),
+                    ),
+            )
+            if (favourite) {
+                Icon(
+                    imageVector = Icons.Filled.Star,
+                    contentDescription = "Favourite channel",
+                    tint = Color(0xFFFACC15),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(20.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                if (selected) {
+                    Text(
+                        text = "NOW PLAYING",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (focused) FontWeight.Black else FontWeight.Bold),
+                    color = Color.White,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
 private suspend fun resolveNextEpisode(
     repository: StreamDekRepository,
     request: PlaybackRequest,

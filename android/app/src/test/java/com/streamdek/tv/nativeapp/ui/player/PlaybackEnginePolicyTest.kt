@@ -23,6 +23,14 @@ class PlaybackEnginePolicyTest {
   }
 
   @Test
+  fun `live retry reloads then refetches before giving up`() {
+    assertEquals(LiveRetryAction.Reload, liveRetryAction(1))
+    assertEquals(LiveRetryAction.Reload, liveRetryAction(2))
+    assertEquals(LiveRetryAction.Refetch, liveRetryAction(3))
+    assertEquals(LiveRetryAction.Refetch, liveRetryAction(6))
+    assertEquals(LiveRetryAction.GiveUp, liveRetryAction(7))
+  }
+  @Test
   fun `stored player names are normalized safely`() {
     assertEquals("Auto", normalizePlayerEngineSetting("unknown"))
     assertEquals("Auto", normalizePlayerEngineSetting("auto"))

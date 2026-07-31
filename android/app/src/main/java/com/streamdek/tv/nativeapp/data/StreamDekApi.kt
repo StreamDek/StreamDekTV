@@ -24,6 +24,7 @@ class AuthSessionStore(
     private val deviceIdKey = "streamdek_tv_device_id"
     private val activeProfileIdKey = "streamdek_tv_active_profile_id"
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
+    private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
 
     private val _session = MutableStateFlow(loadSession())
     val session: StateFlow<AuthSession?> = _session
@@ -46,6 +47,25 @@ class AuthSessionStore(
         preferences.edit().putString(activeProfileIdKey, profileId).apply()
     }
 
+    fun loadFavouriteChannels(): List<MediaItem> {
+        val raw = preferences.getString(favouriteChannelsStorageKey(), null) ?: return emptyList()
+        val type = object : TypeToken<List<MediaItem>>() {}.type
+        return runCatching { gson.fromJson<List<MediaItem>>(raw, type).orEmpty() }.getOrDefault(emptyList())
+    }
+
+    fun saveFavouriteChannels(items: List<MediaItem>) {
+        preferences.edit().putString(favouriteChannelsStorageKey(), gson.toJson(items)).apply()
+    }
+
+    fun favouriteOwnerKey(): String {
+        val userId = currentSession()?.user?.uid
+        val profileId = activeProfileId()
+        return when {
+            userId.isNullOrBlank() -> profileId?.let { "guest:$it" } ?: "guest"
+            profileId.isNullOrBlank() -> userId
+            else -> "$userId:$profileId"
+        }
+    }
     fun sessionId(): String = readOrCreate(sessionIdKey)
 
     fun deviceId(): String = readOrCreate(deviceIdKey)
@@ -74,6 +94,7 @@ class AuthSessionStore(
         return created
     }
 
+    private fun favouriteChannelsStorageKey(): String = "$favouriteChannelsKeyPrefix:${favouriteOwnerKey()}"
     private fun streamPreferenceStorageKey(mediaType: String, mediaId: String, episodeKey: String?): String {
         val profile = activeProfileId() ?: "default"
         return listOf(preferredStreamKeyPrefix, profile, mediaType, mediaId, episodeKey.orEmpty()).joinToString(":")

@@ -75,6 +75,7 @@ import com.streamdek.tv.nativeapp.ui.detail.PlaybackStreamsScreen
 import com.streamdek.tv.nativeapp.ui.home.HomeScreen
 import com.streamdek.tv.nativeapp.ui.library.LibraryScreen
 import com.streamdek.tv.nativeapp.ui.live.LiveScreen
+import com.streamdek.tv.nativeapp.ui.live.LiveBrowseScreen
 import com.streamdek.tv.nativeapp.ui.network.NetworkBrowseScreen
 import com.streamdek.tv.nativeapp.ui.player.PlayerScreen
 import com.streamdek.tv.nativeapp.ui.search.SearchScreen
@@ -96,6 +97,10 @@ private data class LiveNavigationState(
     val sections: List<LiveCatalogSection> = emptyList(),
 )
 
+private data class LiveBrowseSelection(
+    val addonId: String? = null,
+    val catalogId: String? = null,
+)
 private const val ExitBackPressWindowMs = 2500L
 @Composable
 fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.repository }) {
@@ -106,6 +111,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
     val appUpdateState by appUpdateManager.uiState.collectAsState()
+    val favouriteChannels by repository.favouriteChannels.collectAsState()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val activeProfile = repository.activeStreamProfile(bootstrap)
@@ -115,6 +121,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val libraryContentRequester = remember { FocusRequester() }
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
+    var liveBrowseSelection by remember { mutableStateOf(LiveBrowseSelection()) }
     val liveAddonKey = remember(bootstrap) {
         bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
             "${it.id}:${it.enabled}:${it.position}:${it.manifest.catalogs.size}"
@@ -141,6 +148,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     // An enabled addon that publishes a live catalog is enough to surface the Live tab.
     // Waiting for catalog items to load made the tab appear late, or not at all when a
     // single catalog request failed.
+    val favouriteChannelKeys = remember(favouriteChannels) {
+        favouriteChannels.mapTo(linkedSetOf()) { "${it.sourceAddonId}:${it.sourceCatalogId}:${it.id}" }
+    }
     val hasEnabledLiveAddon = remember(bootstrap) {
         bootstrap?.integrations?.addons?.items.orEmpty().any { addon ->
             addon.enabled && addon.manifest.catalogs.any { catalog ->
@@ -262,6 +272,8 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 streamType = item.streamType,
                 sourceAddonId = item.sourceAddonId,
                 sourceAddonName = item.sourceAddonName,
+                sourceCatalogId = item.sourceCatalogId,
+                sourceCatalogName = item.sourceCatalogName,
                 directStreamUrl = item.directStreamUrl,
                 requestHeaders = item.requestHeaders,
             ),
@@ -355,10 +367,31 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         entryFocusRequester = liveContentRequester,
                         restoreFocusedItemKey = lastLiveFocusedItemKey,
                         restoreFocusToken = liveFocusRestoreToken,
+                        favouriteKeys = favouriteChannelKeys,
                         onItemFocused = { key ->
                             lastLiveFocusedItemKey = key
                         },
+                        onToggleFavourite = repository::toggleFavouriteChannel,
+                        onViewAll = { addonId, railId ->
+                            val rail = liveNavigationState.sections.flatMap { it.rails }.firstOrNull { it.id == railId }
+                            liveBrowseSelection = LiveBrowseSelection(
+                                addonId = addonId,
+                                catalogId = rail?.items?.firstOrNull()?.sourceCatalogId,
+                            )
+                            navController.navigate("live-view-all")
+                        },
                         onPlayLive = playLiveItem,
+                    )
+                }
+                composable("live-view-all") {
+                    LiveBrowseScreen(
+                        sections = liveNavigationState.sections,
+                        initialAddonId = liveBrowseSelection.addonId,
+                        initialCatalogId = liveBrowseSelection.catalogId,
+                        favouriteKeys = favouriteChannelKeys,
+                        onToggleFavourite = repository::toggleFavouriteChannel,
+                        onPlayLive = playLiveItem,
+                        onBack = { navController.popBackStack() },
                     )
                 }
                 composable(TopLevelDestination.Library.route) {
@@ -783,15 +816,15 @@ private fun TvFloatingNav(
 ) {
     val slotWidths = destinations.map { it.width }
     var highlightedRoute by remember { mutableStateOf(currentRoute) }
+    var navHasFocus by remember { mutableStateOf(false) }
 
     LaunchedEffect(currentRoute) {
         highlightedRoute = currentRoute
     }
-    val activeIndex = destinations.indexOfFirst { it.route == highlightedRoute }.let { if (it >= 0) it else 0 }
+    val displayedRoute = if (navHasFocus) highlightedRoute else currentRoute
+    val activeIndex = destinations.indexOfFirst { it.route == displayedRoute }.let { if (it >= 0) it else 0 }
     val activeOffset = slotWidths.take(activeIndex).fold(0.dp) { acc, width -> acc + width + 4.dp }
     val animatedOffset by animateDpAsState(activeOffset, label = "nav-pill-offset")
-    var navHasFocus by remember { mutableStateOf(false) }
-
     Box(
         modifier = modifier
             .onFocusChanged { navHasFocus = it.hasFocus }
@@ -814,7 +847,7 @@ private fun TvFloatingNav(
         )
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             destinations.forEach { destination ->
-                val active = destination.route == highlightedRoute
+                val active = destination.route == displayedRoute
                 if (destination == TopLevelDestination.Profile) {
                     Box(
                         modifier = Modifier

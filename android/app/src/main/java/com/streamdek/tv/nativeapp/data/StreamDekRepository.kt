@@ -113,12 +113,30 @@ class StreamDekRepository(
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
     private val fusionBadgeSourcesState = MutableStateFlow<Map<String, FusionBadgeSource>>(emptyMap())
+    private val favouriteChannelsState = MutableStateFlow(sessionStore.loadFavouriteChannels())
     private var lastPlaybackRequest: PlaybackRequest? = null
 
     val session: StateFlow<AuthSession?> = sessionStore.session
     val bootstrap: StateFlow<AccountBootstrap?> = bootstrapState
     val fusionBadgeSources: StateFlow<Map<String, FusionBadgeSource>> = fusionBadgeSourcesState
+    val favouriteChannels: StateFlow<List<MediaItem>> = favouriteChannelsState
 
+    fun isFavouriteChannel(item: MediaItem): Boolean = favouriteChannelsState.value.any {
+        it.id == item.id && it.sourceAddonId == item.sourceAddonId
+    }
+
+    fun toggleFavouriteChannel(item: MediaItem) {
+        if (item.type != "live") return
+        val current = favouriteChannelsState.value.toMutableList()
+        val index = current.indexOfFirst { it.id == item.id && it.sourceAddonId == item.sourceAddonId }
+        if (index >= 0) current.removeAt(index) else current.add(0, item)
+        sessionStore.saveFavouriteChannels(current)
+        favouriteChannelsState.value = current
+    }
+
+    private fun reloadFavouriteChannels() {
+        favouriteChannelsState.value = sessionStore.loadFavouriteChannels()
+    }
     fun currentSession(): AuthSession? = sessionStore.currentSession()
 
     fun savePlaybackRequest(request: PlaybackRequest) {
@@ -210,6 +228,7 @@ class StreamDekRepository(
         sessionStore.clearSession()
         bootstrapState.value = null
         fusionBadgeSourcesState.value = emptyMap()
+        reloadFavouriteChannels()
         detailsCache.clear()
         seasonCache.clear()
         homeCache.clear()
@@ -251,6 +270,7 @@ class StreamDekRepository(
             TvDebugLogger.w("Bootstrap", "refreshBootstrap returned null")
         }
         bootstrapState.value = bootstrap
+        reloadFavouriteChannels()
         return bootstrap
     }
 
@@ -374,10 +394,11 @@ class StreamDekRepository(
     }
 
     private suspend fun fetchAddonCatalogCollections(
+        addonId: String? = null,
         includeCatalog: (rawType: String, mappedType: String) -> Boolean = { _, _ -> true },
     ): List<AddonCatalogCollection> {
         val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
-            .filter { it.enabled }
+            .filter { it.enabled && (addonId.isNullOrBlank() || it.id == addonId) }
             .sortedBy { it.position }
         if (addons.isEmpty()) return emptyList()
 
@@ -459,6 +480,21 @@ class StreamDekRepository(
                 )
             }
             .filter { section -> section.rails.any { it.items.isNotEmpty() } }
+    }
+
+    suspend fun fetchRelatedLiveChannels(
+        addonId: String?,
+        catalogId: String?,
+    ): List<MediaItem> {
+        if (addonId.isNullOrBlank()) return emptyList()
+        val collections = fetchAddonCatalogCollections(addonId = addonId) { _, mappedType -> mappedType == "live" }
+            .filter { collection ->
+                collection.addonId == addonId &&
+                    (catalogId.isNullOrBlank() || collection.catalogId == catalogId)
+            }
+        return collections
+            .flatMap { it.items }
+            .distinctBy { item -> "${item.sourceAddonId}:${item.streamType}:${item.id}" }
     }
 
     private fun normalizeAddonCatalogMeta(
@@ -1031,6 +1067,7 @@ class StreamDekRepository(
 
     fun setActiveStreamProfile(profileId: String?) {
         sessionStore.setActiveProfileId(profileId)
+        reloadFavouriteChannels()
         libraryCache.clear()
         homeCache.clear()
     }
