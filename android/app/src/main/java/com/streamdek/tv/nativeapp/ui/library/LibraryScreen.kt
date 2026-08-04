@@ -168,14 +168,38 @@ fun LibraryScreen(
         }
 
         featuredItem?.let { item ->
+            val scrimBackground = MaterialTheme.colorScheme.background
             AsyncImage(
                 model = item.poster ?: item.backdrop,
                 contentDescription = null,
                 modifier = Modifier.fillMaxWidth().height(360.dp).padding(start = if (compactMode) 204.dp else 218.dp).align(Alignment.TopCenter),
                 contentScale = ContentScale.Crop,
             )
-            Box(modifier = Modifier.fillMaxWidth().height(360.dp).padding(start = if (compactMode) 204.dp else 218.dp).align(Alignment.TopCenter).background(Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.background.copy(alpha = 0.78f), Color.Transparent))))
-            Box(modifier = Modifier.fillMaxWidth().height(360.dp).padding(start = if (compactMode) 204.dp else 218.dp).align(Alignment.TopCenter).background(Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.background))))
+            // Holds solid background through the heading's own width/height (rather than fading
+            // immediately) so the title stays legible regardless of how bright the backdrop art is.
+            Box(
+                modifier = Modifier.fillMaxWidth().height(360.dp).padding(start = if (compactMode) 204.dp else 218.dp).align(Alignment.TopCenter).background(
+                    Brush.horizontalGradient(
+                        colorStops = arrayOf(
+                            0f to scrimBackground,
+                            0.45f to scrimBackground,
+                            0.75f to scrimBackground.copy(alpha = 0.55f),
+                            1f to Color.Transparent,
+                        ),
+                    ),
+                ),
+            )
+            Box(
+                modifier = Modifier.fillMaxWidth().height(360.dp).padding(start = if (compactMode) 204.dp else 218.dp).align(Alignment.TopCenter).background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to scrimBackground.copy(alpha = 0.45f),
+                            0.4f to Color.Transparent,
+                            1f to scrimBackground,
+                        ),
+                    ),
+                ),
+            )
         }
         Column(
             modifier = Modifier
@@ -356,24 +380,37 @@ private fun LibraryRow(
             color = MaterialTheme.colorScheme.onBackground,
             modifier = Modifier.padding(start = 48.dp, end = 48.dp),
         )
-        LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusGroup(),
-            contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            itemsIndexed(items, key = { _, item -> mediaItemStableKey(item) }) { _, item ->
-                val key = mediaItemStableKey(item)
-                val requester = requesters.getOrPut(key) { FocusRequester() }
-                val effectiveRequester = if (initialFocusRequester != null && item == items.firstOrNull()) initialFocusRequester else requester
-                LibraryCard(
-                    item = item,
-                    modifier = Modifier.focusRequester(effectiveRequester),
-                    onPressed = { onOpenDetail(item.type, item.id) },
-                    onMenuPressed = { onOpenActions(item, effectiveRequester) },
-                    onFocused = { onFocused(item) },
-                )
+        androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            // Start from the Search page's 5-column card width so the two pages share a
+            // baseline density, then trim another 30% off both dimensions (kept proportional
+            // so posters don't stretch) since that grid size still read as oversized here.
+            val railHorizontalPadding = 48.dp
+            val itemSpacing = 16.dp
+            val columns = 5
+            val searchGridCardWidth = (maxWidth - railHorizontalPadding * 2 - itemSpacing * (columns - 1)) / columns
+            val cardWidth = searchGridCardWidth * 0.7f * 1.23f
+            val cardHeight = 250.dp * 0.7f
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup(),
+                contentPadding = PaddingValues(start = railHorizontalPadding, end = railHorizontalPadding),
+                horizontalArrangement = Arrangement.spacedBy(itemSpacing),
+            ) {
+                itemsIndexed(items, key = { _, item -> mediaItemStableKey(item) }) { _, item ->
+                    val key = mediaItemStableKey(item)
+                    val requester = requesters.getOrPut(key) { FocusRequester() }
+                    val effectiveRequester = if (initialFocusRequester != null && item == items.firstOrNull()) initialFocusRequester else requester
+                    LibraryCard(
+                        item = item,
+                        cardWidth = cardWidth,
+                        cardHeight = cardHeight,
+                        modifier = Modifier.focusRequester(effectiveRequester),
+                        onPressed = { onOpenDetail(item.type, item.id) },
+                        onMenuPressed = { onOpenActions(item, effectiveRequester) },
+                        onFocused = { onFocused(item) },
+                    )
+                }
             }
         }
     }
@@ -383,6 +420,8 @@ private fun LibraryRow(
 @Composable
 private fun LibraryCard(
     item: MediaItem,
+    cardWidth: androidx.compose.ui.unit.Dp,
+    cardHeight: androidx.compose.ui.unit.Dp,
     modifier: Modifier = Modifier,
     onPressed: () -> Unit,
     onMenuPressed: () -> Unit,
@@ -391,9 +430,10 @@ private fun LibraryCard(
     Card(
         onClick = onPressed,
         modifier = modifier
-            .width(190.dp)
-            .height(250.dp)
-            .tvCardLongPress(onMenuPressed),
+            .width(cardWidth)
+            .height(cardHeight)
+            .tvCardLongPress(onMenuPressed)
+            .onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
             containerColor = Color(0xFF181A1F),

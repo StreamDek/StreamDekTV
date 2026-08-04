@@ -50,7 +50,16 @@ class AuthSessionStore(
     fun loadFavouriteChannels(): List<MediaItem> {
         val raw = preferences.getString(favouriteChannelsStorageKey(), null) ?: return emptyList()
         val type = object : TypeToken<List<MediaItem>>() {}.type
-        return runCatching { gson.fromJson<List<MediaItem>>(raw, type).orEmpty() }.getOrDefault(emptyList())
+        return runCatching {
+            gson.fromJson<List<MediaItem>>(raw, type).orEmpty().map { item ->
+                // Gson populates fields directly via reflection, bypassing the Kotlin default
+                // value, so legacy-stored entries missing this key deserialize to a literal null
+                // despite the non-nullable type — normalize it back before it reaches anything
+                // that trusts the type and crashes on the null.
+                val safeHeaders = (item.requestHeaders as Map<String, String>?) ?: emptyMap()
+                if (safeHeaders === item.requestHeaders) item else item.copy(requestHeaders = safeHeaders)
+            }
+        }.getOrDefault(emptyList())
     }
 
     fun saveFavouriteChannels(items: List<MediaItem>) {

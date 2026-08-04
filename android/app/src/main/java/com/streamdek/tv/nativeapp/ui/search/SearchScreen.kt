@@ -413,7 +413,7 @@ fun SearchScreen(
 private fun SidebarSectionLabel(label: String) {
     Text(
         label,
-        color = Color.White.copy(alpha = 0.62f),
+        color = MaterialTheme.colorScheme.primary,
         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
         modifier = Modifier.padding(top = 8.dp),
     )

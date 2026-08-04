@@ -69,12 +69,13 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Icon
 import coil.compose.AsyncImage
 import com.streamdek.tv.TvRemoteKeyRouter
@@ -340,7 +341,12 @@ fun PlayerScreen(
     }
     fun selectLiveChannel(item: MediaItem) {
         if (!isLive || (item.id == playbackRequest.mediaId && item.sourceAddonId == playbackRequest.sourceAddonId)) {
+            // The clicked channel is already playing — this is the common case when the
+            // favourites drawer opens with the current channel pre-focused and the user just
+            // presses OK on it. Both overlays need to close here, not just the channel row,
+            // or selecting the already-playing favourite silently does nothing.
             liveChannelRowVisible = false
+            liveFavouritesDrawerVisible = false
             scope.launch { runCatching { playerRootRequester.requestFocus() } }
             return
         }
@@ -1099,7 +1105,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         TvRemoteKeyRouter.onKeyUp = { keyCode ->
             when (keyCode) {
                 AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (isLive && !liveChannelRowVisible) {
+                    if (isLive && !liveChannelRowVisible && !liveFavouritesDrawerVisible) {
                         showLiveChannelRow()
                         true
                     } else {
@@ -1115,7 +1121,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     }
                 }                AndroidKeyEvent.KEYCODE_DPAD_CENTER,
                 AndroidKeyEvent.KEYCODE_ENTER -> {
-                    if (isLive && !liveChannelRowVisible) {
+                    if (isLive && !liveChannelRowVisible && !liveFavouritesDrawerVisible) {
                         showLiveChannelInfo()
                         true
                     } else {
@@ -1222,7 +1228,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
-                if (isLive && !loading && error == null && !watchlistPromptVisible) {
+                if (isLive && !loading && error == null && !watchlistPromptVisible && !liveFavouritesDrawerVisible) {
                     if (liveChannelRowVisible) return@onPreviewKeyEvent false
                     when (event.key) {
                         Key.DirectionDown -> {
@@ -1241,7 +1247,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         else -> return@onPreviewKeyEvent false
                     }
                 }
-                if (!loading && panel == null && !controlsVisible && error == null && !watchlistPromptVisible) {
+                if (!loading && panel == null && !controlsVisible && error == null && !watchlistPromptVisible &&
+                    !liveFavouritesDrawerVisible && !liveChannelRowVisible
+                ) {
                     when (event.key) {
                         Key.DirectionLeft, Key.DirectionRight -> {
                             controlsVisible = true
@@ -1283,7 +1291,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         }
                     }
                     onRemoteDownCallback = {
-                        if (isLive) {
+                        if (isLive && !liveFavouritesDrawerVisible) {
                             showLiveChannelRow()
                             true
                         } else {
@@ -1496,7 +1504,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     }
                 }
                 controller.onRemoteDownCallback = {
-                    if (isLive) {
+                    if (isLive && !liveFavouritesDrawerVisible) {
                         showLiveChannelRow()
                         true
                     } else {
@@ -2251,8 +2259,27 @@ private fun LiveFavouritesDrawer(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            OutlinedButton(onClick = onToggleView, modifier = Modifier.padding(start = 10.dp)) {
-                Text(if (cardView) "Text" else "Cards")
+            Card(
+                onClick = onToggleView,
+                modifier = Modifier.padding(start = 10.dp).size(40.dp),
+                shape = CardDefaults.shape(androidx.compose.foundation.shape.RoundedCornerShape(999.dp)),
+                colors = CardDefaults.colors(
+                    containerColor = Color.White.copy(alpha = 0.14f),
+                    contentColor = Color.White,
+                    focusedContainerColor = Color.White,
+                    focusedContentColor = Color.Black,
+                ),
+                border = CardDefaults.border(border = Border.None, focusedBorder = Border.None),
+                glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+                scale = CardDefaults.scale(focusedScale = 1.08f),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (cardView) Icons.Filled.ViewList else Icons.Filled.GridView,
+                        contentDescription = if (cardView) "Switch to text list" else "Switch to card view",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
         LazyColumn(
@@ -2264,7 +2291,7 @@ private fun LiveFavouritesDrawer(
                 } else false
             },
             horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(if (cardView) 12.dp else 5.dp),
+            verticalArrangement = Arrangement.spacedBy(if (cardView) 8.dp else 5.dp),
             contentPadding = PaddingValues(bottom = 36.dp),
         ) {
             items(channels, key = { "${it.sourceAddonId}:${it.id}" }) { item ->
@@ -2339,21 +2366,32 @@ private fun LiveFavouriteDrawerCard(
     onLongPress: () -> Unit,
     onClick: () -> Unit,
 ) {
+    var focused by remember { mutableStateOf(false) }
     Card(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(132.dp).tvCardLongPress(onLongPress),
+        modifier = modifier.fillMaxWidth().height(60.dp).tvCardLongPress(onLongPress).onFocusChanged { focused = it.isFocused },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(containerColor = Color(0xFF181A1F), focusedContainerColor = Color(0xFF20232A)),
-        border = CardDefaults.border(focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppCardShape)),
+        border = CardDefaults.border(border = Border.None, focusedBorder = Border.None),
         glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
-        scale = CardDefaults.scale(focusedScale = 1.025f),
+        scale = CardDefaults.scale(focusedScale = 1.03f),
     ) {
         Box(Modifier.fillMaxSize().clip(AppCardShape)) {
             AsyncImage(item.backdrop ?: item.poster, item.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color.Transparent, Color(0xE6000000)))))
-            Column(Modifier.align(Alignment.BottomEnd).padding(12.dp), horizontalAlignment = Alignment.End) {
+            if (focused) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)))
+                Box(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(MaterialTheme.colorScheme.primary),
+                )
+            }
+            Column(Modifier.align(Alignment.BottomEnd).padding(8.dp), horizontalAlignment = Alignment.End) {
                 if (selected) Text("ON NOW", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black))
-                Text(item.title, color = Color.White, textAlign = TextAlign.End, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(item.title, color = Color.White, textAlign = TextAlign.End, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }

@@ -156,20 +156,20 @@ fun LiveBrowseScreen(
                     },
             )
             LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 28.dp)) {
-                item { Text("QUICK FILTERS", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)) }
+                item { Text("QUICK FILTERS", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)) }
                 item { FilterPill(if (favouritesOnly) "Favourites only" else "Show favourites", favouritesOnly, Modifier.fillMaxWidth()) { favouritesOnly = !favouritesOnly } }
-                item { Text("SOURCES", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)) }
+                item { Text("SOURCES", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)) }
                 items(listOf(null to "All sources") + addons, key = { "source:" + (it.first ?: "all") }) { option ->
                     FilterPill(option.second, option.first == selectedAddonId, Modifier.fillMaxWidth()) { selectedAddonId = option.first; selectedCatalogId = null }
                 }
-                item { Text("COLLECTIONS", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(top = 6.dp)) }
+                item { Text("COLLECTIONS", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(top = 6.dp)) }
                 items(listOf(null to "All channels") + catalogs, key = { "catalog:" + (it.first ?: "all") }) { option ->
                     FilterPill(option.second, option.first == selectedCatalogId, Modifier.fillMaxWidth()) { selectedCatalogId = option.first }
                 }
             }
         }
         Column(modifier = Modifier.padding(start = 250.dp, top = 88.dp)) {
-            Text(if (favouritesOnly) "Favourite Channels" else "All Live Channels", style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
+            Text(if (favouritesOnly) "Favourite Channels" else "All Live Channels", color = Color.White, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
             Text("${filteredItems.size} channels  •  Hold OK to add or remove a favourite", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f))
         }
 
@@ -211,7 +211,7 @@ private fun LiveFilterRail(
     onSelect: (String?) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Text(label.uppercase(), color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+        Text(label.uppercase(), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
         options.take(5).forEach { option ->
             FilterPill(option.second, option.first == selectedId, Modifier.fillMaxWidth()) { onSelect(option.first) }
         }

@@ -53,13 +53,16 @@ internal fun handoffMgf1Digest(algorithm: String): MGF1ParameterSpec = when (alg
 
 internal object HandoffCrypto {
     private const val KEYSTORE = "AndroidKeyStore"
-    private const val KEY_ALIAS = "streamdek_handoff_rsa_v1"
+    private const val KEY_ALIAS_PREFIX = "streamdek_handoff_rsa_v1"
     private val aad = "streamdek-handoff-v1".toByteArray(Charsets.UTF_8)
 
+    @Volatile
+    private var cachedAlias: String? = null
+
     fun publicKeyBase64(): String {
-        ensureKeyPair()
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        val certificate = keyStore.getCertificate(KEY_ALIAS)
+        val alias = resolveUsableAlias(keyStore)
+        val certificate = keyStore.getCertificate(alias)
             ?: throw IllegalStateException("The TV handoff key is unavailable.")
         return Base64.getUrlEncoder().withoutPadding().encodeToString(certificate.publicKey.encoded)
     }
@@ -67,10 +70,10 @@ internal object HandoffCrypto {
     fun decryptPayload(envelope: EncryptedHandoffPayload): String {
         require(envelope.version == 1) { "This handoff uses an unsupported encryption format." }
         val mgf1Digest = handoffMgf1Digest(envelope.algorithm)
-        ensureKeyPair()
         val decoder = Base64.getUrlDecoder()
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        val privateKey = keyStore.getKey(KEY_ALIAS, null)
+        val alias = resolveUsableAlias(keyStore)
+        val privateKey = keyStore.getKey(alias, null)
             ?: throw IllegalStateException("The TV handoff key is unavailable.")
         val rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")
         rsa.init(
@@ -85,24 +88,52 @@ internal object HandoffCrypto {
         return aes.doFinal(decoder.decode(envelope.ciphertext)).toString(Charsets.UTF_8)
     }
 
-    private fun ensureKeyPair() {
-        val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        if (keyStore.containsAlias(KEY_ALIAS)) {
-            val usable = runCatching { keyStore.getKey(KEY_ALIAS, null) }.getOrNull() != null
-            if (usable) return
-            // The alias exists but the underlying key material is gone (e.g. after a
-            // backup/restore or a keystore reset) — drop the dangling entry so a fresh
-            // key pair can be generated below.
-            runCatching { keyStore.deleteEntry(KEY_ALIAS) }
+    /**
+     * Returns an alias whose private key is actually loadable. Some keystore backends can leave
+     * an alias present-but-dangling (post backup/restore, or a flaky keymaster). Reusing the same
+     * alias for a delete-then-generate in that state has been observed to race on-device (Fire TV),
+     * so a broken alias is abandoned in favor of a freshly named one rather than recreated in place.
+     */
+    private fun resolveUsableAlias(keyStore: KeyStore): String {
+        cachedAlias?.takeIf { isUsable(keyStore, it) }?.let { return it }
+        val existingUsable = keyStore.aliases().toList()
+            .firstOrNull { it.startsWith(KEY_ALIAS_PREFIX) && isUsable(keyStore, it) }
+        if (existingUsable != null) {
+            cachedAlias = existingUsable
+            return existingUsable
         }
-        val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, KEYSTORE)
-        generator.initialize(
-            KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_DECRYPT)
-                .setKeySize(2048)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
-                .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA1)
-                .build(),
-        )
-        generator.generateKeyPair()
+        val newAlias = "$KEY_ALIAS_PREFIX-${System.currentTimeMillis()}"
+        generateKeyPair(newAlias)
+        cachedAlias = newAlias
+        // Best-effort cleanup of stale aliases; failures here must never block handoff.
+        keyStore.aliases().toList()
+            .filter { it.startsWith(KEY_ALIAS_PREFIX) && it != newAlias }
+            .forEach { stale -> runCatching { keyStore.deleteEntry(stale) } }
+        return newAlias
+    }
+
+    private fun isUsable(keyStore: KeyStore, alias: String): Boolean =
+        keyStore.containsAlias(alias) && runCatching { keyStore.getKey(alias, null) }.getOrNull() != null
+
+    private fun generateKeyPair(alias: String) {
+        var lastError: Throwable? = null
+        repeat(3) { attempt ->
+            try {
+                val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, KEYSTORE)
+                generator.initialize(
+                    KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_DECRYPT)
+                        .setKeySize(2048)
+                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
+                        .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA1)
+                        .build(),
+                )
+                generator.generateKeyPair()
+                return
+            } catch (error: Exception) {
+                lastError = error
+                if (attempt < 2) Thread.sleep(150L * (attempt + 1))
+            }
+        }
+        throw IllegalStateException("The TV handoff key is unavailable.", lastError)
     }
 }

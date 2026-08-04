@@ -220,7 +220,8 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
 
     LaunchedEffect(session?.user?.uid) {
         if (session != null) {
-            repository.refreshBootstrap()
+            runCatching { repository.refreshBootstrap() }
+                .onFailure { TvDebugLogger.e("Bootstrap", "Could not refresh account bootstrap", it) }
         }
     }
 
@@ -924,6 +925,7 @@ private fun AppUpdatePrompt(
     }
 }
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun TvFloatingNav(
     destinations: List<TopLevelDestination>,
@@ -937,6 +939,7 @@ private fun TvFloatingNav(
     val slotWidths = destinations.map { it.width }
     var highlightedRoute by remember { mutableStateOf(currentRoute) }
     var navHasFocus by remember { mutableStateOf(false) }
+    val itemRequesters = remember(destinations) { destinations.associateWith { FocusRequester() } }
 
     LaunchedEffect(currentRoute) {
         highlightedRoute = currentRoute
@@ -947,6 +950,15 @@ private fun TvFloatingNav(
     val animatedOffset by animateDpAsState(activeOffset, label = "nav-pill-offset")
     Box(
         modifier = modifier
+            // Focus entering this group from below (pressing Up from page content) would
+            // otherwise land on whichever child Compose's default focus search finds nearest,
+            // which is not necessarily the destination the user is actually on. Redirect it to
+            // the current route's own item so the pill never appears to snap back to Home.
+            .focusProperties {
+                enter = {
+                    itemRequesters[destinations.firstOrNull { it.route == currentRoute }] ?: FocusRequester.Default
+                }
+            }
             .onFocusChanged { navHasFocus = it.hasFocus }
             .border(
                 width = if (navHasFocus) 2.dp else 0.dp,
@@ -974,6 +986,7 @@ private fun TvFloatingNav(
                             .height(34.dp)
                             .width(destination.width)
                             .clip(RoundedCornerShape(999.dp))
+                            .focusRequester(itemRequesters.getValue(destination))
                             .onPreviewKeyEvent { event ->
                                 if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
                                     runCatching { downRequesters[destination.route]?.requestFocus() }.isSuccess
@@ -999,6 +1012,7 @@ private fun TvFloatingNav(
                             .height(34.dp)
                             .width(destination.width)
                             .clip(RoundedCornerShape(999.dp))
+                            .focusRequester(itemRequesters.getValue(destination))
                             .onPreviewKeyEvent { event ->
                                 if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
                                     runCatching { downRequesters[destination.route]?.requestFocus() }.isSuccess

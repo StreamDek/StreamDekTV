@@ -142,7 +142,7 @@ fun LiveScreen(
                 selected = favouritesOnly,
                 onClick = { favouritesOnly = true; selectedSourceId = null },
             )
-            Text("SOURCES", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(start = 10.dp, top = 5.dp, bottom = 2.dp))
+            Text("SOURCES", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(start = 10.dp, top = 5.dp, bottom = 2.dp))
             sections.forEach { section ->
                 val count = section.rails.sumOf { it.items.size }
                 LiveSidebarButton(
