@@ -87,7 +87,14 @@ internal object HandoffCrypto {
 
     private fun ensureKeyPair() {
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        if (keyStore.containsAlias(KEY_ALIAS)) return
+        if (keyStore.containsAlias(KEY_ALIAS)) {
+            val usable = runCatching { keyStore.getKey(KEY_ALIAS, null) }.getOrNull() != null
+            if (usable) return
+            // The alias exists but the underlying key material is gone (e.g. after a
+            // backup/restore or a keystore reset) — drop the dangling entry so a fresh
+            // key pair can be generated below.
+            runCatching { keyStore.deleteEntry(KEY_ALIAS) }
+        }
         val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, KEYSTORE)
         generator.initialize(
             KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_DECRYPT)
