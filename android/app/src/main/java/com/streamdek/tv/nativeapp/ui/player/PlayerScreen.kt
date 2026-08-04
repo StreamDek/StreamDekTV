@@ -202,6 +202,8 @@ fun PlayerScreen(
         mutableStateOf(initialPlaybackEngine(playbackPreferences.playerEngine))
     }
     var autoEngineFallbackUsed by remember(currentSourceUrl, playbackPreferences.playerEngine) { mutableStateOf(false) }
+    var failedStreamKeys by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(emptySet<String>()) }
+    var sourceFallbackInProgress by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
     var pendingEngineResumePositionSec by remember(currentSourceUrl) { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
@@ -763,7 +765,8 @@ fun PlayerScreen(
         pendingResumePositionSec = if (isLive) {
             null
         } else {
-            progress?.positionSec
+            activeRequest.startPositionSec?.takeIf { it > 0.0 }
+                ?: progress?.positionSec
                 ?.takeIf { it > 0.0 }
                 ?: continueWatchingItem?.positionSec
                 ?: continueWatchingItem?.resumeAt
@@ -1317,6 +1320,65 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             completePlaybackAndExit()
                         }
                     }
+                    fun beginSourceFallback(message: String) {
+                        if (sourceFallbackInProgress || isLive) return
+                        sourceFallbackInProgress = true
+                        scope.launch {
+                            candidate?.stream?.let { failedStreamKeys = failedStreamKeys + repository.streamSelectionKey(it) }
+                            var streams = candidate?.streams.orEmpty()
+                            if (streams.none { repository.streamSelectionKey(it) !in failedStreamKeys }) {
+                                streams = runCatching {
+                                    repository.resolvePlayback(
+                                        mediaType = playbackRequest.mediaType,
+                                        mediaId = playbackRequest.mediaId,
+                                        imdbId = playbackRequest.imdbId ?: detail?.imdbId,
+                                        episode = currentEpisode,
+                                        preferredStreamKey = null,
+                                        forceRefresh = true,
+                                        streamType = playbackRequest.streamType,
+                                    ).streams
+                                }.getOrDefault(streams)
+                            }
+                            var selected: ResolvedPlaybackCandidate? = null
+                            for (stream in streams) {
+                                val key = repository.streamSelectionKey(stream)
+                                if (key in failedStreamKeys) continue
+                                val resolved = runCatching {
+                                    repository.resolveSelectedPlayback(
+                                        request = playbackRequest.copy(episode = currentEpisode),
+                                        stream = stream,
+                                        streams = streams,
+                                        forceRefresh = true,
+                                    )
+                                }.getOrNull()
+                                if (resolved?.source != null) {
+                                    selected = resolved
+                                    break
+                                }
+                                failedStreamKeys = failedStreamKeys + key
+                            }
+                            if (selected?.source != null) {
+                                val resumeAt = positionSec.coerceAtLeast(0.0)
+                                candidate = selected
+                                currentRequestHeaders = defaultPlaybackHeaders + selected.source.requestHeaders
+                                currentSourceUrl = selected.source.url
+                                currentLabel = selected.source.label
+                                pendingEngineResumePositionSec = resumeAt.takeIf { it > 0.0 }
+                                activePlaybackEngine = initialPlaybackEngine(playbackPreferences.playerEngine)
+                                autoEngineFallbackUsed = false
+                                audioTracks = emptyList()
+                                subtitleTracks = emptyList()
+                                loading = true
+                                error = null
+                                TvDebugLogger.w("Player", "Source failed; switching to ${selected.source.label} at ${resumeAt}s")
+                            } else {
+                                error = "All available sources failed. ${message.take(160)}"
+                                loading = false
+                                showControls(focusPlay = true)
+                            }
+                            sourceFallbackInProgress = false
+                        }
+                    }
                     onErrorCallback = { message ->
                         TvDebugLogger.w(
                             "Player",
@@ -1334,9 +1396,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         } else if (isLive) {
                             scheduleLiveReconnect(message)
                         } else {
-                            error = message
-                            loading = false
-                            showControls(focusPlay = true)
+                            error = "Source failed. Trying another stream…"
+                            loading = true
+                            beginSourceFallback(message)
                         }
                     }
                     onTracksChangedCallback = { audio, subtitles, selectedAudioTrackId, selectedSubtitleTrackId ->

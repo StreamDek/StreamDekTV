@@ -36,6 +36,30 @@ internal fun effectiveRememberedStreamKey(
 ): String? = explicitKey ?: storedKey.takeIf { rememberLastSource }
 
 
+internal fun playbackRequestFromHandoff(payload: PlaybackHandoffPayload): PlaybackRequest {
+    require(payload.mediaId.isNotBlank()) { "The handoff did not include a media id." }
+    val episode = if (payload.seasonNumber != null && payload.episodeNumber != null) {
+        EpisodeContext(payload.seasonNumber, payload.episodeNumber, title = payload.episodeTitle)
+    } else {
+        null
+    }
+    val stream = payload.stream
+    return PlaybackRequest(
+        mediaId = payload.mediaId,
+        mediaType = payload.mediaType,
+        imdbId = payload.imdbId,
+        episode = episode,
+        title = payload.title,
+        selectedStreamKey = null,
+        selectedStreamLabel = payload.sourceLabel ?: payload.quality,
+        selectedStream = stream,
+        availableStreams = listOf(stream),
+        directStreamUrl = stream.url,
+        requestHeaders = stream.requestHeaders,
+        startPositionSec = payload.positionSeconds.coerceAtLeast(0.0),
+        returnToDetailOnBack = false,
+    )
+}
 private data class AddonCatalogCollection(
     val addonId: String,
     val addonName: String,
@@ -121,6 +145,18 @@ class StreamDekRepository(
     val fusionBadgeSources: StateFlow<Map<String, FusionBadgeSource>> = fusionBadgeSourcesState
     val favouriteChannels: StateFlow<List<MediaItem>> = favouriteChannelsState
 
+    suspend fun fetchPendingHandoff(): PlaybackHandoff? =
+        api.get<PlaybackHandoffEnvelope>("/handoffs/pending")?.handoff
+
+    suspend fun acknowledgeHandoff(id: String, status: String): Boolean =
+        api.post<PlaybackHandoffAck>("/handoffs/$id/ack", mapOf("status" to status))?.success == true
+
+    fun acceptHandoff(handoff: PlaybackHandoff): PlaybackRequest {
+        handoff.profileId?.takeIf { profileId ->
+            bootstrapState.value?.streamProfiles.orEmpty().any { it.id == profileId }
+        }?.let(::setActiveStreamProfile)
+        return playbackRequestFromHandoff(handoff.payload)
+    }
     fun isFavouriteChannel(item: MediaItem): Boolean = favouriteChannelsState.value.any {
         it.id == item.id && it.sourceAddonId == item.sourceAddonId
     }

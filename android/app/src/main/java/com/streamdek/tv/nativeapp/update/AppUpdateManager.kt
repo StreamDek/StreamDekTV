@@ -1,12 +1,16 @@
 package com.streamdek.tv.nativeapp.update
 
+import android.content.ClipData
 import android.content.Context
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import androidx.core.content.pm.PackageInfoCompat
 import com.streamdek.tv.BuildConfig
 import com.streamdek.tv.nativeapp.data.AppReleaseManifest
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
@@ -162,7 +166,16 @@ class AppUpdateManager(
                 return
             }
 
-            launchPackageInstaller(apkFile)
+            runCatching { launchPackageInstaller(apkFile) }.onFailure { error ->
+                _uiState.value = _uiState.value.copy(
+                    isInstalling = false,
+                    downloadProgressPercent = null,
+                    showPrompt = true,
+                    statusText = null,
+                    errorMessage = error.message ?: "The TV could not open its package installer.",
+                )
+                return
+            }
             _uiState.value = _uiState.value.copy(
                 isInstalling = false,
                 downloadProgressPercent = null,
@@ -184,7 +197,9 @@ class AppUpdateManager(
         val apkName = release.assetName?.takeIf { it.endsWith(".apk", ignoreCase = true) } ?: "streamdek-tv-${release.versionCode}.apk"
         val apkFile = File(updatesDir, apkName)
         if (apkFile.exists() && verifyChecksumIfPresent(apkFile, release.checksumSha256)) {
-            return@withContext apkFile
+            val cachedValid = runCatching { validateUpdateApk(apkFile, release) }.isSuccess
+            if (cachedValid) return@withContext apkFile
+            apkFile.delete()
         }
 
         val request = Request.Builder().url(resolveReleaseUrl(release.apkUrl)).build()
@@ -226,10 +241,11 @@ class AppUpdateManager(
             throw IllegalStateException("Downloaded update failed checksum validation.")
         }
 
-        val packageMatches = release.packageName.isNullOrBlank() || packageArchivePackageName(apkFile) == release.packageName
-        if (!packageMatches) {
+        try {
+            validateUpdateApk(apkFile, release)
+        } catch (error: Throwable) {
             apkFile.delete()
-            throw IllegalStateException("Downloaded update package name did not match this TV app.")
+            throw error
         }
 
         apkFile
@@ -262,16 +278,55 @@ class AppUpdateManager(
             "${BuildConfig.APPLICATION_ID}.fileprovider",
             apkFile,
         )
-        val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
-            data = apkUri
+        val installIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(apkUri, "application/vnd.android.package-archive")
+            clipData = ClipData.newRawUri("StreamDek TV update", apkUri)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+        }
+        if (installIntent.resolveActivity(context.packageManager) == null) {
+            throw IllegalStateException("No package installer is available on this TV.")
         }
         context.startActivity(installIntent)
     }
 
-    private fun packageArchivePackageName(file: File): String? {
-        val info = context.packageManager.getPackageArchiveInfo(file.absolutePath, 0)
-        return info?.packageName
+    @Suppress("DEPRECATION")
+    private fun validateUpdateApk(file: File, release: AppReleaseManifest) {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val archive = context.packageManager.getPackageArchiveInfo(file.absolutePath, flags)
+            ?: throw IllegalStateException("The downloaded file is not a valid Android app package.")
+        val expectedPackage = release.packageName?.takeIf { it.isNotBlank() } ?: context.packageName
+        if (archive.packageName != expectedPackage || archive.packageName != context.packageName) {
+            throw IllegalStateException("The update belongs to a different app (${archive.packageName}).")
+        }
+        val archiveVersion = PackageInfoCompat.getLongVersionCode(archive)
+        if (archiveVersion <= BuildConfig.VERSION_CODE) {
+            throw IllegalStateException("The downloaded update is not newer than the installed app.")
+        }
+        if (release.versionCode > 0 && archiveVersion != release.versionCode.toLong()) {
+            throw IllegalStateException("The downloaded app version does not match the update manifest.")
+        }
+        val installed = context.packageManager.getPackageInfo(context.packageName, flags)
+        val installedSigners = signingDigests(installed)
+        val archiveSigners = signingDigests(archive)
+        if (installedSigners.isEmpty() || archiveSigners.isEmpty() || installedSigners != archiveSigners) {
+            throw IllegalStateException(
+                "This update is signed differently from the installed StreamDek TV app. " +
+                    "Android cannot update across signing keys; uninstall the existing build once, then install the official release.",
+            )
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun signingDigests(info: PackageInfo): Set<String> {
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.signingInfo?.apkContentsSigners.orEmpty()
+        } else {
+            info.signatures.orEmpty()
+        }
+        return signatures.map { signature ->
+            MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).joinToString("") { "%02x".format(it) }
+        }.toSet()
     }
 }

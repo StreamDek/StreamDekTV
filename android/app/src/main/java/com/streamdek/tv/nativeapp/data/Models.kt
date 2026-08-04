@@ -618,9 +618,36 @@ data class PlaybackRequest(
     val sourceCatalogName: String? = null,
     val directStreamUrl: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+    val startPositionSec: Double? = null,
     val returnToDetailOnBack: Boolean = false,
 )
 
+data class PlaybackHandoffPayload(
+    val mediaId: String = "",
+    val mediaType: String = "movie",
+    val imdbId: String? = null,
+    val title: String? = null,
+    val year: Int? = null,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val episodeTitle: String? = null,
+    val positionSeconds: Double = 0.0,
+    val sourceLabel: String? = null,
+    val quality: String? = null,
+    val stream: AddonStream = AddonStream(),
+)
+
+data class PlaybackHandoff(
+    val id: String,
+    val profileId: String? = null,
+    val payload: PlaybackHandoffPayload,
+    val expiresAt: String? = null,
+    val createdAt: String? = null,
+)
+
+data class PlaybackHandoffEnvelope(val handoff: PlaybackHandoff? = null)
+
+data class PlaybackHandoffAck(val success: Boolean = false, val status: String? = null)
 data class AppReleaseManifest(
     val versionCode: Int = 0,
     val versionName: String = "",

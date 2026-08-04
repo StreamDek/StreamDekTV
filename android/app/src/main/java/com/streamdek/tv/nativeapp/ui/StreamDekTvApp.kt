@@ -122,12 +122,33 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
     var liveBrowseSelection by remember { mutableStateOf(LiveBrowseSelection()) }
+    var handledHandoffId by remember(session?.user?.uid) { mutableStateOf<String?>(null) }
     val liveAddonKey = remember(bootstrap) {
         bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
             "${it.id}:${it.enabled}:${it.position}:${it.manifest.catalogs.size}"
         }
     }
 
+    LaunchedEffect(session?.user?.uid) {
+        while (session != null) {
+            val handoff = runCatching { repository.fetchPendingHandoff() }.getOrNull()
+            if (handoff != null && handoff.id != handledHandoffId) {
+                val playbackRequest = runCatching { repository.acceptHandoff(handoff) }
+                playbackRequest.onSuccess { request ->
+                    handledHandoffId = handoff.id
+                    repository.acknowledgeHandoff(handoff.id, "accepted")
+                    repository.savePlaybackRequest(request)
+                    navController.popBackStack("player", inclusive = true)
+                    navController.navigate("player") { launchSingleTop = true }
+                    repository.acknowledgeHandoff(handoff.id, "playing")
+                }.onFailure {
+                    handledHandoffId = handoff.id
+                    repository.acknowledgeHandoff(handoff.id, "failed")
+                }
+            }
+            delay(3_000L)
+        }
+    }
     LaunchedEffect(session?.user?.uid, activeProfile?.id, liveAddonKey, currentRoute) {
         if (currentRoute != TopLevelDestination.Live.route || session == null || bootstrap == null) {
             return@LaunchedEffect
