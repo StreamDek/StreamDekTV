@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -85,6 +87,8 @@ fun LibraryScreen(
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
+    var featuredItem by remember { mutableStateOf<MediaItem?>(null) }
+    var libraryTypeFilter by remember { mutableStateOf("all") }
     val localInitialCardRequester = remember { FocusRequester() }
     val initialCardRequester = entryFocusRequester ?: localInitialCardRequester
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -95,6 +99,7 @@ fun LibraryScreen(
             try {
                 val result = repository.fetchLibrary(forceRefresh = true)
                 library = result
+                featuredItem = featuredItem ?: result.continueWatching.firstOrNull()?.let { item -> MediaItem(id = item.id, tmdbId = item.tmdbId, title = item.title, type = item.type, poster = item.poster, backdrop = item.backdrop, description = item.description, rating = item.rating, year = item.year, progress = item.progress, positionSec = item.positionSec ?: item.resumeAt, durationSec = item.durationSec, episode = item.episode) } ?: result.watchlist.firstOrNull()
                 TvDebugLogger.i("LibraryUi", "library loaded continue=${result.continueWatching.size} watchlist=${result.watchlist.size}")
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -144,6 +149,16 @@ fun LibraryScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
+        featuredItem?.let { item ->
+            AsyncImage(
+                model = item.poster ?: item.backdrop,
+                contentDescription = null,
+                modifier = Modifier.fillMaxWidth().height(360.dp).align(Alignment.TopCenter),
+                contentScale = ContentScale.Crop,
+            )
+            Box(modifier = Modifier.fillMaxWidth().height(360.dp).align(Alignment.TopCenter).background(Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.background.copy(alpha = 0.78f), Color.Transparent))))
+            Box(modifier = Modifier.fillMaxWidth().height(360.dp).align(Alignment.TopCenter).background(Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.background))))
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -154,16 +169,29 @@ fun LibraryScreen(
                 ),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            Text("YOUR LIBRARY", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary)
             Text(
-                text = "Library",
+                text = featuredItem?.title ?: "Library",
                 style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black),
                 color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = "Continue watching and your watchlist, all in one place.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
-            )
+            featuredItem?.let { item ->
+                Text(
+                    text = listOfNotNull(item.year, item.rating?.let { "★ %.1f".format(it) }, if (item.type == "tv") "Series" else "Movie").joinToString("  •  "),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.86f),
+                )
+                item.description?.takeIf { it.isNotBlank() }?.let { description ->
+                    Text(description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f), maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(620.dp))
+                }
+            } ?: Text("Continue watching and your watchlist, all in one place.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                listOf("all" to "All", "movie" to "Movies", "tv" to "Series").forEach { option ->
+                    LibraryFilterChip(option.second, libraryTypeFilter == option.first) { libraryTypeFilter = option.first }
+                }
+            }
             error?.let {
                 Text(
                     text = it,
@@ -176,7 +204,7 @@ fun LibraryScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = if (compactMode) 148.dp else 168.dp),
+                .padding(top = if (compactMode) 300.dp else 330.dp),
             contentPadding = PaddingValues(bottom = 180.dp),
             verticalArrangement = Arrangement.spacedBy(28.dp),
         ) {
@@ -196,7 +224,7 @@ fun LibraryScreen(
                     durationSec = it.durationSec,
                     episode = it.episode,
                 )
-            }
+            }.filter { libraryTypeFilter == "all" || it.type == libraryTypeFilter }
             if (continueWatching.isNotEmpty()) {
                 item {
                     LibraryRow(
@@ -205,11 +233,12 @@ fun LibraryScreen(
                         initialFocusRequester = initialCardRequester,
                         onOpenDetail = onOpenDetail,
                         onOpenActions = { item, requester -> actionState = BrowseActionState(item, requester) },
+                        onFocused = { featuredItem = it },
                     )
                 }
             }
 
-            val watchlist = library?.watchlist.orEmpty()
+            val watchlist = library?.watchlist.orEmpty().filter { libraryTypeFilter == "all" || it.type == libraryTypeFilter }
             if (watchlist.isNotEmpty()) {
                 item {
                     LibraryRow(
@@ -218,6 +247,7 @@ fun LibraryScreen(
                         initialFocusRequester = if (continueWatching.isEmpty()) initialCardRequester else null,
                         onOpenDetail = onOpenDetail,
                         onOpenActions = { item, requester -> actionState = BrowseActionState(item, requester) },
+                        onFocused = { featuredItem = it },
                     )
                 }
             }
@@ -256,6 +286,24 @@ fun LibraryScreen(
     }
 }
 
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun LibraryFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.height(38.dp),
+        shape = CardDefaults.shape(RoundedCornerShape(999.dp)),
+        colors = CardDefaults.colors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primary else Color(0xAA171B23),
+            focusedContainerColor = if (selected) MaterialTheme.colorScheme.primary else Color(0xFF2A303B),
+        ),
+        scale = CardDefaults.scale(focusedScale = 1.04f),
+    ) {
+        Box(Modifier.padding(horizontal = 18.dp), contentAlignment = Alignment.Center) {
+            Text(label, color = if (selected) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Bold)
+        }
+    }
+}
 @Composable
 private fun LibraryRow(
     title: String,
@@ -263,6 +311,7 @@ private fun LibraryRow(
     initialFocusRequester: FocusRequester? = null,
     onOpenDetail: (String, String) -> Unit,
     onOpenActions: (MediaItem, FocusRequester) -> Unit,
+    onFocused: (MediaItem) -> Unit,
 ) {
     val requesters = remember(title) { mutableMapOf<String, FocusRequester>() }
     Column(
@@ -291,6 +340,7 @@ private fun LibraryRow(
                     modifier = Modifier.focusRequester(effectiveRequester),
                     onPressed = { onOpenDetail(item.type, item.id) },
                     onMenuPressed = { onOpenActions(item, effectiveRequester) },
+                    onFocused = { onFocused(item) },
                 )
             }
         }
@@ -304,6 +354,7 @@ private fun LibraryCard(
     modifier: Modifier = Modifier,
     onPressed: () -> Unit,
     onMenuPressed: () -> Unit,
+    onFocused: () -> Unit,
 ) {
     Card(
         onClick = onPressed,
@@ -330,7 +381,7 @@ private fun LibraryCard(
                 .clip(AppCardShape),
         ) {
             AsyncImage(
-                model = item.backdrop ?: item.poster,
+                model = item.poster ?: item.backdrop,
                 contentDescription = item.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -377,7 +428,7 @@ private fun LibraryCard(
                     ProgressMeter(
                         progress = item.progress,
                         modifier = Modifier
-                            .width(152.dp)
+                            .width(120.dp)
                             .height(4.dp),
                     )
                     Text(

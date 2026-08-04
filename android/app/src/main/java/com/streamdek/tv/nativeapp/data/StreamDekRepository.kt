@@ -1,7 +1,9 @@
 package com.streamdek.tv.nativeapp.data
 
 import com.streamdek.tv.BuildConfig
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -115,6 +117,7 @@ class StreamDekRepository(
     private val sessionStore: AuthSessionStore,
     private val api: StreamDekApi = StreamDekApi(sessionStore),
 ) {
+    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val detailsCache = lruCache<String, MediaDetail>(48)
     private val seasonCache = lruCache<String, SeasonDetail>(32)
     private val homeCache = lruCache<String, HomeContent>(4)
@@ -155,7 +158,10 @@ class StreamDekRepository(
         handoff.profileId?.takeIf { profileId ->
             bootstrapState.value?.streamProfiles.orEmpty().any { it.id == profileId }
         }?.let(::setActiveStreamProfile)
-        return playbackRequestFromHandoff(handoff.payload)
+        val decryptedJson = HandoffCrypto.decryptPayload(handoff.encryptedPayload)
+        val payload = api.gson.fromJson(decryptedJson, PlaybackHandoffPayload::class.java)
+            ?: throw IllegalArgumentException("The handoff payload could not be read.")
+        return playbackRequestFromHandoff(payload)
     }
     fun isFavouriteChannel(item: MediaItem): Boolean = favouriteChannelsState.value.any {
         it.id == item.id && it.sourceAddonId == item.sourceAddonId
@@ -168,10 +174,41 @@ class StreamDekRepository(
         if (index >= 0) current.removeAt(index) else current.add(0, item)
         sessionStore.saveFavouriteChannels(current)
         favouriteChannelsState.value = current
+        syncFavouriteChannels(current)
     }
 
     private fun reloadFavouriteChannels() {
         favouriteChannelsState.value = sessionStore.loadFavouriteChannels()
+    }
+
+    private fun syncFavouriteChannels(items: List<MediaItem>) {
+        val profileId = sessionStore.activeProfileId() ?: return
+        if (currentSession() == null) return
+        repositoryScope.launch {
+            val result = api.put<LiveFavouriteChannelsEnvelope>(
+                "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/live-favourites",
+                mapOf("items" to items),
+            )
+            if (result == null) TvDebugLogger.w("LiveFavourites", "Cloud sync failed; local favourites retained")
+        }
+    }
+
+    private suspend fun refreshFavouriteChannelsFromCloud() {
+        val profileId = sessionStore.activeProfileId() ?: return
+        if (currentSession() == null) return
+        val local = sessionStore.loadFavouriteChannels()
+        val cloud = api.get<LiveFavouriteChannelsEnvelope>(
+            "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/live-favourites",
+        ) ?: return
+        if (cloud.updatedAt > 0L) {
+            sessionStore.saveFavouriteChannels(cloud.items)
+            favouriteChannelsState.value = cloud.items
+        } else if (local.isNotEmpty()) {
+            api.put<LiveFavouriteChannelsEnvelope>(
+                "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/live-favourites",
+                mapOf("items" to local),
+            )
+        }
     }
     fun currentSession(): AuthSession? = sessionStore.currentSession()
 
@@ -307,6 +344,7 @@ class StreamDekRepository(
         }
         bootstrapState.value = bootstrap
         reloadFavouriteChannels()
+        refreshFavouriteChannelsFromCloud()
         return bootstrap
     }
 

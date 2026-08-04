@@ -68,6 +68,12 @@ data class MediaItem(
     val requestHeaders: Map<String, String> = emptyMap(),
 )
 
+data class LiveFavouriteChannelsEnvelope(
+    val success: Boolean = true,
+    val items: List<MediaItem> = emptyList(),
+    val updatedAt: Long = 0L,
+)
+
 data class NetworkItem(
     val id: Int,
     val name: String,
@@ -637,10 +643,18 @@ data class PlaybackHandoffPayload(
     val stream: AddonStream = AddonStream(),
 )
 
+data class EncryptedHandoffPayload(
+    val version: Int = 0,
+    val algorithm: String = "",
+    val encryptedKey: String = "",
+    val iv: String = "",
+    val ciphertext: String = "",
+)
+
 data class PlaybackHandoff(
     val id: String,
     val profileId: String? = null,
-    val payload: PlaybackHandoffPayload,
+    val encryptedPayload: EncryptedHandoffPayload = EncryptedHandoffPayload(),
     val expiresAt: String? = null,
     val createdAt: String? = null,
 )

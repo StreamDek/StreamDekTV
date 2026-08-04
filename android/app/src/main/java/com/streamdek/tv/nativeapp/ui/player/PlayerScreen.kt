@@ -167,9 +167,7 @@ fun PlayerScreen(
     var activeLiveRequest by remember(request) { mutableStateOf<PlaybackRequest?>(null) }
     val playbackRequest = activeLiveRequest ?: request
     val favouriteChannels by repository.favouriteChannels.collectAsState()
-    val liveAddonFavourites = favouriteChannels.filter { favourite ->
-        isLive && !playbackRequest.sourceAddonId.isNullOrBlank() && favourite.sourceAddonId == playbackRequest.sourceAddonId
-    }
+    val liveAddonFavourites = if (isLive) favouriteChannels else emptyList()
     val favouriteChannelKeys = favouriteChannels.mapTo(linkedSetOf()) { "${it.sourceAddonId}:${it.id}" }
     val currentChannelTitle = playbackRequest.title?.takeIf { it.isNotBlank() } ?: "Live TV"
     val completePlaybackExit: () -> Unit = if (isLive) onBack else onExitToStreams
@@ -1507,7 +1505,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         model = logo,
                         contentDescription = detail?.title ?: request.title,
                         modifier = Modifier
-                            .width(340.dp)
+                            .width(390.dp)
                             .scale(logoScale)
                             .alpha(logoAlpha),
                         contentScale = ContentScale.Fit,
@@ -2182,7 +2180,7 @@ private fun LiveFavouritesDrawer(
     Column(
         modifier = modifier
             .fillMaxHeight()
-            .width(340.dp)
+            .width(390.dp)
             .background(
                 Brush.horizontalGradient(
                     colors = listOf(Color(0xB8000000), Color(0xF2050505), Color(0xFF050505)),
@@ -2192,14 +2190,14 @@ private fun LiveFavouritesDrawer(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
-            text = "${channels.firstOrNull()?.sourceAddonName ?: "Live"} favourites",
+            text = "Favourite channels",
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
             color = Color.White,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            text = "Hold OK to remove",
+            text = "${channels.size} saved  •  OK to play  •  Hold OK to remove",
             style = MaterialTheme.typography.labelSmall,
             color = Color.White.copy(alpha = 0.62f),
         )

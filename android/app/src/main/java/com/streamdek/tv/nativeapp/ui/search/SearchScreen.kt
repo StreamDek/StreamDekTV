@@ -330,52 +330,33 @@ fun SearchScreen(
                 onItemMenu = { item, requester -> actionState = BrowseActionState(item, requester) },
             )
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = if (compactMode) 176.dp else 198.dp),
-                contentPadding = PaddingValues(bottom = 180.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp),
+            Column(
+                modifier = Modifier.fillMaxSize().padding(top = if (compactMode) 176.dp else 198.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                item {
-                    Text(
-                        text = if (loading) "Searching..." else "${results.size} results",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-                    )
-                }
-
+                Text(
+                    text = if (loading) "Searching…" else "${results.size} results for “${query.trim()}”",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(start = 48.dp, end = 48.dp),
+                )
                 if (results.isNotEmpty()) {
-                    item {
-                        LazyRow(
-                            state = rowState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusGroup(),
-                            contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            itemsIndexed(results, key = { _, item -> "${item.type}:${item.id}" }) { index, item ->
-                                val key = "${item.type}:${item.id}"
-                                val requester = cardRequesters.getOrPut(key) { FocusRequester() }
-                                SearchResultCard(
-                                    item = item,
-                                    modifier = if (index == 0) {
-                                        Modifier
-                                            .focusRequester(firstResultRequester)
-                                            .focusProperties { up = searchBoxRequester }
-                                    } else {
-                                        Modifier.focusRequester(requester)
-                                    },
-                                    onFocused = { anchoredIndex = index },
-                                    onPressed = { onOpenDetail(item.type, item.id) },
-                                    onMenuPressed = {
-                                        val restoreRequester = if (index == 0) firstResultRequester else requester
-                                        actionState = BrowseActionState(item, restoreRequester)
-                                    },
-                                )
-                            }
+                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(6),
+                        modifier = Modifier.fillMaxSize().focusGroup(),
+                        contentPadding = PaddingValues(start = 48.dp, end = 48.dp, bottom = 180.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        itemsIndexed(results, key = { _, item -> "${item.type}:${item.id}" }) { index, item ->
+                            val key = "${item.type}:${item.id}"
+                            val requester = cardRequesters.getOrPut(key) { FocusRequester() }
+                            DiscoverPosterCard(
+                                item = item,
+                                modifier = if (index == 0) Modifier.focusRequester(firstResultRequester).focusProperties { up = searchBoxRequester } else Modifier.focusRequester(requester),
+                                onPressed = { onOpenDetail(item.type, item.id) },
+                                onMenuPressed = { actionState = BrowseActionState(item, if (index == 0) firstResultRequester else requester) },
+                            )
                         }
                     }
                 }
@@ -551,108 +532,59 @@ private fun DiscoverSection(
     onItemMenu: (MediaItem, FocusRequester) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(
-            text = "Discover",
-            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-        )
-
-        Row(
-            modifier = Modifier
-                .padding(start = 48.dp, end = 48.dp)
-                .focusGroup(),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+    Box(modifier = modifier) {
+        Column(
+            modifier = Modifier.width(286.dp).fillMaxSize().background(Color(0xD90B0E14)).padding(start = 38.dp, end = 22.dp, top = 22.dp, bottom = 30.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Text("BROWSE & FILTER", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.onBackground)
+            Text("Shape the catalogue with the remote, then move right into results.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.62f))
             DiscoverField(
-                label = "Type",
+                label = "Content",
                 value = typeLabel,
                 onClick = { onOpenFilter(DiscoverFilter.Type) },
-                modifier = Modifier
-                    .focusRequester(typeFieldRequester)
-                    .focusProperties { up = upRequester },
+                modifier = Modifier.focusRequester(typeFieldRequester).focusProperties { up = upRequester; right = firstCardRequester },
             )
             DiscoverField(
                 label = "Genre",
-                value = if (genreEnabled) genreLabel else "—",
+                value = if (genreEnabled) genreLabel else "Not available",
                 enabled = genreEnabled,
                 onClick = { onOpenFilter(DiscoverFilter.Genre) },
-                modifier = Modifier.focusProperties { up = upRequester },
+                modifier = Modifier.focusProperties { up = upRequester; right = firstCardRequester },
             )
             DiscoverField(
-                label = "Year",
+                label = "Release year",
                 value = yearLabel,
                 onClick = { onOpenFilter(DiscoverFilter.Year) },
-                modifier = Modifier.focusProperties { up = upRequester },
+                modifier = Modifier.focusProperties { up = upRequester; right = firstCardRequester },
             )
+            Text("${items.size} titles loaded", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.primary)
         }
-
-        when {
-            loading -> {
-                Text(
-                    text = "Loading titles…",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-                )
-            }
-            items.isEmpty() -> {
-                Text(
-                    text = "No titles match these filters.",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-                )
-            }
-            else -> {
-                androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
-                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(6),
+        Column(modifier = Modifier.fillMaxSize().padding(start = 318.dp, top = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Trending for you", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.onBackground)
+            when {
+                loading -> Text("Loading titles…", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+                items.isEmpty() -> Text("No titles match these filters.", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+                else -> androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(5),
                     state = gridState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .focusGroup(),
-                    contentPadding = PaddingValues(start = 48.dp, end = 48.dp, bottom = 140.dp),
+                    modifier = Modifier.fillMaxSize().focusGroup(),
+                    contentPadding = PaddingValues(end = 48.dp, bottom = 140.dp),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    itemsIndexed(
-                        items,
-                        key = { _, item -> "${item.type}:${item.id}" },
-                    ) { index, item ->
+                    itemsIndexed(items, key = { _, item -> "${item.type}:${item.id}" }) { index, item ->
                         val key = "${item.type}:${item.id}"
                         val requester = cardRequesterFor(key)
                         DiscoverPosterCard(
                             item = item,
-                            modifier = if (index == 0) {
-                                Modifier
-                                    .focusRequester(firstCardRequester)
-                                    .focusProperties { up = typeFieldRequester }
-                            } else {
-                                Modifier
-                                    .focusRequester(requester)
-                                    .then(
-                                        // The top row has no cards above it; send focus
-                                        // back to the filters rather than nowhere.
-                                        if (index < 6) Modifier.focusProperties { up = typeFieldRequester } else Modifier,
-                                    )
-                            },
+                            modifier = if (index == 0) Modifier.focusRequester(firstCardRequester).focusProperties { left = typeFieldRequester; up = upRequester }
+                                else Modifier.focusRequester(requester).then(if (index < 5) Modifier.focusProperties { up = upRequester } else Modifier),
                             onPressed = { onOpenDetail(item.type, item.id) },
                             onMenuPressed = { onItemMenu(item, if (index == 0) firstCardRequester else requester) },
                         )
                     }
-                    if (loadingMore) {
-                        item {
-                            Text(
-                                text = "Loading…",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-                            )
-                        }
-                    }
+                    if (loadingMore) item { Text("Loading…", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)) }
                 }
             }
         }
@@ -672,7 +604,7 @@ private fun DiscoverField(
     Card(
         onClick = { if (enabled) onClick() },
         modifier = modifier
-            .width(240.dp)
+            .fillMaxWidth()
             .height(64.dp)
             .onFocusChanged { focused = it.isFocused },
         shape = CardDefaults.shape(RoundedCornerShape(14.dp)),

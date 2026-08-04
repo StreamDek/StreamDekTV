@@ -12,16 +12,16 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.UUID
 
 class AuthSessionStore(
     context: Context,
     private val gson: Gson = Gson(),
 ) {
-    private val preferences = context.getSharedPreferences("streamdek_tv_native", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val preferences = appContext.getSharedPreferences("streamdek_tv_native", Context.MODE_PRIVATE)
     private val authKey = "streamdek_tv_auth_session_v1"
-    private val sessionIdKey = "streamdek_tv_session_id"
     private val deviceIdKey = "streamdek_tv_device_id"
+    private val previousDeviceIdKey = "streamdek_tv_previous_device_id"
     private val activeProfileIdKey = "streamdek_tv_active_profile_id"
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
@@ -66,9 +66,24 @@ class AuthSessionStore(
             else -> "$userId:$profileId"
         }
     }
-    fun sessionId(): String = readOrCreate(sessionIdKey)
+    fun deviceId(): String {
+        val stable = StreamDekDeviceIdentity.stableDeviceId(appContext, "tv")
+        val stored = preferences.getString(deviceIdKey, null)?.takeIf { it.isNotBlank() }
+        if (stored != null && stored != stable && preferences.getString(previousDeviceIdKey, null).isNullOrBlank()) {
+            preferences.edit().putString(previousDeviceIdKey, stored).apply()
+        }
+        if (stored != stable) preferences.edit().putString(deviceIdKey, stable).apply()
+        return stable
+    }
 
-    fun deviceId(): String = readOrCreate(deviceIdKey)
+    fun previousDeviceId(): String? = preferences.getString(previousDeviceIdKey, null)
+        ?.takeIf { it.isNotBlank() && it != deviceId() }
+
+    fun sessionId(): String = StreamDekDeviceIdentity.sessionId(deviceId())
+
+    fun deviceName(): String = StreamDekDeviceIdentity.displayName(deviceId())
+
+    fun handoffPublicKey(): String = HandoffCrypto.publicKeyBase64()
 
     fun preferredStreamKey(mediaType: String, mediaId: String, episodeKey: String?): String? {
         return preferences.getString(streamPreferenceStorageKey(mediaType, mediaId, episodeKey), null)
@@ -84,14 +99,6 @@ class AuthSessionStore(
     private fun loadSession(): AuthSession? {
         val raw = preferences.getString(authKey, null) ?: return null
         return runCatching { gson.fromJson(raw, AuthSession::class.java) }.getOrNull()
-    }
-
-    private fun readOrCreate(key: String): String {
-        val existing = preferences.getString(key, null)
-        if (!existing.isNullOrBlank()) return existing
-        val created = UUID.randomUUID().toString()
-        preferences.edit().putString(key, created).apply()
-        return created
     }
 
     private fun favouriteChannelsStorageKey(): String = "$favouriteChannelsKeyPrefix:${favouriteOwnerKey()}"
@@ -114,6 +121,9 @@ class StreamDekApi(
 
     suspend inline fun <reified T> post(path: String, body: Any, session: AuthSession? = sessionStore.currentSession()): T? =
         request("POST", path, body = gson.toJson(body), session = session)
+
+    suspend inline fun <reified T> put(path: String, body: Any, session: AuthSession? = sessionStore.currentSession()): T? =
+        request("PUT", path, body = gson.toJson(body), session = session)
 
     suspend inline fun <reified T> patch(path: String, body: Any, session: AuthSession? = sessionStore.currentSession()): T? =
         request("PATCH", path, body = gson.toJson(body), session = session)
@@ -138,9 +148,11 @@ class StreamDekApi(
             .header("x-client-device-id", sessionStore.deviceId())
             .header("x-client-name", "StreamDek TV")
             .header("x-client-platform", "android-tv")
-            .header("x-device-name", "Android TV")
+            .header("x-device-name", sessionStore.deviceName())
             .header("x-device-type", "tv")
+            .header("x-handoff-public-key", sessionStore.handoffPublicKey())
             .header("x-app-version", BuildConfig.VERSION_NAME)
+        sessionStore.previousDeviceId()?.let { builder.header("x-previous-device-id", it) }
 
         if (session != null) {
             builder.header("Authorization", "Bearer ${session.user.accessToken}")

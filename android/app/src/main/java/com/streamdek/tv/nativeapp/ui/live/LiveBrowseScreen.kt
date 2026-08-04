@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -101,14 +102,16 @@ fun LiveBrowseScreen(
         mutableStateOf(initialCatalogId?.takeIf { wanted -> catalogs.any { it.first == wanted } })
     }
     var query by remember { mutableStateOf("") }
+    var favouritesOnly by remember { mutableStateOf(false) }
     var searchEditing by remember { mutableStateOf(false) }
     val searchRequester = remember { FocusRequester() }
     val firstCardRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val normalizedQuery = query.trim()
-    val filteredItems = remember(allItems, selectedAddonId, selectedCatalogId, normalizedQuery) {
+    val filteredItems = remember(allItems, selectedAddonId, selectedCatalogId, normalizedQuery, favouritesOnly, favouriteKeys) {
         allItems.filter { item ->
-            (selectedAddonId == null || item.sourceAddonId == selectedAddonId) &&
+            (!favouritesOnly || liveBrowseKey(item) in favouriteKeys) &&
+                (selectedAddonId == null || item.sourceAddonId == selectedAddonId) &&
                 (selectedCatalogId == null || item.sourceCatalogId == selectedCatalogId) &&
                 (normalizedQuery.isBlank() || sequenceOf(item.title, item.description.orEmpty(), item.sourceCatalogName.orEmpty())
                     .any { it.contains(normalizedQuery, ignoreCase = true) })
@@ -122,59 +125,54 @@ fun LiveBrowseScreen(
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(start = 48.dp, end = 48.dp, top = 42.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier
+                .width(304.dp)
+                .fillMaxSize()
+                .background(Color(0xD90B0E14))
+                .padding(start = 38.dp, end = 24.dp, top = 34.dp, bottom = 36.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("All Live Channels", style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { androidx.compose.material3.Text("Search channels") },
-                    singleLine = true,
-                    readOnly = !searchEditing,
-                    shape = RoundedCornerShape(999.dp),
-                    keyboardActions = KeyboardActions(onDone = {
-                        searchEditing = false
-                        focusManager.clearFocus(force = true)
-                    }),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF11141B),
-                        unfocusedContainerColor = Color(0xFF11141B),
-                        focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-                        unfocusedIndicatorColor = Color(0x3311161D),
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        cursorColor = MaterialTheme.colorScheme.primary,
-                    ),
-                    modifier = Modifier.width(540.dp).height(56.dp).focusRequester(searchRequester)
-                        .focusProperties { if (filteredItems.isNotEmpty()) down = firstCardRequester }
-                        .onPreviewKeyEvent { event ->
-                            if (!searchEditing && event.type == KeyEventType.KeyUp &&
-                                (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)
-                            ) {
-                                searchEditing = true
-                                true
-                            } else false
-                        },
-                )
-                Text("${filteredItems.size} channels", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
-            }
-            LiveFilterRow(
-                label = "Addon",
-                options = listOf(null to "All addons") + addons,
-                selectedId = selectedAddonId,
-                onSelect = {
-                    selectedAddonId = it
-                    selectedCatalogId = null
-                },
+            Text("LIVE TV", style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
+            Text("Find a channel", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { androidx.compose.material3.Text("Search") },
+                singleLine = true,
+                readOnly = !searchEditing,
+                shape = RoundedCornerShape(16.dp),
+                keyboardActions = KeyboardActions(onDone = { searchEditing = false; focusManager.clearFocus(force = true) }),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color(0xFF171B23), unfocusedContainerColor = Color(0xFF11141B),
+                    focusedIndicatorColor = MaterialTheme.colorScheme.primary, unfocusedIndicatorColor = Color.Transparent,
+                    focusedTextColor = Color.White, unfocusedTextColor = Color.White, cursorColor = MaterialTheme.colorScheme.primary,
+                ),
+                modifier = Modifier.fillMaxWidth().height(56.dp).focusRequester(searchRequester)
+                    .focusProperties { if (filteredItems.isNotEmpty()) right = firstCardRequester }
+                    .onPreviewKeyEvent { event ->
+                        if (!searchEditing && event.type == KeyEventType.KeyUp && (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)) {
+                            searchEditing = true; true
+                        } else false
+                    },
             )
-            LiveFilterRow(
-                label = "Catalog",
-                options = listOf(null to "All catalogs") + catalogs,
+            Text("QUICK FILTERS", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+            FilterPill(if (favouritesOnly) "★ Favourites" else "☆ Favourites", favouritesOnly, Modifier.fillMaxWidth()) { favouritesOnly = !favouritesOnly }
+            LiveFilterRail(
+                label = "Sources",
+                options = listOf(null to "All sources") + addons,
+                selectedId = selectedAddonId,
+                onSelect = { selectedAddonId = it; selectedCatalogId = null },
+            )
+            LiveFilterRail(
+                label = "Collections",
+                options = listOf(null to "All channels") + catalogs,
                 selectedId = selectedCatalogId,
                 onSelect = { selectedCatalogId = it },
             )
+        }
+        Column(modifier = Modifier.padding(start = 336.dp, top = 38.dp)) {
+            Text(if (favouritesOnly) "Favourite Channels" else "All Live Channels", style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
+            Text("${filteredItems.size} channels  •  Hold OK to add or remove a favourite", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f))
         }
 
         if (filteredItems.isEmpty()) {
@@ -187,8 +185,8 @@ fun LiveBrowseScreen(
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(5),
-                modifier = Modifier.fillMaxSize().padding(top = 250.dp),
-                contentPadding = PaddingValues(start = 48.dp, end = 48.dp, bottom = 120.dp),
+                modifier = Modifier.fillMaxSize().padding(start = 304.dp, top = 108.dp),
+                contentPadding = PaddingValues(start = 32.dp, end = 48.dp, bottom = 120.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
@@ -208,6 +206,20 @@ fun LiveBrowseScreen(
 }
 
 @Composable
+private fun LiveFilterRail(
+    label: String,
+    options: List<Pair<String?, String>>,
+    selectedId: String?,
+    onSelect: (String?) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text(label.uppercase(), color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+        options.take(5).forEach { option ->
+            FilterPill(option.second, option.first == selectedId, Modifier.fillMaxWidth()) { onSelect(option.first) }
+        }
+    }
+}
+@Composable
 private fun LiveFilterRow(
     label: String,
     options: List<Pair<String?, String>>,
@@ -226,10 +238,10 @@ private fun LiveFilterRow(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun FilterPill(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun FilterPill(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        modifier = Modifier.height(38.dp),
+        modifier = modifier.height(38.dp),
         shape = CardDefaults.shape(RoundedCornerShape(999.dp)),
         colors = CardDefaults.colors(
             containerColor = if (selected) MaterialTheme.colorScheme.primary else Color(0xFF171B23),
