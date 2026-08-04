@@ -2,6 +2,8 @@ package com.streamdek.tv.nativeapp.ui.live
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,12 +12,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -72,150 +76,152 @@ fun LiveScreen(
     onViewAll: (String?, String?) -> Unit = { _, _ -> },
     onPlayLive: (MediaItem) -> Unit,
 ) {
-    val localInitialCardRequester = remember { FocusRequester() }
-    val initialCardRequester = entryFocusRequester ?: localInitialCardRequester
-    val hasItems = sections.any { section -> section.rails.any { rail -> rail.items.isNotEmpty() } }
-    val horizontalListStates = remember { mutableMapOf<String, LazyListState>() }
-    val rowFocusIndices = remember { mutableStateMapOf<String, Int>() }
-    val verticalListState = rememberLazyListState()
-    val railColumnIndices = remember(sections) {
-        buildMap {
-            var columnIndex = 0
-            sections.forEach { section ->
-                columnIndex += 1 // section heading
-                section.rails.forEach { rail ->
-                    put(rail.id, columnIndex)
-                    columnIndex += 1
-                }
-            }
+    val localEntryRequester = remember { FocusRequester() }
+    val sidebarEntryRequester = entryFocusRequester ?: localEntryRequester
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
+    val allItems = remember(sections) {
+        sections.flatMap { it.rails }.flatMap { it.items }
+            .distinctBy { "${it.sourceAddonId}:${it.sourceCatalogId}:${it.id}" }
+    }
+    var selectedSourceId by remember(sections) { mutableStateOf<String?>(null) }
+    var favouritesOnly by remember { mutableStateOf(false) }
+    val visibleItems = remember(allItems, selectedSourceId, favouritesOnly, favouriteKeys) {
+        allItems.filter { item ->
+            (!favouritesOnly || "${item.sourceAddonId}:${item.sourceCatalogId}:${item.id}" in favouriteKeys) &&
+                (selectedSourceId == null || sections.firstOrNull { it.id == selectedSourceId }?.rails?.any { rail ->
+                    rail.items.any { candidate -> candidate.id == item.id && candidate.sourceAddonId == item.sourceAddonId }
+                } == true)
         }
     }
-    var initialFocusApplied by remember { mutableStateOf(false) }
-
-    LaunchedEffect(isLoading, hasItems, restoreFocusToken) {
-        if (!isLoading && hasItems && restoreFocusToken == 0 && !initialFocusApplied) {
-            initialFocusApplied = true
-            kotlinx.coroutines.delay(180)
-            runCatching { initialCardRequester.requestFocus() }
-        }
+    val selectedTitle = when {
+        favouritesOnly -> "Favourite channels"
+        selectedSourceId != null -> sections.firstOrNull { it.id == selectedSourceId }?.title ?: "Live TV"
+        else -> "All live channels"
     }
 
-    LaunchedEffect(restoreFocusToken, restoreFocusedItemKey, sections) {
+    LaunchedEffect(isLoading) {
+        if (!isLoading) {
+            kotlinx.coroutines.delay(160)
+            runCatching { sidebarEntryRequester.requestFocus() }
+        }
+    }
+    LaunchedEffect(restoreFocusToken, restoreFocusedItemKey, visibleItems) {
         if (restoreFocusToken <= 0 || restoreFocusedItemKey.isNullOrBlank()) return@LaunchedEffect
-        val rail = sections.asSequence().flatMap { it.rails.asSequence() }.firstOrNull { candidate ->
-            candidate.items.withIndex().any { (index, item) -> liveItemStableKey(item, index) == restoreFocusedItemKey }
-        } ?: return@LaunchedEffect
-        railColumnIndices[rail.id]?.let { verticalListState.scrollToItem(it) }
+        val index = visibleItems.indexOfFirst { item ->
+            val sourceIndex = allItems.indexOf(item).coerceAtLeast(0)
+            liveItemStableKey(item, sourceIndex) == restoreFocusedItemKey
+        }
+        if (index >= 0) {
+            gridState.scrollToItem(index)
+            kotlinx.coroutines.delay(120)
+            runCatching { cardRequesters[restoreFocusedItemKey]?.requestFocus() }
+        }
     }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-    ) {
+
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(
-                    start = if (compactMode) 36.dp else 48.dp,
-                    end = if (compactMode) 36.dp else 48.dp,
-                    top = if (compactMode) 36.dp else 48.dp,
-                ),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .width(if (compactMode) 204.dp else 218.dp)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 12.dp, top = 72.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(
-                text = "Live",
-                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black),
-                color = MaterialTheme.colorScheme.onBackground,
+            Text("LIVE TV", color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black), modifier = Modifier.padding(bottom = 4.dp))
+            LiveSidebarButton(
+                label = "All channels",
+                supporting = allItems.size.toString(),
+                selected = !favouritesOnly && selectedSourceId == null,
+                onClick = { favouritesOnly = false; selectedSourceId = null },
+                modifier = Modifier.focusRequester(sidebarEntryRequester),
             )
-            Text(
-                text = "Browse live channels by source and catalog.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+            LiveSidebarButton(
+                label = "Favourites",
+                supporting = favouriteKeys.size.toString(),
+                selected = favouritesOnly,
+                onClick = { favouritesOnly = true; selectedSourceId = null },
+            )
+            Text("SOURCES", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(start = 10.dp, top = 5.dp, bottom = 2.dp))
+            sections.forEach { section ->
+                val count = section.rails.sumOf { it.items.size }
+                LiveSidebarButton(
+                    label = section.title,
+                    supporting = count.toString(),
+                    selected = !favouritesOnly && selectedSourceId == section.id,
+                    onClick = { favouritesOnly = false; selectedSourceId = section.id },
+                )
+            }
+            LiveSidebarButton(
+                label = "More filters",
+                supporting = "Search and collections",
+                onClick = { onViewAll(selectedSourceId?.removePrefix("live:"), null) },
             )
         }
 
-        when {
-            isLoading && !hasItems -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(48.dp),
-                    verticalArrangement = Arrangement.Center,
+        Column(
+            modifier = Modifier.fillMaxSize().padding(start = if (compactMode) 234.dp else 250.dp, top = 88.dp, end = 44.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(selectedTitle, color = Color.White, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
+            Text(
+                "${visibleItems.size} channels  •  Hold OK to add or remove a favourite",
+                color = Color.White.copy(alpha = 0.70f),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            when {
+                isLoading && allItems.isEmpty() -> LivePageState("Loading live channels…")
+                visibleItems.isEmpty() -> LivePageState(if (favouritesOnly) "No favourite channels yet." else "No channels match this source.")
+                else -> androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(5),
+                    state = gridState,
+                    modifier = Modifier.fillMaxSize().focusGroup(),
+                    contentPadding = PaddingValues(top = 8.dp, bottom = 140.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    Text(
-                        text = "Loading live channels",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                }
-            }
-            !hasItems -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(48.dp),
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Text(
-                        text = "No live channels are available right now.",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Text(
-                        text = "Enable a live TV addon with populated catalogs to show this page.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
-                        modifier = Modifier.padding(top = 12.dp),
-                    )
-                }
-            }
-            else -> {
-                LazyColumn(
-                    state = verticalListState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(top = if (compactMode) 148.dp else 168.dp),
-                    contentPadding = PaddingValues(bottom = 180.dp),
-                    verticalArrangement = Arrangement.spacedBy(28.dp),
-                ) {
-                    sections.forEachIndexed { sectionIndex, section ->
-                        if (section.rails.isEmpty()) return@forEachIndexed
-                        item("section:${section.id}") {
-                            Text(
-                                text = section.title,
-                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-                            )
-                        }
-                        section.rails.forEachIndexed { railIndex, rail ->
-                            item("rail:${rail.id}") {
-                                val rowState = horizontalListStates.getOrPut(rail.id) {
-                                    LazyListState(firstVisibleItemIndex = rowFocusIndices[rail.id] ?: 0)
-                                }
-                                LiveRailRow(
-                                    railId = rail.id,
-                                    title = rail.title,
-                                    items = rail.items,
-                                    rowState = rowState,
-                                    anchoredIndex = rowFocusIndices[rail.id] ?: 0,
-                                    initialFocusRequester = if (sectionIndex == 0 && railIndex == 0 && restoreFocusToken == 0) initialCardRequester else null,
-                                    restoreFocusedItemKey = restoreFocusedItemKey,
-                                    restoreFocusToken = restoreFocusToken,
-                                    favouriteKeys = favouriteKeys,
-                                    onItemFocused = { index, key ->
-                                        rowFocusIndices[rail.id] = index
-                                        onItemFocused(key)
-                                    },
-                                    onToggleFavourite = onToggleFavourite,
-                                    onViewAll = { onViewAll(section.id.removePrefix("live:"), rail.id) },
-                                    onPlayLive = onPlayLive,
-                                )
-                            }
-                        }
+                    gridItemsIndexed(
+                        items = visibleItems,
+                        key = { _, item -> "${item.sourceAddonId}:${item.sourceCatalogId}:${item.id}" },
+                    ) { _, item ->
+                        val sourceIndex = allItems.indexOf(item).coerceAtLeast(0)
+                        val key = liveItemStableKey(item, sourceIndex)
+                        val requester = cardRequesters.getOrPut(key) { FocusRequester() }
+                        LiveChannelCard(
+                            item = item,
+                            favourite = "${item.sourceAddonId}:${item.sourceCatalogId}:${item.id}" in favouriteKeys,
+                            modifier = Modifier.focusRequester(requester),
+                            onFocused = { onItemFocused(key) },
+                            onLongPress = { onToggleFavourite(item) },
+                            onPressed = { onPlayLive(item) },
+                        )
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun LivePageState(message: String) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(message, color = Color.White.copy(alpha = 0.76f), style = MaterialTheme.typography.titleLarge)
+    }
+}
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun LiveSidebarButton(label: String, supporting: String, selected: Boolean = false, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Card(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().height(40.dp),
+        shape = CardDefaults.shape(androidx.compose.foundation.shape.RoundedCornerShape(14.dp)),
+        colors = CardDefaults.colors(containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent, focusedContainerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else Color(0xFF202630)),
+        border = CardDefaults.border(focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp))),
+        scale = CardDefaults.scale(focusedScale = 1.035f),
+    ) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (selected) FontWeight.Black else FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(supporting, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.58f), maxLines = 1)
         }
     }
 }
@@ -315,7 +321,8 @@ private fun LiveChannelCard(
     Card(
         onClick = onPressed,
         modifier = modifier
-            .size(width = 260.dp, height = 146.dp)
+            .fillMaxWidth()
+            .height(250.dp)
             .tvCardLongPress(onLongPress)
             .onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppCardShape),
@@ -338,7 +345,7 @@ private fun LiveChannelCard(
                 .clip(AppCardShape),
         ) {
             AsyncImage(
-                model = item.backdrop ?: item.poster,
+                model = item.poster ?: item.backdrop,
                 contentDescription = item.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,

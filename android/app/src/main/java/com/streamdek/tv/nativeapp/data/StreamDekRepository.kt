@@ -822,17 +822,36 @@ class StreamDekRepository(
     suspend fun searchMedia(query: String, forceRefresh: Boolean = false): List<MediaItem> {
         val normalized = query.trim()
         if (normalized.isBlank()) return emptyList()
-        val cacheKey = normalized.lowercase()
+        val cacheKey = buildSessionProfileCacheKey() + ":" + normalized.lowercase(Locale.US)
         if (!forceRefresh) {
             searchCache[cacheKey]?.let { return it }
         }
         val encoded = URLEncoder.encode(normalized, "UTF-8")
-        val results = api.get<PagedRailResponse>("/tmdb/search?q=$encoded")?.results.orEmpty()
-            .filter { it.type == "movie" || it.type == "tv" }
+        val (tmdbResults, liveResults) = supervisorScope {
+            val tmdb = async {
+                runCatching { api.get<PagedRailResponse>("/tmdb/search?q=$encoded")?.results.orEmpty() }
+                    .getOrDefault(emptyList())
+                    .filter { it.type == "movie" || it.type == "tv" }
+            }
+            val live = async {
+                fetchAddonCatalogCollections { _, mappedType -> mappedType == "live" }
+                    .flatMap { it.items }
+                    .filter { item ->
+                        sequenceOf(
+                            item.title,
+                            item.description.orEmpty(),
+                            item.sourceAddonName.orEmpty(),
+                            item.sourceCatalogName.orEmpty(),
+                        ).any { value -> value.contains(normalized, ignoreCase = true) }
+                    }
+            }
+            tmdb.await() to live.await()
+        }
+        val results = (liveResults + tmdbResults)
+            .distinctBy { item -> listOf(item.type, item.sourceAddonId.orEmpty(), item.sourceCatalogId.orEmpty(), item.id).joinToString(":") }
         searchCache[cacheKey] = results
         return results
     }
-
     suspend fun fetchGenres(type: String, forceRefresh: Boolean = false): List<GenreItem> {
         val normalized = if (type == "tv") "tv" else "movie"
         if (!forceRefresh) {

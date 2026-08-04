@@ -66,7 +66,9 @@ import androidx.tv.material3.Text
 import com.streamdek.tv.nativeapp.AppGraph
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
 import com.streamdek.tv.nativeapp.data.mapAddonCatalogType
+import com.streamdek.tv.nativeapp.data.PlaybackHandoff
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.account.AccountScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
@@ -117,12 +119,17 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val activeProfile = repository.activeStreamProfile(bootstrap)
     val appPrefs = bootstrap?.preferences?.app
     val homeContentRequester = remember { FocusRequester() }
+    val searchContentRequester = remember { FocusRequester() }
     val liveContentRequester = remember { FocusRequester() }
     val libraryContentRequester = remember { FocusRequester() }
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
     var liveBrowseSelection by remember { mutableStateOf(LiveBrowseSelection()) }
     var handledHandoffId by remember(session?.user?.uid) { mutableStateOf<String?>(null) }
+    var pendingHandoff by remember(session?.user?.uid) { mutableStateOf<PlaybackHandoff?>(null) }
+    var handoffProcessing by remember(session?.user?.uid) { mutableStateOf(false) }
+    var handoffError by remember(session?.user?.uid) { mutableStateOf<String?>(null) }
+    val handoffScope = rememberCoroutineScope()
     val liveAddonKey = remember(bootstrap) {
         bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
             "${it.id}:${it.enabled}:${it.position}:${it.manifest.catalogs.size}"
@@ -130,21 +137,20 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     }
 
     LaunchedEffect(session?.user?.uid) {
+        if (session != null) {
+            runCatching { repository.refreshBootstrap() }
+                .onFailure { TvDebugLogger.e("Handoff", "Could not refresh the TV handoff key registration", it) }
+        }
         while (session != null) {
-            val handoff = runCatching { repository.fetchPendingHandoff() }.getOrNull()
-            if (handoff != null && handoff.id != handledHandoffId) {
-                val playbackRequest = runCatching { repository.acceptHandoff(handoff) }
-                playbackRequest.onSuccess { request ->
-                    handledHandoffId = handoff.id
-                    repository.acknowledgeHandoff(handoff.id, "accepted")
-                    repository.savePlaybackRequest(request)
-                    navController.popBackStack("player", inclusive = true)
-                    navController.navigate("player") { launchSingleTop = true }
-                    repository.acknowledgeHandoff(handoff.id, "playing")
-                }.onFailure {
-                    handledHandoffId = handoff.id
-                    repository.acknowledgeHandoff(handoff.id, "failed")
-                }
+            if (pendingHandoff == null) {
+                runCatching { repository.fetchPendingHandoff() }
+                    .onSuccess { handoff ->
+                        if (handoff != null && handoff.id != handledHandoffId) {
+                            pendingHandoff = handoff
+                            handoffError = null
+                        }
+                    }
+                    .onFailure { TvDebugLogger.e("Handoff", "Could not poll for a pending handoff", it) }
             }
             delay(3_000L)
         }
@@ -375,9 +381,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 composable(TopLevelDestination.Search.route) {
                     SearchScreen(
                         repository = repository,
+                        entryFocusRequester = searchContentRequester,
                         onOpenDetail = { mediaType, mediaId ->
                             navController.navigate("detail/$mediaType/$mediaId")
                         },
+                        onPlayLive = playLiveItem,
                     )
                 }
                 composable(TopLevelDestination.Live.route) {
@@ -539,6 +547,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     currentRoute = currentRoute.orEmpty(),
                     downRequesters = mapOf(
                         TopLevelDestination.Home.route to homeContentRequester,
+                        TopLevelDestination.Search.route to searchContentRequester,
                         TopLevelDestination.Live.route to liveContentRequester,
                         TopLevelDestination.Library.route to libraryContentRequester,
                     ),
@@ -565,12 +574,102 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 )
             }
 
+            if (!showUpdatePrompt) {
+                pendingHandoff?.let { handoff ->
+                    HandoffPrompt(
+                        processing = handoffProcessing,
+                        errorMessage = handoffError,
+                        onAccept = {
+                            if (!handoffProcessing) {
+                                handoffProcessing = true
+                                handoffError = null
+                                handoffScope.launch {
+                                    runCatching { repository.acceptHandoff(handoff) }
+                                        .onSuccess { request ->
+                                            handledHandoffId = handoff.id
+                                            repository.acknowledgeHandoff(handoff.id, "accepted")
+                                            repository.savePlaybackRequest(request)
+                                            pendingHandoff = null
+                                            handoffProcessing = false
+                                            navController.popBackStack("player", inclusive = true)
+                                            navController.navigate("player") { launchSingleTop = true }
+                                            repository.acknowledgeHandoff(handoff.id, "playing")
+                                        }
+                                        .onFailure { error ->
+                                            TvDebugLogger.e("Handoff", "Could not decrypt or open the handoff", error)
+                                            handledHandoffId = handoff.id
+                                            repository.acknowledgeHandoff(handoff.id, "failed")
+                                            handoffProcessing = false
+                                            handoffError = "This handoff could not be opened securely. Reopen StreamDek on your phone and try again."
+                                        }
+                                }
+                            }
+                        },
+                        onDismiss = {
+                            if (!handoffProcessing) {
+                                handoffScope.launch { repository.acknowledgeHandoff(handoff.id, "dismissed") }
+                                handledHandoffId = handoff.id
+                                pendingHandoff = null
+                                handoffError = null
+                            }
+                        },
+                    )
+                }
+            }
+
             if (exitHintVisible) {
                 ExitBackHint(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 34.dp),
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HandoffPrompt(
+    processing: Boolean,
+    errorMessage: String?,
+    onAccept: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val acceptRequester = remember { FocusRequester() }
+    LaunchedEffect(errorMessage) {
+        delay(80)
+        runCatching { acceptRequester.requestFocus() }
+    }
+    Dialog(
+        onDismissRequest = { if (!processing) onDismiss() },
+        properties = DialogProperties(dismissOnBackPress = !processing, dismissOnClickOutside = false, usePlatformDefaultWidth = false),
+    ) {
+        Box(Modifier.fillMaxSize().background(Color(0xC7000000)), contentAlignment = Alignment.Center) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.46f)
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(Color(0xFF10141B))
+                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.42f), RoundedCornerShape(28.dp))
+                    .padding(horizontal = 30.dp, vertical = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                Text("Continue on this TV?", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
+                Text(
+                    errorMessage ?: "StreamDek Mobile wants to continue the current movie or episode here. The playback details are encrypted and expire automatically.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (errorMessage == null) MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f) else Color(0xFFFFB4AB),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Button(
+                        onClick = if (errorMessage == null) onAccept else onDismiss,
+                        enabled = !processing,
+                        modifier = Modifier.focusRequester(acceptRequester),
+                    ) { Text(if (processing) "Opening…" else if (errorMessage == null) "Continue watching" else "Close") }
+                    if (errorMessage == null) {
+                        OutlinedButton(onClick = onDismiss, enabled = !processing) { Text("Not now") }
+                    }
+                }
             }
         }
     }

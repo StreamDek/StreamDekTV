@@ -126,13 +126,13 @@ fun LiveBrowseScreen(
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
             modifier = Modifier
-                .width(304.dp)
+                .width(218.dp)
                 .fillMaxSize()
-                .background(Color(0xD90B0E14))
-                .padding(start = 38.dp, end = 24.dp, top = 34.dp, bottom = 36.dp),
+                .background(Color.Transparent)
+                .padding(start = 20.dp, end = 12.dp, top = 72.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("LIVE TV", style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
+            Text("LIVE TV", color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
             Text("Find a channel", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
             OutlinedTextField(
                 value = query,
@@ -147,7 +147,7 @@ fun LiveBrowseScreen(
                     focusedIndicatorColor = MaterialTheme.colorScheme.primary, unfocusedIndicatorColor = Color.Transparent,
                     focusedTextColor = Color.White, unfocusedTextColor = Color.White, cursorColor = MaterialTheme.colorScheme.primary,
                 ),
-                modifier = Modifier.fillMaxWidth().height(56.dp).focusRequester(searchRequester)
+                modifier = Modifier.fillMaxWidth().height(52.dp).focusRequester(searchRequester)
                     .focusProperties { if (filteredItems.isNotEmpty()) right = firstCardRequester }
                     .onPreviewKeyEvent { event ->
                         if (!searchEditing && event.type == KeyEventType.KeyUp && (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)) {
@@ -155,22 +155,20 @@ fun LiveBrowseScreen(
                         } else false
                     },
             )
-            Text("QUICK FILTERS", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
-            FilterPill(if (favouritesOnly) "★ Favourites" else "☆ Favourites", favouritesOnly, Modifier.fillMaxWidth()) { favouritesOnly = !favouritesOnly }
-            LiveFilterRail(
-                label = "Sources",
-                options = listOf(null to "All sources") + addons,
-                selectedId = selectedAddonId,
-                onSelect = { selectedAddonId = it; selectedCatalogId = null },
-            )
-            LiveFilterRail(
-                label = "Collections",
-                options = listOf(null to "All channels") + catalogs,
-                selectedId = selectedCatalogId,
-                onSelect = { selectedCatalogId = it },
-            )
+            LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 28.dp)) {
+                item { Text("QUICK FILTERS", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)) }
+                item { FilterPill(if (favouritesOnly) "Favourites only" else "Show favourites", favouritesOnly, Modifier.fillMaxWidth()) { favouritesOnly = !favouritesOnly } }
+                item { Text("SOURCES", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)) }
+                items(listOf(null to "All sources") + addons, key = { "source:" + (it.first ?: "all") }) { option ->
+                    FilterPill(option.second, option.first == selectedAddonId, Modifier.fillMaxWidth()) { selectedAddonId = option.first; selectedCatalogId = null }
+                }
+                item { Text("COLLECTIONS", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(top = 6.dp)) }
+                items(listOf(null to "All channels") + catalogs, key = { "catalog:" + (it.first ?: "all") }) { option ->
+                    FilterPill(option.second, option.first == selectedCatalogId, Modifier.fillMaxWidth()) { selectedCatalogId = option.first }
+                }
+            }
         }
-        Column(modifier = Modifier.padding(start = 336.dp, top = 38.dp)) {
+        Column(modifier = Modifier.padding(start = 250.dp, top = 88.dp)) {
             Text(if (favouritesOnly) "Favourite Channels" else "All Live Channels", style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
             Text("${filteredItems.size} channels  •  Hold OK to add or remove a favourite", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f))
         }
@@ -185,7 +183,7 @@ fun LiveBrowseScreen(
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(5),
-                modifier = Modifier.fillMaxSize().padding(start = 304.dp, top = 108.dp),
+                modifier = Modifier.fillMaxSize().padding(start = 218.dp, top = 158.dp),
                 contentPadding = PaddingValues(start = 32.dp, end = 48.dp, bottom = 120.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -241,16 +239,16 @@ private fun LiveFilterRow(
 private fun FilterPill(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        modifier = modifier.height(38.dp),
-        shape = CardDefaults.shape(RoundedCornerShape(999.dp)),
+        modifier = modifier.height(36.dp),
+        shape = CardDefaults.shape(RoundedCornerShape(10.dp)),
         colors = CardDefaults.colors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primary else Color(0xFF171B23),
-            focusedContainerColor = if (selected) MaterialTheme.colorScheme.primary else Color(0xFF252B36),
+            containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent,
+            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
         ),
         scale = CardDefaults.scale(focusedScale = 1.04f),
     ) {
         Box(Modifier.padding(horizontal = 15.dp), contentAlignment = Alignment.Center) {
-            Text(label, color = if (selected) Color(0xFF18120A) else Color.White, maxLines = 1)
+            Text(label, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (selected) FontWeight.Black else FontWeight.Medium), maxLines = 1)
         }
     }
 }
@@ -266,7 +264,7 @@ private fun LiveBrowseCard(
 ) {
     Card(
         onClick = onClick,
-        modifier = modifier.size(width = 332.dp, height = 186.dp).tvCardLongPress(onLongPress),
+        modifier = modifier.fillMaxWidth().height(250.dp).tvCardLongPress(onLongPress),
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(containerColor = Color(0xFF181A1F), focusedContainerColor = Color(0xFF20242C)),
         border = CardDefaults.border(focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppCardShape)),
@@ -274,7 +272,7 @@ private fun LiveBrowseCard(
         scale = CardDefaults.scale(focusedScale = 1.025f),
     ) {
         Box(Modifier.fillMaxSize().clip(AppCardShape)) {
-            AsyncImage(item.backdrop ?: item.poster, item.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            AsyncImage(item.poster ?: item.backdrop, item.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xEE000000)))))
             if (favourite) {
                 Icon(Icons.Filled.Star, "Favourite channel", tint = Color(0xFFFACC15), modifier = Modifier.align(Alignment.TopEnd).padding(12.dp).size(24.dp))

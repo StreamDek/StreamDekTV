@@ -42,6 +42,15 @@ internal object StreamDekDeviceIdentity {
     }
 }
 
+private const val FIRE_TV_HANDOFF_ALGORITHM = "RSA-OAEP-256-MGF1-SHA1+A256GCM"
+private const val LEGACY_HANDOFF_ALGORITHM = "RSA-OAEP-256+A256GCM"
+
+internal fun handoffMgf1Digest(algorithm: String): MGF1ParameterSpec = when (algorithm) {
+    FIRE_TV_HANDOFF_ALGORITHM -> MGF1ParameterSpec.SHA1
+    LEGACY_HANDOFF_ALGORITHM -> MGF1ParameterSpec.SHA256
+    else -> throw IllegalArgumentException("This handoff uses an unsupported encryption format.")
+}
+
 internal object HandoffCrypto {
     private const val KEYSTORE = "AndroidKeyStore"
     private const val KEY_ALIAS = "streamdek_handoff_rsa_v1"
@@ -56,9 +65,8 @@ internal object HandoffCrypto {
     }
 
     fun decryptPayload(envelope: EncryptedHandoffPayload): String {
-        require(envelope.version == 1 && envelope.algorithm == "RSA-OAEP-256+A256GCM") {
-            "This handoff uses an unsupported encryption format."
-        }
+        require(envelope.version == 1) { "This handoff uses an unsupported encryption format." }
+        val mgf1Digest = handoffMgf1Digest(envelope.algorithm)
         ensureKeyPair()
         val decoder = Base64.getUrlDecoder()
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
@@ -68,7 +76,7 @@ internal object HandoffCrypto {
         rsa.init(
             Cipher.DECRYPT_MODE,
             privateKey,
-            OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT),
+            OAEPParameterSpec("SHA-256", "MGF1", mgf1Digest, PSource.PSpecified.DEFAULT),
         )
         val aesKey = rsa.doFinal(decoder.decode(envelope.encryptedKey))
         val aes = Cipher.getInstance("AES/GCM/NoPadding")

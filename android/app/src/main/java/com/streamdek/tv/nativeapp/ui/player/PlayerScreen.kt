@@ -69,6 +69,7 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -100,6 +101,8 @@ import kotlinx.coroutines.launch
 private const val ControlsHideDelayMs = 3000L
 private const val LiveControlsHideDelayMs = 2000L
 private const val LiveChannelInfoHideDelayMs = 5000L
+private const val LiveHintVisibleMs = 3_000L
+private const val LiveHintCycleMs = 15_000L
 private const val AutoPlayNextEpisodeCountdownSeconds = 5
 
 /**
@@ -165,6 +168,7 @@ fun PlayerScreen(
     // back exits to the previous screen rather than the streams picker.
     val isLive = request.mediaType == "live"
     var activeLiveRequest by remember(request) { mutableStateOf<PlaybackRequest?>(null) }
+    var liveChannelHistory by remember(request) { mutableStateOf<List<PlaybackRequest>>(emptyList()) }
     val playbackRequest = activeLiveRequest ?: request
     val favouriteChannels by repository.favouriteChannels.collectAsState()
     val liveAddonFavourites = if (isLive) favouriteChannels else emptyList()
@@ -212,6 +216,8 @@ fun PlayerScreen(
     var liveChannelsLoading by remember { mutableStateOf(false) }
     var liveChannelRowVisible by remember { mutableStateOf(false) }
     var liveFavouritesDrawerVisible by remember { mutableStateOf(false) }
+    var liveFavouritesCardView by remember { mutableStateOf(false) }
+    var liveHintsVisible by remember { mutableStateOf(true) }
     var liveRefetchGeneration by remember { mutableIntStateOf(0) }
     var lastLiveProgressAtMs by remember { mutableStateOf(0L) }
     var lastLiveProgressPositionSec by remember { mutableDoubleStateOf(-1.0) }
@@ -351,6 +357,7 @@ fun PlayerScreen(
             requestHeaders = item.requestHeaders,
         )
         TvDebugLogger.i("Player", "switch live channel from=${playbackRequest.mediaId} to=${item.id} addon=${item.sourceAddonName}")
+        liveChannelHistory = (liveChannelHistory + playbackRequest).takeLast(20)
         repository.savePlaybackRequest(nextRequest)
         loading = true
         error = null
@@ -1067,6 +1074,18 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }
     }
 
+    LaunchedEffect(isLive, loading, error) {
+        if (!isLive || loading || error != null) {
+            liveHintsVisible = false
+            return@LaunchedEffect
+        }
+        while (true) {
+            liveHintsVisible = true
+            delay(LiveHintVisibleMs)
+            liveHintsVisible = false
+            delay((LiveHintCycleMs - LiveHintVisibleMs).coerceAtLeast(0L))
+        }
+    }
     DisposableEffect(
         isLive,
         liveChannelRowVisible,
@@ -1140,6 +1159,21 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         } else if (panel != null) {
             panel = null
             showControls(focusPlay = !isLive)
+        } else if (isLive && liveChannelHistory.isNotEmpty()) {
+            val previousRequest = liveChannelHistory.last()
+            liveChannelHistory = liveChannelHistory.dropLast(1)
+            TvDebugLogger.i("Player", "back to previous live channel from=${playbackRequest.mediaId} to=${previousRequest.mediaId}")
+            repository.savePlaybackRequest(previousRequest)
+            loading = true
+            error = null
+            currentLabel = "Loading ${previousRequest.title ?: "previous channel"}…"
+            liveChannelRowVisible = false
+            liveFavouritesDrawerVisible = false
+            liveReconnectAttempt = 0
+            liveRefetchGeneration = 0
+            streamKeyOverride = null
+            streamLabelOverride = null
+            activeLiveRequest = previousRequest
         } else {
             TvDebugLogger.i("Player", "back exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
             queueTraktStop()
@@ -1696,7 +1730,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        if (isLive && liveChannels.size > 1 && !liveChannelRowVisible && !loading && error == null) {
+        if (isLive && liveHintsVisible && liveChannels.size > 1 && !liveChannelRowVisible && !loading && error == null) {
             LiveChannelDownHint(
                 offsetY = liveCaretOffset,
                 modifier = Modifier
@@ -1705,7 +1739,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        if (isLive && liveAddonFavourites.isNotEmpty() && !liveFavouritesDrawerVisible && !loading && error == null) {
+        if (isLive && liveHintsVisible && liveAddonFavourites.isNotEmpty() && !liveFavouritesDrawerVisible && !loading && error == null) {
             LiveFavouritesRightHint(
                 offsetX = liveCaretOffset,
                 modifier = Modifier.align(Alignment.CenterEnd).padding(end = 18.dp),
@@ -1720,6 +1754,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 initialFocusRequester = liveFavouriteFirstRequester,
                 onSelect = ::selectLiveChannel,
                 onToggleFavourite = repository::toggleFavouriteChannel,
+                cardView = liveFavouritesCardView,
+                onToggleView = { liveFavouritesCardView = !liveFavouritesCardView },
                 onDismiss = {
                     liveFavouritesDrawerVisible = false
                     scope.launch { runCatching { playerRootRequester.requestFocus() } }
@@ -2173,6 +2209,8 @@ private fun LiveFavouritesDrawer(
     initialFocusRequester: FocusRequester,
     onSelect: (MediaItem) -> Unit,
     onToggleFavourite: (MediaItem) -> Unit,
+    cardView: Boolean,
+    onToggleView: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -2180,27 +2218,43 @@ private fun LiveFavouritesDrawer(
     Column(
         modifier = modifier
             .fillMaxHeight()
-            .width(390.dp)
+            .fillMaxWidth(0.33f)
             .background(
                 Brush.horizontalGradient(
-                    colors = listOf(Color(0xB8000000), Color(0xF2050505), Color(0xFF050505)),
+                    colors = listOf(Color.Transparent, Color(0xD9050505), Color(0xFF050505)),
                 ),
             )
-            .padding(start = 28.dp, end = 22.dp, top = 96.dp, bottom = 34.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(start = 46.dp, end = 22.dp, top = 88.dp, bottom = 34.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(
-            text = "Favourite channels",
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
-            color = Color.White,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            text = "${channels.size} saved  •  OK to play  •  Hold OK to remove",
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White.copy(alpha = 0.62f),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "Favourite channels",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                    color = Color.White,
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = "${channels.size} saved  •  Hold OK to remove",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.66f),
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            OutlinedButton(onClick = onToggleView, modifier = Modifier.padding(start = 10.dp)) {
+                Text(if (cardView) "Text" else "Cards")
+            }
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize().focusGroup().onPreviewKeyEvent { event ->
@@ -2209,19 +2263,97 @@ private fun LiveFavouritesDrawer(
                     true
                 } else false
             },
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(if (cardView) 12.dp else 5.dp),
             contentPadding = PaddingValues(bottom = 36.dp),
         ) {
             items(channels, key = { "${it.sourceAddonId}:${it.id}" }) { item ->
                 val index = channels.indexOf(item)
-                LivePlayerChannelCard(
-                    item = item,
-                    selected = item.id == currentChannelId,
-                    favourite = true,
-                    modifier = if (index == focusedIndex) Modifier.focusRequester(initialFocusRequester) else Modifier,
-                    onLongPress = { onToggleFavourite(item) },
-                    onClick = { onSelect(item) },
-                )
+                val itemModifier = if (index == focusedIndex) Modifier.focusRequester(initialFocusRequester) else Modifier
+                if (cardView) {
+                    LiveFavouriteDrawerCard(
+                        item = item,
+                        selected = item.id == currentChannelId,
+                        modifier = itemModifier,
+                        onLongPress = { onToggleFavourite(item) },
+                        onClick = { onSelect(item) },
+                    )
+                } else {
+                    LiveFavouriteTextItem(
+                        item = item,
+                        selected = item.id == currentChannelId,
+                        modifier = itemModifier,
+                        onLongPress = { onToggleFavourite(item) },
+                        onClick = { onSelect(item) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun LiveFavouriteTextItem(
+    item: MediaItem,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onLongPress: () -> Unit,
+    onClick: () -> Unit,
+) {
+    Card(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().height(44.dp).tvCardLongPress(onLongPress),
+        shape = CardDefaults.shape(androidx.compose.foundation.shape.RoundedCornerShape(10.dp)),
+        colors = CardDefaults.colors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent,
+            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+        ),
+        scale = CardDefaults.scale(focusedScale = 1.02f),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                item.title,
+                color = Color.White,
+                textAlign = TextAlign.End,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (selected) FontWeight.Black else FontWeight.Medium),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (selected) Text("  ON NOW", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black))
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun LiveFavouriteDrawerCard(
+    item: MediaItem,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onLongPress: () -> Unit,
+    onClick: () -> Unit,
+) {
+    Card(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().height(132.dp).tvCardLongPress(onLongPress),
+        shape = CardDefaults.shape(AppCardShape),
+        colors = CardDefaults.colors(containerColor = Color(0xFF181A1F), focusedContainerColor = Color(0xFF20232A)),
+        border = CardDefaults.border(focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppCardShape)),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = 1.025f),
+    ) {
+        Box(Modifier.fillMaxSize().clip(AppCardShape)) {
+            AsyncImage(item.backdrop ?: item.poster, item.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color.Transparent, Color(0xE6000000)))))
+            Column(Modifier.align(Alignment.BottomEnd).padding(12.dp), horizontalAlignment = Alignment.End) {
+                if (selected) Text("ON NOW", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black))
+                Text(item.title, color = Color.White, textAlign = TextAlign.End, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
     }

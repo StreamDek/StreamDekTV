@@ -2,6 +2,8 @@ package com.streamdek.tv.nativeapp.ui.library
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -105,7 +107,7 @@ fun LibraryScreen(
                 throw cancelled
             } catch (failure: Throwable) {
                 library = null
-                error = failure.message
+                error = "Your library could not be loaded. Check your connection and try again."
                 TvDebugLogger.e("LibraryUi", "library failed to load", failure)
             }
         }
@@ -113,12 +115,9 @@ fun LibraryScreen(
         refresh()
     }
 
-    LaunchedEffect(library) {
-        val hasItems = library?.continueWatching?.isNotEmpty() == true || library?.watchlist?.isNotEmpty() == true
-        if (hasItems) {
-            kotlinx.coroutines.delay(180)
-            initialCardRequester.requestFocus()
-        }
+    LaunchedEffect(library, error) {
+        kotlinx.coroutines.delay(160)
+        runCatching { initialCardRequester.requestFocus() }
     }
 
     LaunchedEffect(library) {
@@ -149,23 +148,42 @@ fun LibraryScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
+        Column(
+            modifier = Modifier
+                .width(if (compactMode) 204.dp else 218.dp)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 12.dp, top = 72.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("LIBRARY", color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black), modifier = Modifier.padding(bottom = 4.dp))
+            listOf("all" to "Everything", "movie" to "Movies", "tv" to "Series").forEachIndexed { index, option ->
+                LibrarySidebarItem(
+                    label = option.second,
+                    selected = libraryTypeFilter == option.first,
+                    onClick = { libraryTypeFilter = option.first },
+                    modifier = if (index == 0) Modifier.focusRequester(initialCardRequester) else Modifier,
+                )
+            }
+        }
+
         featuredItem?.let { item ->
             AsyncImage(
                 model = item.poster ?: item.backdrop,
                 contentDescription = null,
-                modifier = Modifier.fillMaxWidth().height(360.dp).align(Alignment.TopCenter),
+                modifier = Modifier.fillMaxWidth().height(360.dp).padding(start = if (compactMode) 204.dp else 218.dp).align(Alignment.TopCenter),
                 contentScale = ContentScale.Crop,
             )
-            Box(modifier = Modifier.fillMaxWidth().height(360.dp).align(Alignment.TopCenter).background(Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.background.copy(alpha = 0.78f), Color.Transparent))))
-            Box(modifier = Modifier.fillMaxWidth().height(360.dp).align(Alignment.TopCenter).background(Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.background))))
+            Box(modifier = Modifier.fillMaxWidth().height(360.dp).padding(start = if (compactMode) 204.dp else 218.dp).align(Alignment.TopCenter).background(Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.background.copy(alpha = 0.78f), Color.Transparent))))
+            Box(modifier = Modifier.fillMaxWidth().height(360.dp).padding(start = if (compactMode) 204.dp else 218.dp).align(Alignment.TopCenter).background(Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.background))))
         }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
-                    start = if (compactMode) 36.dp else 48.dp,
+                    start = if (compactMode) 234.dp else 250.dp,
                     end = if (compactMode) 36.dp else 48.dp,
-                    top = if (compactMode) 36.dp else 48.dp,
+                    top = 88.dp,
                 ),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -187,11 +205,7 @@ fun LibraryScreen(
                     Text(description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f), maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(620.dp))
                 }
             } ?: Text("Continue watching and your watchlist, all in one place.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                listOf("all" to "All", "movie" to "Movies", "tv" to "Series").forEach { option ->
-                    LibraryFilterChip(option.second, libraryTypeFilter == option.first) { libraryTypeFilter = option.first }
-                }
-            }
+
             error?.let {
                 Text(
                     text = it,
@@ -204,7 +218,7 @@ fun LibraryScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = if (compactMode) 300.dp else 330.dp),
+                .padding(start = if (compactMode) 204.dp else 218.dp, top = if (compactMode) 300.dp else 330.dp),
             contentPadding = PaddingValues(bottom = 180.dp),
             verticalArrangement = Arrangement.spacedBy(28.dp),
         ) {
@@ -230,7 +244,7 @@ fun LibraryScreen(
                     LibraryRow(
                         title = "Continue Watching",
                         items = continueWatching,
-                        initialFocusRequester = initialCardRequester,
+                        initialFocusRequester = null,
                         onOpenDetail = onOpenDetail,
                         onOpenActions = { item, requester -> actionState = BrowseActionState(item, requester) },
                         onFocused = { featuredItem = it },
@@ -244,7 +258,7 @@ fun LibraryScreen(
                     LibraryRow(
                         title = "My Watchlist",
                         items = watchlist,
-                        initialFocusRequester = if (continueWatching.isEmpty()) initialCardRequester else null,
+                        initialFocusRequester = null,
                         onOpenDetail = onOpenDetail,
                         onOpenActions = { item, requester -> actionState = BrowseActionState(item, requester) },
                         onFocused = { featuredItem = it },
@@ -286,6 +300,24 @@ fun LibraryScreen(
     }
 }
 
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun LibrarySidebarItem(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Card(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().height(40.dp),
+        shape = CardDefaults.shape(RoundedCornerShape(10.dp)),
+        colors = CardDefaults.colors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent,
+            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+        ),
+        scale = CardDefaults.scale(focusedScale = 1.02f),
+    ) {
+        Box(Modifier.fillMaxSize().padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
+            Text(label, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (selected) FontWeight.Black else FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun LibraryFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
@@ -359,7 +391,8 @@ private fun LibraryCard(
     Card(
         onClick = onPressed,
         modifier = modifier
-            .size(width = 260.dp, height = 150.dp)
+            .width(190.dp)
+            .height(250.dp)
             .tvCardLongPress(onMenuPressed),
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
