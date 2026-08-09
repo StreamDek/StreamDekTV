@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.data
 
+import com.google.gson.JsonObject
 import com.streamdek.tv.BuildConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +63,14 @@ internal fun playbackRequestFromHandoff(payload: PlaybackHandoffPayload): Playba
         returnToDetailOnBack = false,
     )
 }
+/**
+ * Raised when a screen has nothing to show *and* the backend could not be reached, so the UI can
+ * offer a retry instead of presenting an outage as an empty catalog.
+ */
+class ContentUnavailableException(
+    message: String = "StreamDek could not be reached. Check the connection and try again.",
+) : Exception(message)
+
 private data class AddonCatalogCollection(
     val addonId: String,
     val addonName: String,
@@ -139,12 +148,26 @@ class StreamDekRepository(
     private val episodeSegmentCache = lruCache<String, List<PlaybackSegment>>(32)
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
+
+    /**
+     * The active profile's stored blob exactly as the backend holds it. Kept raw because it also
+     * carries keys this client does not model — live favourites, mobile-only layout choices — and
+     * a write has to hand the whole thing back without dropping them.
+     */
+    private val profilePreferencesState = MutableStateFlow(JsonObject())
     private val fusionBadgeSourcesState = MutableStateFlow<Map<String, FusionBadgeSource>>(emptyMap())
     private val favouriteChannelsState = MutableStateFlow(sessionStore.loadFavouriteChannels())
     private var lastPlaybackRequest: PlaybackRequest? = null
 
     val session: StateFlow<AuthSession?> = sessionStore.session
     val bootstrap: StateFlow<AccountBootstrap?> = bootstrapState
+
+    /** Whether the backend is answering, and whether what is on screen came out of the cache. */
+    val reachability: StateFlow<ApiReachability> = api.reachability
+
+    /** Raised once the backend rejects the stored credentials, so the shell can ask for sign-in. */
+    val sessionExpired: StateFlow<Boolean> = api.sessionExpired
+
     val fusionBadgeSources: StateFlow<Map<String, FusionBadgeSource>> = fusionBadgeSourcesState
     val favouriteChannels: StateFlow<List<MediaItem>> = favouriteChannelsState
 
@@ -189,8 +212,26 @@ class StreamDekRepository(
                 "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/live-favourites",
                 mapOf("items" to items),
             )
-            if (result == null) TvDebugLogger.w("LiveFavourites", "Cloud sync failed; local favourites retained")
+            if (result == null) {
+                TvDebugLogger.w("LiveFavourites", "Cloud sync failed; local favourites retained")
+            } else {
+                rememberFavouritesInProfileBlob(result)
+            }
         }
+    }
+
+    /**
+     * Favourites live inside the same profile blob as the settings, and a settings write has to
+     * resend that blob whole. Keeping the cached copy current stops a settings change made after
+     * a favourite was toggled from putting the old list back.
+     */
+    private fun rememberFavouritesInProfileBlob(envelope: LiveFavouriteChannelsEnvelope) {
+        val blob = profilePreferencesState.value.deepCopy()
+        blob.add(
+            "liveFavouriteChannels",
+            api.gson.toJsonTree(mapOf("items" to envelope.items, "updatedAt" to envelope.updatedAt)),
+        )
+        profilePreferencesState.value = blob
     }
 
     private suspend fun refreshFavouriteChannelsFromCloud() {
@@ -312,6 +353,9 @@ class StreamDekRepository(
         resolvedPlaybackCache.clear()
         resolvedPlaybackCacheTimes.clear()
         watchedHistoryCache.clear()
+        profilePreferencesState.value = JsonObject()
+        StreamDekHttp.evictCache()
+        api.clearSessionExpired()
     }
 
     suspend fun refreshBootstrap(): AccountBootstrap? {
@@ -321,7 +365,7 @@ class StreamDekRepository(
             return null
         }
         TvDebugLogger.i("Bootstrap", "refreshBootstrap start user=${session.user.uid}")
-        var bootstrap = api.get<AccountBootstrap>("/account/bootstrap", session)
+        var bootstrap = fetchBootstrap(session)
         if (bootstrap != null) {
             val activeProfileId = sessionStore.activeProfileId()
             if (activeProfileId.isNullOrBlank()) {
@@ -332,7 +376,8 @@ class StreamDekRepository(
                 if (!preferredProfileId.isNullOrBlank()) {
                     sessionStore.setActiveProfileId(preferredProfileId)
                     TvDebugLogger.i("Bootstrap", "selected initial profile=$preferredProfileId")
-                    bootstrap = api.get<AccountBootstrap>("/account/bootstrap", session) ?: bootstrap
+                    // Re-read so the profile-scoped overrides for the profile just picked are applied.
+                    bootstrap = fetchBootstrap(session) ?: bootstrap
                 }
             }
             TvDebugLogger.i(
@@ -346,6 +391,22 @@ class StreamDekRepository(
         reloadFavouriteChannels()
         refreshFavouriteChannelsFromCloud()
         return bootstrap
+    }
+
+    /**
+     * Reads the bootstrap and folds the active profile's overrides into `preferences` before the
+     * payload is typed, so every screen keeps reading `bootstrap.preferences` and gets the answer
+     * for the profile actually in use.
+     */
+    private suspend fun fetchBootstrap(session: AuthSession): AccountBootstrap? {
+        val raw = api.get<JsonObject>("/account/bootstrap", session) ?: return null
+        val profilePreferences = raw.asObjectOrNull("profilePreferences") ?: JsonObject()
+        profilePreferencesState.value = profilePreferences
+        val accountPreferences = raw.asObjectOrNull("preferences") ?: JsonObject()
+        raw.add("preferences", PreferenceScopes.mergeIntoAccountPreferences(accountPreferences, profilePreferences))
+        return runCatching { api.gson.fromJson(raw, AccountBootstrap::class.java) }
+            .onFailure { TvDebugLogger.e("Bootstrap", "could not read bootstrap payload", it) }
+            .getOrNull()
     }
 
     suspend fun updatePlaybackPreferences(partial: Map<String, Any?>): AccountBootstrap? {
@@ -416,6 +477,13 @@ class StreamDekRepository(
                     "badgePosition" to (partial["badgePosition"] ?: existing.badgePosition),
                     "fusionBadgeUrls" to (partial["fusionBadgeUrls"] ?: existing.fusionBadgeUrls),
                     "activeFusionBadgeUrl" to (if (partial.containsKey("activeFusionBadgeUrl")) partial["activeFusionBadgeUrl"] else existing.activeFusionBadgeUrl),
+                    // Carried through untouched so writing a badge setting from the TV does not
+                    // blank out the stream-picker keys the other clients own.
+                    "showStreamsList" to (partial["showStreamsList"] ?: existing.showStreamsList),
+                    "rememberLastSource" to (partial["rememberLastSource"] ?: existing.rememberLastSource),
+                    "blurUnwatchedEpisodes" to (partial["blurUnwatchedEpisodes"] ?: existing.blurUnwatchedEpisodes),
+                    "streamDekFormattingEnabled" to (partial["streamDekFormattingEnabled"] ?: existing.streamDekFormattingEnabled),
+                    "showAddonTmdbRatings" to (partial["showAddonTmdbRatings"] ?: existing.showAddonTmdbRatings),
                 ),
             ),
         )
@@ -671,17 +739,27 @@ class StreamDekRepository(
             homeCache[cacheKey]?.let { return it }
         }
         TvDebugLogger.i("Home", "fetchHomeContent forceRefresh=$forceRefresh user=$cacheKey")
+        val failuresBefore = api.failureEpoch
+        val recommendationsAvailable = isSyncServiceConnected(SyncServiceId.TRAKT)
+        // A profile can turn the built-in TMDB rows off and browse purely through its addons.
+        val builtInCatalogsEnabled = bootstrapState.value?.preferences?.home?.defaultAppCatalogsEnabled != false
 
         val content = supervisorScope {
-            val trendingMovie = async { safeResults<RailResponse>("/tmdb/trending/movie") }
-            val trendingTv = async { safeResults<RailResponse>("/tmdb/trending/tv") }
-            val popularMovie = async { safeResults<RailResponse>("/tmdb/popular/movie") }
-            val popularTv = async { safeResults<RailResponse>("/tmdb/popular/tv") }
-            val browseMovie = async { safeResults<RailResponse>("/tmdb/browse/movie") }
-            val browseTv = async { safeResults<RailResponse>("/tmdb/browse/tv") }
-            val networks = async { safeResults<NetworkResponse>("/tmdb/networks") }
-            val recMovie = async { safeResults<RailResponse>("/trakt/recommendations/movies") }
-            val recTv = async { safeResults<RailResponse>("/trakt/recommendations/shows") }
+            val trendingMovie = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/trending/movie") else emptyList() }
+            val trendingTv = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/trending/tv") else emptyList() }
+            val popularMovie = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/popular/movie") else emptyList() }
+            val popularTv = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/popular/tv") else emptyList() }
+            val browseMovie = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/browse/movie") else emptyList() }
+            val browseTv = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/browse/tv") else emptyList() }
+            val networks = async { if (builtInCatalogsEnabled) safeResults<NetworkResponse>("/tmdb/networks") else emptyList() }
+            // Recommendations exist on Trakt only; without a connection the row falls back to
+            // Popular below, so there is nothing to gain from asking.
+            val recMovie = async {
+                if (recommendationsAvailable) safeResults<RailResponse>("/trakt/recommendations/movies") else emptyList()
+            }
+            val recTv = async {
+                if (recommendationsAvailable) safeResults<RailResponse>("/trakt/recommendations/shows") else emptyList()
+            }
             val library = async { runCatching { fetchLibrary() }.getOrDefault(LibraryResponse()) }
             val addonRails = async { runCatching { fetchAddonCatalogRails() }.getOrDefault(emptyList()) }
 
@@ -725,14 +803,16 @@ class StreamDekRepository(
                     if (continueWatching.isNotEmpty()) {
                         add(HomeRail("continue-watching", "Continue Watching", continueWatching))
                     }
-                    add(HomeRail("popular-movies", "Popular Movies", popularMovies))
-                    add(HomeRail("popular-series", "Popular Series", popularShows))
-                    add(HomeRail("trending", "Trending", (trendingMovies + trendingShows).take(20)))
-                    add(HomeRail("recently-added", "Recently Added", recentlyAdded))
-                    if (streamingNetworks.isNotEmpty()) {
-                        add(HomeRail("networks", "Streaming Services", streamingNetworks))
+                    if (builtInCatalogsEnabled) {
+                        add(HomeRail("popular-movies", "Popular Movies", popularMovies))
+                        add(HomeRail("popular-series", "Popular Series", popularShows))
+                        add(HomeRail("trending", "Trending", (trendingMovies + trendingShows).take(20)))
+                        add(HomeRail("recently-added", "Recently Added", recentlyAdded))
+                        if (streamingNetworks.isNotEmpty()) {
+                            add(HomeRail("networks", "Streaming Services", streamingNetworks))
+                        }
+                        add(HomeRail("recommended", "Recommended For You", (recommendedMovies + recommendedShows).take(20)))
                     }
-                    add(HomeRail("recommended", "Recommended For You", (recommendedMovies + recommendedShows).take(20)))
                 }.let { baseRails ->
                     // Match the mobile app's ordering: live TV addon rows sit directly
                     // below Streaming Services, other addon catalogs stay at the end.
@@ -751,6 +831,14 @@ class StreamDekRepository(
                     ordered
                 }.filter { it.items.isNotEmpty() }
             )
+        }
+
+        // Every row is fetched defensively, so a total outage produces an empty screen rather than
+        // an error. Without this check the viewer is shown a blank Home with nothing to act on and
+        // no hint that anything went wrong.
+        if (content.rails.isEmpty() && api.failureEpoch > failuresBefore) {
+            TvDebugLogger.w("Home", "fetchHomeContent produced nothing after backend failures")
+            throw ContentUnavailableException()
         }
 
         TvDebugLogger.i(
@@ -798,22 +886,39 @@ class StreamDekRepository(
             "Library",
             "fetchLibrary forceRefresh=$forceRefresh user=$cacheKey profile=${sessionStore.activeProfileId() ?: "none"}",
         )
+        val failuresBefore = api.failureEpoch
         val library = runCatching {
             api.get<LibraryResponse>("/sync/library")
         }.onFailure {
             TvDebugLogger.e("Library", "fetchLibrary failed", it)
         }.getOrNull() ?: LibraryResponse()
-        val traktContinueWatching = fetchTraktContinueWatching()
+        val servicePlayback = fetchServicePlayback()
         val mergedContinueWatching = mergeContinueWatching(
             primary = library.continueWatching,
-            secondary = traktContinueWatching,
+            secondary = servicePlayback,
         )
+        // /sync/library follows the profile's tracking service, so its watchlist is normally the
+        // right one already. The direct read stays as a safety net for a TV running ahead of a
+        // backend that still answers with Trakt's list only.
+        val watchlist = if (library.watchlist.isNotEmpty() || primarySyncService() == SyncServiceId.TRAKT) {
+            library.watchlist
+        } else {
+            fetchServiceWatchlist() ?: library.watchlist
+        }
         val merged = library.copy(
             continueWatching = mergedContinueWatching,
+            watchlist = watchlist,
         )
+        // An empty library is perfectly normal for a new account, so only an empty result that
+        // also had failed requests behind it is reported as a problem worth showing.
+        if (merged.continueWatching.isEmpty() && merged.watchlist.isEmpty() && api.failureEpoch > failuresBefore) {
+            TvDebugLogger.w("Library", "library came back empty after backend failures")
+            throw ContentUnavailableException("Your library could not be loaded. Check the connection and try again.")
+        }
         TvDebugLogger.i(
             "Library",
-            "fetchLibrary ok continue=${merged.continueWatching.size} watchlist=${merged.watchlist.size} traktContinue=${traktContinueWatching.size}",
+            "fetchLibrary ok continue=${merged.continueWatching.size} watchlist=${merged.watchlist.size} " +
+                "service=${primarySyncService()} serviceContinue=${servicePlayback.size}",
         )
         libraryCache[cacheKey] = merged
         return merged
@@ -930,34 +1035,84 @@ class StreamDekRepository(
         return response
     }
 
+    /**
+     * The tracking service this profile has chosen. Picked up from the profile-scoped home
+     * preferences that mobile and the web portal write, so all three clients agree on where a
+     * watchlist toggle lands.
+     */
+    fun primarySyncService(): String =
+        SyncServiceId.normalize(bootstrapState.value?.preferences?.home?.primarySyncService)
+
+    fun isSyncServiceConnected(service: String): Boolean {
+        val integrations = bootstrapState.value?.integrations ?: return false
+        return when (SyncServiceId.normalize(service)) {
+            SyncServiceId.SIMKL -> integrations.simkl.connected
+            SyncServiceId.MDBLIST -> integrations.mdblist.connected
+            else -> integrations.trakt.connected || bootstrapState.value?.syncStatus?.traktConnected == true
+        }
+    }
+
+    /**
+     * The services to try, in order, for a watchlist or resume-point call.
+     *
+     * The profile's own choice comes first. Trakt is kept as a backstop whenever it is also
+     * connected: a profile that switched to Simkl last week still has years of Trakt history, and
+     * a service that is unreachable or half-configured should cost the viewer an empty screen for
+     * as short a time as possible. A service that cannot do the job at all is skipped outright.
+     */
+    private fun syncServiceChain(requires: (SyncServiceCapabilities) -> Boolean): List<String> {
+        val primary = primarySyncService()
+        return listOf(primary, SyncServiceId.TRAKT)
+            .distinct()
+            .filter { requires(SyncServiceCapabilities.of(it)) && isSyncServiceConnected(it) }
+    }
+
     suspend fun addToWatchlist(item: MediaItem) {
-        val tmdbId = item.tmdbId.takeIf { it > 0 } ?: item.id.toIntOrNull()
-        val entry: Map<String, Any?> = mapOf(
-            "title" to item.title,
-            "year" to item.year?.toIntOrNull(),
-            "ids" to mapOf<String, Any?>("tmdb" to tmdbId),
-        )
-        api.post<Map<String, Any>>(
-            "/trakt/sync/watchlist/add",
-            if (item.type == "tv") mapOf("movies" to emptyList<Any>(), "shows" to listOf(entry))
-            else mapOf("movies" to listOf(entry), "shows" to emptyList<Any>()),
-        )
-        fetchLibrary(forceRefresh = true)
+        updateWatchlist(item, remove = false)
     }
 
     suspend fun removeFromWatchlist(item: MediaItem) {
+        updateWatchlist(item, remove = true)
+    }
+
+    private suspend fun updateWatchlist(item: MediaItem, remove: Boolean) {
         val tmdbId = item.tmdbId.takeIf { it > 0 } ?: item.id.toIntOrNull()
         val entry: Map<String, Any?> = mapOf(
             "title" to item.title,
             "year" to item.year?.toIntOrNull(),
             "ids" to mapOf<String, Any?>("tmdb" to tmdbId),
         )
-        api.post<Map<String, Any>>(
-            "/trakt/sync/watchlist/remove",
-            if (item.type == "tv") mapOf("movies" to emptyList<Any>(), "shows" to listOf(entry))
-            else mapOf("movies" to listOf(entry), "shows" to emptyList<Any>()),
-        )
-        fetchLibrary(forceRefresh = true)
+        val payload = if (item.type == "tv") {
+            mapOf("movies" to emptyList<Any>(), "shows" to listOf(entry))
+        } else {
+            mapOf("movies" to listOf(entry), "shows" to emptyList<Any>())
+        }
+        val action = if (remove) "remove" else "add"
+        // Only the profile's own service is written to. Mirroring the change into Trakt as well
+        // would quietly edit a list the viewer did not ask to touch.
+        val services = syncServiceChain { it.watchlistWrite }.take(1)
+            .ifEmpty { listOf(primarySyncService()) }
+        for (service in services) {
+            val response = api.post<Map<String, Any>>("/$service/sync/watchlist/$action", payload)
+            if (response != null) break
+            TvDebugLogger.w("Watchlist", "$action failed on $service for ${item.type}:${item.id}")
+        }
+        // Refreshing is a courtesy; a failure here must not surface as a failed watchlist edit.
+        runCatching { fetchLibrary(forceRefresh = true) }
+    }
+
+    /**
+     * Watchlist for the profile's tracking service. `/sync/library` enriches Trakt only, so any
+     * other primary service has to be read from its own route.
+     */
+    private suspend fun fetchServiceWatchlist(): List<MediaItem>? {
+        val services = syncServiceChain { it.watchlist }
+        for (service in services) {
+            val results = api.get<WatchlistEnvelope>("/$service/sync/watchlist/enriched")?.results
+            if (results != null) return results
+            TvDebugLogger.w("Watchlist", "could not read the $service watchlist")
+        }
+        return null
     }
 
     suspend fun markWatched(
@@ -1159,10 +1314,15 @@ class StreamDekRepository(
     }
 
     fun setActiveStreamProfile(profileId: String?) {
+        if (profileId == sessionStore.activeProfileId()) return
         sessionStore.setActiveProfileId(profileId)
         reloadFavouriteChannels()
         libraryCache.clear()
         homeCache.clear()
+        watchedHistoryCache.clear()
+        // Responses are cached per URL, and the profile only travels in a header, so the previous
+        // profile's rows would otherwise be replayed for this one whenever the network drops.
+        StreamDekHttp.evictCache()
     }
 
     suspend fun fetchProgress(mediaType: String, mediaId: String, episode: EpisodeContext? = null): PlaybackProgressRecord? {
@@ -1185,6 +1345,9 @@ class StreamDekRepository(
         if (!forceRefresh) {
             watchedHistoryCache[cacheKey]?.let { return it }
         }
+        // Watched history is a Trakt-only feature; a profile tracking elsewhere would otherwise
+        // spend a rejected request on every detail screen it opens.
+        if (!isSyncServiceConnected(SyncServiceId.TRAKT)) return emptySet()
         val results = runCatching {
             api.get<TraktHistoryResponse>("/trakt/sync/history", session)?.results.orEmpty()
         }.onFailure {
@@ -1676,8 +1839,15 @@ class StreamDekRepository(
     }
 
 
-    private fun rememberLastSourceEnabled(): Boolean =
-        bootstrapState.value?.preferences?.playback?.rememberLastSource ?: true
+    /**
+     * Mobile and the web portal keep this alongside the other stream-picker settings, while older
+     * TV builds wrote it with playback. Both are read so the viewer's choice is honoured whichever
+     * client last saved it.
+     */
+    private fun rememberLastSourceEnabled(): Boolean {
+        val preferences = bootstrapState.value?.preferences ?: return true
+        return preferences.streams.rememberLastSource && preferences.playback.rememberLastSource
+    }
 
     /** Searches OpenSubtitles, installed subtitle addons, and mobile-managed cloud sources. */
     suspend fun fetchExternalSubtitles(request: PlaybackRequest): List<ExternalSubtitleTrack> = withContext(Dispatchers.IO) {
@@ -2422,23 +2592,58 @@ class StreamDekRepository(
         }
     }
 
+    /**
+     * Writes a settings change to both scopes: the account copy keeps devices that have no profile
+     * selected in step, and the profile copy is what mobile and web read back for this viewer.
+     * Sending only the account copy would leave the change invisible to them, and a later profile
+     * write from another client would silently undo it.
+     */
     private suspend fun patchPreferences(payload: Map<String, Any?>) {
         api.patch<Map<String, PreferencesEnvelope>>(
             "/account/preferences",
             mapOf("preferences" to payload),
         )
+        writeProfilePreferences(payload)
     }
 
-    private suspend fun fetchTraktContinueWatching(): List<ContinueWatchingItem> {
+    private suspend fun writeProfilePreferences(payload: Map<String, Any?>) {
+        val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return
+        if (currentSession() == null) return
+        val changed = runCatching { api.gson.toJsonTree(payload).asJsonObject }.getOrNull() ?: return
+        // The whole blob is resent, so it has to be current: another client may have changed a
+        // favourite channel since this one last read it, and settings writes are rare enough that
+        // one extra read costs nothing.
+        val current = api.get<ProfilePreferencesEnvelope>(
+            "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/preferences",
+        )?.preferences ?: profilePreferencesState.value
+        val next = PreferenceScopes.applyToProfileBlob(current, changed) ?: return
+        val response = api.put<ProfilePreferencesEnvelope>(
+            "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/preferences",
+            mapOf("preferences" to next),
+        )
+        if (response == null) {
+            TvDebugLogger.w("Preferences", "profile preference sync failed; account copy was still saved")
+            return
+        }
+        profilePreferencesState.value = response.preferences ?: next
+    }
+
+    /**
+     * Resume points held by the tracking service, which complement the ones this account recorded
+     * itself. MDBList has no playback API, so a profile using it simply contributes nothing here
+     * and falls back to Trakt if that is still connected.
+     */
+    private suspend fun fetchServicePlayback(): List<ContinueWatchingItem> {
         val session = currentSession() ?: return emptyList()
-        val traktConnected = bootstrapState.value?.syncStatus?.traktConnected == true ||
-            bootstrapState.value?.integrations?.trakt?.connected == true
-        if (!traktConnected) return emptyList()
-        return runCatching {
-            api.get<TraktPlaybackResponse>("/trakt/sync/playback", session)?.results.orEmpty()
-        }.onFailure {
-            TvDebugLogger.e("Library", "fetchTraktContinueWatching failed", it)
-        }.getOrDefault(emptyList())
+        for (service in syncServiceChain { it.playback }) {
+            val results = runCatching {
+                api.get<TraktPlaybackResponse>("/$service/sync/playback", session)?.results
+            }.onFailure {
+                TvDebugLogger.e("Library", "continue-watching read failed on $service", it)
+            }.getOrNull()
+            if (results != null) return results
+        }
+        return emptyList()
     }
 
     private fun mergeContinueWatching(

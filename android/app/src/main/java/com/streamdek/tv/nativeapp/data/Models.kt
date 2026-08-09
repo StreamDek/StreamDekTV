@@ -328,12 +328,67 @@ data class StreamsPreferences(
     val badgePosition: String = "bottom",
     val fusionBadgeUrls: List<String> = listOf(DEFAULT_FUSION_BADGE_URL),
     val activeFusionBadgeUrl: String? = null,
+    /** Mobile-managed: whether the stream picker is offered before playback starts. */
+    val showStreamsList: Boolean = true,
+    val rememberLastSource: Boolean = true,
+    val blurUnwatchedEpisodes: Boolean = true,
+    val streamDekFormattingEnabled: Boolean = false,
+    val showAddonTmdbRatings: Boolean = false,
+)
+
+/**
+ * Home-surface choices. Profile-scoped: two people sharing an account can pick different rows and
+ * different tracking services.
+ */
+data class HomePreferences(
+    /**
+     * Which tracking service backs the watchlist and continue-watching for this profile:
+     * `trakt`, `simkl` or `mdblist`. See [SyncServiceId].
+     */
+    val primarySyncService: String = SyncServiceId.TRAKT,
+    val defaultAppCatalogsEnabled: Boolean = true,
+    val continueWatchingStyle: String? = null,
+    val liveCategoriesEnabled: Boolean = true,
+    val liveLandscapeCards: Boolean = true,
+    val liveFavouriteDrawerCards: Boolean = false,
+    val showHeroSynopsis: Boolean = true,
+    val detailPageStyle: String? = null,
+    val vividAmbient: Boolean = true,
+    val ambientTintPercent: Int = 100,
+    val homeCatalogRows: List<HomeCatalogRowPreference> = emptyList(),
+)
+
+/** One customised home row, as laid out on mobile or the web portal. */
+data class HomeCatalogRowPreference(
+    val id: String = "",
+    val enabled: Boolean = true,
+    val position: Int = 0,
+    val title: String? = null,
+)
+
+/** Detail-screen choices, profile-scoped apart from the account-wide MDBList key. */
+data class DetailPreferences(
+    val seasonTabStyle: String? = null,
+    val heroTrailerAutoplay: Boolean = true,
+    val heroTrailerResolution: Int = 2160,
+    val ratingsEnabled: Boolean = true,
+    val externalRatingsEnabled: Boolean = true,
+    val enabledRatingProviders: List<String> = emptyList(),
+    val mdblistApiKey: String? = null,
 )
 
 data class PreferencesEnvelope(
     val app: AppPreferences = AppPreferences(),
+    val home: HomePreferences = HomePreferences(),
+    val detail: DetailPreferences = DetailPreferences(),
     val playback: PlaybackPreferences = PlaybackPreferences(),
     val streams: StreamsPreferences = StreamsPreferences(),
+)
+
+/** Reply shape of `PUT /profiles/:id/preferences`. */
+data class ProfilePreferencesEnvelope(
+    val success: Boolean = false,
+    val preferences: com.google.gson.JsonObject? = null,
 )
 
 data class FusionBadgeGroup(
@@ -368,6 +423,17 @@ data class FusionBadgeSource(
 data class TraktIntegration(
     val connected: Boolean = false,
     val username: String? = null,
+)
+
+/**
+ * Connection state for one of the tracking services a profile can pick. The backend reports Simkl
+ * and MDBList in the same shape as Trakt, so all three can be handled uniformly.
+ */
+data class SyncServiceIntegration(
+    val connected: Boolean = false,
+    val username: String? = null,
+    val slug: String? = null,
+    val expiresAt: String? = null,
 )
 
 data class DebridAccount(
@@ -435,6 +501,8 @@ data class AddonsIntegration(
 
 data class IntegrationsEnvelope(
     val trakt: TraktIntegration = TraktIntegration(),
+    val simkl: SyncServiceIntegration = SyncServiceIntegration(),
+    val mdblist: SyncServiceIntegration = SyncServiceIntegration(),
     val debrid: DebridIntegration = DebridIntegration(),
     val addons: AddonsIntegration = AddonsIntegration(),
 )
@@ -499,6 +567,14 @@ data class LibraryResponse(
 
 data class TraktPlaybackResponse(
     val results: List<ContinueWatchingItem> = emptyList(),
+)
+
+/**
+ * `/{service}/sync/watchlist/enriched` for every tracking service. The backend normalizes and
+ * TMDB-enriches all three to the same item shape.
+ */
+data class WatchlistEnvelope(
+    val results: List<MediaItem> = emptyList(),
 )
 
 data class PlaybackProgressRecord(

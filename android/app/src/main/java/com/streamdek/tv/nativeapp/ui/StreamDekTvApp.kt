@@ -112,6 +112,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val appUpdateManager = remember { AppGraph.appUpdateManager }
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
+    val sessionExpired by repository.sessionExpired.collectAsState()
     val appUpdateState by appUpdateManager.uiState.collectAsState()
     val favouriteChannels by repository.favouriteChannels.collectAsState()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -133,6 +134,17 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val liveAddonKey = remember(bootstrap) {
         bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
             "${it.id}:${it.enabled}:${it.position}:${it.manifest.catalogs.size}"
+        }
+    }
+
+    // A lapsed sign-in used to show up as screens that were simply empty forever. Send the viewer
+    // somewhere they can act instead.
+    LaunchedEffect(sessionExpired) {
+        if (!sessionExpired || session == null) return@LaunchedEffect
+        TvDebugLogger.w("Auth", "stored sign-in rejected; returning to the sign-in screen")
+        repository.signOut()
+        navController.navigate("auth") {
+            launchSingleTop = true
         }
     }
 

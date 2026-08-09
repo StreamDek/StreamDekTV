@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -51,6 +52,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
+import androidx.tv.material3.Button
+import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
@@ -58,6 +61,8 @@ import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.streamdek.tv.nativeapp.data.ApiReachability
+import kotlinx.coroutines.delay
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -112,6 +117,7 @@ fun HomeScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
+    val reachability by repository.reachability.collectAsState()
     val appPrefs = bootstrap?.preferences?.app
     val compactMode = appPrefs?.compactMode == true
     val homeRowCardStyle = if (appPrefs?.homeRowCardStyle == "portrait") "portrait" else "landscape"
@@ -189,9 +195,28 @@ fun HomeScreen(
                 },
         )
 
+        if (reachability == ApiReachability.Cached && content != null) {
+            CachedContentNotice(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 24.dp, end = 40.dp),
+            )
+        }
+
         when {
             screenState.isLoading && content == null -> HomeLoading()
-            screenState.error != null && content == null -> HomeError(screenState.error ?: "Could not load home")
+            screenState.error != null && content == null -> HomeError(
+                message = screenState.error ?: "Could not load home",
+                isRetrying = screenState.isLoading,
+                onRetry = { homeViewModel.forceRefresh(loadKey) },
+            )
+            // Genuinely nothing to show: every built-in row is switched off for this profile and
+            // no addon supplied one either. Say so, rather than leaving the screen blank.
+            content != null && content.rails.isEmpty() -> HomeEmpty(
+                isRetrying = screenState.isLoading,
+                onRetry = { homeViewModel.forceRefresh(loadKey) },
+                onOpenAccount = onOpenAccount,
+            )
             content != null -> {
                 LaunchedEffect(content) {
                     val preloadUrls = buildList {
@@ -398,7 +423,16 @@ private fun HomeLoading() {
 }
 
 @Composable
-private fun HomeError(message: String) {
+private fun HomeError(message: String, isRetrying: Boolean, onRetry: () -> Unit) {
+    val retryRequester = remember { FocusRequester() }
+
+    // Without focus here the screen is a dead end: there is nothing for the remote to land on and
+    // no way back other than force-quitting the app.
+    LaunchedEffect(Unit) {
+        delay(120)
+        runCatching { retryRequester.requestFocus() }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -416,7 +450,79 @@ private fun HomeError(message: String) {
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
             modifier = Modifier.padding(top = 12.dp),
         )
+        Button(
+            onClick = onRetry,
+            enabled = !isRetrying,
+            modifier = Modifier
+                .padding(top = 24.dp)
+                .focusRequester(retryRequester),
+            shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+        ) {
+            Text(if (isRetrying) "Retrying…" else "Try Again")
+        }
     }
+}
+
+@Composable
+private fun HomeEmpty(isRetrying: Boolean, onRetry: () -> Unit, onOpenAccount: () -> Unit) {
+    val retryRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        delay(120)
+        runCatching { retryRequester.requestFocus() }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(48.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = "Nothing to show yet",
+            style = MaterialTheme.typography.headlineMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        Text(
+            text = "This profile has no home rows turned on and no add-on catalogues to fill them. " +
+                "Enable an add-on or turn the built-in catalogues back on to start browsing.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+            modifier = Modifier.padding(top = 12.dp),
+        )
+        Row(
+            modifier = Modifier.padding(top = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Button(
+                onClick = onRetry,
+                enabled = !isRetrying,
+                modifier = Modifier.focusRequester(retryRequester),
+                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+            ) {
+                Text(if (isRetrying) "Refreshing…" else "Refresh")
+            }
+            Button(
+                onClick = onOpenAccount,
+                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+            ) {
+                Text("Open Settings")
+            }
+        }
+    }
+}
+
+/** Quiet notice that the network is gone and the rows on screen came out of the cache. */
+@Composable
+private fun CachedContentNotice(modifier: Modifier = Modifier) {
+    Text(
+        text = "Offline — showing saved content",
+        style = MaterialTheme.typography.labelLarge,
+        color = Color(0xFF0B0B0B),
+        modifier = modifier
+            .background(Color(0xF2E9C46A), RoundedCornerShape(999.dp))
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    )
 }
 
 @Composable

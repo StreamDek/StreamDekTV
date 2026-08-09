@@ -67,6 +67,7 @@ import com.streamdek.tv.nativeapp.data.SessionInfo
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamProfile
 import com.streamdek.tv.nativeapp.data.StreamsPreferences
+import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.countEnabledFilters
 import com.streamdek.tv.nativeapp.data.countGroupsWithFilters
 import com.streamdek.tv.nativeapp.data.groupSourceFilters
@@ -288,10 +289,36 @@ fun AccountScreen(
                         }
                     }
                     item {
-                        CompactCard("Trakt") {
-                            val trakt = bootstrap?.integrations?.trakt
-                            TextLine("Status", if (trakt?.connected == true) "Connected" else "Not connected")
-                            TextLine("Username", trakt?.username ?: "Unavailable")
+                        CompactCard("Tracking") {
+                            val integrations = bootstrap?.integrations
+                            val primary = SyncServiceId.normalize(prefs?.home?.primarySyncService)
+                            TextLine("Primary Service", SyncServiceId.label(primary))
+                            TrackingServiceRow(
+                                service = SyncServiceId.TRAKT,
+                                connected = integrations?.trakt?.connected == true,
+                                username = integrations?.trakt?.username,
+                                isPrimary = primary == SyncServiceId.TRAKT,
+                            )
+                            TrackingServiceRow(
+                                service = SyncServiceId.SIMKL,
+                                connected = integrations?.simkl?.connected == true,
+                                username = integrations?.simkl?.username,
+                                isPrimary = primary == SyncServiceId.SIMKL,
+                            )
+                            TrackingServiceRow(
+                                service = SyncServiceId.MDBLIST,
+                                connected = integrations?.mdblist?.connected == true,
+                                username = integrations?.mdblist?.username,
+                                isPrimary = primary == SyncServiceId.MDBLIST,
+                            )
+                            if (integrations?.let { it.trakt.connected || it.simkl.connected || it.mdblist.connected } != true) {
+                                Text(
+                                    text = "Connect a tracking service in the StreamDek mobile app or web portal " +
+                                        "to sync your watchlist and resume points to this TV.",
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
                         }
                     }
                     item {
@@ -422,7 +449,18 @@ fun AccountScreen(
                             TextLine("Settings Sync", bootstrap?.syncStatus?.lastSettingsSyncAt ?: "Ready")
                             TextLine("Cloud Sync", if (bootstrap?.syncStatus?.cloudSyncEnabled != false) "On" else "Off")
                             TextLine("Playback Sync", if (bootstrap?.syncStatus?.playbackSyncEnabled != false) "On" else "Off")
-                            TextLine("Trakt", if (bootstrap?.syncStatus?.traktConnected == true) "Connected" else "Not connected")
+                            TextLine(
+                                "Tracking",
+                                SyncServiceId.label(SyncServiceId.normalize(prefs?.home?.primarySyncService)).let { label ->
+                                    val connected = when (SyncServiceId.normalize(prefs?.home?.primarySyncService)) {
+                                        SyncServiceId.SIMKL -> bootstrap?.integrations?.simkl?.connected == true
+                                        SyncServiceId.MDBLIST -> bootstrap?.integrations?.mdblist?.connected == true
+                                        else -> bootstrap?.integrations?.trakt?.connected == true ||
+                                            bootstrap?.syncStatus?.traktConnected == true
+                                    }
+                                    if (connected) "$label  |  connected" else "$label  |  not connected"
+                                },
+                            )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.End,
@@ -866,6 +904,17 @@ private fun SettingsActionButton(
             },
         content = content,
     )
+}
+
+/** One tracking service and what it can currently do for this profile. */
+@Composable
+private fun TrackingServiceRow(service: String, connected: Boolean, username: String?, isPrimary: Boolean) {
+    val detail = buildString {
+        append(if (connected) "Connected" else "Not connected")
+        if (connected && !username.isNullOrBlank()) append("  |  $username")
+        if (isPrimary) append("  |  primary")
+    }
+    TextLine(SyncServiceId.label(service), detail)
 }
 
 @Composable

@@ -5,19 +5,23 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.streamdek.tv.BuildConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import okhttp3.CacheControl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 class AuthSessionStore(
     context: Context,
     private val gson: Gson = Gson(),
 ) {
-    private val appContext = context.applicationContext
+    internal val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences("streamdek_tv_native", Context.MODE_PRIVATE)
     private val authKey = "streamdek_tv_auth_session_v1"
     private val deviceIdKey = "streamdek_tv_device_id"
@@ -25,6 +29,7 @@ class AuthSessionStore(
     private val activeProfileIdKey = "streamdek_tv_active_profile_id"
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
+    private val handoffPublicKeyKey = "streamdek_tv_handoff_public_key_v1"
 
     private val _session = MutableStateFlow(loadSession())
     val session: StateFlow<AuthSession?> = _session
@@ -92,7 +97,23 @@ class AuthSessionStore(
 
     fun deviceName(): String = StreamDekDeviceIdentity.displayName(deviceId())
 
-    fun handoffPublicKey(): String = HandoffCrypto.publicKeyBase64()
+    /**
+     * The handoff key itself is still read straight from the keystore on every call so a
+     * regenerated key is picked up immediately. Only the failure path changed: a keystore that
+     * momentarily refuses to hand back the certificate used to abort the whole request, taking
+     * every unrelated API call down with it. The last key we successfully published is kept as a
+     * fallback so the app stays usable, and handoff keeps working as long as that key is current.
+     */
+    fun handoffPublicKey(): String? = runCatching { HandoffCrypto.publicKeyBase64() }
+        .onSuccess { key ->
+            if (key != preferences.getString(handoffPublicKeyKey, null)) {
+                preferences.edit().putString(handoffPublicKeyKey, key).apply()
+            }
+        }
+        .getOrElse { error ->
+            TvDebugLogger.w("Handoff", "public key unavailable; using last published key", error)
+            preferences.getString(handoffPublicKeyKey, null)?.takeIf { it.isNotBlank() }
+        }
 
     fun preferredStreamKey(mediaType: String, mediaId: String, episodeKey: String?): String? {
         return preferences.getString(streamPreferenceStorageKey(mediaType, mediaId, episodeKey), null)
@@ -117,13 +138,96 @@ class AuthSessionStore(
     }
 }
 
+/** How well the backend is currently answering, so screens can explain themselves to the viewer. */
+enum class ApiReachability {
+    /** The last request succeeded against the network. */
+    Online,
+
+    /** The network is unreachable but cached content is still being served. */
+    Cached,
+
+    /** The network is unreachable and nothing was cached. */
+    Offline,
+}
+
+/**
+ * Shared HTTP client. A disk cache is what makes the offline fallback possible: successful GETs
+ * are stored, and when the backend cannot be reached the same request is replayed against the
+ * cache so the viewer keeps the last good screen instead of an empty one.
+ */
+object StreamDekHttp {
+    private const val CACHE_BYTES = 24L * 1024 * 1024
+
+    @Volatile
+    private var cache: okhttp3.Cache? = null
+
+    @Volatile
+    private var instance: OkHttpClient? = null
+
+    fun client(context: Context): OkHttpClient = instance ?: synchronized(this) {
+        instance ?: build(context).also { instance = it }
+    }
+
+    /** Dropped on sign-out and profile switches so one viewer never sees another's cached rows. */
+    fun evictCache() {
+        runCatching { cache?.evictAll() }
+    }
+
+    private fun build(context: Context): OkHttpClient {
+        val httpCache = okhttp3.Cache(java.io.File(context.applicationContext.cacheDir, "streamdek-http"), CACHE_BYTES)
+        cache = httpCache
+        return OkHttpClient.Builder()
+            .cache(httpCache)
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(25, TimeUnit.SECONDS)
+            .writeTimeout(25, TimeUnit.SECONDS)
+            .callTimeout(45, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            // Most backend routes send no caching headers, so nothing would ever be stored and the
+            // offline replay below would always miss. Responses are given a short lifetime purely
+            // so they land in the cache; live requests always revalidate (see `noCache` below).
+            .addNetworkInterceptor { chain ->
+                val response = chain.proceed(chain.request())
+                if (chain.request().method != "GET" || response.header("Cache-Control") != null) {
+                    response
+                } else {
+                    response.newBuilder().header("Cache-Control", "private, max-age=300").build()
+                }
+            }
+            .build()
+    }
+}
+
 class StreamDekApi(
     @PublishedApi internal val sessionStore: AuthSessionStore,
-    @PublishedApi internal val client: OkHttpClient = OkHttpClient(),
+    @PublishedApi internal val client: OkHttpClient = StreamDekHttp.client(sessionStore.appContext),
     @PublishedApi internal val gson: Gson = Gson(),
     @PublishedApi internal val baseUrl: String = BuildConfig.STREAMDEK_API_URL.trimEnd('/'),
 ) {
     @PublishedApi internal val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+    private val _reachability = MutableStateFlow(ApiReachability.Online)
+
+    /** Drives the "showing saved content" notice; never blocks a screen on its own. */
+    val reachability: StateFlow<ApiReachability> = _reachability
+
+    private val _sessionExpired = MutableStateFlow(false)
+
+    /** Set once the backend has rejected the stored credentials, so the shell can ask for sign-in. */
+    val sessionExpired: StateFlow<Boolean> = _sessionExpired
+
+    /**
+     * Bumped whenever a request ends without a usable answer. Callers that fan out across many
+     * endpoints compare the value before and after to tell "the backend returned nothing" from
+     * "the backend was never reached", which are very different things to show a viewer.
+     */
+    @Volatile
+    var failureEpoch: Long = 0L
+        private set
+
+    fun clearSessionExpired() {
+        _sessionExpired.value = false
+    }
 
     suspend inline fun <reified T> get(path: String, session: AuthSession? = sessionStore.currentSession()): T? =
         request("GET", path, session = session)
@@ -145,22 +249,149 @@ class StreamDekApi(
         path: String,
         body: String? = null,
         session: AuthSession? = sessionStore.currentSession(),
-    ): T? = withContext(Dispatchers.IO) {
+    ): T? {
+        val raw = executeRaw(method, path, body, session) ?: return null
+        val type = object : TypeToken<T>() {}.type
+        return runCatching {
+            gson.fromJson<T>(raw, type)
+        }.onFailure {
+            noteParseFailure(path, raw, it)
+        }.getOrNull()
+    }
+
+    @PublishedApi
+    internal fun noteParseFailure(path: String, raw: String, error: Throwable) {
+        failureEpoch++
+        TvDebugLogger.e("Api", "json parse failed path=$path payload=${raw.take(240)}", error)
+    }
+
+    /**
+     * Runs one call and returns its body, or null when there is nothing usable to parse.
+     *
+     * GETs are safe to repeat, so they get a small retry budget for transport errors and for the
+     * 429/5xx answers a restarting backend produces, then fall back to the disk cache. Writes are
+     * never retried — a duplicated watchlist add or progress write is worse than a failed one.
+     */
+    @PublishedApi
+    internal suspend fun executeRaw(
+        method: String,
+        path: String,
+        body: String?,
+        session: AuthSession?,
+    ): String? = withContext(Dispatchers.IO) {
         TvDebugLogger.i(
             "Api",
             "request method=$method path=$path auth=${session != null} profile=${sessionStore.activeProfileId() ?: "none"}",
         )
+        val idempotent = method == "GET"
+        val attempts = if (idempotent) MAX_GET_ATTEMPTS else 1
+        var transportError: IOException? = null
+
+        for (attempt in 1..attempts) {
+            val response = runCatching { client.newCall(buildRequest(method, path, body, session)).execute() }
+                .getOrElse { error ->
+                    if (error !is IOException) throw error
+                    transportError = error
+                    TvDebugLogger.w("Api", "transport failure method=$method path=$path attempt=$attempt", error)
+                    null
+                }
+
+            if (response == null) {
+                if (attempt < attempts) delay(retryDelayMs(attempt))
+                continue
+            }
+
+            response.use {
+                if (it.isSuccessful) {
+                    val raw = it.body?.string()?.takeIf { payload -> payload.isNotBlank() }
+                    if (raw == null) {
+                        failureEpoch++
+                    } else {
+                        _reachability.value = ApiReachability.Online
+                        TvDebugLogger.d("Api", "response method=$method path=$path code=${it.code} bytes=${raw.length}")
+                    }
+                    return@withContext raw
+                }
+
+                val errorBody = runCatching { it.body?.string() }.getOrNull().orEmpty()
+                TvDebugLogger.w(
+                    "Api",
+                    "response method=$method path=$path code=${it.code} body=${errorBody.take(240)}",
+                )
+                if (it.code == 401 && session != null) confirmCredentialsRejected(path, session)
+                val retryable = idempotent && (it.code == 429 || it.code in 500..599)
+                if (!retryable || attempt == attempts) {
+                    failureEpoch++
+                    // A reachable backend that is refusing the request is not an offline device;
+                    // leave the reachability state alone so the viewer is not told they are offline.
+                    return@withContext null
+                }
+            }
+            delay(retryDelayMs(attempt))
+        }
+
+        failureEpoch++
+        val cached = transportError?.let { if (idempotent) readFromCache(method, path, body, session) else null }
+        _reachability.value = if (cached != null) ApiReachability.Cached else ApiReachability.Offline
+        cached
+    }
+
+    /**
+     * Replays a GET against the disk cache alone. Staleness is deliberately unbounded: an hour-old
+     * home screen is a far better answer than a blank one when the network is gone.
+     */
+    private fun readFromCache(method: String, path: String, body: String?, session: AuthSession?): String? =
+        runCatching {
+            val request = buildRequest(method, path, body, session)
+                .newBuilder()
+                .cacheControl(CacheControl.Builder().onlyIfCached().maxStale(Int.MAX_VALUE, TimeUnit.SECONDS).build())
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                response.body?.string()?.takeIf { it.isNotBlank() }
+            }
+        }.getOrNull().also {
+            if (it != null) TvDebugLogger.i("Api", "served from cache path=$path bytes=${it.length}")
+        }
+
+    /**
+     * A 401 does not always mean the sign-in has lapsed. The tracking-service routes answer 401
+     * for "this profile has not connected that service", which is an ordinary state and must never
+     * sign anybody out. Anything else is confirmed against `/auth/me` before the shell is told.
+     */
+    private suspend fun confirmCredentialsRejected(path: String, session: AuthSession) {
+        if (TRACKING_SERVICE_PREFIXES.any(path::startsWith)) {
+            TvDebugLogger.i("Api", "tracking service not connected path=$path")
+            return
+        }
+        if (path == AUTH_PROBE_PATH || _sessionExpired.value || !authProbeInFlight.compareAndSet(false, true)) return
+        try {
+            val probe = runCatching { client.newCall(buildRequest("GET", AUTH_PROBE_PATH, null, session)).execute() }
+                .getOrNull() ?: return
+            val rejected = probe.use { it.code == 401 || it.code == 403 }
+            if (rejected) {
+                TvDebugLogger.w("Api", "sign-in no longer valid; first seen on path=$path")
+                _sessionExpired.value = true
+            }
+        } finally {
+            authProbeInFlight.set(false)
+        }
+    }
+
+    private fun buildRequest(method: String, path: String, body: String?, session: AuthSession?): Request {
         val builder = Request.Builder()
             .url("$baseUrl$path")
             .header("Accept", "application/json")
+            // Always revalidate; the cache exists only for the offline replay above.
+            .cacheControl(CacheControl.Builder().noCache().build())
             .header("x-client-session-id", sessionStore.sessionId())
             .header("x-client-device-id", sessionStore.deviceId())
             .header("x-client-name", "StreamDek TV")
             .header("x-client-platform", "android-tv")
             .header("x-device-name", sessionStore.deviceName())
             .header("x-device-type", "tv")
-            .header("x-handoff-public-key", sessionStore.handoffPublicKey())
             .header("x-app-version", BuildConfig.VERSION_NAME)
+        sessionStore.handoffPublicKey()?.let { builder.header("x-handoff-public-key", it) }
         sessionStore.previousDeviceId()?.let { builder.header("x-previous-device-id", it) }
 
         if (session != null) {
@@ -172,31 +403,22 @@ class StreamDekApi(
         }
 
         val requestBody = body?.toRequestBody(jsonMediaType)
-        val request = when (method) {
+        return when (method) {
             "POST" -> builder.post(requestBody ?: "{}".toRequestBody(jsonMediaType))
             "PATCH" -> builder.patch(requestBody ?: "{}".toRequestBody(jsonMediaType))
             "PUT" -> builder.put(requestBody ?: "{}".toRequestBody(jsonMediaType))
             "DELETE" -> if (requestBody != null) builder.delete(requestBody) else builder.delete()
             else -> builder.get()
         }.build()
+    }
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                val errorBody = runCatching { response.body?.string() }.getOrNull().orEmpty()
-                TvDebugLogger.w(
-                    "Api",
-                    "response method=$method path=$path code=${response.code} body=${errorBody.take(240)}",
-                )
-                return@withContext null
-            }
-            val raw = response.body?.string()?.takeIf { it.isNotBlank() } ?: return@withContext null
-            TvDebugLogger.d("Api", "response method=$method path=$path code=${response.code} bytes=${raw.length}")
-            val type = object : TypeToken<T>() {}.type
-            runCatching {
-                gson.fromJson<T>(raw, type)
-            }.onFailure {
-                TvDebugLogger.e("Api", "json parse failed path=$path payload=${raw.take(240)}", it)
-            }.getOrNull()
-        }
+    private val authProbeInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    companion object {
+        private const val MAX_GET_ATTEMPTS = 3
+        private const val AUTH_PROBE_PATH = "/auth/me"
+        private val TRACKING_SERVICE_PREFIXES = listOf("/trakt/", "/simkl/", "/mdblist/")
+
+        internal fun retryDelayMs(attempt: Int): Long = 350L * (1L shl (attempt - 1))
     }
 }

@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,6 +46,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
+import androidx.tv.material3.Button
+import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
@@ -88,6 +91,8 @@ fun LibraryScreen(
     val scope = rememberCoroutineScope()
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    /** Bumped by the retry button so the load below runs again. */
+    var reloadToken by remember { mutableIntStateOf(0) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
     var featuredItem by remember { mutableStateOf<MediaItem?>(null) }
     var libraryTypeFilter by remember { mutableStateOf("all") }
@@ -95,7 +100,7 @@ fun LibraryScreen(
     val initialCardRequester = entryFocusRequester ?: localInitialCardRequester
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
+    LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, reloadToken) {
         suspend fun refresh() {
             error = null
             try {
@@ -236,6 +241,17 @@ fun LibraryScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
+                // The rows below are empty in this state, so without this the remote has nowhere
+                // to go and no way to ask for another attempt.
+                Button(
+                    onClick = { reloadToken++ },
+                    modifier = Modifier
+                        .padding(top = 10.dp)
+                        .focusRequester(initialCardRequester),
+                    shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                ) {
+                    Text("Try Again")
+                }
             }
         }
 
