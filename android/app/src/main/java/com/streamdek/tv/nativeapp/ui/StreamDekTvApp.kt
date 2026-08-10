@@ -5,7 +5,10 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.clipToBounds
+import com.streamdek.tv.nativeapp.ui.TvScroll
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
@@ -966,15 +969,24 @@ private fun TvSideNav(
 ) {
     var highlightedRoute by remember { mutableStateOf(currentRoute) }
     var navHasFocus by remember { mutableStateOf(false) }
+    val navScope = rememberCoroutineScope()
     val itemRequesters = remember(destinations, profileFocusRequester) {
         destinations.associateWith { destination ->
             if (destination == TopLevelDestination.Profile) profileFocusRequester else FocusRequester()
         }
     }
+    // One curve for the whole rail. The width used a short linear-ish tween while the labels
+    // popped in and out with no animation at all, so the panel and its contents moved on
+    // different clocks — which is what read as chop rather than as a slide.
     val railWidth by animateDpAsState(
         targetValue = if (navHasFocus) 196.dp else 64.dp,
-        animationSpec = tween(TvMotion.duration(150)),
+        animationSpec = TvScroll.spec(TvMotion.duration(260)),
         label = "side-nav-width",
+    )
+    val labelAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (navHasFocus) 1f else 0f,
+        animationSpec = TvScroll.spec(TvMotion.duration(220)),
+        label = "side-nav-label",
     )
 
     LaunchedEffect(currentRoute) {
@@ -992,8 +1004,13 @@ private fun TvSideNav(
                         ?: FocusRequester.Default
                 }
             }
+            // `enter` is only consulted for a focus group. Without this the rail was an ordinary
+            // container, so returning to it used plain spatial navigation and landed on whichever
+            // item was nearest — in practice always Home — instead of the page you are on.
+            .focusGroup()
             .onFocusChanged { navHasFocus = it.hasFocus }
             .background(TvChromeSurface)
+            .clipToBounds()
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,
     ) {
@@ -1005,7 +1022,15 @@ private fun TvSideNav(
                     .height(46.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(
-                        if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent,
+                        androidx.compose.animation.animateColorAsState(
+                            targetValue = if (highlighted) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                            } else {
+                                Color.Transparent
+                            },
+                            animationSpec = TvScroll.spec(TvMotion.duration(200)),
+                            label = "side-nav-highlight",
+                        ).value,
                     )
                     .focusRequester(itemRequesters.getValue(destination))
                     .onPreviewKeyEvent { event ->
@@ -1020,7 +1045,16 @@ private fun TvSideNav(
                     .onFocusChanged {
                         if (it.isFocused) highlightedRoute = destination.route
                     }
-                    .clickable { onNavigate(destination.route) }
+                    .clickable {
+                        onNavigate(destination.route)
+                        // Hand focus to the page that was just opened. The rail collapses as a
+                        // consequence of losing focus, which is what makes selecting a destination
+                        // feel like arriving somewhere rather than leaving the menu open behind you.
+                        navScope.launch {
+                            delay(120)
+                            runCatching { contentRequesters[destination.route]?.requestFocus() }
+                        }
+                    }
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -1045,13 +1079,15 @@ private fun TvSideNav(
                         }
                     }
                 }
-                if (navHasFocus) {
+                if (labelAlpha > 0.01f) {
                     Spacer(Modifier.width(12.dp))
                     Text(
                         text = destination.label,
-                        color = if (highlighted) Color.White else MaterialTheme.colorScheme.onBackground,
+                        color = (if (highlighted) Color.White else MaterialTheme.colorScheme.onBackground)
+                            .copy(alpha = labelAlpha),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         maxLines = 1,
+                        softWrap = false,
                     )
                 }
             }

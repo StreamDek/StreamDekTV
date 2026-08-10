@@ -141,7 +141,9 @@ fun SettingsScreen(
 
     CompositionLocalProvider(LocalSettingsLeftRequester provides selectedRequester) {
     Row(
-        Modifier.fillMaxSize().background(TvChromeSurface).padding(start = 18.dp, end = 92.dp, top = 18.dp, bottom = 24.dp),
+        // Clears the clock at the top right, then uses the rest of the screen. The old 92dp right
+        // inset was reserving space nothing occupied.
+        Modifier.fillMaxSize().background(TvChromeSurface).padding(start = 18.dp, end = 28.dp, top = 56.dp, bottom = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(22.dp),
     ) {
         Column(Modifier.width(238.dp).fillMaxHeight()) {
@@ -368,7 +370,6 @@ private fun SettingsOverviewCard(destination: SettingsDestination, status: Strin
     ) {
         Box(Modifier.size(46.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(destination.icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(25.dp)) }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) { Text(destination.label, color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black)); Text(destination.description, color = Color.White.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium); status?.let { Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall) } }
-        Text("Recommended defaults in context", color = Color.White.copy(alpha = 0.42f), style = MaterialTheme.typography.bodySmall)
     }
 }
 

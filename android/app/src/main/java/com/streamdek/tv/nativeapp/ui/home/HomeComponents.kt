@@ -21,6 +21,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,10 +65,13 @@ import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 internal val HomeInset = TvSpacing.ScreenHorizontal
 
 /**
- * Height the spotlight occupies. Fixed and known, which is the point: the rails below take the
+ * Height the spotlight occupies. Fixed and known, which is the point: the shelves below take the
  * remaining height with a weight, so nothing depends on guessing where the hero ends.
+ *
+ * Sized so exactly two shelves fit underneath — the focused one at full height and the next
+ * collapsed. A third partially visible row read as clutter rather than as an affordance.
  */
-internal val SpotlightHeight = 226.dp
+internal val SpotlightHeight = 276.dp
 
 /**
  * Card geometry. Every card of a given shape is the same size everywhere on the screen and stays
@@ -163,7 +168,7 @@ internal fun HomeSpotlight(
                 text = it,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
-                maxLines = 2,
+                maxLines = 4,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -235,6 +240,17 @@ internal fun HomeShelf(
         onFocusItemHandled()
     }
 
+    // Keeps the focused card at the leading edge as the viewer travels the row, on the same
+    // curve the vertical movement uses, so horizontal and vertical motion feel like one system.
+    var focusedIndex by androidx.compose.runtime.remember(row.id) { androidx.compose.runtime.mutableIntStateOf(0) }
+    LaunchedEffect(focusedIndex, rowItems.size) {
+        rowState.animateToAnchoredItem(
+            focusedIndex = focusedIndex,
+            itemCount = rowItems.size,
+            leadingItems = 0,
+        )
+    }
+
     val titleAlpha by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (compact) 0.55f else 1f,
         animationSpec = tween(TvMotion.duration(160)),
@@ -276,7 +292,10 @@ internal fun HomeShelf(
                     NetworkCard(
                         item = item,
                         modifier = Modifier.focusRequester(effective).width(size).height(cardHeight),
-                        onFocused = { onItemFocused(index, item) },
+                        onFocused = {
+                            focusedIndex = index
+                            onItemFocused(index, item)
+                        },
                         onPressed = { onItemPressed(item) },
                     )
                 } else {
@@ -295,7 +314,10 @@ internal fun HomeShelf(
                             .tvCardLongPress { onItemMenu(item, effective) },
                         onClick = { onItemPressed(item) },
                         onLongPress = { onItemMenu(item, effective) },
-                        onFocused = { onItemFocused(index, item) },
+                        onFocused = {
+                            focusedIndex = index
+                            onItemFocused(index, item)
+                        },
                     )
                 }
             }
@@ -322,7 +344,8 @@ private fun NetworkCard(
             pressedContainerColor = Color.White,
         ),
         border = CardDefaults.border(
-            border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)), shape = AppCardShape),
+            // No resting outline on any card in the app.
+            border = Border.None,
             focusedBorder = Border(
                 BorderStroke(
                     if (LocalTvExperienceSettings.current.highContrast) 3.dp else 2.dp,

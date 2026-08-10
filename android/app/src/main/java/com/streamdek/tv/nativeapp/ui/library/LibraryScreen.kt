@@ -274,13 +274,19 @@ fun LibraryScreen(
                     itemsIndexed(items, key = { _, item -> libraryItemKey(item) }) { index, item ->
                         val requester = cardRequesters.getOrPut(libraryItemKey(item)) { FocusRequester() }
                         val effective = if (index == 0) firstCardRequester else requester
+                        val watchlistPoster = section == LibrarySection.Watchlist
                         PremiumMediaCard(
                             item = item,
-                            variant = if (section == LibrarySection.Continue) {
-                                TvMediaCardVariant.ContinueWatching
-                            } else {
+                            variant = if (watchlistPoster) {
                                 TvMediaCardVariant.Poster
+                            } else {
+                                TvMediaCardVariant.ContinueWatching
                             },
+                            // Watchlist entries carry no progress and need no title: the poster is
+                            // the identifier, so only the year and rating sit over it.
+                            showLabels = !watchlistPoster,
+                            metaOnTop = watchlistPoster,
+                            metaOnTopAlignment = androidx.compose.ui.Alignment.TopCenter,
                             modifier = Modifier
                                 .focusRequester(effective)
                                 .width(LibraryCardWidth)

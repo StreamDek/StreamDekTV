@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
@@ -51,6 +53,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.tv.material3.Button
@@ -70,6 +73,8 @@ import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TraktCommentItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
+import com.streamdek.tv.nativeapp.ui.glideToItem
 import com.streamdek.tv.nativeapp.ui.launchExternalIntent
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -91,6 +96,7 @@ import kotlinx.coroutines.supervisorScope
  *    (two of them large radial shaders) that was redrawn every frame over a full-bleed image.
  *    That stack was the main reason this screen felt heavier than the rest of the app on a stick.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun DetailScreen(
     repository: StreamDekRepository,
@@ -297,13 +303,40 @@ fun DetailScreen(
 
             is DetailUiState.Ready -> {
                 val d = state.detail
+                // The bands actually on screen, in order. Needed because Episodes only exists for
+                // series and any section can be absent, so "the row before this one" cannot be
+                // derived from a fixed list.
+                val bandIds = remember(d.id, d.seasons.size, d.cast.size, d.similarTitles.size, comments.size) {
+                    buildList {
+                        if (d.type == "tv" && d.seasons.isNotEmpty()) add("episodes")
+                        if (d.cast.isNotEmpty()) add("cast")
+                        if (d.similarTitles.isNotEmpty()) add("similar")
+                        if (comments.isNotEmpty()) add("comments")
+                    }
+                }
+
+                // Keep exactly one row of history on screen.
+                //
+                // The focused row sits second in the viewport with the previous row minified above
+                // it, and everything earlier scrolls up under the pinned hero. That gives a sense
+                // of place — you can always see where you just came from — without letting three
+                // collapsed rows eat the space the focused one needs.
+                LaunchedEffect(focusedRow, bandIds) {
+                    val index = bandIds.indexOf(focusedRow)
+                    listState.glideToItem(if (index < 0) 0 else (index - 1).coerceAtLeast(0))
+                }
                 // The hero sits outside the scrolling container.
                 //
                 // Anything inside a lazy list gets scrolled to when it takes focus, and since focus
                 // opens on Play that dragged the poster and title clean off the top of the screen.
                 // Pinning the hero removes the possibility rather than fighting it: only the
                 // sections below can move, and the title is always the first thing on screen.
-                Column(Modifier.fillMaxSize().padding(top = if (heroFocused) 72.dp else 28.dp)) {
+                val heroTop by androidx.compose.animation.core.animateDpAsState(
+                    targetValue = if (heroFocused) 72.dp else 28.dp,
+                    animationSpec = androidx.compose.animation.core.tween(220),
+                    label = "hero-top",
+                )
+                Column(Modifier.fillMaxSize().padding(top = heroTop)) {
                     DetailHero(
                             compact = !heroFocused,
                             onFocusChanged = {
@@ -386,6 +419,11 @@ fun DetailScreen(
 
                         Spacer(Modifier.height(26.dp))
 
+                        // The bands position this list themselves, so the focus system must not
+                        // also move it — that second scroll is the visible double-step.
+                        androidx.compose.runtime.CompositionLocalProvider(
+                            androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides SuppressBringIntoView,
+                        ) {
                         LazyColumn(
                             state = listState,
                             // weight, not fillMaxSize: as the second child of a Column, filling
@@ -465,6 +503,7 @@ fun DetailScreen(
                 }
             }
         }
+        }
 
         shareSheet?.let { sheet ->
             ShareDialog(
@@ -502,6 +541,7 @@ fun DetailScreen(
 }
 
 /** Poster, copy and actions as one band: everything needed to decide and press play. */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun DetailHero(
     detail: MediaDetail,
@@ -520,9 +560,29 @@ private fun DetailHero(
     onTrailer: () -> Unit,
     onShare: () -> Unit,
 ) {
+    val heroTween = androidx.compose.animation.core.tween<Dp>(220)
+    val posterWidth by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (compact) 0.dp else 188.dp,
+        animationSpec = heroTween,
+        label = "hero-poster",
+    )
+    val logoHeight by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (compact) 44.dp else 74.dp,
+        animationSpec = heroTween,
+        label = "hero-logo",
+    )
+    val heroSpacing by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (compact) 10.dp else 14.dp,
+        animationSpec = heroTween,
+        label = "hero-spacing",
+    )
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // Coming back up from the bands below lands on Play every time, rather than on
+            // whichever secondary icon happened to be nearest the column the viewer came from.
+            .focusProperties { enter = { playRequester } }
             .onFocusChanged { onFocusChanged(it.hasFocus) }
             .padding(horizontal = DetailInset),
         horizontalArrangement = Arrangement.spacedBy(if (compact) 20.dp else 30.dp),
@@ -533,13 +593,13 @@ private fun DetailHero(
 
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 14.dp),
+            verticalArrangement = Arrangement.spacedBy(heroSpacing),
         ) {
             if (!detail.titleLogo.isNullOrBlank()) {
                 AsyncImage(
                     model = detail.titleLogo,
                     contentDescription = detail.title,
-                    modifier = Modifier.height(if (compact) 44.dp else 74.dp),
+                    modifier = Modifier.height(logoHeight),
                     contentScale = ContentScale.Fit,
                 )
             } else {
@@ -552,14 +612,16 @@ private fun DetailHero(
                 )
             }
 
-            if (!compact) detail.tagline?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.90f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            HeroDetailVisibility(visible = !compact) {
+                detail.tagline?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.90f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -583,18 +645,22 @@ private fun DetailHero(
                 )
             }
 
-            if (!compact) detail.description?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.80f),
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.width(720.dp),
-                )
+            HeroDetailVisibility(visible = !compact) {
+                detail.description?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.80f),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.width(720.dp),
+                    )
+                }
             }
 
-            if (!compact) progressFraction?.takeIf { it > 0f }?.let { ResumeProgress(it, progressLabel) }
+            HeroDetailVisibility(visible = !compact) {
+                progressFraction?.takeIf { it > 0f }?.let { ResumeProgress(it, progressLabel) }
+            }
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -602,8 +668,22 @@ private fun DetailHero(
             ) {
                 Button(
                     onClick = onPlay,
-                    modifier = Modifier.focusRequester(playRequester).height(48.dp),
+                    // Roughly a third wider than the label needs, and 15% shorter than it was. It
+                    // is the one action that matters on this screen and should read as the primary
+                    // target rather than the first of five equal buttons.
+                    modifier = Modifier.focusRequester(playRequester).height(41.dp).widthIn(min = 196.dp),
                     shape = ButtonDefaults.shape(AppPillShape),
+                    // Stays white in every state. Tinting it with the theme accent on focus made
+                    // the primary action change identity as the highlight landed on it; a slight
+                    // step to off-white reads as "selected" without that.
+                    colors = ButtonDefaults.colors(
+                        containerColor = Color.White,
+                        contentColor = Color(0xFF101013),
+                        focusedContainerColor = Color(0xFFEDEDEA),
+                        focusedContentColor = Color(0xFF101013),
+                        pressedContainerColor = Color(0xFFE2E2DF),
+                        pressedContentColor = Color(0xFF101013),
+                    ),
                 ) {
                     Text(
                         text = if ((progressFraction ?: 0f) > 0f) "Resume" else "Play",
@@ -631,6 +711,26 @@ private fun DetailHero(
                 HeroAction(Icons.Rounded.Share, "Share", false, onShare)
             }
         }
+    }
+}
+
+
+/**
+ * Fades and collapses the parts of the hero that only exist at full size.
+ *
+ * Dropping them from the composition outright made the hero snap between two layouts; expanding
+ * and shrinking the height means the rows below slide rather than jump.
+ */
+@Composable
+private fun HeroDetailVisibility(visible: Boolean, content: @Composable () -> Unit) {
+    androidx.compose.animation.AnimatedVisibility(
+        visible = visible,
+        enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)) +
+            androidx.compose.animation.expandVertically(androidx.compose.animation.core.tween(220)),
+        exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(140)) +
+            androidx.compose.animation.shrinkVertically(androidx.compose.animation.core.tween(220)),
+    ) {
+        content()
     }
 }
 

@@ -49,6 +49,7 @@ import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.TvSpacing
+import com.streamdek.tv.nativeapp.ui.glideToItem
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -290,19 +291,14 @@ fun HomeScreen(
                     if (rows.isEmpty()) return@LaunchedEffect
                     val target = rows.indexOfFirst { it.id == activeRowId }.takeIf { it >= 0 }
                         ?: return@LaunchedEffect
-                    // Scroll only when the active shelf is not already fully on screen.
+                    // The focused shelf is pinned to the top of the viewport, so the row being
+                    // left goes fully out of view rather than lingering half on screen. Anything
+                    // partly visible above the active row reads as clutter on a TV and makes the
+                    // row you are actually using look like it is somewhere in the middle.
                     //
-                    // Pinning it to the top on every change looked fine until rows started
-                    // arriving progressively: a shelf resolving above the focused one shifts its
-                    // index, and the unconditional scroll then yanked the whole screen to chase
-                    // it, hiding the row that had just appeared.
-                    val visible = shelfListState.layoutInfo.visibleItemsInfo
-                    val entry = visible.firstOrNull { it.index == target }
-                    val viewportEnd = shelfListState.layoutInfo.viewportEndOffset
-                    val fullyVisible = entry != null && entry.offset >= 0 && entry.offset + entry.size <= viewportEnd
-                    if (!fullyVisible) {
-                        shelfListState.animateScrollToItem(target)
-                    }
+                    // Safe to do unconditionally now that the active shelf is tracked by id: the
+                    // earlier version chased a shifting index while rows were still arriving.
+                    shelfListState.glideToItem(target)
                 }
             }
 

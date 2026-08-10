@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp.ui
 
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.focus.FocusRequester
@@ -57,6 +58,56 @@ object TvMotion {
     fun focusScale(): Float = 1f
 }
 val AppPillShape = RoundedCornerShape(999.dp)
+
+
+/**
+ * Motion shared by every scrolling surface.
+ *
+ * Two things made row-to-row movement feel like a cut rather than a glide. The focus system runs
+ * its own `bringIntoView` scroll the instant focus lands on an off-screen child, and screens that
+ * also position rows themselves then ran a second scroll on top of it — two animations, different
+ * curves, same axis. And `animateScrollToItem` takes no easing, so long moves arrived abruptly.
+ *
+ * [SuppressBringIntoView] hands the axis to whoever is positioning rows explicitly, and
+ * [glideToItem] gives every one of those a single consistent curve.
+ */
+object TvScroll {
+    const val DurationMs = 340
+
+    val Easing = androidx.compose.animation.core.CubicBezierEasing(0.22f, 0.9f, 0.24f, 1f)
+
+    fun <T> spec(durationMs: Int = DurationMs): androidx.compose.animation.core.TweenSpec<T> =
+        androidx.compose.animation.core.tween(durationMs, easing = Easing)
+}
+
+/**
+ * Stops the focus system scrolling an axis, for lists that position themselves.
+ *
+ * Provide this around a list whose scroll position is driven by an effect. Without it the focus
+ * system moves the list first and the effect corrects it a frame later, which is the visible
+ * double-step.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+val SuppressBringIntoView = object : androidx.compose.foundation.gestures.BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
+}
+
+/** Scrolls [index] to the top of the viewport on one easing curve. */
+suspend fun androidx.compose.foundation.lazy.LazyListState.glideToItem(
+    index: Int,
+    durationMs: Int = TvScroll.DurationMs,
+) {
+    val entry = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+    if (entry != null && entry.offset != 0) {
+        // Already on screen: scroll by the exact delta so the curve is ours end to end.
+        animateScrollBy(
+            value = entry.offset.toFloat(),
+            animationSpec = TvScroll.spec<Float>(durationMs),
+        )
+    } else if (entry == null) {
+        animateScrollToItem(index)
+    }
+}
 
 /**
  * Chrome surfaces — the navigation rail, control columns and settings sidebar.

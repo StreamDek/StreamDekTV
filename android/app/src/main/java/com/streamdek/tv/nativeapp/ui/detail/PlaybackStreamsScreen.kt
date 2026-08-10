@@ -2,27 +2,26 @@ package com.streamdek.tv.nativeapp.ui.detail
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -43,6 +42,7 @@ import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
+import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -60,6 +60,11 @@ import com.streamdek.tv.nativeapp.data.matchFusionBadges
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.FusionBadgeRow
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
+import com.streamdek.tv.nativeapp.ui.TvMotion
+import com.streamdek.tv.nativeapp.ui.TvSkeletonBox
+import com.streamdek.tv.nativeapp.ui.TvSpacing
+import com.streamdek.tv.nativeapp.ui.search.SearchChip
 
 private sealed interface PlaybackStreamsUiState {
     data object Loading : PlaybackStreamsUiState
@@ -72,6 +77,40 @@ private sealed interface PlaybackStreamsUiState {
     data class Error(val message: String) : PlaybackStreamsUiState
 }
 
+private val StreamsInset = TvSpacing.ScreenHorizontal
+
+private val QualityPattern = Regex("""(2160p|1080p|720p|480p|4k|uhd)""", RegexOption.IGNORE_CASE)
+private val SizePattern = Regex("""(\d+(?:[.,]\d+)?)\s?(GB|MB)""", RegexOption.IGNORE_CASE)
+
+/**
+ * Quality and size as shown in the columns.
+ *
+ * Add-ons rarely populate the dedicated fields — the information is almost always inside the
+ * release name — so the row fell back to a dash on nearly every line. Reading it out of the label
+ * makes the columns worth having; when a value genuinely is not there the column is dropped for
+ * the whole list rather than filled with placeholders.
+ */
+internal fun streamQualityLabel(stream: AddonStream, label: String): String? =
+    stream.quality?.takeIf { it.isNotBlank() }
+        ?: QualityPattern.find(label)?.value?.uppercase()?.replace("UHD", "2160P")
+
+internal fun streamSizeLabel(stream: AddonStream, label: String): String? =
+    stream.size?.takeIf { it.isNotBlank() }
+        ?: SizePattern.find(label)?.let { "${it.groupValues[1]} ${it.groupValues[2].uppercase()}" }
+
+/**
+ * Stream picker.
+ *
+ * This is a decision list, not a browse screen, and it is rebuilt to read like one. The layout it
+ * replaces gave a fixed 430dp column to metadata the viewer had just read on the detail page and
+ * left the streams — the only thing being chosen between — squeezed into what was left. Here the
+ * title compresses to one header strip and the list gets the width.
+ *
+ * Each row is laid out on a fixed grid: source, then description, then quality, size and
+ * availability in aligned columns. Scanning down a column to compare is the whole task, and the
+ * previous free-flowing chips made that impossible — the same fact sat in a different place on
+ * every row.
+ */
 @Composable
 fun PlaybackStreamsScreen(
     repository: StreamDekRepository,
@@ -87,28 +126,29 @@ fun PlaybackStreamsScreen(
         )
     }
     var detail by remember(request) { mutableStateOf(cachedDetail) }
-    var refreshGeneration by remember(request) { mutableStateOf(0) }
+    var refreshGeneration by remember(request) { mutableIntStateOf(0) }
     val firstCardRequester = remember(request) { FocusRequester() }
+    val firstTabRequester = remember(request) { FocusRequester() }
     val context = androidx.compose.ui.platform.LocalContext.current
 
     val bootstrap by repository.bootstrap.collectAsState()
     val fusionBadgeSourcesByUrl by repository.fusionBadgeSources.collectAsState()
     val streamsPrefs = bootstrap?.preferences?.streams ?: StreamsPreferences()
-    val activeFusionBadgeSources = remember(streamsPrefs.fusionBadgeUrls, streamsPrefs.activeFusionBadgeUrl, fusionBadgeSourcesByUrl) {
+    val activeFusionBadgeSources = remember(
+        streamsPrefs.fusionBadgeUrls, streamsPrefs.activeFusionBadgeUrl, fusionBadgeSourcesByUrl,
+    ) {
         val urls = streamsPrefs.fusionBadgeUrls
         val active = streamsPrefs.activeFusionBadgeUrl
-        // When multiple imports exist and one was chosen as active, match badges
-        // against that source only; otherwise merge all configured sources.
+        // When multiple imports exist and one was chosen as active, match badges against that
+        // source only; otherwise merge all configured sources.
         val effectiveUrls = if (urls.size > 1 && !active.isNullOrBlank() && urls.contains(active)) listOf(active) else urls
         effectiveUrls.mapNotNull { fusionBadgeSourcesByUrl[it] }
     }
 
-    LaunchedEffect(Unit) {
-        repository.ensureFusionBadgeSourcesLoaded()
-    }
+    LaunchedEffect(Unit) { repository.ensureFusionBadgeSourcesLoaded() }
 
-    // Detail metadata loads alongside the stream lookup rather than gating it, so the
-    // first streams can render as soon as any addon answers.
+    // Metadata loads alongside the stream lookup rather than gating it, so the first streams can
+    // render as soon as any addon answers.
     LaunchedEffect(request) {
         if (detail == null) {
             detail = runCatching { repository.fetchDetail(request.mediaId, request.mediaType) }.getOrNull()
@@ -120,7 +160,6 @@ fun PlaybackStreamsScreen(
             uiState = PlaybackStreamsUiState.Ready(detail, candidate)
             return@LaunchedEffect
         }
-
         uiState = PlaybackStreamsUiState.Loading
         runCatching {
             repository.streamCandidates(
@@ -151,34 +190,20 @@ fun PlaybackStreamsScreen(
         }
     }
 
-    // Keep the detail panel in sync once metadata resolves after the first streams.
     LaunchedEffect(detail) {
         (uiState as? PlaybackStreamsUiState.Ready)?.let { ready ->
-            if (ready.detail == null && detail != null) {
-                uiState = ready.copy(detail = detail)
-            }
+            if (ready.detail == null && detail != null) uiState = ready.copy(detail = detail)
         }
-    }
-
-    LaunchedEffect(detail) {
-        buildList {
-            detail?.backdrop?.let(::add)
-            detail?.poster?.let(::add)
-        }.distinct().take(6).forEach { url ->
+        detail?.backdrop?.let { url ->
             context.imageLoader.enqueue(
-                ImageRequest.Builder(context)
-                    .data(url)
-                    .memoryCacheKey(url)
-                    .diskCacheKey(url)
-                    .crossfade(false)
-                    .allowHardware(true)
-                    .build(),
+                ImageRequest.Builder(context).data(url).memoryCacheKey(url).diskCacheKey(url)
+                    .crossfade(false).allowHardware(true).build(),
             )
         }
     }
 
-    // Focus the first card once, when results first appear. Later batches must not
-    // yank focus back while the viewer is already browsing the list.
+    // Focus the first row once, when results first appear. Later batches must not yank focus back
+    // while the viewer is already reading the list.
     var initialFocusApplied by remember(request) { mutableStateOf(false) }
     val hasStreams = (uiState as? PlaybackStreamsUiState.Ready)?.candidate?.streams?.isNotEmpty() == true
     LaunchedEffect(hasStreams) {
@@ -190,7 +215,6 @@ fun PlaybackStreamsScreen(
     }
 
     val ready = uiState as? PlaybackStreamsUiState.Ready
-    val overview = request.episode?.overview ?: detail?.description
     val streamRows = ready?.candidate?.streams.orEmpty().filter { stream ->
         if (!repository.isPlayableStreamOption(stream)) {
             false
@@ -199,24 +223,30 @@ fun PlaybackStreamsScreen(
         } else {
             val url = stream.url
             if (url != null && stream.infoHash == null && stream.size == null) {
-                val cleanUrl = url.substringBefore('?').lowercase()
-                !cleanUrl.endsWith(".m3u8")
+                !url.substringBefore('?').lowercase().endsWith(".m3u8")
             } else {
                 true
             }
         }
     }
-    val addonNames = remember(streamRows) {
-        streamRows.map { it.addonName.ifBlank { "Other" } }.distinct()
-    }
-    val sourceTabs = remember(addonNames) {
-        if (addonNames.size <= 1) emptyList() else listOf("All") + addonNames
-    }
-    // Keyed to the request, not the stream list: progressive batches must not reset
-    // the viewer's chosen source tab.
+    val addonNames = remember(streamRows) { streamRows.map { it.addonName.ifBlank { "Other" } }.distinct() }
+    val sourceTabs = remember(addonNames) { if (addonNames.size <= 1) emptyList() else listOf("All") + addonNames }
+    // Keyed to the request, not the stream list: progressive batches must not reset the chosen tab.
     var selectedTab by remember(request) { mutableStateOf("All") }
-    val filteredStreams = if (sourceTabs.isEmpty() || selectedTab == "All") streamRows
-        else streamRows.filter { it.addonName.ifBlank { "Other" } == selectedTab }
+    val filteredStreams = if (sourceTabs.isEmpty() || selectedTab == "All") {
+        streamRows
+    } else {
+        streamRows.filter { it.addonName.ifBlank { "Other" } == selectedTab }
+    }
+
+    // Decided across the whole list so the columns line up and empty ones disappear entirely.
+    val anyQuality = remember(filteredStreams) {
+        filteredStreams.any { streamQualityLabel(it, repository.describeStreamOption(it)) != null }
+    }
+    val anySize = remember(filteredStreams, streamsPrefs.showSizeBadges) {
+        streamsPrefs.showSizeBadges &&
+            filteredStreams.any { streamSizeLabel(it, repository.describeStreamOption(it)) != null }
+    }
 
     LaunchedEffect(selectedTab) {
         if (filteredStreams.isNotEmpty() && initialFocusApplied) {
@@ -225,180 +255,121 @@ fun PlaybackStreamsScreen(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-    ) {
-        if (!detail?.backdrop.isNullOrBlank()) {
+    val backgroundColor = MaterialTheme.colorScheme.background
+
+    Box(Modifier.fillMaxSize().background(backgroundColor)) {
+        detail?.backdrop?.takeIf { it.isNotBlank() }?.let { backdrop ->
             AsyncImage(
-                model = detail?.backdrop,
+                model = backdrop,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
         }
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .drawWithCache {
-                    val leftFade = Brush.horizontalGradient(
-                        colors = listOf(Color(0xF0040404), Color(0xC0040404), Color.Transparent),
-                        endX = size.width * 0.62f,
-                    )
-                    val verticalFade = Brush.verticalGradient(
-                        colors = listOf(Color(0x65040404), Color(0xC8040404), Color(0xFF040404)),
-                        startY = size.height * 0.18f,
-                    )
-                    onDrawBehind {
-                        drawRect(leftFade)
-                        drawRect(verticalFade)
-                    }
+            Modifier.fillMaxSize().drawWithCache {
+                val wash = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to backgroundColor.copy(alpha = 0.82f),
+                        0.35f to backgroundColor.copy(alpha = 0.95f),
+                        1f to backgroundColor,
+                    ),
+                )
+                onDrawBehind { drawRect(wash) }
+            },
+        )
+
+        Column(Modifier.fillMaxSize()) {
+            StreamsHeader(
+                detail = detail,
+                request = request,
+                pendingSources = ready?.pendingSources ?: 0,
+                streamCount = filteredStreams.size,
+                onReload = {
+                    selectedTab = "All"
+                    initialFocusApplied = false
+                    uiState = PlaybackStreamsUiState.Loading
+                    refreshGeneration += 1
                 },
-        )
+            )
 
-        when (val state = uiState) {
-            PlaybackStreamsUiState.Loading -> {
+            if (sourceTabs.isNotEmpty()) {
                 Row(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(start = 40.dp, end = 40.dp, top = 36.dp, bottom = 44.dp),
-                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .focusGroup()
+                        .padding(horizontal = StreamsInset, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .width(430.dp)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        StreamsInfoPanel(detail, request, overview)
-                    }
-                    LazyColumn(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                        contentPadding = PaddingValues(bottom = 48.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        item("title") {
-                            Text(
-                                text = "Streams",
-                                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
-                                color = MaterialTheme.colorScheme.onBackground,
-                            )
-                        }
-                        item("loading") {
-                            LoadingStreamsCard()
-                        }
+                    sourceTabs.forEachIndexed { index, tab ->
+                        SearchChip(
+                            label = tab,
+                            selected = tab == selectedTab,
+                            modifier = if (index == 0) Modifier.focusRequester(firstTabRequester) else Modifier,
+                            onClick = { selectedTab = tab },
+                        )
                     }
                 }
             }
-            is PlaybackStreamsUiState.Error -> DetailError(state.message)
-            is PlaybackStreamsUiState.Ready -> {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(start = 40.dp, end = 40.dp, top = 36.dp, bottom = 44.dp),
-                    horizontalArrangement = Arrangement.spacedBy(28.dp),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .width(430.dp)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        StreamsInfoPanel(detail, request, overview)
-                    }
 
-                    // Right column: title + tabs pinned, stream cards scroll below
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = when {
-                                    filteredStreams.isNotEmpty() -> "Streams"
-                                    state.pendingSources > 0 -> "Searching sources…"
-                                    else -> "No streams found"
-                                },
-                                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
-                                color = MaterialTheme.colorScheme.onBackground,
-                            )
-                            ReloadSourcesButton(
-                                loading = state.pendingSources > 0,
-                                onClick = {
-                                    selectedTab = "All"
-                                    initialFocusApplied = false
-                                    uiState = PlaybackStreamsUiState.Loading
-                                    refreshGeneration += 1
-                                },
-                            )
-                            // Non-blocking hint: results keep filling in behind it.
-                            if (state.pendingSources > 0) {
-                                Text(
-                                    text = "${state.pendingSources} source${if (state.pendingSources == 1) "" else "s"} still loading",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                                )
-                            }
+            when (val state = uiState) {
+                PlaybackStreamsUiState.Loading -> StreamsSkeleton()
+
+                is PlaybackStreamsUiState.Error -> DetailError(
+                    message = state.message,
+                    onRetry = {
+                        initialFocusApplied = false
+                        uiState = PlaybackStreamsUiState.Loading
+                        refreshGeneration += 1
+                    },
+                    onBack = onBack,
+                )
+
+                is PlaybackStreamsUiState.Ready -> LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+                    contentPadding = PaddingValues(
+                        start = StreamsInset, end = StreamsInset, top = 6.dp, bottom = 64.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (filteredStreams.isEmpty()) {
+                        // Only declare "nothing found" once every source has replied.
+                        if (state.pendingSources > 0) {
+                            item("loading") { StreamRowSkeleton() }
+                        } else {
+                            item("empty") { NoStreamsRow(onReload = { refreshGeneration += 1 }) }
                         }
-                        if (sourceTabs.isNotEmpty()) {
-                            LazyRow(
-                                modifier = Modifier.fillMaxWidth().focusGroup(),
-                                contentPadding = PaddingValues(vertical = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                itemsIndexed(sourceTabs) { _, tab ->
-                                    SourceTabChip(
-                                        label = tab,
-                                        selected = tab == selectedTab,
-                                        onClick = { selectedTab = tab },
+                    } else {
+                        itemsIndexed(
+                            filteredStreams,
+                            // The index is part of the key on purpose: two addons can return the
+                            // same file, and duplicate keys are fatal in a lazy list.
+                            key = { index, stream -> "${repository.streamSelectionKey(stream)}:$index:$selectedTab" },
+                        ) { index, stream ->
+                            val rowLabel = repository.describeStreamOption(stream)
+                            StreamRow(
+                                stream = stream,
+                                label = rowLabel,
+                                showQuality = anyQuality,
+                                showSize = anySize,
+                                requestFocus = if (index == 0) firstCardRequester else null,
+                                streamsPrefs = streamsPrefs,
+                                fusionBadgeSources = activeFusionBadgeSources,
+                                onPressed = {
+                                    onPlayRequest(
+                                        request.copy(
+                                            selectedStreamKey = repository.streamSelectionKey(stream),
+                                            selectedStreamLabel = repository.describeStreamOption(stream),
+                                            selectedStream = stream,
+                                            availableStreams = streamRows,
+                                        ),
                                     )
-                                }
-                            }
+                                },
+                            )
                         }
-                        LazyColumn(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth(),
-                            contentPadding = PaddingValues(top = 10.dp, bottom = 48.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp),
-                        ) {
-                            if (filteredStreams.isEmpty()) {
-                                // Only declare "nothing found" once every source has replied.
-                                if (state.pendingSources > 0) {
-                                    item("loading") { LoadingStreamsCard() }
-                                } else {
-                                    item("empty") { EmptyStreamsMessage() }
-                                }
-                            } else {
-                                itemsIndexed(filteredStreams, key = { index, stream -> "${repository.streamSelectionKey(stream)}:$index:$selectedTab" }) { index, stream ->
-                                    StreamOptionCard(
-                                        stream = stream,
-                                        label = repository.describeStreamOption(stream),
-                                        requestFocus = if (index == 0) firstCardRequester else null,
-                                        streamsPrefs = streamsPrefs,
-                                        fusionBadgeSources = activeFusionBadgeSources,
-                                        onPressed = {
-                                            onPlayRequest(
-                                                request.copy(
-                                                    selectedStreamKey = repository.streamSelectionKey(stream),
-                                                    selectedStreamLabel = repository.describeStreamOption(stream),
-                                                    selectedStream = stream,
-                                                    availableStreams = streamRows,
-                                                ),
-                                            )
-                                        },
-                                    )
-                                }
-                            }
+                        if (state.pendingSources > 0) {
+                            item("more") { StreamRowSkeleton() }
                         }
                     }
                 }
@@ -407,189 +378,99 @@ fun PlaybackStreamsScreen(
     }
 }
 
-@OptIn(ExperimentalTvMaterial3Api::class)
+/** One strip: what is being played, how many options, and a way to search again. */
 @Composable
-private fun ReloadSourcesButton(loading: Boolean, onClick: () -> Unit) {
-    Card(
-        onClick = { if (!loading) onClick() },
-        shape = CardDefaults.shape(AppPillShape),
-        colors = CardDefaults.colors(
-            containerColor = Color(0x18191D22),
-            focusedContainerColor = Color(0xFF2A2D36),
-        ),
-        border = CardDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppPillShape),
-        ),
-        scale = CardDefaults.scale(focusedScale = 1.02f),
-    ) {
-        Text(
-            text = if (loading) "Reloading..." else "Reload Sources",
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (loading) 0.5f else 0.9f),
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
-        )
-    }
-}
-@OptIn(ExperimentalTvMaterial3Api::class)
-@Composable
-private fun SourceTabChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    Card(
-        onClick = onClick,
-        modifier = Modifier.onFocusChanged { focused = it.isFocused },
-        shape = CardDefaults.shape(AppPillShape),
-        colors = CardDefaults.colors(
-            containerColor = if (selected) Color(0x2AF4EDE2) else Color(0x15191D22),
-            focusedContainerColor = Color(0xFF2A2D36),
-        ),
-        border = CardDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppPillShape),
-        ),
-        scale = CardDefaults.scale(focusedScale = 1.02f),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.titleSmall.copy(
-                fontWeight = if (selected) FontWeight.Black else FontWeight.Medium,
-            ),
-            color = if (selected || focused) MaterialTheme.colorScheme.onBackground
-                else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.70f),
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-    }
-}
-
-@Composable
-private fun LoadingStreamsCard() {
+private fun StreamsHeader(
+    detail: MediaDetail?,
+    request: PlaybackRequest,
+    pendingSources: Int,
+    streamCount: Int,
+    onReload: () -> Unit,
+) {
+    // `?:` does not catch an empty string, and a blank request title left the header showing
+    // nothing at all while the reload chip stretched across the whole row.
+    val title = detail?.title?.takeIf { it.isNotBlank() }
+        ?: request.title?.takeIf { it.isNotBlank() }
+        ?: "Streams"
+    val episode = request.episode
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
-            .background(Color(0x1611141B))
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = StreamsInset, end = StreamsInset, top = 30.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = "Finding streams",
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Text(
-            text = "Searching your configured sources…",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
-        )
-    }
-}
-
-@Composable
-private fun StreamsInfoPanel(detail: MediaDetail?, request: PlaybackRequest, overview: String?) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(28.dp))
-            .background(Color(0x1611141B))
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        detail?.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
-            AsyncImage(
-                model = logo,
-                contentDescription = detail.title,
-                modifier = Modifier
-                    .height(84.dp)
-                    .fillMaxWidth(),
-                contentScale = ContentScale.Fit,
-                alignment = Alignment.Center,
-            )
-        } ?: Text(
-            text = detail?.title ?: request.title ?: "Playback",
-            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-
-        request.episode?.let {
+        Row(
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
             Text(
-                text = "S${it.seasonNumber} E${it.episodeNumber}${it.title?.let { name -> "  •  $name" } ?: ""}",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.primary,
+                text = title,
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            // Width pinned deliberately. A tv-material3 Card fills the space offered to it, and
+            // unweighted children are measured first — so in a bounded row the chip swallowed the
+            // whole width and the weighted title next to it was measured at zero.
+            SearchChip(
+                label = if (pendingSources > 0) "Searching…" else "Reload sources",
+                selected = false,
+                modifier = Modifier.width(186.dp),
+                onClick = onReload,
             )
         }
-
-        val meta = buildList {
-            detail?.year?.let(::add)
-            detail?.runtime?.takeIf { it > 0 }?.let { add("${it}m") }
-            detail?.rating?.let { add("IMDb ${"%.1f".format(it)}") }
-        }.joinToString("  •  ")
-
-        if (meta.isNotBlank()) {
-            Text(
-                text = meta,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-        }
-
-        overview?.takeIf { it.isNotBlank() }?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.84f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
-            )
-        }
-    }
-}
-
-@Composable
-private fun EmptyStreamsMessage() {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
-            .background(Color(0x1AFFFFFF))
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
         Text(
-            text = "No playable links are available right now.",
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Text(
-            text = "Try again in a moment, change addons, or pick another title.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+            text = buildString {
+                episode?.let {
+                    append("S${it.seasonNumber} E${it.episodeNumber}")
+                    it.title?.takeIf { name -> name.isNotBlank() }?.let { name -> append("  ·  $name") }
+                    append("  ·  ")
+                }
+                append(if (streamCount == 1) "1 stream" else "$streamCount streams")
+                if (pendingSources > 0) {
+                    append("  ·  $pendingSources source${if (pendingSources == 1) "" else "s"} still loading")
+                }
+            },
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
+/**
+ * One stream, laid out on a fixed grid so the same fact is in the same place on every row.
+ *
+ * Source and release text on the left; quality, size and availability right-aligned in that order.
+ * Comparing options means running an eye down one column, which the previous free-flowing chip row
+ * made impossible.
+ */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun StreamOptionCard(
+private fun StreamRow(
     stream: AddonStream,
     label: String,
+    showQuality: Boolean,
+    showSize: Boolean,
     requestFocus: FocusRequester?,
     streamsPrefs: StreamsPreferences,
     fusionBadgeSources: List<FusionBadgeSource>,
     onPressed: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val chips = buildList {
-        stream.quality?.takeIf { it.isNotBlank() }?.let(::add)
-        if (streamsPrefs.showSizeBadges) {
-            stream.size?.takeIf { it.isNotBlank() }?.let(::add)
-        }
-        if (stream.cachedBy.isNotEmpty()) add("Cached: ${stream.cachedBy.joinToString()}") else if (!stream.url.isNullOrBlank()) add("Direct")
-    }
+    val highContrast = LocalTvExperienceSettings.current.highContrast
     val fusionBadges = remember(stream, fusionBadgeSources, streamsPrefs.fusionBadgesEnabled) {
         if (streamsPrefs.fusionBadgesEnabled && fusionBadgeSources.isNotEmpty()) {
             flattenFusionBadges(matchFusionBadges(stream, fusionBadgeSources))
         } else {
             emptyList()
         }
+    }
+    val availability = when {
+        stream.cachedBy.isNotEmpty() -> "Cached" to true
+        !stream.url.isNullOrBlank() -> "Direct" to false
+        else -> "Torrent" to false
     }
 
     Card(
@@ -600,65 +481,119 @@ private fun StreamOptionCard(
             .onFocusChanged { focused = it.isFocused },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
-            containerColor = Color(0x19161A20),
-            focusedContainerColor = Color(0xFF181A1F),
+            containerColor = Color.White.copy(alpha = 0.05f),
+            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+            pressedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
         ),
         border = CardDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppCardShape),
+            border = Border.None,
+            focusedBorder = Border(
+                BorderStroke(if (highContrast) 3.dp else 2.dp, MaterialTheme.colorScheme.primary),
+                shape = AppCardShape,
+            ),
         ),
-        scale = CardDefaults.scale(focusedScale = 1.015f),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = TvMotion.focusScale()),
     ) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (streamsPrefs.badgePosition == "top") {
-                FusionBadgeRow(badges = fusionBadges)
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
-            ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 13.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
                         text = stream.addonName.ifBlank { "Stream source" },
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
-                        color = if (focused) Color(0xFFF7E4B8) else MaterialTheme.colorScheme.onBackground,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         text = label,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (focused) 0.95f else 0.78f),
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text(
-                    text = "Play",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                    color = MaterialTheme.colorScheme.primary,
-                )
+
+                // Fixed-width columns so these line up down the list.
+                if (showQuality) StreamFact(streamQualityLabel(stream, label) ?: "—", 92.dp)
+                if (showSize) StreamFact(streamSizeLabel(stream, label) ?: "—", 92.dp)
+                StreamFact(availability.first, 88.dp, emphasised = availability.second)
             }
-            if (chips.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    chips.take(4).forEach { chip ->
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(Color(0x20F4EDE2))
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                        ) {
-                            Text(
-                                text = chip,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
-                            )
-                        }
-                    }
-                }
-            }
-            if (streamsPrefs.badgePosition != "top") {
+            if (fusionBadges.isNotEmpty()) {
                 FusionBadgeRow(badges = fusionBadges)
             }
         }
     }
 }
 
+@Composable
+private fun StreamFact(text: String, width: androidx.compose.ui.unit.Dp, emphasised: Boolean = false) {
+    Box(Modifier.width(width), contentAlignment = Alignment.CenterEnd) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+            color = if (emphasised) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+            },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun StreamRowSkeleton() {
+    TvSkeletonBox(Modifier.fillMaxWidth().height(72.dp))
+}
+
+@Composable
+private fun StreamsSkeleton() {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = StreamsInset, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        repeat(5) { StreamRowSkeleton() }
+    }
+}
+
+/** Nothing came back. Offers another attempt rather than just stating the fact. */
+@Composable
+private fun NoStreamsRow(onReload: () -> Unit) {
+    val retryRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(120)
+        runCatching { retryRequester.requestFocus() }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(AppCardShape)
+            .background(Color.White.copy(alpha = 0.05f))
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = "No playable streams",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = "Every source answered without a usable link. Reloading asks them all again.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f),
+        )
+        Box(Modifier.padding(top = 4.dp)) {
+            SearchChip(
+                label = "Reload sources",
+                selected = false,
+                modifier = Modifier.focusRequester(retryRequester),
+                onClick = onReload,
+            )
+        }
+    }
+}

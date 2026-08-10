@@ -12,6 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +50,21 @@ fun PremiumMediaCard(
     modifier: Modifier = Modifier,
     favourite: Boolean = false,
     showProvider: Boolean = item.type == "live",
+    /**
+     * Draw the title and meta overlay. Off for collapsed rows, where the card is too small for
+     * text and a clipped word reads as breakage rather than as a minified card.
+     */
+    showLabels: Boolean = true,
+    /**
+     * Show year and rating along the top and drop the title entirely.
+     *
+     * For rows where the artwork is the identifier — recommendations, mostly. A poster is
+     * recognisable on its own, and a title block covers the bottom third of it to say something
+     * the picture already said.
+     */
+    metaOnTop: Boolean = false,
+    /** Where the top meta line sits. Centred reads better on a bare poster with no title under it. */
+    metaOnTopAlignment: Alignment = Alignment.TopStart,
     onClick: () -> Unit,
     onLongPress: () -> Unit = {},
     onFocused: () -> Unit = {},
@@ -66,6 +84,12 @@ fun PremiumMediaCard(
             .crossfade(false)
             .build()
     }
+    var focused by remember { mutableStateOf(false) }
+    val metaLine = listOfNotNull(
+        item.rating?.takeIf { it > 0 }?.let { "★ %.1f".format(it) },
+        item.year,
+    ).joinToString("  ·  ")
+    val topMeta = metaOnTop && metaLine.isNotBlank()
     val spokenDescription = buildString {
         append(item.title)
         item.year?.let { append(", $it") }
@@ -79,7 +103,10 @@ fun PremiumMediaCard(
         modifier = modifier
             .semantics { contentDescription = spokenDescription }
             .tvCardLongPress(onLongPress)
-            .onFocusChanged { if (it.isFocused) onFocused() },
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused()
+            },
         shape = CardDefaults.shape(shape),
         colors = CardDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface,
@@ -87,7 +114,9 @@ fun PremiumMediaCard(
             pressedContainerColor = MaterialTheme.colorScheme.surface,
         ),
         border = CardDefaults.border(
-            border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)), shape = shape),
+            // No resting outline. Artwork defines its own edge; a translucent white hairline over
+            // it just reads as a rendering artefact, especially while the card is resizing.
+            border = Border.None,
             focusedBorder = Border(BorderStroke(if (LocalTvExperienceSettings.current.highContrast) 3.dp else 2.dp, MaterialTheme.colorScheme.primary), shape = shape),
         ),
         glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
@@ -103,7 +132,11 @@ fun PremiumMediaCard(
             Box(
                 Modifier.fillMaxSize().background(
                     Brush.verticalGradient(
-                        colorStops = arrayOf(0f to Color.Transparent, 0.52f to Color(0x18000000), 1f to Color(0xEE000000)),
+                        colorStops = if (metaOnTop) {
+                            arrayOf(0f to Color(0x8C000000), 0.34f to Color.Transparent, 1f to Color(0x66000000))
+                        } else {
+                            arrayOf(0f to Color.Transparent, 0.52f to Color(0x18000000), 1f to Color(0xEE000000))
+                        },
                     ),
                 ),
             )
@@ -115,7 +148,18 @@ fun PremiumMediaCard(
                 if (variant == TvMediaCardVariant.ContinueWatching) CardBadge("CONTINUE")
                 if (variant == TvMediaCardVariant.Live) CardBadge("LIVE")
             }
-            Column(
+            // Plain text, no pill: the badge shape competed with the poster art it sits on.
+            if (topMeta) {
+                Text(
+                    text = metaLine,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+                    color = Color.White.copy(alpha = if (focused) 1f else 0.86f),
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.align(metaOnTopAlignment).padding(horizontal = 10.dp, vertical = 8.dp),
+                )
+            }
+            if (showLabels && !topMeta) Column(
                 modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
@@ -143,6 +187,14 @@ private fun CardBadge(label: String) {
         modifier = Modifier.clip(AppPillShape).background(Color.Black.copy(alpha = 0.72f)).padding(horizontal = 7.dp, vertical = 4.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary)
+        // One line always. "2025 · ★ 7.3" wrapping to two lines inside a pill reads as broken
+        // rather than as a badge, and the poster is narrow enough that it will try.
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            softWrap = false,
+        )
     }
 }

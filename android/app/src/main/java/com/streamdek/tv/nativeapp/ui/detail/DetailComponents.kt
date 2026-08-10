@@ -1,6 +1,11 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,14 +15,21 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
+import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +43,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
@@ -61,6 +75,34 @@ import com.streamdek.tv.nativeapp.ui.TvSpacing
 internal val DetailInset = TvSpacing.ScreenHorizontal
 
 /**
+ * How far a band shrinks once the viewer has moved past it.
+ *
+ * Every row below the hero collapses to this fraction of its full size, and expands again when it
+ * takes focus. With four bands competing for the space under the hero, only the one being used is
+ * worth full height; the rest just need to stay identifiable as somewhere to go back to.
+ */
+internal const val DetailCompactScale = 0.4f
+
+/**
+ * Animates a dimension between its full and collapsed size.
+ *
+ * Call this **once per band**, never inside a lazy item lambda. Every call is a running animation
+ * that re-measures its subtree each frame, so putting it on the card meant eight-odd animations per
+ * row and thirty-odd across the screen, all driving layout at once — which is exactly what made
+ * moving between rows stutter on a stick. Hoisted, it is four.
+ */
+@Composable
+internal fun collapsingSize(full: Dp, compact: Boolean): Dp {
+    val target = if (compact) full * DetailCompactScale else full
+    val animated by androidx.compose.animation.core.animateDpAsState(
+        targetValue = target,
+        animationSpec = androidx.compose.animation.core.tween(TvMotion.duration(170)),
+        label = "detail-collapse",
+    )
+    return animated
+}
+
+/**
  * One focusable surface used by every card on this screen, so focus reads identically everywhere:
  * a ring in the accent colour and a restrained lift. The old screen gave each section its own
  * treatment, which made focus position harder to track at a glance across a room.
@@ -88,7 +130,7 @@ internal fun DetailFocusCard(
             pressedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
         ),
         border = CardDefaults.border(
-            border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)), shape = shape),
+            border = Border.None,
             focusedBorder = Border(
                 BorderStroke(if (highContrast) 3.dp else 2.dp, MaterialTheme.colorScheme.primary),
                 shape = shape,
@@ -99,6 +141,55 @@ internal fun DetailFocusCard(
         content = { content() },
     )
 }
+
+
+/**
+ * Focus behaviour for one row.
+ *
+ * Entering a row always lands on its first card, and the row then scrolls so the focused card
+ * stays pinned at the leading edge as the viewer travels along it. Compose's own behaviour is
+ * "nearest child in the direction of travel", which lands wherever the row happened to be scrolled
+ * to — so moving down the page arrived at a different horizontal position in every row.
+ */
+internal class RowFocusMemory {
+    /** Index the row is currently on, used to drive the anchored scroll. */
+    var focusedIndex by mutableIntStateOf(0)
+        private set
+    private val requesters = mutableMapOf<Int, FocusRequester>()
+
+    fun requester(index: Int): FocusRequester = requesters.getOrPut(index) { FocusRequester() }
+
+    fun remember(index: Int) { focusedIndex = index }
+
+    /** Always the first card. Falls back to Compose's choice before the row has been laid out. */
+    fun entryTarget(): FocusRequester = requesters[0] ?: FocusRequester.Default
+}
+
+@Composable
+internal fun rememberRowFocus(key: Any?): RowFocusMemory = remember(key) { RowFocusMemory() }
+
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+internal fun Modifier.rowFocusEntry(memory: RowFocusMemory): Modifier =
+    this.focusProperties { enter = { memory.entryTarget() } }
+
+/**
+ * Keeps the focused card at the leading edge, so travelling right scrolls the row under a fixed
+ * highlight rather than moving the highlight across a static row.
+ */
+@Composable
+internal fun AnchorRowToFocus(state: LazyListState, memory: RowFocusMemory, itemCount: Int) {
+    LaunchedEffect(memory.focusedIndex, itemCount) {
+        state.animateToAnchoredItem(
+            focusedIndex = memory.focusedIndex,
+            itemCount = itemCount,
+            leadingItems = 0,
+        )
+    }
+}
+
+internal fun Modifier.rowFocusItem(memory: RowFocusMemory, index: Int): Modifier =
+    this.focusRequester(memory.requester(index))
+        .onFocusChanged { if (it.isFocused) memory.remember(index) }
 
 /** Section header shared by every band below the hero. */
 @Composable
@@ -173,6 +264,8 @@ internal fun HeroPoster(detail: MediaDetail, modifier: Modifier = Modifier) {
 @Composable
 internal fun EpisodeCard(
     compact: Boolean = false,
+    cardWidth: Dp,
+    stillHeight: Dp,
     episode: SeasonEpisode,
     seasonNumber: Int,
     watched: Boolean,
@@ -183,7 +276,7 @@ internal fun EpisodeCard(
 ) {
     DetailFocusCard(
         onClick = { if (released) onClick() },
-        modifier = modifier.width(if (compact) 200.dp else 268.dp),
+        modifier = modifier.width(cardWidth),
         onFocused = onFocused,
         description = buildString {
             append("Season $seasonNumber episode ${episode.episodeNumber}, ${episode.name}")
@@ -192,7 +285,7 @@ internal fun EpisodeCard(
         },
     ) {
         Column {
-            Box(Modifier.fillMaxWidth().height(if (compact) 112.dp else 150.dp).background(Color.Black.copy(alpha = 0.5f))) {
+            Box(Modifier.fillMaxWidth().height(stillHeight).background(Color.Black.copy(alpha = 0.5f))) {
                 if (!episode.still.isNullOrBlank()) {
                     AsyncImage(
                         model = episode.still,
@@ -290,8 +383,13 @@ internal fun EpisodesBand(
     onEpisodeFocused: (Int) -> Unit,
     onEpisodePressed: (SeasonEpisode) -> Unit,
 ) {
+    val cardWidth = collapsingSize(268.dp, compact)
+    val stillHeight = collapsingSize(150.dp, compact)
+    val rowFocus = rememberRowFocus(seasonDetail?.episodes)
+    val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
+    AnchorRowToFocus(rowState, rowFocus, seasonDetail?.episodes?.size ?: 0)
     Column(
-        modifier = Modifier.onFocusChanged { onFocusChanged(it.hasFocus) },
+        modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp),
     ) {
         DetailSectionHeader(
@@ -309,16 +407,20 @@ internal fun EpisodesBand(
                 horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
                 modifier = Modifier.padding(horizontal = DetailInset),
             ) {
-                repeat(4) { TvSkeletonBox(Modifier.width(if (compact) 200.dp else 268.dp).height(if (compact) 128.dp else 232.dp)) }
+                repeat(4) { TvSkeletonBox(Modifier.width(cardWidth).height(stillHeight + 82.dp)) }
             }
         } else {
             LazyRow(
+                state = rowState,
                 horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
             ) {
                 itemsIndexed(episodes, key = { _, episode -> episode.id }) { index, episode ->
                     EpisodeCard(
+                        modifier = Modifier.rowFocusItem(rowFocus, index),
                         compact = compact,
+                        cardWidth = cardWidth,
+                        stillHeight = stillHeight,
                         episode = episode,
                         seasonNumber = selectedSeasonNumber,
                         watched = watchedEpisodes.contains(episode.episodeNumber),
@@ -339,22 +441,30 @@ internal fun SimilarBand(
     onFocusChanged: (Boolean) -> Unit = {},
     onOpen: (MediaItem) -> Unit,
 ) {
+    val cardWidth = collapsingSize(106.dp, compact)
+    val cardHeight = collapsingSize(159.dp, compact)
+    val rowFocus = rememberRowFocus(items)
+    val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
+    AnchorRowToFocus(rowState, rowFocus, items.size)
     Column(
-        modifier = Modifier.onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
+        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp),
     ) {
         DetailSectionHeader("More Like This")
         LazyRow(
+            state = rowState,
             horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
         ) {
-            items(items, key = { "${it.type}:${it.id}" }) { item ->
+            itemsIndexed(items, key = { _, item -> "${item.type}:${item.id}" }) { index, item ->
                 // The same card Home and Library use, so a title looks identical wherever it turns
                 // up. The old screen had a bespoke card here for no reason.
                 PremiumMediaCard(
                     item = item,
                     variant = TvMediaCardVariant.Poster,
-                    modifier = Modifier.width(if (compact) 84.dp else 106.dp).height(if (compact) 126.dp else 159.dp),
+                    showLabels = false,
+                    metaOnTop = !compact,
+                    modifier = Modifier.rowFocusItem(rowFocus, index).width(cardWidth).height(cardHeight),
                     onClick = { onOpen(item) },
                 )
             }
@@ -364,56 +474,107 @@ internal fun SimilarBand(
 
 @Composable
 internal fun CastBand(cast: List<CastMember>, compact: Boolean = false, onFocusChanged: (Boolean) -> Unit = {}) {
-    // Cast shrinks once the viewer has moved past it to the recommendations. Nobody is reading
-    // character names at that point, and the space buys the row below enough height to sit fully
-    // on screen instead of being clipped by the fold.
-    val photoSize = if (compact) 56.dp else 96.dp
-    val columnWidth = if (compact) 72.dp else 116.dp
+    // Cast shrinks once the viewer has moved past it. Nobody is reading character names at that
+    // point, and the space buys the row below enough height to sit fully on screen.
+    // 15% down on the full-size portrait: the row was heavier than the section warranted next to
+    // the recommendations below it. The collapsed size follows from this automatically.
+    val photoSize = collapsingSize(82.dp, compact)
+    val columnWidth = collapsingSize(99.dp, compact)
+    val rowFocus = rememberRowFocus(cast)
+    val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
+    AnchorRowToFocus(rowState, rowFocus, cast.size)
     Column(
-        modifier = Modifier.onFocusChanged { onFocusChanged(it.hasFocus) },
+        modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp),
     ) {
         DetailSectionHeader("Cast")
         LazyRow(
+            state = rowState,
             horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
+            contentPadding = PaddingValues(horizontal = DetailInset),
         ) {
-            items(cast, key = { it.id }) { member ->
-                Column(
-                    modifier = Modifier.width(columnWidth),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp),
-                ) {
-                    Box(
-                        Modifier.size(photoSize).clip(CircleShape).background(MaterialTheme.colorScheme.surface),
-                    ) {
-                        if (!member.photo.isNullOrBlank()) {
-                            AsyncImage(
-                                model = member.photo,
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop,
-                            )
-                        }
-                    }
-                    Text(
-                        text = member.name,
-                        style = (if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge)
-                            .copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onBackground,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (!compact) member.character?.takeIf { it.isNotBlank() }?.let {
-                        Text(
-                            text = it,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
+            itemsIndexed(cast, key = { _, member -> member.id }) { index, member ->
+                CastPortrait(
+                    modifier = Modifier.rowFocusItem(rowFocus, index),
+                    member = member,
+                    photoSize = photoSize,
+                    columnWidth = columnWidth,
+                    compact = compact,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One cast member.
+ *
+ * The portrait itself is the focus target — no card behind it. Wrapping the column in a circular
+ * surface put a ring around the name as well as the face and clipped the whole thing at the
+ * collapsed size; the picture is the thing being pointed at, so it is the thing that highlights.
+ */
+@Composable
+private fun CastPortrait(
+    modifier: Modifier = Modifier,
+    member: CastMember,
+    photoSize: Dp,
+    columnWidth: Dp,
+    compact: Boolean,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val highContrast = LocalTvExperienceSettings.current.highContrast
+    val ring by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (focused) (if (highContrast) 3.dp else 2.dp) else 0.dp,
+        animationSpec = androidx.compose.animation.core.tween(TvMotion.duration(140)),
+        label = "cast-ring",
+    )
+
+    Column(
+        modifier = Modifier.width(columnWidth),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 8.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(photoSize)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface)
+                .then(
+                    // Applied only while focused: a 0.dp stroke still rasterises a faint ring.
+                    if (ring > 0.dp) Modifier.border(ring, MaterialTheme.colorScheme.primary, CircleShape) else Modifier,
+                )
+                .semantics { contentDescription = listOfNotNull(member.name, member.character).joinToString(", ") }
+                .then(modifier)
+                .onFocusChanged { focused = it.isFocused }
+                .focusable()
+                .clickable { },
+        ) {
+            if (!member.photo.isNullOrBlank()) {
+                AsyncImage(
+                    model = member.photo,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    alpha = if (focused) 1f else 0.86f,
+                )
+            }
+        }
+        if (!compact) {
+            Text(
+                text = member.name,
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = if (focused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            member.character?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -421,21 +582,37 @@ internal fun CastBand(cast: List<CastMember>, compact: Boolean = false, onFocusC
 
 @Composable
 internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = false, onFocusChanged: (Boolean) -> Unit = {}) {
+    val cardWidth = collapsingSize(340.dp, compact)
+    val cardHeight = collapsingSize(150.dp, compact)
+    val rowFocus = rememberRowFocus(comments)
+    val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
+    AnchorRowToFocus(rowState, rowFocus, comments.size)
     Column(
-        modifier = Modifier.onFocusChanged { onFocusChanged(it.hasFocus) },
+        modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp),
     ) {
         DetailSectionHeader("Reviews", trailing = "${comments.size}")
         LazyRow(
+            state = rowState,
             horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
         ) {
-            items(comments, key = { it.id }) { comment ->
+            itemsIndexed(comments, key = { _, comment -> comment.id }) { index, comment ->
+                // Focusable like every other row, so the D-pad can reach the reviews instead of
+                // stopping dead at the recommendations above them.
+                // Fixed size regardless of content. A row of boxes that each stop at a different
+                // height reads as broken layout, and on a remote the varying hit targets make the
+                // row harder to travel along than the reviews are worth.
+                DetailFocusCard(
+                    onClick = { },
+                    modifier = Modifier.rowFocusItem(rowFocus, index).width(cardWidth).height(cardHeight),
+                    description = "Review by ${comment.author}",
+                ) {
                 Column(
                     modifier = Modifier
-                        .width(if (compact) 260.dp else 340.dp)
+                        .width(cardWidth)
+                        .height(cardHeight)
                         .clip(AppCardShape)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -464,6 +641,7 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
                         maxLines = if (compact) 2 else 5,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
                 }
             }
         }

@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp.ui.network
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,64 +12,75 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.tv.material3.Border
-import androidx.tv.material3.ButtonDefaults
-import androidx.tv.material3.Card
-import androidx.tv.material3.CardDefaults
-import androidx.tv.material3.ExperimentalTvMaterial3Api
-import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
-import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.GenreItem
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
-import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
+import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
+import com.streamdek.tv.nativeapp.ui.TvEmptyState
+import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
+import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
+import com.streamdek.tv.nativeapp.ui.TvSpacing
+import com.streamdek.tv.nativeapp.ui.search.SearchChip
+import com.streamdek.tv.nativeapp.ui.search.SearchFilterOption
+import com.streamdek.tv.nativeapp.ui.search.SearchFilterTray
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
-import java.time.Year
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.time.Year
 
 private data class BrowseActionState(
     val item: MediaItem,
     val restoreFocusRequester: FocusRequester,
 )
 
+private enum class OpenTray { None, Type, Year, Genre, Rating }
+
+private val NetworkInset = TvSpacing.ScreenHorizontal
+
+/**
+ * One streaming service's catalogue.
+ *
+ * Rebuilt around the same filter idiom as Search, and as a real grid. Points that needed fixing:
+ *
+ *  - **Results were chunked into rows of three by hand** (`visibleResults.chunked(3)`) inside a
+ *    lazy column, which both fixed the density at three enormous cards per row and defeated
+ *    per-card recycling — the lazy layout could only recycle whole rows.
+ *  - **Only the first page ever loaded.** The endpoint is paged and the screen never asked for
+ *    page two, so a large catalogue silently stopped a screen and a half in.
+ *  - **The rating filter lied.** It filtered the loaded page client-side while presenting itself
+ *    as a catalogue filter, so "7+" meant "7+ among the first page" — now labelled as such.
+ *  - Filters were dropdown menus; they expand in place, matching Search.
+ */
 @Composable
 fun NetworkBrowseScreen(
     repository: StreamDekRepository,
@@ -77,143 +89,253 @@ fun NetworkBrowseScreen(
     onBack: () -> Unit,
     onOpenDetail: (String, String) -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val gridColumns = LocalTvExperienceSettings.current.gridColumns
+
     var mediaType by remember { mutableStateOf("all") }
     var year by remember { mutableStateOf<String?>(null) }
     var genreId by remember { mutableStateOf<Int?>(null) }
     var minRating by remember { mutableStateOf<Int?>(null) }
-    var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var genres by remember { mutableStateOf<List<GenreItem>>(emptyList()) }
+    var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var page by remember { mutableIntStateOf(1) }
+    var totalPages by remember { mutableIntStateOf(1) }
     var loading by remember { mutableStateOf(true) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    var reloadToken by remember { mutableIntStateOf(0) }
+    var openTray by remember { mutableStateOf(OpenTray.None) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val initialCardRequester = remember { FocusRequester() }
-    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(networkId, mediaType, year, genreId) {
+    val firstChipRequester = remember { FocusRequester() }
+    val firstCardRequester = remember { FocusRequester() }
+    val trayRequester = remember { FocusRequester() }
+    val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
+    val gridState = rememberLazyGridState()
+    val yearOptions = remember { listOf<String?>(null) + (0..14).map { (Year.now().value - it).toString() } }
+
+    LaunchedEffect(networkId, mediaType, year, genreId, reloadToken) {
         loading = true
-        val typeForGenres = if (mediaType == "tv") "tv" else "movie"
-        genres = repository.fetchGenres(typeForGenres)
-        results = repository.fetchNetworkCatalog(
-            networkId = networkId,
-            type = mediaType,
-            year = year,
-            genreId = genreId,
-            sort = "year",
-            forceRefresh = true,
-        ).results
+        failed = false
+        genres = runCatching { repository.fetchGenres(if (mediaType == "tv") "tv" else "movie") }
+            .getOrDefault(emptyList())
+        val payload = runCatching {
+            repository.fetchNetworkCatalog(
+                networkId = networkId, type = mediaType, year = year,
+                genreId = genreId, sort = "year", page = 1, forceRefresh = true,
+            )
+        }.getOrNull()
+        if (payload == null) {
+            failed = true
+            results = emptyList()
+        } else {
+            results = payload.results.distinctBy { "${it.type}:${it.id}" }
+            page = payload.page
+            totalPages = payload.total_pages
+        }
         loading = false
     }
 
-    LaunchedEffect(results) {
-        results.take(8).flatMap { listOfNotNull(it.backdrop, it.poster) }.distinct().take(12).forEach { url ->
+    // Paged catalogue: pull the next page a couple of rows before the viewer reaches the end.
+    LaunchedEffect(gridState, results.size, page, totalPages) {
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .collect { lastVisible ->
+                if (loading || loadingMore || page >= totalPages || results.isEmpty()) return@collect
+                if (lastVisible < results.size - gridColumns * 2) return@collect
+                loadingMore = true
+                val payload = runCatching {
+                    repository.fetchNetworkCatalog(
+                        networkId = networkId, type = mediaType, year = year,
+                        genreId = genreId, sort = "year", page = page + 1,
+                    )
+                }.getOrNull()
+                if (payload != null) {
+                    results = (results + payload.results).distinctBy { "${it.type}:${it.id}" }
+                    page = payload.page
+                    totalPages = payload.total_pages
+                }
+                loadingMore = false
+            }
+    }
+
+    val visibleResults = remember(results, minRating) {
+        results.filter { minRating == null || (it.rating ?: 0.0) >= minRating!!.toDouble() }
+    }
+
+    LaunchedEffect(loading, failed) {
+        if (loading) return@LaunchedEffect
+        delay(160)
+        runCatching { firstChipRequester.requestFocus() }
+    }
+
+    LaunchedEffect(openTray) {
+        if (openTray == OpenTray.None) return@LaunchedEffect
+        delay(60)
+        runCatching { trayRequester.requestFocus() }
+    }
+
+    LaunchedEffect(visibleResults.size) {
+        visibleResults.take(10).mapNotNull { it.poster ?: it.backdrop }.distinct().forEach { url ->
             context.imageLoader.enqueue(
-                ImageRequest.Builder(context)
-                    .data(url)
-                    .memoryCacheKey(url)
-                    .diskCacheKey(url)
-                    .crossfade(false)
-                    .allowHardware(true)
-                    .build(),
+                ImageRequest.Builder(context).data(url).memoryCacheKey(url).diskCacheKey(url)
+                    .crossfade(false).allowHardware(true).allowRgb565(true).build(),
             )
         }
     }
 
-    LaunchedEffect(loading, results) {
-        if (!loading && results.isNotEmpty()) {
-            kotlinx.coroutines.delay(180)
-            initialCardRequester.requestFocus()
-        }
-    }
-
-    val visibleResults = results.filter { item ->
-        minRating == null || (item.rating ?: 0.0) >= minRating!!.toDouble()
-    }
-    val resultRows = visibleResults.chunked(3)
-    val yearOptions = remember {
-        listOf<String?>(null) + (0..10).map { (Year.now().value - it).toString() }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(networkHeroBrush(networkName)),
-    ) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // A single tinted wash keyed off the service's brand, rather than a brand gradient plus a
+        // second full-screen scrim over it.
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color(0x22000000), Color(0xCC040404), Color(0xFF040404)),
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to networkTint(networkName).copy(alpha = 0.34f),
+                        0.5f to MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
+                        1f to MaterialTheme.colorScheme.background,
                     ),
                 ),
+            ),
         )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 48.dp, end = 48.dp, top = 48.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = networkName,
-                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black),
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-            Text(
-                text = "Browse by type, year, genre, and rating.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
-            )
-        }
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = 156.dp),
-            contentPadding = PaddingValues(bottom = 180.dp),
-            verticalArrangement = Arrangement.spacedBy(22.dp),
-        ) {
-            item {
-                FilterBar(
-                    mediaType = mediaType,
-                    onMediaTypeSelected = {
-                        mediaType = it
-                        genreId = null
-                    },
-                    year = year,
-                    onYearSelected = { year = it.ifBlank { null } },
-                    genreId = genreId,
-                    onGenreSelected = { genreId = it.toIntOrNull() },
-                    minRating = minRating,
-                    onMinRatingSelected = { minRating = it.toIntOrNull() },
-                    genres = genres,
-                    yearOptions = yearOptions,
-                )
-            }
-            item {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = NetworkInset, end = NetworkInset, top = 34.dp),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
                 Text(
-                    text = if (loading) "Loading titles..." else "${visibleResults.size} titles",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    text = networkName,
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.padding(start = 48.dp, end = 48.dp),
+                )
+                Text(
+                    text = when {
+                        loading -> "Loading…"
+                        else -> "${visibleResults.size} titles" + if (page < totalPages) " so far" else ""
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(bottom = 4.dp),
                 )
             }
-            if (resultRows.isEmpty() && !loading) {
-                item {
-                    Text(
-                        text = "No titles matched these filters.",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
-                        modifier = Modifier.padding(start = 48.dp, end = 48.dp),
-                    )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .focusGroup()
+                    .padding(horizontal = NetworkInset, vertical = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SearchChip(
+                    label = when (mediaType) { "movie" -> "Films"; "tv" -> "Series"; else -> "Everything" },
+                    selected = openTray == OpenTray.Type,
+                    leading = "Show",
+                    modifier = Modifier.focusRequester(firstChipRequester)
+                        .focusProperties { down = firstCardRequester },
+                    onClick = { openTray = if (openTray == OpenTray.Type) OpenTray.None else OpenTray.Type },
+                )
+                SearchChip(
+                    label = year ?: "Any Year",
+                    selected = openTray == OpenTray.Year,
+                    leading = "Year",
+                    modifier = Modifier.focusProperties { down = firstCardRequester },
+                    onClick = { openTray = if (openTray == OpenTray.Year) OpenTray.None else OpenTray.Year },
+                )
+                SearchChip(
+                    label = genres.firstOrNull { it.id == genreId }?.name ?: "All Genres",
+                    selected = openTray == OpenTray.Genre,
+                    leading = "Genre",
+                    modifier = Modifier.focusProperties { down = firstCardRequester },
+                    onClick = {
+                        if (genres.isNotEmpty()) {
+                            openTray = if (openTray == OpenTray.Genre) OpenTray.None else OpenTray.Genre
+                        }
+                    },
+                )
+                SearchChip(
+                    // Named for what it actually does: this one narrows what has been loaded, it
+                    // does not ask the catalogue for highly rated titles.
+                    label = minRating?.let { "$it+" } ?: "Any",
+                    selected = openTray == OpenTray.Rating,
+                    leading = "Rated (loaded)",
+                    modifier = Modifier.focusProperties { down = firstCardRequester },
+                    onClick = { openTray = if (openTray == OpenTray.Rating) OpenTray.None else OpenTray.Rating },
+                )
+            }
+
+            if (openTray != OpenTray.None) {
+                SearchFilterTray(
+                    firstOptionRequester = trayRequester,
+                    onDismiss = { openTray = OpenTray.None },
+                    options = when (openTray) {
+                        OpenTray.Type -> listOf("all" to "Everything", "movie" to "Films", "tv" to "Series")
+                            .map { (value, label) ->
+                                SearchFilterOption(label, mediaType == value) { mediaType = value; genreId = null }
+                            }
+                        OpenTray.Year -> yearOptions.map { option ->
+                            SearchFilterOption(option ?: "Any Year", year == option) { year = option }
+                        }
+                        OpenTray.Genre -> buildList {
+                            add(SearchFilterOption("All Genres", genreId == null) { genreId = null })
+                            genres.forEach { genre ->
+                                add(SearchFilterOption(genre.name, genre.id == genreId) { genreId = genre.id })
+                            }
+                        }
+                        OpenTray.Rating -> listOf<Int?>(null, 6, 7, 8, 9).map { value ->
+                            SearchFilterOption(value?.let { "$it+" } ?: "Any", minRating == value) { minRating = value }
+                        }
+                        OpenTray.None -> emptyList()
+                    },
+                )
+            }
+
+            when {
+                loading && results.isEmpty() -> TvSkeletonGrid(columns = gridColumns, rows = 3)
+
+                failed -> TvEmptyState(
+                    title = "Could not load $networkName",
+                    message = "The catalogue could not be reached. Check the connection and try again.",
+                    actionLabel = "Try Again",
+                    onAction = { reloadToken++ },
+                )
+
+                visibleResults.isEmpty() -> TvEmptyState(
+                    title = "Nothing matches these filters",
+                    message = "Widen the year, genre or rating and try again.",
+                    actionLabel = "Clear Filters",
+                    onAction = { mediaType = "all"; year = null; genreId = null; minRating = null },
+                )
+
+                else -> LazyVerticalGrid(
+                    columns = GridCells.Fixed(gridColumns),
+                    state = gridState,
+                    modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+                    contentPadding = PaddingValues(
+                        start = NetworkInset, end = NetworkInset, top = 2.dp, bottom = 72.dp,
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
+                    verticalArrangement = Arrangement.spacedBy(TvSpacing.Card),
+                ) {
+                    itemsIndexed(visibleResults, key = { _, item -> "${item.type}:${item.id}" }) { index, item ->
+                        val requester = cardRequesters.getOrPut("${item.type}:${item.id}") { FocusRequester() }
+                        val effective = if (index == 0) firstCardRequester else requester
+                        PremiumMediaCard(
+                            item = item,
+                            variant = TvMediaCardVariant.Poster,
+                            modifier = Modifier
+                                .focusRequester(effective)
+                                .width(132.dp)
+                                .height(198.dp)
+                                .focusProperties { if (index < gridColumns) up = firstChipRequester }
+                                .tvCardLongPress { actionState = BrowseActionState(item, effective) },
+                            onClick = { onOpenDetail(item.type, item.id) },
+                            onLongPress = { actionState = BrowseActionState(item, effective) },
+                        )
+                    }
                 }
-            }
-            items(resultRows) { rowItems ->
-                NetworkResultRow(
-                    items = rowItems,
-                    initialFocusRequester = if (rowItems == resultRows.firstOrNull()) initialCardRequester else null,
-                    onOpenDetail = onOpenDetail,
-                    onOpenActions = { item, requester -> actionState = BrowseActionState(item, requester) },
-                )
             }
         }
 
@@ -222,263 +344,29 @@ fun NetworkBrowseScreen(
                 repository = repository,
                 item = state.item,
                 onDismiss = {
-                    val restoreRequester = state.restoreFocusRequester
+                    val restore = state.restoreFocusRequester
                     actionState = null
                     scope.launch {
-                        kotlinx.coroutines.delay(40)
-                        runCatching { restoreRequester.requestFocus() }
+                        delay(40)
+                        runCatching { restore.requestFocus() }
                     }
                 },
                 onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
-                onChanged = {
-                    results = repository.fetchNetworkCatalog(
-                        networkId = networkId,
-                        type = mediaType,
-                        year = year,
-                        genreId = genreId,
-                        sort = "year",
-                        forceRefresh = true,
-                    ).results
-                },
+                onChanged = { },
             )
         }
     }
 }
 
-@Composable
-private fun FilterBar(
-    mediaType: String,
-    onMediaTypeSelected: (String) -> Unit,
-    year: String?,
-    onYearSelected: (String) -> Unit,
-    genreId: Int?,
-    onGenreSelected: (String) -> Unit,
-    minRating: Int?,
-    onMinRatingSelected: (String) -> Unit,
-    genres: List<GenreItem>,
-    yearOptions: List<String?>,
-) {
-    LazyRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusGroup(),
-        contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            FilterDropdown(
-                label = "Type",
-                value = when (mediaType) {
-                    "movie" -> "Movies"
-                    "tv" -> "Series"
-                    else -> "All"
-                },
-                options = listOf("All" to "all", "Movies" to "movie", "Series" to "tv"),
-                selected = mediaType,
-                onSelected = onMediaTypeSelected,
-            )
-        }
-        item {
-            FilterDropdown(
-                label = "Year",
-                value = year ?: "All",
-                options = yearOptions.map { (it ?: "All") to (it ?: "") },
-                selected = year ?: "",
-                onSelected = onYearSelected,
-            )
-        }
-        item {
-            FilterDropdown(
-                label = "Genre",
-                value = genres.firstOrNull { it.id == genreId }?.name ?: "All",
-                options = listOf("All" to "") + genres.map { it.name to it.id.toString() },
-                selected = genreId?.toString().orEmpty(),
-                onSelected = onGenreSelected,
-            )
-        }
-        item {
-            FilterDropdown(
-                label = "Rating",
-                value = minRating?.let { "$it+" } ?: "All",
-                options = listOf("All" to "", "5+" to "5", "6+" to "6", "7+" to "7", "8+" to "8"),
-                selected = minRating?.toString().orEmpty(),
-                onSelected = onMinRatingSelected,
-            )
-        }
-    }
-}
-
-@Composable
-private fun FilterDropdown(
-    label: String,
-    value: String,
-    options: List<Pair<String, String>>,
-    selected: String,
-    onSelected: (String) -> Unit,
-) {
-    var expanded by remember(label, selected) { mutableStateOf(false) }
-
-    Box {
-        OutlinedButton(
-            onClick = { expanded = true },
-            shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
-            colors = ButtonDefaults.colors(
-                containerColor = Color(0x2611141B),
-                contentColor = MaterialTheme.colorScheme.onBackground,
-            ),
-            scale = ButtonDefaults.scale(focusedScale = 1f),
-        ) {
-            Text(
-                text = "$label: $value ▾",
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.background(Color(0xEE11141B)),
-        ) {
-            options.forEach { option ->
-                var focused by remember(option.second, selected) { mutableStateOf(false) }
-                DropdownMenuItem(
-                    modifier = Modifier
-                        .background(
-                            when {
-                                focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
-                                option.second == selected -> Color(0x331F2834)
-                                else -> Color.Transparent
-                            },
-                        )
-                        .onFocusChanged { focused = it.isFocused },
-                    text = {
-                        Text(
-                            text = option.first,
-                            color = if (option.second == selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
-                        )
-                    },
-                    onClick = {
-                        expanded = false
-                        onSelected(option.second)
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun NetworkResultRow(
-    items: List<MediaItem>,
-    initialFocusRequester: FocusRequester? = null,
-    onOpenDetail: (String, String) -> Unit,
-    onOpenActions: (MediaItem, FocusRequester) -> Unit,
-) {
-    val requesters = remember(items) { mutableMapOf<String, FocusRequester>() }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 48.dp, end = 48.dp)
-            .focusGroup(),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        items.forEachIndexed { index, item ->
-            val key = "${item.type}:${item.id}"
-            val requester = requesters.getOrPut(key) { FocusRequester() }
-            val effectiveRequester = if (initialFocusRequester != null && index == 0) initialFocusRequester else requester
-            NetworkCatalogCard(
-                item = item,
-                modifier = Modifier.focusRequester(effectiveRequester),
-                onPressed = { onOpenDetail(item.type, item.id) },
-                onMenuPressed = { onOpenActions(item, effectiveRequester) },
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalTvMaterial3Api::class)
-@Composable
-private fun NetworkCatalogCard(
-    item: MediaItem,
-    modifier: Modifier = Modifier,
-    onPressed: () -> Unit,
-    onMenuPressed: () -> Unit,
-) {
-    Card(
-        onClick = onPressed,
-        modifier = modifier
-            .size(width = 260.dp, height = 150.dp)
-            .tvCardLongPress(onMenuPressed),
-        shape = CardDefaults.shape(AppCardShape),
-        colors = CardDefaults.colors(
-            containerColor = Color(0xFF181A1F),
-            focusedContainerColor = Color(0xFF181A1F),
-        ),
-        border = CardDefaults.border(
-            focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
-                shape = AppCardShape,
-            ),
-        ),
-        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
-        scale = CardDefaults.scale(focusedScale = 1.02f),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(AppCardShape),
-        ) {
-            AsyncImage(
-                model = item.backdrop ?: item.poster,
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color(0xD9000000)),
-                        ),
-                    ),
-            )
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = if (item.type == "tv") "Series" else "Movie",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onBackground,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = listOfNotNull(item.year, item.rating?.let { "IMDb ${"%.1f".format(it)}" }).joinToString("  |  "),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
-                )
-            }
-        }
-    }
-}
-
-private fun networkHeroBrush(name: String): Brush {
-    val colors = when {
-        name.contains("netflix", ignoreCase = true) -> listOf(Color(0xFF2C0004), Color(0xFF8E0E16), Color(0xFF140202))
-        name.contains("prime", ignoreCase = true) -> listOf(Color(0xFF03151F), Color(0xFF0F4C81), Color(0xFF122A39))
-        name.contains("apple", ignoreCase = true) -> listOf(Color(0xFFF3F6FA), Color(0xFFE3E8EF), Color(0xFFF7F9FC))
-        name.contains("disney", ignoreCase = true) -> listOf(Color(0xFF071228), Color(0xFF0E5ACF), Color(0xFF0B1730))
-        name.contains("hbo", ignoreCase = true) || name.contains("max", ignoreCase = true) -> listOf(Color(0xFF17102B), Color(0xFF4A3DC7), Color(0xFF160B2B))
-        else -> listOf(Color(0xFF111318), Color(0xFF1D2430), Color(0xFF0C0E12))
-    }
-    return Brush.horizontalGradient(colors)
+/** Brand wash for the header. Only a hint of colour; the grid below stays neutral. */
+private fun networkTint(name: String): Color = when {
+    name.contains("netflix", true) -> Color(0xFF8E0E16)
+    name.contains("prime", true) -> Color(0xFF0F4C81)
+    name.contains("apple", true) -> Color(0xFF6E7681)
+    name.contains("hbo", true) -> Color(0xFF4A3DC7)
+    name.contains("disney", true) -> Color(0xFF1B3E88)
+    name.contains("hulu", true) -> Color(0xFF1CE783)
+    name.contains("paramount", true) -> Color(0xFF0064FF)
+    name.contains("peacock", true) -> Color(0xFF7B3FE4)
+    else -> Color(0xFF1D2430)
 }
