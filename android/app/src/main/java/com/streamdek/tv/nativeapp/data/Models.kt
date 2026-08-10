@@ -197,6 +197,23 @@ data class LiveCatalogSection(
 data class HomeContent(
     val featured: MediaItem?,
     val rails: List<HomeRail>,
+    /**
+     * Rows still being fetched, in the position they will occupy. Home draws a skeleton for each
+     * so the rails already on screen keep their place: a row appearing above the focused one would
+     * otherwise shove it down mid-browse, which on a remote reads as the app losing your place.
+     */
+    val pendingRails: List<PendingRail> = emptyList(),
+) {
+    /** True once every row has either arrived or been ruled out. */
+    val isComplete: Boolean get() = pendingRails.isEmpty()
+}
+
+/** A reserved slot for a row that has not resolved yet. */
+data class PendingRail(
+    val id: String,
+    val title: String,
+    /** Matches the card shape the finished row will use, so the swap is not a visual jump. */
+    val portrait: Boolean = false,
 )
 
 data class AccountProfile(

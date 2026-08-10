@@ -17,8 +17,10 @@ def otaManifestPath = (
     envProperties.getProperty("STREAMDEK_OTA_MANIFEST_PATH")
         ?: "/public/updates/android-tv/latest"
 ).trim()
-def ciVersionName = (findProperty("STREAMDEK_VERSION_NAME") ?: System.getenv("STREAMDEK_VERSION_NAME") ?: "1.0").toString()
-def ciVersionCode = (findProperty("STREAMDEK_VERSION_CODE") ?: System.getenv("STREAMDEK_VERSION_CODE") ?: "1").toString().toInteger()
+// Local builds default ahead of anything the release manifest will advertise, so the update
+// prompt stays out of the way during development. CI still passes the real values in.
+def ciVersionName = (findProperty("STREAMDEK_VERSION_NAME") ?: System.getenv("STREAMDEK_VERSION_NAME") ?: "99.0.0-dev").toString()
+def ciVersionCode = (findProperty("STREAMDEK_VERSION_CODE") ?: System.getenv("STREAMDEK_VERSION_CODE") ?: "999999").toString().toInteger()
 def ciStoreFile = System.getenv("ANDROID_KEYSTORE_PATH")
 def ciStorePassword = System.getenv("ANDROID_STORE_PASSWORD")
 def ciKeyAlias = System.getenv("ANDROID_KEY_ALIAS")

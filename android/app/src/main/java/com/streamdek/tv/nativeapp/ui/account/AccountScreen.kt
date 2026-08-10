@@ -74,6 +74,8 @@ import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.countEnabledFilters
 import com.streamdek.tv.nativeapp.data.countGroupsWithFilters
 import com.streamdek.tv.nativeapp.data.groupSourceFilters
+import com.streamdek.tv.nativeapp.ui.TvChromeSurface
+import com.streamdek.tv.nativeapp.ui.TvChromePanel
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import kotlinx.coroutines.delay
@@ -161,7 +163,7 @@ fun AccountScreen(
     Row(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF06080C))
+            .background(TvChromeSurface)
             .padding(start = 32.dp, end = 32.dp, top = 96.dp, bottom = 24.dp),
         horizontalArrangement = Arrangement.spacedBy(18.dp),
     ) {
@@ -840,7 +842,7 @@ private fun CompactCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(Color(0x9411141B), RoundedCornerShape(20.dp))
+            .background(TvChromePanel, RoundedCornerShape(20.dp))
             .border(
                 width = if (focused) 2.dp else 1.dp,
                 color = if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.66f) else Color(0x10FFFFFF),
@@ -1085,7 +1087,7 @@ private fun EntityRow(title: String, subtitle: String) {
         modifier = Modifier.fillMaxWidth(),
         shape = CardDefaults.shape(RoundedCornerShape(16.dp)),
         colors = CardDefaults.colors(
-            containerColor = Color(0x5915181D),
+            containerColor = TvChromePanel,
             focusedContainerColor = Color(0x7015181D),
         ),
         border = CardDefaults.border(
@@ -1114,7 +1116,7 @@ private fun AddonRow(
     onRemove: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().background(Color(0x5915181D), RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().background(TvChromePanel, RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1158,7 +1160,7 @@ private fun BadgeUrlRow(
     onRemove: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().background(Color(0x5915181D), RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().background(TvChromePanel, RoundedCornerShape(16.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1221,7 +1223,7 @@ private fun FusionBadgePreviewDialog(source: FusionBadgeSource?, onDismiss: () -
             modifier = Modifier
                 .fillMaxWidth(0.85f)
                 .heightIn(max = 560.dp)
-                .background(Color(0xFF11141B), RoundedCornerShape(20.dp))
+                .background(TvChromePanel, RoundedCornerShape(20.dp))
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {

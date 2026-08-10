@@ -6,8 +6,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.withLock
@@ -26,6 +29,21 @@ private val LIVE_ADDON_CATALOG_TYPES = setOf(
 )
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
+
+/** Add-on rows are identified by prefix so they can be ordered as a group. */
+private const val ADDON_RAIL_PREFIX = "addon:"
+
+/** Display order of the Home slots, independent of the order they finish loading in. */
+private val HOME_SLOT_ORDER = listOf(
+    "continue-watching",
+    "popular-movies",
+    "popular-series",
+    "trending",
+    "recently-added",
+    "networks",
+    "recommended",
+    "addon-catalogs",
+)
 
 /**
  * Resolved playback URLs (debrid links, addon direct links) expire quickly, so cached
@@ -733,121 +751,197 @@ class StreamDekRepository(
         return null
     }
 
-    suspend fun fetchHomeContent(forceRefresh: Boolean = false): HomeContent {
+    /**
+     * Home, delivered a row at a time.
+     *
+     * Building the whole screen before showing any of it meant the slowest source set the speed of
+     * the entire app: fanning out to every installed add-on, or one Trakt round trip, held back the
+     * TMDB rows that were already in hand. On a Firestick over a slow connection that is several
+     * seconds of nothing. Rows now arrive as they resolve, each into a slot reserved from the
+     * start, so the layout never reflows underneath the viewer.
+     *
+     * The last value emitted is the complete screen, which is what gets cached.
+     */
+    fun homeContentStream(forceRefresh: Boolean = false): Flow<HomeContent> = channelFlow {
         val cacheKey = buildSessionProfileCacheKey()
         if (!forceRefresh) {
-            homeCache[cacheKey]?.let { return it }
+            homeCache[cacheKey]?.let {
+                send(it)
+                return@channelFlow
+            }
         }
-        TvDebugLogger.i("Home", "fetchHomeContent forceRefresh=$forceRefresh user=$cacheKey")
-        val failuresBefore = api.failureEpoch
+
         val recommendationsAvailable = isSyncServiceConnected(SyncServiceId.TRAKT)
-        // A profile can turn the built-in TMDB rows off and browse purely through its addons.
         val builtInCatalogsEnabled = bootstrapState.value?.preferences?.home?.defaultAppCatalogsEnabled != false
+        val failuresBefore = api.failureEpoch
 
-        val content = supervisorScope {
-            val trendingMovie = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/trending/movie") else emptyList() }
-            val trendingTv = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/trending/tv") else emptyList() }
-            val popularMovie = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/popular/movie") else emptyList() }
-            val popularTv = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/popular/tv") else emptyList() }
-            val browseMovie = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/browse/movie") else emptyList() }
-            val browseTv = async { if (builtInCatalogsEnabled) safeResults<RailResponse>("/tmdb/browse/tv") else emptyList() }
-            val networks = async { if (builtInCatalogsEnabled) safeResults<NetworkResponse>("/tmdb/networks") else emptyList() }
-            // Recommendations exist on Trakt only; without a connection the row falls back to
-            // Popular below, so there is nothing to gain from asking.
-            val recMovie = async {
-                if (recommendationsAvailable) safeResults<RailResponse>("/trakt/recommendations/movies") else emptyList()
-            }
-            val recTv = async {
-                if (recommendationsAvailable) safeResults<RailResponse>("/trakt/recommendations/shows") else emptyList()
-            }
-            val library = async { runCatching { fetchLibrary() }.getOrDefault(LibraryResponse()) }
-            val addonRails = async { runCatching { fetchAddonCatalogRails() }.getOrDefault(emptyList()) }
+        // Slots are declared up front, in final display order, so a row that resolves late lands
+        // where its skeleton already was.
+        val pending = linkedMapOf<String, PendingRail>()
+        fun reserve(id: String, title: String, portrait: Boolean = false) {
+            pending[id] = PendingRail(id, title, portrait)
+        }
+        reserve("continue-watching", "Continue Watching")
+        if (builtInCatalogsEnabled) {
+            reserve("popular-movies", "Popular Movies")
+            reserve("popular-series", "Popular Series")
+            reserve("trending", "Trending")
+            reserve("recently-added", "Recently Added")
+            reserve("networks", "Streaming Services")
+            reserve("recommended", "Recommended For You")
+        }
+        reserve("addon-catalogs", "Add-on Catalogues")
 
-            val trendingMovies = trendingMovie.await()
-            val trendingShows = trendingTv.await()
-            val popularMovies = popularMovie.await().ifEmpty { trendingMovies }
-            val popularShows = popularTv.await().ifEmpty { trendingShows }
-            val browseMovies = browseMovie.await().ifEmpty { popularMovies }
-            val browseShows = browseTv.await().ifEmpty { popularShows }
-            val streamingNetworks = networks.await()
-            val recommendedMovies = recMovie.await().ifEmpty { popularMovies }
-            val recommendedShows = recTv.await().ifEmpty { popularShows }
-            val continueWatching = library.await().continueWatching.map {
-                MediaItem(
-                    id = it.id,
-                    tmdbId = it.tmdbId,
-                    title = it.title,
-                    type = it.type,
-                    poster = it.poster,
-                    backdrop = it.backdrop,
-                    description = it.description,
-                    rating = it.rating,
-                    year = it.year,
-                    titleLogo = null,
-                    progress = it.progress,
-                    positionSec = it.positionSec ?: it.resumeAt,
-                    durationSec = it.durationSec,
-                    episode = it.episode,
+        val resolved = linkedMapOf<String, List<HomeRail>>()
+        val mutex = kotlinx.coroutines.sync.Mutex()
+
+        suspend fun publish(slot: String, rails: List<HomeRail>) {
+            val snapshot = mutex.withLock {
+                resolved[slot] = rails
+                pending.remove(slot)
+                // Emit in declared order regardless of which slot finished first.
+                val ordered = pending.keys.toList()
+                val ready = resolved.keys
+                    .sortedBy { key -> HOME_SLOT_ORDER.indexOf(key) }
+                    .flatMap { resolved.getValue(it) }
+                    .filter { it.items.isNotEmpty() }
+                HomeContent(
+                    featured = ready.firstOrNull { it.id != "continue-watching" }?.items?.firstOrNull()
+                        ?: ready.firstOrNull()?.items?.firstOrNull(),
+                    rails = orderHomeRails(ready),
+                    pendingRails = ordered.mapNotNull { pending[it] },
                 )
             }
+            send(snapshot)
+        }
 
-            val recentlyAdded = (browseMovies + browseShows)
-                .distinctBy { "${it.type}:${it.id}" }
-                .sortedByDescending { it.year?.toIntOrNull() ?: 0 }
-                .take(20)
-            val heroCandidates = trendingMovies + popularMovies + trendingShows + popularShows
+        supervisorScope {
+            launch {
+                val library = runCatching { fetchLibrary() }.getOrDefault(LibraryResponse())
+                val items = library.continueWatching.map(::continueWatchingCard)
+                publish("continue-watching", listOf(HomeRail("continue-watching", "Continue Watching", items)))
+            }
 
+            if (builtInCatalogsEnabled) {
+                launch { publishTmdbRails(::publish, recommendationsAvailable) }
+            }
+
+            launch {
+                val addonRails = runCatching { fetchAddonCatalogRails() }.getOrDefault(emptyList())
+                publish("addon-catalogs", addonRails)
+            }
+        }
+
+        val complete = mutex.withLock {
+            val ready = resolved.keys
+                .sortedBy { key -> HOME_SLOT_ORDER.indexOf(key) }
+                .flatMap { resolved.getValue(it) }
+                .filter { it.items.isNotEmpty() }
             HomeContent(
-                featured = heroCandidates.firstOrNull(),
-                rails = buildList {
-                    if (continueWatching.isNotEmpty()) {
-                        add(HomeRail("continue-watching", "Continue Watching", continueWatching))
-                    }
-                    if (builtInCatalogsEnabled) {
-                        add(HomeRail("popular-movies", "Popular Movies", popularMovies))
-                        add(HomeRail("popular-series", "Popular Series", popularShows))
-                        add(HomeRail("trending", "Trending", (trendingMovies + trendingShows).take(20)))
-                        add(HomeRail("recently-added", "Recently Added", recentlyAdded))
-                        if (streamingNetworks.isNotEmpty()) {
-                            add(HomeRail("networks", "Streaming Services", streamingNetworks))
-                        }
-                        add(HomeRail("recommended", "Recommended For You", (recommendedMovies + recommendedShows).take(20)))
-                    }
-                }.let { baseRails ->
-                    // Match the mobile app's ordering: live TV addon rows sit directly
-                    // below Streaming Services, other addon catalogs stay at the end.
-                    val allAddonRails = addonRails.await()
-                    val (liveAddonRails, otherAddonRails) = allAddonRails.partition { it.isLive }
-                    val ordered = baseRails.toMutableList()
-                    val networksIndex = ordered.indexOfFirst { it.id == "networks" }
-                    if (liveAddonRails.isNotEmpty()) {
-                        if (networksIndex >= 0) {
-                            ordered.addAll(networksIndex + 1, liveAddonRails)
-                        } else {
-                            ordered.addAll(liveAddonRails)
-                        }
-                    }
-                    ordered.addAll(otherAddonRails)
-                    ordered
-                }.filter { it.items.isNotEmpty() }
+                featured = ready.firstOrNull { it.id != "continue-watching" }?.items?.firstOrNull()
+                    ?: ready.firstOrNull()?.items?.firstOrNull(),
+                rails = orderHomeRails(ready),
             )
         }
 
         // Every row is fetched defensively, so a total outage produces an empty screen rather than
         // an error. Without this check the viewer is shown a blank Home with nothing to act on and
         // no hint that anything went wrong.
-        if (content.rails.isEmpty() && api.failureEpoch > failuresBefore) {
-            TvDebugLogger.w("Home", "fetchHomeContent produced nothing after backend failures")
+        if (complete.rails.isEmpty() && api.failureEpoch > failuresBefore) {
+            TvDebugLogger.w("Home", "home produced nothing after backend failures")
             throw ContentUnavailableException()
         }
 
-        TvDebugLogger.i(
-            "Home",
-            "fetchHomeContent ok featured=${content.featured?.id ?: "none"} rails=${content.rails.joinToString { "${it.id}:${it.items.size}" }}",
-        )
-        homeCache[cacheKey] = content
-        return content
+        homeCache[cacheKey] = complete
+        send(complete)
     }
+
+    private fun continueWatchingCard(item: ContinueWatchingItem): MediaItem = MediaItem(
+        id = item.id,
+        tmdbId = item.tmdbId,
+        title = item.title,
+        type = item.type,
+        poster = item.poster,
+        backdrop = item.backdrop,
+        description = item.description,
+        rating = item.rating,
+        year = item.year,
+        titleLogo = null,
+        progress = item.progress,
+        positionSec = item.positionSec ?: item.resumeAt,
+        durationSec = item.durationSec,
+        episode = item.episode,
+    )
+
+    /**
+     * The TMDB rows. Popular falls back to Trending and Browse falls back to Popular, so these
+     * share one coroutine and publish in two waves: the three rows the viewer sees first, then the
+     * rest. Splitting them further would not help, since the fallbacks make them interdependent.
+     */
+    private suspend fun publishTmdbRails(
+        publish: suspend (String, List<HomeRail>) -> Unit,
+        recommendationsAvailable: Boolean,
+    ) = supervisorScope {
+        val trendingMovie = async { safeResults<RailResponse>("/tmdb/trending/movie") }
+        val trendingTv = async { safeResults<RailResponse>("/tmdb/trending/tv") }
+        val popularMovie = async { safeResults<RailResponse>("/tmdb/popular/movie") }
+        val popularTv = async { safeResults<RailResponse>("/tmdb/popular/tv") }
+        val browseMovie = async { safeResults<RailResponse>("/tmdb/browse/movie") }
+        val browseTv = async { safeResults<RailResponse>("/tmdb/browse/tv") }
+        val networks = async { safeResults<NetworkResponse>("/tmdb/networks") }
+        val recMovie = async {
+            if (recommendationsAvailable) safeResults<RailResponse>("/trakt/recommendations/movies") else emptyList()
+        }
+        val recTv = async {
+            if (recommendationsAvailable) safeResults<RailResponse>("/trakt/recommendations/shows") else emptyList()
+        }
+
+        val trendingMovies = trendingMovie.await()
+        val trendingShows = trendingTv.await()
+        val popularMovies = popularMovie.await().ifEmpty { trendingMovies }
+        val popularShows = popularTv.await().ifEmpty { trendingShows }
+
+        publish("popular-movies", listOf(HomeRail("popular-movies", "Popular Movies", popularMovies)))
+        publish("popular-series", listOf(HomeRail("popular-series", "Popular Series", popularShows)))
+        publish("trending", listOf(HomeRail("trending", "Trending", (trendingMovies + trendingShows).take(20))))
+
+        val browseMovies = browseMovie.await().ifEmpty { popularMovies }
+        val browseShows = browseTv.await().ifEmpty { popularShows }
+        val recentlyAdded = (browseMovies + browseShows)
+            .distinctBy { "${it.type}:${it.id}" }
+            .sortedByDescending { it.year?.toIntOrNull() ?: 0 }
+            .take(20)
+        publish("recently-added", listOf(HomeRail("recently-added", "Recently Added", recentlyAdded)))
+        publish("networks", listOf(HomeRail("networks", "Streaming Services", networks.await())))
+
+        val recommendedMovies = recMovie.await().ifEmpty { popularMovies }
+        val recommendedShows = recTv.await().ifEmpty { popularShows }
+        publish(
+            "recommended",
+            listOf(HomeRail("recommended", "Recommended For You", (recommendedMovies + recommendedShows).take(20))),
+        )
+    }
+
+    /**
+     * Matches the mobile app's ordering: live add-on rows sit directly below Streaming Services,
+     * everything else from add-ons goes to the end.
+     */
+    private fun orderHomeRails(rails: List<HomeRail>): List<HomeRail> {
+        val (addonRails, baseRails) = rails.partition { it.id.startsWith(ADDON_RAIL_PREFIX) }
+        val (liveAddonRails, otherAddonRails) = addonRails.partition { it.isLive }
+        val ordered = baseRails.toMutableList()
+        val networksIndex = ordered.indexOfFirst { it.id == "networks" }
+        if (liveAddonRails.isNotEmpty()) {
+            if (networksIndex >= 0) ordered.addAll(networksIndex + 1, liveAddonRails) else ordered.addAll(liveAddonRails)
+        }
+        ordered.addAll(otherAddonRails)
+        return ordered
+    }
+
+    /** The finished screen. Callers that cannot render progressively still get one value. */
+    suspend fun fetchHomeContent(forceRefresh: Boolean = false): HomeContent =
+        homeContentStream(forceRefresh).last()
+
 
     suspend fun fetchDetail(id: String, type: String, forceRefresh: Boolean = false): MediaDetail? {
         val cacheKey = "$type:$id"

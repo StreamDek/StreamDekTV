@@ -1,8 +1,12 @@
 package com.streamdek.tv.nativeapp.ui
 
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
@@ -40,10 +45,54 @@ object TvMotion {
         return if (settings.reducedMotion) 0 else (baseMillis * settings.animationScale).toInt()
     }
 
+    /**
+     * Cards keep their size when focused.
+     *
+     * A grid whose focused tile grows pushes its neighbours around and makes the row look like it
+     * is breathing as focus travels, which is exactly the wrong signal when the point of a grid is
+     * that every item is the same weight. Focus is shown with the accent ring instead, so card
+     * geometry is fixed and the layout can spend the space on more items per row.
+     */
     @Composable
-    fun focusScale(): Float = if (LocalTvExperienceSettings.current.reducedMotion) 1f else 1.025f
+    fun focusScale(): Float = 1f
 }
 val AppPillShape = RoundedCornerShape(999.dp)
+
+/**
+ * Chrome surfaces — the navigation rail, control columns and settings sidebar.
+ *
+ * Deliberately neutral rather than the near-blacks these replaced (`0x07090D`, `0x10141B` and
+ * friends), every one of which carried more blue than red and read as navy against content.
+ * They were also translucent, so the tinted backdrop bled through and the cast got stronger the
+ * brighter the artwork behind it. Opaque and neutral keeps the chrome receding instead of
+ * competing with the poster art.
+ */
+val TvChromeSurface = Color(0xFF060607)
+
+/** One step up from [TvChromeSurface], for panels that sit on top of chrome. */
+val TvChromePanel = Color(0xFF0E0E11)
+
+/**
+ * Hands an intent to whatever app can take it, reporting failure instead of crashing.
+ *
+ * TV boxes are a hostile place for implicit intents: plenty of Fire TV and Android TV devices ship
+ * with no browser, and the YouTube app on them does not always accept a `watch?v=` view intent.
+ * An unhandled intent throws [android.content.ActivityNotFoundException], which on a remote means
+ * the whole app disappears back to the launcher with no explanation.
+ *
+ * @return null when the intent was handed off, or a message to show the viewer when it was not.
+ */
+fun launchExternalIntent(context: android.content.Context, intent: android.content.Intent, label: String): String? {
+    val withFlags = intent.apply { addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK) }
+    return runCatching { context.startActivity(withFlags) }
+        .fold(
+            onSuccess = { null },
+            onFailure = { error ->
+                TvDebugLogger.w("Intent", "no activity accepted $label", error)
+                "This TV has no app that can open $label."
+            },
+        )
+}
 
 private val CurrentTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
@@ -101,6 +150,113 @@ fun ProgressMeter(
     }
 }
 
+
+/**
+ * Placeholder card for a row that has not arrived yet.
+ *
+ * The shimmer is a single animated alpha on a solid box rather than a moving gradient: it reads as
+ * "working" without the per-frame shader cost of a sweep, which matters when a dozen of these are
+ * on screen at once on a Firestick. Reduced-motion holds it at a flat tint.
+ */
+@Composable
+fun TvSkeletonBox(modifier: Modifier = Modifier, shape: androidx.compose.ui.graphics.Shape = AppCardShape) {
+    val reducedMotion = LocalTvExperienceSettings.current.reducedMotion
+    val alpha = if (reducedMotion) {
+        0.10f
+    } else {
+        val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "skeleton")
+        transition.animateFloat(
+            initialValue = 0.06f,
+            targetValue = 0.16f,
+            animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                animation = androidx.compose.animation.core.tween(TvMotion.duration(900).coerceAtLeast(1)),
+                repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+            ),
+            label = "skeleton-alpha",
+        ).value
+    }
+    Box(modifier.background(Color.White.copy(alpha = alpha), shape))
+}
+
+/**
+ * The one way this app says "there is nothing here".
+ *
+ * Home, Search, Live and Library each grew their own centred line of grey text, which read
+ * differently on every screen and — worse — gave the remote nothing to land on. A state that can
+ * be reached but not left is the single most frustrating thing on a TV, so an action is offered
+ * whenever there is one to offer, and it takes focus on arrival.
+ */
+@Composable
+fun TvEmptyState(
+    title: String,
+    message: String? = null,
+    actionLabel: String? = null,
+    modifier: Modifier = Modifier,
+    onAction: (() -> Unit)? = null,
+) {
+    val actionRequester = remember { FocusRequester() }
+
+    LaunchedEffect(title, actionLabel) {
+        if (onAction == null || actionLabel == null) return@LaunchedEffect
+        delay(120)
+        runCatching { actionRequester.requestFocus() }
+    }
+
+    androidx.compose.foundation.layout.Column(
+        modifier = modifier.fillMaxWidth().padding(horizontal = TvSpacing.ScreenHorizontal, vertical = 40.dp),
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        message?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
+            )
+        }
+        if (onAction != null && actionLabel != null) {
+            androidx.tv.material3.Button(
+                onClick = onAction,
+                modifier = Modifier.padding(top = 8.dp).focusRequester(actionRequester),
+                shape = androidx.tv.material3.ButtonDefaults.shape(AppPillShape),
+            ) {
+                Text(actionLabel)
+            }
+        }
+    }
+}
+
+/** A grid of placeholders, used while a results page is still loading. */
+@Composable
+fun TvSkeletonGrid(
+    columns: Int = 5,
+    rows: Int = 2,
+    portrait: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.foundation.layout.Column(
+        modifier = modifier.padding(horizontal = TvSpacing.ScreenHorizontal),
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(TvSpacing.Card),
+    ) {
+        repeat(rows) {
+            androidx.compose.foundation.layout.Row(
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(TvSpacing.Card),
+            ) {
+                repeat(columns) {
+                    TvSkeletonBox(
+                        Modifier
+                            .width(if (portrait) 132.dp else 208.dp)
+                            .height(if (portrait) 198.dp else 122.dp),
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun TvSectionHeading(title: String, subtitle: String? = null, modifier: Modifier = Modifier) {

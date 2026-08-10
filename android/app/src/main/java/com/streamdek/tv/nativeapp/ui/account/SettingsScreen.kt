@@ -73,6 +73,8 @@ import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
+import com.streamdek.tv.nativeapp.ui.TvChromeSurface
+import com.streamdek.tv.nativeapp.ui.TvChromePanel
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -139,7 +141,7 @@ fun SettingsScreen(
 
     CompositionLocalProvider(LocalSettingsLeftRequester provides selectedRequester) {
     Row(
-        Modifier.fillMaxSize().background(Color(0xFF07090D)).padding(start = 18.dp, end = 92.dp, top = 18.dp, bottom = 24.dp),
+        Modifier.fillMaxSize().background(TvChromeSurface).padding(start = 18.dp, end = 92.dp, top = 18.dp, bottom = 24.dp),
         horizontalArrangement = Arrangement.spacedBy(22.dp),
     ) {
         Column(Modifier.width(238.dp).fillMaxHeight()) {
@@ -361,7 +363,7 @@ private fun SettingsDestinationRow(destination: SettingsDestination, selected: B
 private fun SettingsOverviewCard(destination: SettingsDestination, status: String?, requester: FocusRequester, leftRequester: FocusRequester) {
     var focused by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().background(Color(0xD4111720), androidx.compose.foundation.shape.RoundedCornerShape(22.dp)).border(1.dp, Color(0x14FFFFFF), androidx.compose.foundation.shape.RoundedCornerShape(22.dp)).focusRequester(requester).onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess }.focusable().padding(horizontal = 20.dp, vertical = 18.dp),
+        Modifier.fillMaxWidth().background(TvChromePanel, androidx.compose.foundation.shape.RoundedCornerShape(22.dp)).border(1.dp, Color(0x14FFFFFF), androidx.compose.foundation.shape.RoundedCornerShape(22.dp)).focusRequester(requester).onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess }.focusable().padding(horizontal = 20.dp, vertical = 18.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(46.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(destination.icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(25.dp)) }
@@ -373,7 +375,7 @@ private fun SettingsOverviewCard(destination: SettingsDestination, status: Strin
 @Composable
 private fun SettingsPanel(title: String, content: @Composable ColumnScope.() -> Unit) {
     Column(
-        Modifier.fillMaxWidth().background(Color(0xA80E131B), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+        Modifier.fillMaxWidth().background(TvChromePanel, androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
             .border(1.dp, Color(0x10FFFFFF), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp),
@@ -433,7 +435,7 @@ private fun SettingsDropdownRow(title: String, description: String, value: Strin
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier.width(300.dp).background(Color(0xFF151B25)),
+            modifier = Modifier.width(300.dp).background(TvChromePanel),
         ) {
             options.forEach { (optionValue, label) ->
                 DropdownMenuItem(

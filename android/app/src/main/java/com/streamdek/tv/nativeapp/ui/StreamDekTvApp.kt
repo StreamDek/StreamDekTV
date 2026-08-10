@@ -677,7 +677,7 @@ private fun HandoffPrompt(
                 modifier = Modifier
                     .fillMaxWidth(0.46f)
                     .clip(RoundedCornerShape(28.dp))
-                    .background(Color(0xFF10141B))
+                    .background(TvChromePanel)
                     .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.42f), RoundedCornerShape(28.dp))
                     .padding(horizontal = 30.dp, vertical = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -710,7 +710,7 @@ private fun ExitBackHint(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(Color(0xEE10141B))
+            .background(TvChromePanel)
             .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.36f), RoundedCornerShape(999.dp))
             .padding(horizontal = 18.dp, vertical = 12.dp),
     ) {
@@ -768,7 +768,7 @@ private fun AppUpdatePrompt(
                     .fillMaxWidth(0.58f)
                     .heightIn(max = 760.dp)
                     .clip(RoundedCornerShape(28.dp))
-                    .background(Color(0xFF10141B))
+                    .background(TvChromePanel)
                     .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), RoundedCornerShape(28.dp))
                     .padding(horizontal = 26.dp, vertical = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -993,7 +993,7 @@ private fun TvSideNav(
                 }
             }
             .onFocusChanged { navHasFocus = it.hasFocus }
-            .background(Color(0xD907090D))
+            .background(TvChromeSurface)
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,
     ) {

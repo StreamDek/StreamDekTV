@@ -52,21 +52,38 @@ class HomeViewModel(
                 isLoading = cachedContent == null,
                 error = null,
             )
-            runCatching { repository.fetchHomeContent(forceRefresh = forceRefresh) }
-                .onSuccess { content ->
-                    TvDebugLogger.i("HomeVm", "load ok rails=${content.rails.size} forceRefresh=$forceRefresh")
+            // On a cold load each row is applied the moment it lands, so the screen fills in
+            // progressively instead of waiting on the slowest source. A refresh over a screen that
+            // is already populated swaps in one go instead: tearing rows out from under someone
+            // who is mid-browse to rebuild them is worse than a moment of stale content.
+            val progressive = cachedContent == null
+            runCatching {
+                repository.homeContentStream(forceRefresh = forceRefresh).collect { content ->
+                    if (!progressive && !content.isComplete) return@collect
                     _uiState.value = _uiState.value.copy(
-                        isLoading = false,
+                        isLoading = !content.isComplete,
                         content = content,
                         error = null,
                     )
+                }
+            }
+                .onSuccess {
+                    val content = _uiState.value.content
+                    TvDebugLogger.i("HomeVm", "load ok rails=${content?.rails?.size ?: 0} forceRefresh=$forceRefresh")
+                    _uiState.value = _uiState.value.copy(isLoading = false)
                 }
                 .onFailure { error ->
                     if (error is kotlinx.coroutines.CancellationException) return@onFailure
                     TvDebugLogger.e("HomeVm", "load failed", error)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = error.message ?: "Could not load home",
+                        // A partial screen is better than an error page, so the failure is only
+                        // surfaced when nothing at all arrived.
+                        error = if (_uiState.value.content?.rails.isNullOrEmpty()) {
+                            error.message ?: "Could not load home"
+                        } else {
+                            null
+                        },
                     )
                 }
         }
