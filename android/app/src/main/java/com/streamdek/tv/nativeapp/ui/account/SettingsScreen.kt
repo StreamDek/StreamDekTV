@@ -146,6 +146,8 @@ fun SettingsScreen(
     var query by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var expandedPluginParents by remember { mutableStateOf<Set<String>>(emptySet()) }
+    /** Plugin source whose settings cog is open, if any. */
+    var editingPluginProvider by remember { mutableStateOf<ProfilePluginProvider?>(null) }
     val contentEntryRequester = remember { FocusRequester() }
     val destinationRequesters = remember(entryFocusRequester) {
         SettingsDestination.entries.associateWith { if (it == SettingsDestination.Accounts) entryFocusRequester else FocusRequester() }
@@ -500,6 +502,14 @@ fun SettingsScreen(
                                                                 complete(updated != null)
                                                             }
                                                         }
+                                                        if (provider.hasSettings) {
+                                                            SettingsActionRow(
+                                                                "${provider.name.ifBlank { "This source" }} settings",
+                                                                "API keys and options this source asks for. Stored on this TV.",
+                                                                "Open",
+                                                                selectedRequester,
+                                                            ) { editingPluginProvider = provider }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -536,6 +546,14 @@ fun SettingsScreen(
                                                             status = if (updated != null) "${provider.name.ifBlank { "Plugin provider" }} updated." else "Plugin provider could not be updated."
                                                             complete(updated != null)
                                                         }
+                                                    }
+                                                    if (provider.hasSettings) {
+                                                        SettingsActionRow(
+                                                            "${provider.name.ifBlank { "This source" }} settings",
+                                                            "API keys and options this source asks for. Stored on this TV.",
+                                                            "Open",
+                                                            selectedRequester,
+                                                        ) { editingPluginProvider = provider }
                                                     }
                                                 }
                                             }
@@ -648,6 +666,14 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+    }
+
+    editingPluginProvider?.let { provider ->
+        PluginProviderSettingsDialog(
+            provider = provider,
+            repository = repository,
+            onDismiss = { editingPluginProvider = null },
+        )
     }
 }
 

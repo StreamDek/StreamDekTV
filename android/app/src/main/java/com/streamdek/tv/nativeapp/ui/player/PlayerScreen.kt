@@ -2134,7 +2134,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     return@launch
                                 }
                                 if (selected.source == null) {
-                                    error = "This source could not be resolved. Please try another."
+                                    error = if (repository.isUsenetStream(stream)) {
+                                        "This is a usenet source. StreamDek cannot download NZBs yet — pick another source."
+                                    } else {
+                                        "This source could not be resolved. Please try another."
+                                    }
                                     loading = false
                                     controlsVisible = true
                                     return@launch

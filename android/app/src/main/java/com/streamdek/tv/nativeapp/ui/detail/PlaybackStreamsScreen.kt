@@ -512,6 +512,9 @@ private fun StreamRow(
     val availability = when {
         stream.cachedBy.isNotEmpty() -> "Cached" to true
         !stream.url.isNullOrBlank() -> "Direct" to false
+        // Listed for parity with mobile, but nothing can play an NZB yet — say so in the column
+        // rather than letting it read as a torrent that simply never starts.
+        !stream.nzbUrl.isNullOrBlank() -> "Usenet" to false
         else -> "Torrent" to false
     }
 

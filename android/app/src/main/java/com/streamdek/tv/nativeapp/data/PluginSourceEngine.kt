@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
@@ -40,6 +41,23 @@ private const val MAX_CONCURRENT_PLUGIN_PROVIDERS = 4
 
 /** Matches the mobile app's per-provider budget for a stream lookup. */
 private const val PLUGIN_PROVIDER_TIMEOUT_MS = 25_000L
+
+/** Reading a settings schema runs no scraping, so it gets a much shorter budget. */
+private const val PLUGIN_SETTINGS_TIMEOUT_MS = 15_000L
+
+/** One field a provider asks the viewer to fill in — an API key, a region, a toggle. */
+data class PluginSettingField(
+    val type: String,
+    val key: String?,
+    val label: String,
+    val description: String? = null,
+    val placeholder: String? = null,
+    val defaultValue: String? = null,
+    val isPassword: Boolean = false,
+    val options: List<PluginSettingOption> = emptyList(),
+)
+
+data class PluginSettingOption(val label: String, val value: String)
 
 /**
  * Rewrites the ES module syntax plugin sources are authored in into the CommonJS shape the
@@ -201,8 +219,112 @@ class PluginSourceEngine(context: Context) {
      */
     private val providerBytecodeCache = ConcurrentHashMap<String, ByteArray>()
 
+    /** Signature of the state the scraper cache was last warmed for, so a refresh is a no-op. */
+    @Volatile
+    private var warmedSignature: String? = null
+
+    /**
+     * Which profile's provider settings to read and write. Two people on one account can hold
+     * different keys for the same source, so these are scoped the way mobile scopes them.
+     */
+    @Volatile
+    private var profileKey: String = "default"
+
+    fun selectProfile(profileId: String?) {
+        profileKey = profileId?.takeIf { it.isNotBlank() } ?: "default"
+    }
+
+    /**
+     * The settings a provider asks for, by running its `onSettings` export.
+     *
+     * Only providers that advertise `hasSettings` export it; everything else has nothing to
+     * configure and this is never called for them.
+     */
+    suspend fun settingsSchema(
+        state: ProfilePluginState?,
+        provider: ProfilePluginProvider,
+    ): Result<List<PluginSettingField>> = runCatching {
+        require(provider.hasSettings) { "This source does not advertise any settings." }
+        val repoVersion = state?.repos.orEmpty().firstOrNull { it.url == provider.repoUrl }?.version.orEmpty()
+        val code = providerCode(provider, repoVersion)
+        parseSettingsSchema(executeProvider(provider, code, null, null, null, null, settingsOnly = true))
+    }.onFailure { TvDebugLogger.w("Plugins", "settings schema failed name=${provider.name}", it) }
+
+    /** Values the viewer has entered for one provider on this device, for this profile. */
+    fun providerSettings(providerId: String): Map<String, String> {
+        val raw = prefs.getString(settingsKey(providerId), "{}") ?: "{}"
+        val root = runCatching { JSONObject(raw) }.getOrDefault(JSONObject())
+        return buildMap {
+            root.keys().forEach { key ->
+                root.opt(key)?.takeUnless { it == JSONObject.NULL }?.let { put(key, it.toString()) }
+            }
+        }
+    }
+
+    fun saveProviderSettings(providerId: String, values: Map<String, String>) {
+        val root = JSONObject()
+        values.forEach { (key, value) -> if (key.isNotBlank()) root.put(key, value) }
+        prefs.edit().putString(settingsKey(providerId), root.toString()).apply()
+    }
+
+    private fun settingsKey(providerId: String) = "settings:$profileKey:$providerId"
+
+    private fun parseSettingsSchema(raw: String): List<PluginSettingField> {
+        val array = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val options = item.optJSONArray("options")
+                add(
+                    PluginSettingField(
+                        type = item.optString("type").lowercase(Locale.US),
+                        key = item.optString("key").ifBlank { null },
+                        label = item.optString("label").ifBlank { item.optString("key") },
+                        description = item.optString("description").ifBlank { null },
+                        placeholder = item.optString("placeholder").ifBlank { null },
+                        defaultValue = item.opt("defaultValue")?.takeUnless { it == JSONObject.NULL }?.toString(),
+                        isPassword = item.optBoolean("isPassword", false),
+                        options = buildList {
+                            if (options != null) for (optionIndex in 0 until options.length()) {
+                                val option = options.optJSONObject(optionIndex) ?: continue
+                                add(PluginSettingOption(option.optString("label"), option.optString("value")))
+                            }
+                        },
+                    ),
+                )
+            }
+        }
+    }
+
     fun eligibleProviders(state: ProfilePluginState?, type: String): List<ProfilePluginProvider> =
         eligiblePluginProviders(state, type)
+
+    /**
+     * Downloads the scraper for every enabled provider in the background, so the first stream
+     * lookup of a session does not pay for it. Safe to call on every bootstrap: once a collection
+     * is cached this returns without touching the network.
+     */
+    fun warmUp(state: ProfilePluginState?) {
+        if (state == null || !state.enabled) return
+        val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
+        val providers = state.providers.filter { it.enabled && it.repoUrl in enabledRepos }
+        if (providers.isEmpty()) return
+        val repoVersions = state.repos.associate { it.url to it.version }
+        val signature = providers.joinToString("|") { "${it.id}@${repoVersions[it.repoUrl].orEmpty()}" }
+        if (signature == warmedSignature) return
+        warmedSignature = signature
+        engineScope.launch {
+            val gate = Semaphore(MAX_CONCURRENT_PLUGIN_PROVIDERS)
+            providers.map { provider ->
+                async {
+                    gate.withPermit {
+                        runCatching { providerCode(provider, repoVersions[provider.repoUrl].orEmpty()) }
+                            .onFailure { TvDebugLogger.w("Plugins", "could not preload ${provider.name}", it) }
+                    }
+                }
+            }.awaitAll()
+        }
+    }
 
     /**
      * Streams for one title from every eligible provider.
@@ -318,11 +440,12 @@ class PluginSourceEngine(context: Context) {
     private suspend fun executeProvider(
         provider: ProfilePluginProvider,
         code: String,
-        id: String,
-        type: String,
+        id: String?,
+        type: String?,
         season: Int?,
         episode: Int?,
-    ): String = withTimeout(PLUGIN_PROVIDER_TIMEOUT_MS) {
+        settingsOnly: Boolean = false,
+    ): String = withTimeout(if (settingsOnly) PLUGIN_SETTINGS_TIMEOUT_MS else PLUGIN_PROVIDER_TIMEOUT_MS) {
         val deferred = CompletableDeferred<String>()
         val domNodes = mutableMapOf<Int, Element>()
         var nextDomNodeId = 1
@@ -435,13 +558,19 @@ class PluginSourceEngine(context: Context) {
                 compile(providerSource, "provider.js", false)
             }
             evaluate<Any?>(providerBytecode)
-            // Per-provider settings (API keys and the like) live only on the device that entered
-            // them and are never synced, so the TV always runs a provider with its defaults.
-            evaluate<Any?>("globalThis.SCRAPER_SETTINGS={};globalThis.global.SCRAPER_SETTINGS=globalThis.SCRAPER_SETTINGS;")
-            val invocation = "var f=module.exports.getStreams||globalThis.getStreams;" +
-                "if(typeof f!=='function')throw new Error('Plugin does not export getStreams');" +
-                "var r=await f(" + JSONObject.quote(id) + "," + JSONObject.quote(type) + "," +
-                (season?.toString() ?: "undefined") + "," + (episode?.toString() ?: "undefined") + ");"
+            // Whatever the viewer entered under the source's settings cog, in the same global the
+            // mobile app exposes. Providers with no settings simply see an empty object.
+            val settingsJson = JSONObject(providerSettings(provider.id) as Map<*, *>).toString()
+            evaluate<Any?>("globalThis.SCRAPER_SETTINGS=$settingsJson;globalThis.global.SCRAPER_SETTINGS=globalThis.SCRAPER_SETTINGS;")
+            val invocation = if (settingsOnly) {
+                "var f=module.exports.onSettings||globalThis.onSettings;" +
+                    "if(typeof f!=='function')throw new Error('Plugin does not export onSettings');var r=await f();"
+            } else {
+                "var f=module.exports.getStreams||globalThis.getStreams;" +
+                    "if(typeof f!=='function')throw new Error('Plugin does not export getStreams');" +
+                    "var r=await f(" + JSONObject.quote(id) + "," + JSONObject.quote(type) + "," +
+                    (season?.toString() ?: "undefined") + "," + (episode?.toString() ?: "undefined") + ");"
+            }
             val call = "(async function(){${invocation}__capture_result(JSON.stringify(r||[]));})()" +
                 ".catch(function(e){__sd_log(String(e&&e.stack||e));__capture_error(String(e&&e.message||e));})"
             evaluate<Any?>(call)

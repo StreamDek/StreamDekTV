@@ -543,6 +543,37 @@ data class AddonCatalogResponse(
     val metas: List<AddonCatalogMetaItem> = emptyList(),
 )
 
+/**
+ * One item as an add-on describes it, from the backend's cross-addon `meta` route. Used when
+ * TMDB cannot resolve a card's id — a metadata add-on's `tmdb:`/`kitsu:` id, or a bridge's own.
+ */
+data class AddonMetaItem(
+    val id: String? = null,
+    @SerializedName("imdb_id") val imdbId: String? = null,
+    val type: String? = null,
+    val name: String? = null,
+    val description: String? = null,
+    val poster: String? = null,
+    val background: String? = null,
+    val logo: String? = null,
+    val releaseInfo: String? = null,
+    val imdbRating: String? = null,
+    val genres: List<String> = emptyList(),
+    val videos: List<AddonMetaVideo> = emptyList(),
+)
+
+data class AddonMetaVideo(
+    val id: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+)
+
+data class AddonMetaResponse(
+    val meta: AddonMetaItem? = null,
+    val addonId: String? = null,
+    val addonName: String? = null,
+)
+
 data class AddonsIntegration(
     val items: List<AddonManifest> = emptyList(),
 )
@@ -705,6 +736,12 @@ data class AddonStream(
     val description: String? = null,
     val url: String? = null,
     val infoHash: String? = null,
+    /**
+     * NZB pointer published by usenet sources (AIOStreams and friends). Such a stream has no
+     * playable url and no info hash — it names an NZB plus the news [servers] to pull it from.
+     */
+    val nzbUrl: String? = null,
+    val servers: List<String> = emptyList(),
     val fileIdx: Int? = null,
     val filename: String? = null,
     val behaviorHints: BehaviorHints? = null,

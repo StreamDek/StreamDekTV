@@ -30,6 +30,42 @@ private val LIVE_ADDON_CATALOG_TYPES = setOf(
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
 
+/**
+ * A usenet result: an NZB pointer plus the news servers to fetch it from, with no direct url and
+ * no info hash. AIOStreams returns these alongside ordinary results, and for some titles they are
+ * nearly all of them.
+ */
+internal fun isUsenetAddonStream(stream: AddonStream): Boolean = !stream.nzbUrl.isNullOrBlank()
+
+/**
+ * Whether a catalog entry is an add-on reporting a failure rather than describing a real title.
+ *
+ * AIOStreams drops a card into the row whenever one of the catalog providers behind it errors —
+ * "[❌] Bingecat / Failed to parse meta for Bingecat" — under its own `aiostreamserror` id prefix,
+ * which its manifest openly declares. That is a diagnostic for the add-on's operator, not
+ * something to put on a viewer's home screen: it has no artwork and opening it leads nowhere.
+ */
+internal fun isPlaceholderCatalogMeta(id: String, name: String?): Boolean {
+    if (id.isBlank() || id.equals("null", ignoreCase = true)) return true
+    if (id.startsWith("aiostreamserror", ignoreCase = true)) return true
+    return name?.trim()?.startsWith("[❌]") == true
+}
+
+/**
+ * Whether an add-on's `meta` answer actually describes the item that was asked for.
+ *
+ * Advertising a `meta` resource is not the same as being able to serve one: AIOStreams answers
+ * every call with a placeholder whose id encodes the failure ("aiostreamserror.…") and whose name
+ * is the error text. A usable answer keeps an id that could still drive a lookup — the id that was
+ * requested, or an IMDb id — or brings episodes with it.
+ */
+internal fun isUsableAddonMeta(meta: AddonMetaItem, requestedId: String): Boolean {
+    if (meta.name.isNullOrBlank()) return false
+    if (!meta.imdbId.isNullOrBlank()) return true
+    if (meta.videos.isNotEmpty()) return true
+    return meta.id?.equals(requestedId, ignoreCase = true) == true
+}
+
 /** Add-on rows are identified by prefix so they can be ordered as a group. */
 private const val ADDON_RAIL_PREFIX = "addon:"
 
@@ -452,6 +488,10 @@ class StreamDekRepository(
             TvDebugLogger.w("Bootstrap", "refreshBootstrap returned null")
         }
         bootstrapState.value = bootstrap
+        // The synced snapshot carries plugin configuration but not the scrapers themselves, so
+        // fetch those in the background rather than on the first stream lookup.
+        pluginEngine?.selectProfile(sessionStore.activeProfileId())
+        pluginEngine?.warmUp(bootstrap?.profilePlugins)
         reloadFavouriteChannels()
         refreshFavouriteChannelsFromCloud()
         return@withLock bootstrap
@@ -632,6 +672,22 @@ class StreamDekRepository(
         homeCache.clear()
         refreshBootstrap()
         return true
+    }
+
+    /** The fields a plugin source asks for, read by running its own `onSettings` export. */
+    suspend fun pluginSettingsSchema(provider: ProfilePluginProvider): Result<List<PluginSettingField>> =
+        pluginEngine?.settingsSchema(bootstrapState.value?.profilePlugins, provider)
+            ?: Result.failure(IllegalStateException("Plugin sources are unavailable on this device."))
+
+    /**
+     * Values entered for one plugin source. Kept on this device rather than synced: they are API
+     * keys and passwords, and nothing in the account carries them today.
+     */
+    fun pluginProviderSettings(providerId: String): Map<String, String> =
+        pluginEngine?.providerSettings(providerId).orEmpty()
+
+    fun savePluginProviderSettings(providerId: String, values: Map<String, String>) {
+        pluginEngine?.saveProviderSettings(providerId, values)
     }
 
     suspend fun updateProfilePlugins(state: ProfilePluginState): AccountBootstrap? {
@@ -821,6 +877,7 @@ class StreamDekRepository(
         val tmdbId = meta.movieDbId ?: 0
         val resolvedId = if (tmdbId > 0) tmdbId.toString() else rawId
         if (resolvedId.isBlank()) return null
+        if (isPlaceholderCatalogMeta(rawId, meta.name)) return null
         val rawNativeType = meta.type?.trim()?.lowercase(Locale.US).orEmpty()
         val mapped = rawNativeType.takeIf { it.isNotBlank() }?.let { mapAddonCatalogType(it) }
         val type = mapped ?: fallbackType
@@ -1115,11 +1172,47 @@ class StreamDekRepository(
             detailsCache[cacheKey]?.let { return it }
         }
         val detail = api.get<MediaDetail>("/tmdb/details/$resolvedType/$resolvedId")
+            ?: fetchAddonMetaDetail(resolvedId, canonicalType)
         if (detail != null) {
             detailsCache[cacheKey] = detail
         }
         return detail
     }
+
+    /**
+     * Falls back to whichever installed add-on can describe this item, for cards TMDB cannot
+     * resolve — a metadata add-on's `tmdb:`/`kitsu:` id, a bridge's own id, a title TMDB has never
+     * heard of. Without this the detail screen simply reported that it could not load the title.
+     */
+    private suspend fun fetchAddonMetaDetail(id: String, canonicalType: String): MediaDetail? {
+        // Add-on routes speak Stremio's spelling: 'series', never TMDB's 'tv'.
+        val addonType = if (canonicalType == "tv") "series" else canonicalType
+        val response = runCatching {
+            api.get<AddonMetaResponse>("/addons/meta/$addonType/${encodePathSegment(id)}")
+        }.onFailure { TvDebugLogger.w("Detail", "addon meta lookup failed type=$addonType id=$id") }
+            .getOrNull()
+        val meta = response?.meta ?: return null
+        if (!isUsableAddonMeta(meta, id)) {
+            TvDebugLogger.w("Detail", "addon meta unusable addon=${response.addonName.orEmpty()} id=${meta.id.orEmpty()}")
+            return null
+        }
+        val seasonNumbers = meta.videos.mapNotNull { it.season }.filter { it > 0 }.distinct().sorted()
+        return MediaDetail(
+            id = id,
+            title = meta.name?.trim().orEmpty().ifBlank { return null },
+            type = if (meta.videos.isNotEmpty() || addonType == "series") "tv" else "movie",
+            poster = meta.poster,
+            backdrop = meta.background ?: meta.poster,
+            description = meta.description,
+            rating = meta.imdbRating?.toDoubleOrNull(),
+            year = meta.releaseInfo?.let { Regex("(19|20)\\d{2}").find(it)?.value },
+            imdbId = meta.imdbId?.takeIf { it.startsWith("tt") } ?: id.takeIf { it.startsWith("tt") },
+            titleLogo = meta.logo,
+            genreNames = meta.genres,
+            seasons = seasonNumbers.map { season -> SeasonRef(seasonNumber = season, name = "Season $season") },
+        )
+    }
+
 
     suspend fun fetchTraktComments(id: String, type: String): List<TraktCommentItem> {
         return api.get<TraktCommentsResponse>("/trakt/comments/$type/$id")?.results.orEmpty()
@@ -2497,6 +2590,12 @@ class StreamDekRepository(
         }
         if (!isPlayableStreamOption(playbackStream)) return null
         normalizedDirectUrl(playbackStream)?.let { return it }
+        if (isUsenetStream(playbackStream)) {
+            // Listed, but there is nothing to hand the player: an NZB has to be fetched from a
+            // news server and reassembled first, which no StreamDek client or service does yet.
+            TvDebugLogger.i("Playback", "skipping usenet source ${playbackStream.addonName}: no NZB resolver")
+            return null
+        }
         val infoHash = effectiveInfoHash(playbackStream) ?: return null
         val filename = effectiveFilename(playbackStream)
         val magnetLink = buildMagnetLink(infoHash, filename)
@@ -2517,8 +2616,19 @@ class StreamDekRepository(
         }.getOrNull()
     }
 
+    /**
+     * A usenet result: an NZB pointer plus the news servers to fetch it from, with no direct url
+     * and no info hash. AIOStreams returns these alongside ordinary results, and for some titles
+     * they are nearly all of them.
+     */
+    fun isUsenetStream(stream: AddonStream): Boolean = isUsenetAddonStream(stream)
+
     /** Reject archive/download payloads that addons occasionally mislabel as playable videos. */
     fun isPlayableStreamOption(stream: AddonStream): Boolean {
+        // Usenet results are listed like the mobile app lists them. They cannot be resolved yet,
+        // so resolveStreamToUrl skips them and the picker labels them — but hiding them outright
+        // left titles whose results are all usenet looking as though nothing was found at all.
+        if (isUsenetStream(stream)) return true
         if (!effectiveInfoHash(stream).isNullOrBlank()) return true
         val url = normalizedDirectUrl(stream) ?: return false
         val decodedUrl = runCatching { java.net.URLDecoder.decode(url, "UTF-8") }.getOrDefault(url)

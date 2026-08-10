@@ -710,7 +710,13 @@ private fun HandoffPrompt(
                     .padding(horizontal = 30.dp, vertical = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
-                Text("Continue on this TV?", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
+                // A Dialog's content sits outside any Surface, so LocalContentColor is still the
+                // black default here — an unstyled Text disappears against the dark panel.
+                Text(
+                    "Continue on this TV?",
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
                 Text(
                     errorMessage ?: "StreamDek Mobile wants to continue the current movie or episode here. The playback details are encrypted and expire automatically.",
                     style = MaterialTheme.typography.bodyLarge,
