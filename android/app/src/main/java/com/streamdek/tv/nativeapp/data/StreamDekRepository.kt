@@ -279,6 +279,10 @@ class StreamDekRepository(
 
     fun currentPlaybackRequest(): PlaybackRequest? = lastPlaybackRequest
 
+    fun playerBrightnessPercent(): Int = sessionStore.playerBrightnessPercent()
+
+    fun savePlayerBrightnessPercent(percent: Int) = sessionStore.savePlayerBrightnessPercent(percent)
+
     fun consumePlaybackRequest(): PlaybackRequest? = lastPlaybackRequest
 
     fun peekCachedDetail(id: String, type: String): MediaDetail? {
@@ -490,6 +494,8 @@ class StreamDekRepository(
                     "highContrast" to (partial["highContrast"] ?: existing.highContrast),
                     "largeText" to (partial["largeText"] ?: existing.largeText),
                     "reducedMotion" to (partial["reducedMotion"] ?: existing.reducedMotion),
+                    "hideHomeSynopsis" to (partial["hideHomeSynopsis"] ?: existing.hideHomeSynopsis),
+                    "transparentNavigation" to (partial["transparentNavigation"] ?: existing.transparentNavigation),
                 ),
             ),
         )) return null

@@ -30,6 +30,7 @@ class AuthSessionStore(
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
     private val handoffPublicKeyKey = "streamdek_tv_handoff_public_key_v1"
+    private val playerBrightnessKey = "streamdek_tv_player_brightness_v1"
 
     private val _session = MutableStateFlow(loadSession())
     val session: StateFlow<AuthSession?> = _session
@@ -44,6 +45,19 @@ class AuthSessionStore(
     fun clearSession() {
         preferences.edit().remove(authKey).remove(activeProfileIdKey).apply()
         _session.value = null
+    }
+
+    /**
+     * Player brightness, as a percentage of the untouched picture.
+     *
+     * Deliberately local to this device rather than part of the synced preferences: it is a
+     * property of the room and the panel in it, not of the account, and a phone has no use for the
+     * value a TV settled on.
+     */
+    fun playerBrightnessPercent(): Int = preferences.getInt(playerBrightnessKey, 100).coerceIn(10, 100)
+
+    fun savePlayerBrightnessPercent(percent: Int) {
+        preferences.edit().putInt(playerBrightnessKey, percent.coerceIn(10, 100)).apply()
     }
 
     fun activeProfileId(): String? = preferences.getString(activeProfileIdKey, null)

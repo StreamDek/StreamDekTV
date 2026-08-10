@@ -122,6 +122,14 @@ private data class LiveBrowseSelection(
 )
 private const val ExitBackPressWindowMs = 2500L
 
+/**
+ * How far the navigation rail is allowed to let the backdrop through.
+ *
+ * The ceiling is the point, not the value: the rail is the only persistent indication of where you
+ * are, and any further and it stops reading as a surface at all against bright artwork.
+ */
+private const val NavRailTransparentAlpha = 0.85f
+
 private fun detailRoute(mediaType: String, mediaId: String): String {
     val canonicalType = if (mediaType == "series") "tv" else mediaType
     return "detail/$canonicalType/$mediaId"
@@ -502,7 +510,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     )
                 }
                 composable("player") {
-                    val request = repository.consumePlaybackRequest()
+                    // Read once per entry. The request is a plain field on the repository, so a
+                    // recomposition — of which there are several during the transition in — would
+                    // otherwise pick up whatever was written most recently and hand the player a
+                    // different object than the one it started with.
+                    val request = remember { repository.consumePlaybackRequest() }
                     if (request == null) {
                         navController.popBackStack()
                     } else {
@@ -523,7 +535,12 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     }
                 }
                 composable("streams") {
-                    val request = repository.currentPlaybackRequest()
+                    // Selecting a stream writes a new request and navigates away, but this screen
+                    // stays composed through the transition. Re-reading the repository here handed
+                    // it that new request, whose identity keys the whole screen — so the list it
+                    // was already showing was thrown away and rebuilt as skeletons on the way out,
+                    // and the viewer saw the search start over instead of the player opening.
+                    val request = remember { repository.currentPlaybackRequest() }
                     if (request == null) {
                         navController.popBackStack()
                     } else {
@@ -591,6 +608,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         TopLevelDestination.Library.route to libraryContentRequester,
                         TopLevelDestination.Profile.route to settingsContentRequester,
                     ),
+                    transparent = appPrefs?.transparentNavigation != false,
                     modifier = Modifier.align(Alignment.CenterStart),
                     onNavigate = { route ->
                         if (route != currentRoute) {
@@ -971,6 +989,7 @@ private fun TvSideNav(
     profileFocusRequester: FocusRequester,
     currentRoute: String,
     contentRequesters: Map<String, FocusRequester>,
+    transparent: Boolean,
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
 ) {
@@ -1001,6 +1020,16 @@ private fun TvSideNav(
     }
 
     val displayedRoute = if (navHasFocus) highlightedRoute else currentRoute
+    // The highlight stays solid while the rail around it does not. It used to be a 22% primary tint
+    // relying on opaque black underneath it; with the rail translucent that tint would sit on
+    // artwork and the marker for where you are would change colour with whatever is behind it.
+    // Mixing the same 22% into the chrome colour up front reproduces exactly the old appearance as
+    // one opaque value.
+    val navHighlight = androidx.compose.ui.graphics.lerp(
+        TvChromeSurface,
+        MaterialTheme.colorScheme.primary,
+        0.22f,
+    )
     Column(
         modifier = modifier
             .width(railWidth)
@@ -1016,7 +1045,11 @@ private fun TvSideNav(
             // item was nearest — in practice always Home — instead of the page you are on.
             .focusGroup()
             .onFocusChanged { navHasFocus = it.hasFocus }
-            .background(TvChromeSurface)
+            // The backdrop carries on behind the rail instead of being cut off by a solid strip down
+            // the edge. Applied here rather than to TvChromeSurface itself — the settings sidebar
+            // and the live filter column use that same colour and want to stay opaque, since they
+            // sit over content rather than over artwork.
+            .background(TvChromeSurface.copy(alpha = if (transparent) NavRailTransparentAlpha else 1f))
             .clipToBounds()
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,
@@ -1030,11 +1063,10 @@ private fun TvSideNav(
                     .clip(RoundedCornerShape(14.dp))
                     .background(
                         androidx.compose.animation.animateColorAsState(
-                            targetValue = if (highlighted) {
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                            } else {
-                                Color.Transparent
-                            },
+                            // Fades on its own alpha rather than towards Color.Transparent, so the
+                            // in-between frames are the same hue getting fainter instead of a slide
+                            // through transparent black.
+                            targetValue = if (highlighted) navHighlight else navHighlight.copy(alpha = 0f),
                             animationSpec = TvScroll.spec(TvMotion.duration(200)),
                             label = "side-nav-highlight",
                         ).value,

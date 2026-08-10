@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CheckCircle
@@ -88,12 +89,29 @@ internal enum class OverlayPanel {
     Audio,
     Subtitles,
     Speed,
+    Brightness,
 }
 
 internal data class SpeedOption(
     val label: String,
     val value: Double,
 )
+
+/**
+ * Brightness steps offered in the player.
+ *
+ * 100% is the picture exactly as the decoder produced it — the default, and the only value that
+ * touches nothing. Everything below it is a scrim over the video, which is the one lever available
+ * to both playback engines: neither libMPV's nor Media3's surface exposes a gamma control here, and
+ * window brightness is ignored by most TV hardware.
+ */
+internal val BrightnessOptions = listOf(100, 90, 80, 70, 60, 50, 40, 30)
+
+internal const val DefaultBrightnessPercent = 100
+
+/** Scrim alpha for a brightness level. 100% is transparent; the floor stays short of black. */
+internal fun brightnessScrimAlpha(percent: Int): Float =
+    ((100 - percent.coerceIn(10, 100)) / 100f) * 0.85f
 
 private val PlayerPanelShape = RoundedCornerShape(22.dp)
 
@@ -155,6 +173,7 @@ internal fun PlayerBottomBar(
     nextRequester: FocusRequester,
     watchedRequester: FocusRequester,
     speedRequester: FocusRequester,
+    brightnessRequester: FocusRequester,
     progressRequester: FocusRequester,
     liveProgressRequester: FocusRequester,
     onInteract: () -> Unit,
@@ -370,7 +389,7 @@ internal fun PlayerBottomBar(
                     requester = sourcesRequester,
                     upRequester = timelineUpRequester,
                     leftRequester = if (isLive) liveProgressRequester else audioRequester,
-                    rightRequester = if (isLive) sourcesRequester else if (hasNext) nextRequester else watchedRequester,
+                    rightRequester = if (isLive) brightnessRequester else if (hasNext) nextRequester else watchedRequester,
                     onFocused = onInteract,
                     onClick = { onOpenPanel(OverlayPanel.Streams) },
                 )
@@ -404,10 +423,22 @@ internal fun PlayerBottomBar(
                         requester = speedRequester,
                         upRequester = timelineUpRequester,
                         leftRequester = watchedRequester,
+                        rightRequester = brightnessRequester,
                         onFocused = onInteract,
                         onClick = { onOpenPanel(OverlayPanel.Speed) },
                     )
                 }
+
+                PlayerControlIconButton(
+                    icon = Icons.Filled.BrightnessMedium,
+                    label = "Brightness",
+                    active = selectedPanel == OverlayPanel.Brightness,
+                    requester = brightnessRequester,
+                    upRequester = timelineUpRequester,
+                    leftRequester = if (isLive) sourcesRequester else speedRequester,
+                    onFocused = onInteract,
+                    onClick = { onOpenPanel(OverlayPanel.Brightness) },
+                )
 
                 Spacer(Modifier.weight(1f))
             }
@@ -599,6 +630,7 @@ internal fun PlayerOptionPanel(
     selectedSubtitleId: Int,
     selectedExternalSubtitleId: String?,
     currentSpeed: Double,
+    currentBrightness: Int,
     closeRequester: FocusRequester,
     firstItemRequester: FocusRequester,
     onClose: () -> Unit,
@@ -609,6 +641,7 @@ internal fun PlayerOptionPanel(
     onSelectSubtitle: (Int) -> Unit,
     onSelectExternalSubtitle: (ExternalSubtitleTrack) -> Unit,
     onSelectSpeed: (Double) -> Unit,
+    onSelectBrightness: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     PlayerGlassSurface(
@@ -636,6 +669,7 @@ internal fun PlayerOptionPanel(
                                 OverlayPanel.Audio -> "Audio"
                                 OverlayPanel.Subtitles -> "Subtitles"
                                 OverlayPanel.Speed -> "Playback Speed"
+                                OverlayPanel.Brightness -> "Brightness"
                             },
                             style = androidx.tv.material3.MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
                             color = Color.White,
@@ -646,6 +680,7 @@ internal fun PlayerOptionPanel(
                                 OverlayPanel.Audio -> "Pick a different audio track."
                                 OverlayPanel.Subtitles -> "Enable, disable, or change subtitle tracks."
                                 OverlayPanel.Speed -> "Match playback speed to your preference."
+                                OverlayPanel.Brightness -> "Take the picture down for a dark room."
                             },
                             style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.58f),
@@ -769,6 +804,19 @@ internal fun PlayerOptionPanel(
                         )
                     }
                 }
+                OverlayPanel.Brightness -> {
+                    itemsIndexed(BrightnessOptions) { index, percent ->
+                        OptionButton(
+                            label = "$percent%",
+                            subtitle = if (percent == DefaultBrightnessPercent) "Full picture, nothing applied" else null,
+                            active = currentBrightness == percent,
+                            activeBadge = if (currentBrightness == percent) "Selected" else null,
+                            requestFocus = if (index == 0) firstItemRequester else null,
+                            onInteract = onInteract,
+                            onClick = { onSelectBrightness(percent) },
+                        )
+                    }
+                }
             }
 
             item { Spacer(modifier = Modifier.height(14.dp)) }
@@ -776,10 +824,18 @@ internal fun PlayerOptionPanel(
     }
 }
 
+/**
+ * The skip / next-episode prompt.
+ *
+ * It holds focus for as long as it is on screen, which is the point: while it is up it is the only
+ * thing the remote can act on, so a press cannot half-open the transport controls behind it and
+ * leave the viewer wondering which of the two the next press will hit.
+ */
 @Composable
 internal fun PlayerSkipActionChip(
     label: String,
     bottomPadding: androidx.compose.ui.unit.Dp,
+    focusRequester: FocusRequester,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -797,8 +853,14 @@ internal fun PlayerSkipActionChip(
                 border = BorderStroke(1.dp, Color(0x28FFFFFF)),
                 shape = AppPillShape,
             ),
+            focusedBorder = Border(
+                border = BorderStroke(2.dp, Color(0xFFF0BA66)),
+                shape = AppPillShape,
+            ),
         ),
-        modifier = modifier.padding(end = 24.dp, bottom = bottomPadding),
+        modifier = modifier
+            .padding(end = 24.dp, bottom = bottomPadding)
+            .focusRequester(focusRequester),
     ) {
         Icon(
             imageVector = Icons.Filled.SkipNext,
@@ -822,6 +884,8 @@ internal fun NextEpisodeDialog(
     streams: List<AddonStream>,
     loading: Boolean,
     countdown: Int?,
+    playRequester: FocusRequester,
+    cancelRequester: FocusRequester,
     onPlayNow: () -> Unit,
     onSelectStream: (Int) -> Unit,
     onCancel: () -> Unit,
@@ -972,10 +1036,17 @@ internal fun NextEpisodeDialog(
                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    OutlinedButton(onClick = onCancel) {
+                    OutlinedButton(
+                        onClick = onCancel,
+                        modifier = Modifier.focusRequester(cancelRequester),
+                    ) {
                         Text("Cancel")
                     }
-                    Button(onClick = onPlayNow, enabled = streams.isNotEmpty()) {
+                    Button(
+                        onClick = onPlayNow,
+                        enabled = streams.isNotEmpty(),
+                        modifier = Modifier.focusRequester(playRequester),
+                    ) {
                         Text("Play Now")
                     }
                 }

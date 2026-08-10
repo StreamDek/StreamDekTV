@@ -180,7 +180,9 @@ fun PlayerScreen(
     val completePlaybackExit: () -> Unit = if (isLive) onBack else onExitToStreams
     val backExitPlayback: () -> Unit = if (isLive || request.returnToDetailOnBack) onBack else onExitToStreams
 
-    var detail by remember { mutableStateOf<MediaDetail?>(null) }
+    // Seeded from the cache the detail and streams screens already filled, so the start-up screen
+    // shows this title's artwork immediately instead of a black hold while the fetch repeats.
+    var detail by remember { mutableStateOf(if (isLive) null else repository.peekCachedDetail(request.mediaId, request.mediaType)) }
     var currentEpisode by remember(request) { mutableStateOf(request.episode) }
     var nextEpisode by remember { mutableStateOf<EpisodeContext?>(null) }
     var candidate by remember { mutableStateOf<ResolvedPlaybackCandidate?>(null) }
@@ -267,6 +269,15 @@ fun PlayerScreen(
     var nextEpisodeCountdown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<Int?>(null) }
     var streamKeyOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamKey) }
     var streamLabelOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamLabel) }
+    var brightnessPercent by remember { mutableIntStateOf(repository.playerBrightnessPercent()) }
+    /**
+     * A skip prompt owns the remote while it is up.
+     *
+     * Nothing else may be summoned until it is taken or dismissed: without this the same press that
+     * was meant for "Skip Intro" also raised the transport controls behind it, and the viewer ended
+     * up with two things on screen competing for the next press.
+     */
+    var segmentPromptActive by remember { mutableStateOf(false) }
 
     val resolvedRenderSurface = remember(playbackPreferences.renderSurface) {
         normalizeRenderSurfacePreference(playbackPreferences.renderSurface)
@@ -283,6 +294,10 @@ fun PlayerScreen(
     val nextRequester = remember { FocusRequester() }
     val watchedRequester = remember { FocusRequester() }
     val speedRequester = remember { FocusRequester() }
+    val brightnessRequester = remember { FocusRequester() }
+    val segmentChipRequester = remember { FocusRequester() }
+    val nextEpisodePlayRequester = remember { FocusRequester() }
+    val nextEpisodeCancelRequester = remember { FocusRequester() }
     val progressRequester = remember { FocusRequester() }
     val liveProgressRequester = remember { FocusRequester() }
     val panelCloseRequester = remember { FocusRequester() }
@@ -481,6 +496,9 @@ fun PlayerScreen(
     }
 
     fun showControls(focusPlay: Boolean = false) {
+        // Every route into the controls funnels through here — key handling, the engine's own
+        // remote callbacks, the end of a load — so one check covers all of them.
+        if (segmentPromptActive) return
         pauseInfoVisible = false
         controlsVisible = true
         scheduleControlsHide()
@@ -488,6 +506,7 @@ fun PlayerScreen(
     }
 
     fun registerInteraction() {
+        if (segmentPromptActive) return
         pauseInfoVisible = false
         if (!controlsVisible) controlsVisible = true
         scheduleControlsHide()
@@ -1146,8 +1165,48 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }
     }
 
+    // The prompt currently owed a decision — skip intro, skip recap, skip ending, or next episode.
+    // Computed here, before the handlers that have to respect it, so there is exactly one answer
+    // per composition rather than each call site asking again.
+    val segmentAction = if (!isLive && !loading && error == null && !nextEpisodeDialogVisible && !watchlistPromptVisible) {
+        activeSegmentAction()
+    } else {
+        null
+    }
+
+    LaunchedEffect(segmentAction?.kind, segmentAction?.segmentType) {
+        segmentPromptActive = segmentAction != null
+        if (segmentAction == null) return@LaunchedEffect
+        // Anything already open is taken down: the prompt is the only thing to answer.
+        panel = null
+        hideControlsNow()
+        delay(60)
+        runCatching { segmentChipRequester.requestFocus() }
+            .onFailure { TvDebugLogger.w("Player", "skip chip focus request skipped: ${it.message}") }
+    }
+
+    LaunchedEffect(nextEpisodeDialogVisible, nextEpisodeLoading, nextEpisodeCandidate?.streams?.size) {
+        if (!nextEpisodeDialogVisible) return@LaunchedEffect
+        delay(80)
+        // Play Now is disabled until a stream lands, and a disabled button cannot take focus —
+        // Cancel holds it in the meantime so the dialog is never focus-less.
+        val requester = if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
+            nextEpisodeCancelRequester
+        } else {
+            nextEpisodePlayRequester
+        }
+        runCatching { requester.requestFocus() }
+            .onFailure { TvDebugLogger.w("Player", "next episode focus request skipped: ${it.message}") }
+    }
+
     BackHandler {
-        if (liveFavouritesDrawerVisible) {
+        if (segmentPromptActive) {
+            // Dismissing is a decision too: the segment is marked handled so the prompt does not
+            // come straight back on the next progress tick.
+            segmentAction?.let { markSegmentHandled(it.segmentType) }
+            segmentPromptActive = false
+            scope.launch { runCatching { playerRootRequester.requestFocus() } }
+        } else if (liveFavouritesDrawerVisible) {
             liveFavouritesDrawerVisible = false
             scope.launch { runCatching { playerRootRequester.requestFocus() } }
         } else if (liveChannelRowVisible) {
@@ -1216,8 +1275,10 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     // The video surface deliberately does not take focus, so the player root holds it
     // whenever no control is focused. Without this, D-pad presses while the controls
     // are hidden would not reach any key handler at all.
-    LaunchedEffect(controlsVisible, panel, loading, error, isLive, watchlistPromptVisible, nextEpisodeDialogVisible) {
-        if (!controlsVisible && panel == null && error == null && !watchlistPromptVisible && !nextEpisodeDialogVisible) {
+    LaunchedEffect(controlsVisible, panel, loading, error, isLive, watchlistPromptVisible, nextEpisodeDialogVisible, segmentPromptActive) {
+        // Taking the controls down to show a skip prompt would otherwise land focus back here and
+        // pull it straight off the chip that was just raised.
+        if (!controlsVisible && panel == null && error == null && !watchlistPromptVisible && !nextEpisodeDialogVisible && !segmentPromptActive) {
             delay(40)
             runCatching { playerRootRequester.requestFocus() }
         }
@@ -1230,7 +1291,17 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             .focusRequester(playerRootRequester)
             .focusable()
             .onPreviewKeyEvent { event ->
+                // While a skip prompt is up the D-pad is swallowed whole — both edges, since focus
+                // moves on key-down — so the only ways out are OK on the chip and Back. OK and Back
+                // pass through untouched to the chip and the back handler.
+                if (segmentPromptActive) {
+                    return@onPreviewKeyEvent when (event.key) {
+                        Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight -> true
+                        else -> false
+                    }
+                }
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+                if (nextEpisodeDialogVisible) return@onPreviewKeyEvent false
                 if (isLive && !controlsVisible && panel == null && !loading && error == null && !watchlistPromptVisible && !liveFavouritesDrawerVisible) {
                     if (liveChannelRowVisible) return@onPreviewKeyEvent false
                     when (event.key) {
@@ -1287,7 +1358,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     setDecoderMode(playbackPreferences.decoderMode)
                     setHeaders(currentRequestHeaders)
                     onRemoteCenterCallback = {
-                        if (isLive) {
+                        if (segmentPromptActive) {
+                            // Left for the skip chip. Reporting it handled here would consume the
+                            // press without doing anything, and the prompt would never be taken.
+                            false
+                        } else if (isLive) {
                             showControls(focusPlay = true)
                             true
                         } else if (!controlsVisible || panel != null) {
@@ -1500,7 +1575,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 playerView = controller
                 controller.setDecoderMode(playbackPreferences.decoderMode)
                 controller.onRemoteCenterCallback = {
-                    if (isLive) {
+                    if (segmentPromptActive) {
+                        false
+                    } else if (isLive) {
                         showControls(focusPlay = true)
                         true
                     } else if (!controlsVisible || panel != null) {
@@ -1521,6 +1598,17 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             },
             modifier = Modifier.fillMaxSize(),
         )
+        }
+
+        // Brightness. Sits directly over the video and under everything else, so lowering it dims
+        // the picture without also dimming the controls drawn on top of it.
+        val brightnessScrim = brightnessScrimAlpha(brightnessPercent)
+        if (brightnessScrim > 0.001f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = brightnessScrim)),
+            )
         }
 
         // Loading screen — backdrop + breathing logo only, no controls
@@ -1821,6 +1909,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     nextRequester = nextRequester,
                     watchedRequester = watchedRequester,
                     speedRequester = speedRequester,
+                    brightnessRequester = brightnessRequester,
                     progressRequester = progressRequester,
                     liveProgressRequester = liveProgressRequester,
                     onInteract = ::registerInteraction,
@@ -1863,28 +1952,31 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             }
         }
 
-        // Pause info card — title logo + synopsis, appears 2.5 s after pause
-        if (!loading && error == null && !nextEpisodeDialogVisible && !watchlistPromptVisible) {
-            activeSegmentAction()?.let { action ->
-                PlayerSkipActionChip(
-                    label = action.label,
-                    bottomPadding = if (controlsVisible) 112.dp else 24.dp,
-                    onClick = {
-                        when (action.kind) {
-                            SegmentActionKind.Skip -> {
-                                val target = maxOf(action.targetTimeSec ?: positionSec, positionSec)
-                                scheduleSeek(target)
-                                markSegmentHandled(action.segmentType)
-                                registerInteraction()
-                            }
-                            SegmentActionKind.NextEpisode -> {
-                                scope.launch { openNextEpisodeDialog() }
-                            }
+        // Skip intro / recap / ending, and the hand-off into the next episode.
+        segmentAction?.let { action ->
+            PlayerSkipActionChip(
+                label = action.label,
+                bottomPadding = if (controlsVisible) 112.dp else 24.dp,
+                focusRequester = segmentChipRequester,
+                onClick = {
+                    when (action.kind) {
+                        SegmentActionKind.Skip -> {
+                            val target = maxOf(action.targetTimeSec ?: positionSec, positionSec)
+                            scheduleSeek(target)
+                            markSegmentHandled(action.segmentType)
+                            // Released before showing the controls, or the guard this same press
+                            // relies on would swallow the call that puts them back.
+                            segmentPromptActive = false
+                            registerInteraction()
                         }
-                    },
-                    modifier = Modifier.align(Alignment.BottomEnd),
-                )
-            }
+                        SegmentActionKind.NextEpisode -> {
+                            segmentPromptActive = false
+                            scope.launch { openNextEpisodeDialog() }
+                        }
+                    }
+                },
+                modifier = Modifier.align(Alignment.BottomEnd),
+            )
         }
 
         if (nextEpisodeDialogVisible && nextEpisode != null) {
@@ -1894,6 +1986,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 streams = nextEpisodeCandidate?.streams.orEmpty(),
                 loading = nextEpisodeLoading,
                 countdown = nextEpisodeCountdown,
+                playRequester = nextEpisodePlayRequester,
+                cancelRequester = nextEpisodeCancelRequester,
                 onPlayNow = { beginNextEpisode() },
                 onSelectStream = { index -> beginNextEpisode(index) },
                 onCancel = {
@@ -2006,6 +2100,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         selectedSubtitleId = selectedSubtitleId,
                         selectedExternalSubtitleId = selectedExternalSubtitleId,
                         currentSpeed = speed,
+                        currentBrightness = brightnessPercent,
                         closeRequester = panelCloseRequester,
                         firstItemRequester = panelFirstItemRequester,
                         onClose = {
@@ -2103,6 +2198,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         },
                         onSelectSpeed = {
                             speed = it
+                            panel = null
+                            panelClosedAtMs = System.currentTimeMillis()
+                            showControls(focusPlay = !isLive)
+                        },
+                        onSelectBrightness = {
+                            brightnessPercent = it
+                            repository.savePlayerBrightnessPercent(it)
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
                             showControls(focusPlay = !isLive)

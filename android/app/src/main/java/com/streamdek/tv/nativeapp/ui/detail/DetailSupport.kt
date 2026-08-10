@@ -38,6 +38,21 @@ internal data class ShareSheetState(
 internal fun SeasonEpisode.toEpisodeContext(seasonNumber: Int): EpisodeContext =
     EpisodeContext(seasonNumber, episodeNumber, name, overview, still, runtime, airDate, id)
 
+/**
+ * One episode plus the season it came from.
+ *
+ * The episode row is no longer one season's worth of cards: it keeps going into the next season as
+ * the viewer reaches the end of the current one, so every card has to carry its own season rather
+ * than inheriting it from a single selected value.
+ */
+internal data class SeasonEpisodeEntry(
+    val seasonNumber: Int,
+    val episode: SeasonEpisode,
+)
+
+/** Key used to test an episode against the watched set, which spans every loaded season. */
+internal fun watchedEpisodeKey(seasonNumber: Int, episodeNumber: Int): String = "s$seasonNumber:e$episodeNumber"
+
 internal fun isEpisodeReleased(airDate: String?): Boolean {
     val parsed = airDate?.takeIf { it.isNotBlank() }?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         ?: return true

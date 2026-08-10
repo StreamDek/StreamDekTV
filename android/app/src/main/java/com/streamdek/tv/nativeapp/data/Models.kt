@@ -275,6 +275,17 @@ data class AppPreferences(
     val highContrast: Boolean = false,
     val largeText: Boolean = false,
     val reducedMotion: Boolean = false,
+    /**
+     * Drops the synopsis from the Home spotlight, leaving the badge, title and metadata centred in
+     * the band. Off by default, so an account that has never seen this setting is unchanged.
+     */
+    val hideHomeSynopsis: Boolean = false,
+    /**
+     * Lets the backdrop show through the navigation rail. Capped at 15% by design: the rail carries
+     * the only persistent sense of where you are in the app, and past that it stops reading as a
+     * surface at all over bright artwork.
+     */
+    val transparentNavigation: Boolean = true,
 )
 
 data class SubtitleSourcePreference(

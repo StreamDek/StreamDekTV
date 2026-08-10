@@ -114,6 +114,9 @@ fun HomeScreen(
     val reachability by repository.reachability.collectAsState()
     val appPrefs = bootstrap?.preferences?.app
     val portraitCards = appPrefs?.homeRowCardStyle == "portrait"
+    // Whatever the shelves do not need. See [spotlightHeight].
+    val heroHeight = spotlightHeight(portraitCards)
+    val hideHomeSynopsis = appPrefs?.hideHomeSynopsis == true
 
     val shelfListState = rememberLazyListState()
     val rowStates = remember { mutableMapOf<String, LazyListState>() }
@@ -314,7 +317,12 @@ fun HomeScreen(
                                     detail.id == heroItem.detailLookupId()
                                 )
                         }
-                        HomeSpotlight(item = heroItem, detail = matchingDetail)
+                        HomeSpotlight(
+                            item = heroItem,
+                            detail = matchingDetail,
+                            height = heroHeight,
+                            hideSynopsis = hideHomeSynopsis,
+                        )
                     }
 
                     androidx.compose.runtime.CompositionLocalProvider(
@@ -328,8 +336,8 @@ fun HomeScreen(
                         // Enough trailing range for even the final shelf to align with the top of
                         // this viewport. A short footer makes LazyColumn clamp near the end and
                         // leaves the preceding shelf visible, regardless of later scroll retries.
-                        contentPadding = PaddingValues(bottom = SpotlightHeight + 48.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        contentPadding = PaddingValues(bottom = heroHeight + 48.dp),
+                        verticalArrangement = Arrangement.spacedBy(ShelfSpacing),
                     ) {
                         itemsIndexed(rows, key = { _, row -> row.id }) { rowIndex, row ->
                             val rowState = rowStates.getOrPut(row.id) {
@@ -425,7 +433,7 @@ private fun HomeFirstLoad(portraitCards: Boolean) {
     Column(Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
-                .height(SpotlightHeight)
+                .height(spotlightHeight(portraitCards))
                 .fillMaxWidth(0.56f)
                 .padding(start = HomeInset, top = 34.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -434,7 +442,7 @@ private fun HomeFirstLoad(portraitCards: Boolean) {
             com.streamdek.tv.nativeapp.ui.TvSkeletonBox(Modifier.fillMaxWidth(0.45f).height(20.dp))
             com.streamdek.tv.nativeapp.ui.TvSkeletonBox(Modifier.fillMaxWidth(0.95f).height(16.dp))
         }
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(ShelfSpacing)) {
             repeat(2) {
                 HomeSkeletonShelf(
                     pending = com.streamdek.tv.nativeapp.data.PendingRail(

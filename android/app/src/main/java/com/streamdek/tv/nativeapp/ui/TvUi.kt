@@ -3,8 +3,16 @@ package com.streamdek.tv.nativeapp.ui
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.width
@@ -16,17 +24,31 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.tv.material3.Button
+import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** Shared vNext geometry keeps every content surface visually related and limits focus zoom. */
 val AppCardShape = RoundedCornerShape(14.dp)
@@ -176,7 +198,17 @@ fun CurrentTimePill(
     Text(
         text = currentTime,
         modifier = modifier,
-        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+        style = MaterialTheme.typography.titleMedium.copy(
+            fontWeight = FontWeight.SemiBold,
+            // The clock sits directly on artwork with no plate behind it, so on a pale backdrop it
+            // had nothing to separate it from the image. Tight and close in: enough to hold an edge
+            // against a bright frame without reading as a drop shadow in its own right.
+            shadow = Shadow(
+                color = Color.Black.copy(alpha = 0.72f),
+                offset = Offset(0f, 1f),
+                blurRadius = 5f,
+            ),
+        ),
         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.92f),
     )
 }
@@ -313,6 +345,138 @@ fun TvSectionHeading(title: String, subtitle: String? = null, modifier: Modifier
     androidx.compose.foundation.layout.Column(modifier = modifier, verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)) {
         Text(title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.onBackground)
         subtitle?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f)) }
+    }
+}
+
+/**
+ * The affordance that says "there is more text than this".
+ *
+ * Hero copy is clamped to whatever fits the band, which on a long synopsis means the sentence stops
+ * mid-thought with no way to read the rest. This is the way through: small enough that it does not
+ * compete with the artwork, focusable so a remote can actually reach it.
+ */
+@Composable
+fun TvMoreButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    label: String = "More",
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.height(32.dp),
+        shape = ButtonDefaults.shape(AppPillShape),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+        colors = ButtonDefaults.colors(
+            containerColor = Color.White.copy(alpha = 0.10f),
+            contentColor = MaterialTheme.colorScheme.onBackground,
+            focusedContainerColor = MaterialTheme.colorScheme.primary,
+            focusedContentColor = Color.Black,
+        ),
+        border = ButtonDefaults.border(border = androidx.tv.material3.Border.None),
+        scale = ButtonDefaults.scale(focusedScale = 1f),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+        )
+    }
+}
+
+/**
+ * The full synopsis, over the screen it was opened from.
+ *
+ * Close holds focus rather than the text, because a remote has no other way to leave: up and down
+ * on it scroll the copy, so a long synopsis is readable without ever moving focus somewhere the
+ * viewer then has to find their way back from.
+ */
+@Composable
+fun TvSynopsisDialog(
+    title: String,
+    synopsis: String,
+    onDismiss: () -> Unit,
+    subtitle: String? = null,
+) {
+    val closeRequester = remember { FocusRequester() }
+    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    val scrollStepPx = 200
+
+    LaunchedEffect(title) {
+        delay(80)
+        runCatching { closeRequester.requestFocus() }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize().background(Color(0xC4000000)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.62f)
+                    .heightIn(max = 520.dp)
+                    .background(TvChromePanel, RoundedCornerShape(24.dp))
+                    .padding(horizontal = 32.dp, vertical = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                subtitle?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Text(
+                    text = synopsis,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.84f),
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(scrollState),
+                )
+                Button(
+                    onClick = onDismiss,
+                    shape = ButtonDefaults.shape(AppPillShape),
+                    modifier = Modifier
+                        .focusRequester(closeRequester)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (event.key) {
+                                Key.DirectionDown -> {
+                                    if (!scrollState.canScrollForward) return@onPreviewKeyEvent true
+                                    scope.launch {
+                                        scrollState.animateScrollTo(
+                                            (scrollState.value + scrollStepPx).coerceAtMost(scrollState.maxValue),
+                                        )
+                                    }
+                                    true
+                                }
+                                Key.DirectionUp -> {
+                                    if (scrollState.canScrollBackward) {
+                                        scope.launch {
+                                            scrollState.animateScrollTo(
+                                                (scrollState.value - scrollStepPx).coerceAtLeast(0),
+                                            )
+                                        }
+                                    }
+                                    true
+                                }
+                                else -> false
+                            }
+                        },
+                ) {
+                    Text("Close")
+                }
+            }
+        }
     }
 }
 

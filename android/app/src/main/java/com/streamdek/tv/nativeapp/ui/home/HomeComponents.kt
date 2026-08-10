@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,25 +61,60 @@ import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
-import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvScroll
 import com.streamdek.tv.nativeapp.ui.TvSkeletonBox
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
-
-/** Page inset. The nav rail already reserves its own gutter, so this is measured from content. */
-internal val HomeInset = TvSpacing.ScreenHorizontal
+import kotlin.math.roundToInt
 
 /**
- * Height the spotlight occupies. Fixed and known, which is the point: the shelves below take the
- * remaining height with a weight, so nothing depends on guessing where the hero ends.
+ * Page inset.
  *
- * Sized so exactly two shelves fit underneath — the focused one at full height and the next
- * collapsed. A third partially visible row read as clutter rather than as an affordance.
+ * Tighter than the app-wide [TvSpacing.ScreenHorizontal], because on Home it is not the only gutter
+ * in play: the nav rail already holds its own 68dp back from the edge, and stacking the standard
+ * 48dp on top of that pushed the shelves a long way inboard and left a channel of dead space beside
+ * the rail. 24dp is the 5% overscan margin, measured from where the rail leaves off.
  */
-internal val SpotlightHeight = 276.dp
+internal val HomeInset = 24.dp
+
+/**
+ * Title line above each shelf, the gap under it, and the gap between shelves.
+ *
+ * The title height is the line box a shelf heading actually occupies, measured off the running app
+ * rather than taken from the 24sp line height the type scale nominally asks for — the two differ by
+ * enough (6dp a shelf, twice over) to turn a third of a card into half of one.
+ */
+private val ShelfTitleHeight = 18.dp
+private val ShelfTitleGap = 10.dp
+internal val ShelfSpacing = 16.dp
+
+/** How far a shelf the viewer is not on shrinks. Matches the scale [HomeShelf] animates to. */
+internal const val CompactShelfScale = 0.72f
+
+/**
+ * Height the spotlight occupies. The shelves below take the rest with a weight, so nothing depends
+ * on guessing where the hero ends.
+ *
+ * Derived rather than fixed, because it is really a statement about the shelves: show one complete
+ * and a third of the next. Two essentially complete rows left the screen bottom-heavy and gave the
+ * hero no room to breathe; a sliver of the row below still says "there is more down here", which is
+ * the only job it has. A constant could only be right for one combination — card shape and density
+ * are both settings the viewer can change, and a 174dp poster shelf needs 57dp more than a 117dp
+ * landscape one — so the arithmetic is done here instead: measure what the shelves need, and the
+ * hero gets what is left.
+ */
+@Composable
+internal fun spotlightHeight(portraitCards: Boolean): Dp {
+    val dense = LocalTvExperienceSettings.current.denseCards
+    val screenHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
+    val cardHeight = (if (portraitCards) 174.dp else 117.dp) * (if (dense) 0.9f else 1f)
+    val fullShelf = ShelfTitleHeight + ShelfTitleGap + cardHeight
+    val trailingShelf = ShelfTitleHeight + ShelfTitleGap + (cardHeight * CompactShelfScale) / 3f
+    // Bounded so an unusual screen cannot squeeze the hero out or let it swallow the shelves.
+    return (screenHeight - (fullShelf + ShelfSpacing + trailingShelf)).coerceIn(180.dp, 420.dp)
+}
 
 /**
  * Card geometry. Every card of a given shape is the same size everywhere on the screen and stays
@@ -87,7 +124,7 @@ internal val SpotlightHeight = 276.dp
 internal data class HomeCardSize(val width: Dp, val height: Dp)
 
 internal fun homeCardSize(item: MediaItem, portrait: Boolean, compact: Boolean, dense: Boolean): HomeCardSize {
-    val scale = (if (compact) 0.72f else 1f) * (if (dense) 0.9f else 1f)
+    val scale = (if (compact) CompactShelfScale else 1f) * (if (dense) 0.9f else 1f)
     return when {
         item.type == "network" -> HomeCardSize(190.dp * scale, 104.dp * scale)
         portrait -> HomeCardSize(116.dp * scale, 174.dp * scale)
@@ -108,10 +145,12 @@ internal fun homeCardSize(item: MediaItem, portrait: Boolean, compact: Boolean, 
 internal fun HomeSpotlight(
     item: MediaItem?,
     detail: MediaDetail?,
+    height: Dp,
+    hideSynopsis: Boolean,
     modifier: Modifier = Modifier,
 ) {
     if (item == null) {
-        Box(modifier.height(SpotlightHeight))
+        Box(modifier.height(height))
         return
     }
 
@@ -134,18 +173,25 @@ internal fun HomeSpotlight(
 
     Column(
         modifier = modifier
-            .height(SpotlightHeight)
+            .height(height)
             .fillMaxWidth(0.68f)
             .padding(start = HomeInset, top = 34.dp, end = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item.sourceAddonName?.takeIf { it.isNotBlank() && item.type == "live" }?.let {
-            Text(
-                text = it.uppercase(),
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-            )
+        // Every slot below has a fixed height and every one of them is always present, so the copy
+        // holds still as the viewer travels the rows. Previously the kind label existed only for
+        // live channels, the metadata row grew a chip at a time as the detail fetch landed, and the
+        // title swapped between a logo and two lines of text — so the block shuffled on nearly
+        // every highlight. What changes now is the content of each slot, never its size.
+        //
+        // With the synopsis hidden there is spare room, and it is split above and below so the
+        // block sits in the middle of the band rather than stranded at the top.
+        if (hideSynopsis) Spacer(Modifier.weight(1f))
+
+        Box(modifier = Modifier.height(BadgeSlotHeight).fillMaxWidth()) {
+            spotlightKindLabel(item, detail)?.let { label ->
+                SpotlightChip(label, emphasised = true)
+            }
         }
 
         // The logo arrives with the detail fetch, a beat after the card takes focus. Showing the
@@ -179,30 +225,66 @@ internal fun HomeSpotlight(
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            (detail?.rating ?: item.rating)?.takeIf { it > 0 }?.let {
-                SpotlightChip("★ %.1f".format(it), emphasised = true)
+        Box(modifier = Modifier.height(MetaSlotHeight).fillMaxWidth()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                (detail?.rating ?: item.rating)?.takeIf { it > 0 }?.let {
+                    SpotlightChip("★ %.1f".format(it), emphasised = true)
+                }
+                (detail?.year ?: item.year)?.takeIf { it.isNotBlank() }?.let { SpotlightChip(it) }
+                detail?.runtime?.takeIf { it > 0 }?.let { SpotlightChip("${it / 60}h ${it % 60}m") }
+                detail?.genreNames?.take(2)?.forEach { SpotlightChip(it) }
             }
-            (detail?.year ?: item.year)?.takeIf { it.isNotBlank() }?.let { SpotlightChip(it) }
-            detail?.runtime?.takeIf { it > 0 }?.let { SpotlightChip("${it / 60}h ${it % 60}m") }
-            detail?.genreNames?.take(2)?.forEach { SpotlightChip(it) }
         }
 
-        synopsis?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-            )
+        if (!hideSynopsis) {
+            // The chips and the synopsis are different kinds of information and were reading as one
+            // block; the gap is what separates "facts about this title" from "what it is about".
+            Spacer(Modifier.height(8.dp))
+
+            // Nothing focusable lives in the spotlight: it is a description of whatever card has
+            // the highlight, not somewhere the remote travels to. The full synopsis is on the
+            // detail page, which is one press away.
+            synopsis?.let { text ->
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
-        // Continue Watching cards carry a position; showing it here means the viewer can tell how
-        // far in they are without opening the title.
-        item.progress?.takeIf { it > 0.0 }?.let { progress ->
-            ProgressMeter(progress, Modifier.width(260.dp).height(4.dp))
-        }
+        Spacer(Modifier.weight(1f))
+    }
+}
+
+/** Fixed slots either side of the title, so the block never resizes as metadata arrives. */
+private val BadgeSlotHeight = 24.dp
+private val MetaSlotHeight = 30.dp
+
+/**
+ * What kind of thing the spotlight is describing.
+ *
+ * Genre wins over the raw type where it is more use — "Documentary" says more than "Movie" — and a
+ * live channel names its source, which is where the addon label above the title used to live.
+ */
+private fun spotlightKindLabel(item: MediaItem, detail: MediaDetail?): String? {
+    val genres = detail?.genreNames.orEmpty()
+    return when {
+        item.type == "live" -> item.sourceAddonName?.takeIf { it.isNotBlank() }?.uppercase() ?: "LIVE"
+        item.type == "network" -> "STREAMING SERVICE"
+        genres.any { it.equals("Documentary", ignoreCase = true) } -> "DOCUMENTARY"
+        genres.any { it.equals("Reality", ignoreCase = true) } -> "REALITY"
+        genres.any { it.equals("Talk", ignoreCase = true) } -> "TALK SHOW"
+        genres.any { it.equals("News", ignoreCase = true) } -> "NEWS"
+        item.type == "tv" -> "SERIES"
+        item.type == "movie" -> "MOVIE"
+        else -> null
     }
 }
 
@@ -283,7 +365,7 @@ internal fun HomeShelf(
     )
 
     val shelfScale by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (compact) 0.72f else 1f,
+        targetValue = if (compact) CompactShelfScale else 1f,
         animationSpec = TvScroll.spec(TvMotion.duration(220)),
         label = "shelf-scale",
     )
@@ -306,11 +388,16 @@ internal fun HomeShelf(
         )
         LazyRow(
             state = rowState,
-            modifier = Modifier.fillMaxWidth().focusGroup(),
+            modifier = Modifier.fillMaxWidth().compactShelfViewport(compact).focusGroup(),
             contentPadding = PaddingValues(horizontal = HomeInset),
             horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
         ) {
-            itemsIndexed(row.items, key = { _, item -> "${row.id}:${homeItemKey(item)}" }) { index, item ->
+            // rowItems, not row.items: the de-duplication above is the whole point, and iterating
+            // the raw list threw it away. Continue Watching can hold the same title twice (two
+            // entries for one series, neither carrying an episode), and a repeated key is a hard
+            // crash — reliably reproduced by pressing up, because focus search composes items
+            // beyond the visible window and reaches the duplicate.
+            itemsIndexed(rowItems, key = { _, item -> "${row.id}:${homeItemKey(item)}" }) { index, item ->
                 val key = "${row.id}:${homeItemKey(item)}"
                 val requester = requesters.getOrPut(key) { FocusRequester() }
                 val effective = if (index == 0 && firstCardRequester != null) firstCardRequester else requester
@@ -368,6 +455,34 @@ internal fun HomeShelf(
             }
         }
     }
+}
+
+/**
+ * Measures a collapsed shelf against the width it will actually occupy once scaled.
+ *
+ * A collapsed row draws at 72% through a graphics layer, but the lazy row underneath still reserves
+ * each card's full unscaled width — so it composes only as many cards as the *unscaled* viewport
+ * holds, and the scaled result stops short of the screen edge. That trailing gap is a card's worth
+ * of empty space, which reads as a row missing its last item. Measuring the row wider makes it
+ * compose the extra card; the surplus width is off-screen and the list above clips it.
+ *
+ * Keyed to the discrete compact flag rather than the animated scale, so this is one extra
+ * measurement when a row collapses, not a re-measure every frame of the animation.
+ */
+private fun Modifier.compactShelfViewport(compact: Boolean): Modifier = layout { measurable, constraints ->
+    val childWidth = if (compact && constraints.hasBoundedWidth) {
+        (constraints.maxWidth / CompactShelfScale).roundToInt()
+    } else {
+        constraints.maxWidth
+    }
+    val childConstraints = if (constraints.hasBoundedWidth) {
+        constraints.copy(minWidth = childWidth, maxWidth = childWidth)
+    } else {
+        constraints
+    }
+    val placeable = measurable.measure(childConstraints)
+    val width = if (constraints.hasBoundedWidth) constraints.maxWidth else placeable.width
+    layout(width, placeable.height) { placeable.placeRelative(0, 0) }
 }
 
 /** Streaming-service tile. Logos are supplied on white, so the surface stays light. */
@@ -455,20 +570,29 @@ internal fun homeItemKey(item: MediaItem): String {
     return "${item.type}:${item.id}$episode"
 }
 
-/** Backdrop wash. Two linear passes; radial shaders are the expensive kind on a stick. */
+/**
+ * Backdrop wash. Two linear passes; radial shaders are the expensive kind on a stick.
+ *
+ * Each pass only has to cover what sits on top of it. The horizontal one exists for the copy, which
+ * ends around 68% of the width, so it now clears completely by 76% instead of easing all the way to
+ * the right edge — the artwork's top right corner is the part of the frame with nothing over it at
+ * all, and it was being dimmed for no reason. The vertical one exists for the shelves, so it holds
+ * its strength at the bottom and starts later than it did, leaving the upper third of the image
+ * close to untouched.
+ */
 internal fun homeScrim(backgroundColor: Color): Pair<Brush, Brush> {
     val readingScrim = Brush.horizontalGradient(
         colorStops = arrayOf(
-            0f to backgroundColor.copy(alpha = 0.96f),
-            0.46f to backgroundColor.copy(alpha = 0.72f),
-            1f to Color.Transparent,
+            0f to backgroundColor.copy(alpha = 0.92f),
+            0.44f to backgroundColor.copy(alpha = 0.58f),
+            0.76f to Color.Transparent,
         ),
     )
     val baseFade = Brush.verticalGradient(
         colorStops = arrayOf(
             0f to Color.Transparent,
-            0.34f to backgroundColor.copy(alpha = 0.34f),
-            0.62f to backgroundColor.copy(alpha = 0.88f),
+            0.46f to backgroundColor.copy(alpha = 0.20f),
+            0.68f to backgroundColor.copy(alpha = 0.82f),
             1f to backgroundColor,
         ),
     )

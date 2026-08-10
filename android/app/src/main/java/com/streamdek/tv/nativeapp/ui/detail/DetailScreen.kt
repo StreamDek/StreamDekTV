@@ -14,6 +14,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.tv.material3.Icon
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -113,25 +114,40 @@ fun DetailScreen(
         mutableStateOf<DetailUiState>(cachedDetail?.let(DetailUiState::Ready) ?: DetailUiState.Loading)
     }
     var reloadToken by remember(mediaType, mediaId) { mutableIntStateOf(0) }
-    var selectedSeasonNumber by rememberSaveable(mediaType, mediaId) { mutableIntStateOf(1) }
+    /**
+     * Season the episode run starts at. Only a deliberate press on a season chip moves it, and
+     * doing so throws away the loaded run and starts a new one there.
+     */
+    var anchorSeasonNumber by rememberSaveable(mediaType, mediaId) { mutableIntStateOf(1) }
+    /**
+     * Season the focused episode belongs to. Follows the row as it crosses a season boundary, and
+     * is what the chips highlight and the season-level actions act on.
+     */
+    var activeSeasonNumber by rememberSaveable(mediaType, mediaId) { mutableIntStateOf(1) }
     var selectedEpisodeIndex by rememberSaveable(mediaType, mediaId) { mutableIntStateOf(0) }
-    var selectedSeason by remember(mediaType, mediaId) { mutableStateOf<SeasonDetail?>(null) }
+    /** Seasons fetched so far, in order, starting at [anchorSeasonNumber]. */
+    var loadedSeasons by remember(mediaType, mediaId) { mutableStateOf<List<SeasonDetail>>(emptyList()) }
+    var loadingNextSeason by remember(mediaType, mediaId) { mutableStateOf(false) }
     var resumeEpisodeContext by remember(mediaType, mediaId) { mutableStateOf<EpisodeContext?>(null) }
     var progressFraction by remember(mediaType, mediaId) { mutableStateOf<Float?>(null) }
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
     var markedWatched by remember(mediaType, mediaId) { mutableStateOf(false) }
-    var watchedEpisodesInSeason by remember(mediaType, mediaId, selectedSeasonNumber) { mutableStateOf<Set<Int>>(emptySet()) }
-    var markingSeasonWatched by remember(mediaType, mediaId, selectedSeasonNumber) { mutableStateOf(false) }
+    /** Watched episodes across every loaded season, keyed by [watchedEpisodeKey]. */
+    var watchedEpisodeKeys by remember(mediaType, mediaId) { mutableStateOf<Set<String>>(emptySet()) }
+    var markingSeasonWatched by remember(mediaType, mediaId, activeSeasonNumber) { mutableStateOf(false) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
     var shareSheet by remember(mediaType, mediaId) { mutableStateOf<ShareSheetState?>(null) }
-    var episodeAction by remember(mediaType, mediaId) { mutableStateOf<SeasonEpisode?>(null) }
+    var episodeAction by remember(mediaType, mediaId) { mutableStateOf<SeasonEpisodeEntry?>(null) }
     var episodeActionLoading by remember(mediaType, mediaId) { mutableStateOf(false) }
     var episodeActionError by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
+    /** Full synopsis the viewer asked to read, shown over the screen until they close it. */
+    var expandedSynopsis by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     /** Set when no installed app could take an intent, so the press is not silently swallowed. */
     var externalIntentNotice by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
 
     val playRequester = remember(mediaType, mediaId) { FocusRequester() }
+    val synopsisMoreRequester = remember(mediaType, mediaId) { FocusRequester() }
     /** Whether focus is still in the hero. Drives the collapse when the viewer moves below it. */
     var heroFocused by remember(mediaType, mediaId) { mutableStateOf(true) }
     /**
@@ -156,7 +172,7 @@ fun DetailScreen(
         progressLabel = null
         inWatchlist = false
         markedWatched = false
-        watchedEpisodesInSeason = emptySet()
+        watchedEpisodeKeys = emptySet()
         shareSheet = null
         episodeAction = null
         episodeActionLoading = false
@@ -171,8 +187,9 @@ fun DetailScreen(
             return@LaunchedEffect
         }
         uiState = DetailUiState.Ready(detail)
-        if (detail.seasons.none { it.seasonNumber == selectedSeasonNumber }) {
-            selectedSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
+        if (detail.seasons.none { it.seasonNumber == anchorSeasonNumber }) {
+            anchorSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
+            activeSeasonNumber = anchorSeasonNumber
             selectedEpisodeIndex = 0
         }
         libraryDeferred.await()?.let { library ->
@@ -194,17 +211,66 @@ fun DetailScreen(
         runCatching { playRequester.requestFocus() }
     }
 
-    val selectedEpisode = selectedSeason?.episodes?.getOrNull(selectedEpisodeIndex)
-    val selectedEpisodeContext = selectedEpisode?.toEpisodeContext(selectedSeasonNumber)
-    val selectedSeasonWatched = selectedSeason?.episodes
+    /** Every loaded season's episodes as one continuous run — what the episode row actually shows. */
+    val episodeEntries = remember(loadedSeasons) {
+        loadedSeasons.flatMap { season ->
+            season.episodes.map { SeasonEpisodeEntry(season.seasonNumber, it) }
+        }
+    }
+    val selectedEntry = episodeEntries.getOrNull(selectedEpisodeIndex)
+    val selectedEpisodeContext = selectedEntry?.episode?.toEpisodeContext(selectedEntry.seasonNumber)
+    val activeSeasonDetail = loadedSeasons.firstOrNull { it.seasonNumber == activeSeasonNumber }
+    val selectedSeasonWatched = activeSeasonDetail?.episodes
         ?.takeIf { it.isNotEmpty() }
-        ?.all { watchedEpisodesInSeason.contains(it.episodeNumber) } == true
+        ?.all { watchedEpisodeKeys.contains(watchedEpisodeKey(activeSeasonNumber, it.episodeNumber)) } == true
 
-    LaunchedEffect(selectedSeasonNumber, detail?.id) {
-        if (detail?.type == "tv") selectedSeason = repository.fetchSeason(detail.id, selectedSeasonNumber)
+    // The run restarts whenever the viewer picks a season from the chips; everything after that
+    // season is appended as they reach it.
+    LaunchedEffect(detail?.id, anchorSeasonNumber) {
+        val currentDetail = detail
+        if (currentDetail?.type != "tv") {
+            loadedSeasons = emptyList()
+            return@LaunchedEffect
+        }
+        loadedSeasons = emptyList()
+        loadingNextSeason = false
+        selectedEpisodeIndex = 0
+        activeSeasonNumber = anchorSeasonNumber
+        loadedSeasons = listOfNotNull(repository.fetchSeason(currentDetail.id, anchorSeasonNumber))
     }
 
-    LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedEpisodeIndex, resumeEpisodeContext) {
+    /**
+     * Pulls in the season after the last one loaded.
+     *
+     * A season that cannot be fetched is still recorded, empty, so the cursor moves past it — the
+     * alternative is asking for the same failing season again on every focus move along the row.
+     */
+    val loadNextSeason: () -> Unit = load@{
+        val currentDetail = detail ?: return@load
+        if (loadingNextSeason) return@load
+        val lastLoaded = loadedSeasons.lastOrNull()?.seasonNumber ?: return@load
+        val nextSeasonNumber = currentDetail.seasons
+            .map { it.seasonNumber }
+            .filter { it > lastLoaded }
+            .minOrNull() ?: return@load
+        val anchorAtLaunch = anchorSeasonNumber
+        loadingNextSeason = true
+        scope.launch {
+            val season = repository.fetchSeason(currentDetail.id, nextSeasonNumber)
+            // Picking a season from the chips while this was in flight starts a different run;
+            // appending to it here would splice a season onto the end of the wrong one.
+            val stillCurrent = anchorSeasonNumber == anchorAtLaunch &&
+                loadedSeasons.lastOrNull()?.seasonNumber == lastLoaded
+            if (stillCurrent) {
+                loadedSeasons = loadedSeasons + (
+                    season ?: SeasonDetail(seasonNumber = nextSeasonNumber, name = "Season $nextSeasonNumber")
+                    )
+            }
+            loadingNextSeason = false
+        }
+    }
+
+    LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext) {
         val progressEpisode = if (mediaType == "tv") resumeEpisodeContext ?: selectedEpisodeContext else selectedEpisodeContext
         val progress = repository.fetchProgress(mediaType, mediaId, progressEpisode)
         progressFraction = progress?.progress?.div(100.0)?.toFloat()?.coerceIn(0f, 1f)
@@ -213,21 +279,29 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedSeason?.episodes, detail?.id) {
-        if (mediaType != "tv" || detail == null) {
-            watchedEpisodesInSeason = emptySet()
+    LaunchedEffect(mediaType, mediaId, loadedSeasons, detail?.id) {
+        val currentDetail = detail
+        if (mediaType != "tv" || currentDetail == null) {
+            watchedEpisodeKeys = emptySet()
             return@LaunchedEffect
         }
-        val watchedKeys = repository.fetchWatchedKeys(forceRefresh = true)
-        watchedEpisodesInSeason = selectedSeason?.episodes
-            ?.mapNotNull { episode ->
-                episode.episodeNumber.takeIf { watchedKeys.contains("tv:${detail.id}:s$selectedSeasonNumber:e$it") }
+        // Refreshed when a new run starts; appending a season only needs the set already in hand,
+        // and the row now appends often enough that asking Trakt each time would be a request per
+        // season boundary the viewer scrolls past.
+        val watchedKeys = repository.fetchWatchedKeys(forceRefresh = loadedSeasons.size <= 1)
+        watchedEpisodeKeys = loadedSeasons.flatMap { season ->
+            season.episodes.mapNotNull { episode ->
+                watchedEpisodeKey(season.seasonNumber, episode.episodeNumber)
+                    .takeIf {
+                        watchedKeys.contains(
+                            "tv:${currentDetail.id}:s${season.seasonNumber}:e${episode.episodeNumber}",
+                        )
+                    }
             }
-            ?.toSet()
-            .orEmpty()
+        }.toSet()
     }
 
-    LaunchedEffect(mediaType, mediaId, selectedSeasonNumber, selectedEpisodeIndex, resumeEpisodeContext, progressFraction, detail?.id) {
+    LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, progressFraction, detail?.id) {
         val currentDetail = detail ?: return@LaunchedEffect
         markedWatched = repository.isWatched(
             mediaType = mediaType,
@@ -424,7 +498,8 @@ fun DetailScreen(
                                             progressFraction = null
                                             progressLabel = null
                                             episodeContext?.takeIf { d.type == "tv" }?.let {
-                                                watchedEpisodesInSeason = watchedEpisodesInSeason + it.episodeNumber
+                                                watchedEpisodeKeys = watchedEpisodeKeys +
+                                                    watchedEpisodeKey(it.seasonNumber, it.episodeNumber)
                                             }
                                         }
                                     }
@@ -438,6 +513,8 @@ fun DetailScreen(
                                 }
                             },
                             onShare = { shareSheet = buildShareSheetState(d) },
+                            synopsisMoreRequester = synopsisMoreRequester,
+                            onExpandSynopsis = { expandedSynopsis = it },
                         )
 
                         Spacer(Modifier.height(26.dp))
@@ -464,20 +541,26 @@ fun DetailScreen(
                                 compact = focusedRow != null && focusedRow != "episodes",
                                 onFocusChanged = { if (it) focusedRow = "episodes" },
                                 seasons = d.seasons,
-                                selectedSeasonNumber = selectedSeasonNumber,
-                                seasonDetail = selectedSeason,
-                                watchedEpisodes = watchedEpisodesInSeason,
+                                activeSeasonNumber = activeSeasonNumber,
+                                entries = episodeEntries,
+                                rowFocusKey = "${d.id}:$anchorSeasonNumber",
+                                loadingNextSeason = loadingNextSeason,
+                                isEpisodeWatched = { entry ->
+                                    watchedEpisodeKeys.contains(
+                                        watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber),
+                                    )
+                                },
                                 seasonWatched = selectedSeasonWatched,
                                 markingSeason = markingSeasonWatched,
                                 firstChipRequester = seasonChipRequester,
+                                upRequester = playRequester,
                                 onSelectSeason = {
-                                    if (selectedSeasonNumber != it) {
-                                        selectedSeasonNumber = it
-                                        selectedEpisodeIndex = 0
+                                    if (anchorSeasonNumber != it) {
+                                        anchorSeasonNumber = it
                                     }
                                 },
                                 onMarkSeasonWatched = markSeason@{
-                                    val season = selectedSeason ?: return@markSeason
+                                    val season = activeSeasonDetail ?: return@markSeason
                                     if (markingSeasonWatched || selectedSeasonWatched) return@markSeason
                                     markingSeasonWatched = true
                                     scope.launch {
@@ -485,33 +568,42 @@ fun DetailScreen(
                                             mediaId = d.id,
                                             title = d.title,
                                             year = d.year,
-                                            seasonNumber = selectedSeasonNumber,
+                                            seasonNumber = season.seasonNumber,
                                         )
                                         if (marked) {
-                                            watchedEpisodesInSeason = season.episodes
-                                                .map { it.episodeNumber }
-                                                .toSet()
+                                            watchedEpisodeKeys = watchedEpisodeKeys + season.episodes.map {
+                                                watchedEpisodeKey(season.seasonNumber, it.episodeNumber)
+                                            }
                                         }
                                         markingSeasonWatched = false
                                     }
                                 },
-                                onEpisodeFocused = { selectedEpisodeIndex = it },
-                                onEpisodePressed = { episode ->
+                                onEpisodeFocused = { index, entry ->
+                                    selectedEpisodeIndex = index
+                                    // The chips follow the row across a season boundary.
+                                    if (entry.seasonNumber != activeSeasonNumber) {
+                                        activeSeasonNumber = entry.seasonNumber
+                                    }
+                                    // Fetch the next season before the row runs out, so travelling
+                                    // right never stops at the end of a season.
+                                    if (index >= episodeEntries.size - 3) loadNextSeason()
+                                },
+                                onEpisodePressed = { entry ->
                                     if (repository.currentSession() == null) {
                                         onRequireAuth()
                                     } else {
                                         onPlay(
                                             PlaybackRequest(
                                                 mediaId = d.id, mediaType = d.type, imdbId = d.imdbId,
-                                                episode = episode.toEpisodeContext(selectedSeasonNumber),
+                                                episode = entry.episode.toEpisodeContext(entry.seasonNumber),
                                                 title = d.title,
                                             ),
                                         )
                                     }
                                 },
-                                onEpisodeMenu = { episode ->
+                                onEpisodeMenu = { entry ->
                                     episodeActionError = null
-                                    episodeAction = episode
+                                    episodeAction = entry
                                 },
                             )
                         }
@@ -578,13 +670,15 @@ fun DetailScreen(
             )
         }
 
-        episodeAction?.let { episode ->
+        episodeAction?.let { entry ->
             val currentDetail = detail
             if (currentDetail != null) {
                 EpisodeActionDialog(
-                    episode = episode,
-                    seasonNumber = selectedSeasonNumber,
-                    watched = watchedEpisodesInSeason.contains(episode.episodeNumber),
+                    episode = entry.episode,
+                    seasonNumber = entry.seasonNumber,
+                    watched = watchedEpisodeKeys.contains(
+                        watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber),
+                    ),
                     loading = episodeActionLoading,
                     error = episodeActionError,
                     onDismiss = {
@@ -598,7 +692,7 @@ fun DetailScreen(
                             episodeActionLoading = true
                             episodeActionError = null
                             scope.launch {
-                                val context = episode.toEpisodeContext(selectedSeasonNumber)
+                                val context = entry.episode.toEpisodeContext(entry.seasonNumber)
                                 val marked = repository.markWatched(
                                     mediaType = "tv",
                                     mediaId = currentDetail.id,
@@ -609,7 +703,8 @@ fun DetailScreen(
                                 )
                                 if (marked) {
                                     repository.clearProgress("tv", currentDetail.id, context)
-                                    watchedEpisodesInSeason = watchedEpisodesInSeason + episode.episodeNumber
+                                    watchedEpisodeKeys = watchedEpisodeKeys +
+                                        watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber)
                                     episodeAction = null
                                 } else {
                                     episodeActionError = "Could not mark this episode watched."
@@ -620,6 +715,24 @@ fun DetailScreen(
                     },
                 )
             }
+        }
+
+        expandedSynopsis?.let { synopsis ->
+            com.streamdek.tv.nativeapp.ui.TvSynopsisDialog(
+                title = detail?.title.orEmpty(),
+                subtitle = selectedEpisodeContext?.let { episode ->
+                    "S${episode.seasonNumber} E${episode.episodeNumber}" +
+                        (episode.title?.takeIf { it.isNotBlank() }?.let { "  ·  $it" } ?: "")
+                },
+                synopsis = synopsis,
+                onDismiss = {
+                    expandedSynopsis = null
+                    scope.launch {
+                        delay(40)
+                        runCatching { synopsisMoreRequester.requestFocus() }
+                    }
+                },
+            )
         }
         externalIntentNotice?.let { message ->
             NoticeDialog(
@@ -650,6 +763,8 @@ private fun DetailHero(
     onMarkWatched: () -> Unit,
     onTrailer: () -> Unit,
     onShare: () -> Unit,
+    synopsisMoreRequester: FocusRequester,
+    onExpandSynopsis: (String) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val titleLogoRequest = remember(detail.titleLogo) {
@@ -687,6 +802,10 @@ private fun DetailHero(
             .fillMaxWidth()
             // Coming back up from the bands below lands on Play every time, rather than on
             // whichever secondary icon happened to be nearest the column the viewer came from.
+            //
+            // focusGroup is what makes that true: `enter` is only consulted for a group, so without
+            // it this was an ordinary container and the redirect never ran.
+            .focusGroup()
             .focusProperties { enter = { playRequester } }
             .onFocusChanged { onFocusChanged(it.hasFocus) }
             .padding(horizontal = DetailInset),
@@ -751,15 +870,27 @@ private fun DetailHero(
             }
 
             HeroDetailVisibility(visible = !compact) {
-                detail.description?.takeIf { it.isNotBlank() }?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.80f),
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.width(720.dp),
-                    )
+                detail.description?.takeIf { it.isNotBlank() }?.let { description ->
+                    // Whether the three-line clamp actually cut anything, measured rather than
+                    // guessed from length — the same synopsis wraps differently per title.
+                    var truncated by remember(description) { mutableStateOf(false) }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = description,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.80f),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.width(720.dp),
+                            onTextLayout = { truncated = it.hasVisualOverflow },
+                        )
+                        if (truncated) {
+                            com.streamdek.tv.nativeapp.ui.TvMoreButton(
+                                onClick = { onExpandSynopsis(description) },
+                                modifier = Modifier.focusRequester(synopsisMoreRequester),
+                            )
+                        }
+                    }
                 }
             }
 
