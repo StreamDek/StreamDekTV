@@ -40,6 +40,7 @@ internal object PreferenceScopes {
             "nextEpisodeThresholdMode",
             "nextEpisodeThresholdPercent",
             "nextEpisodeThresholdMinutes",
+            "liveProgressBarEnabled",
         ),
     )
 

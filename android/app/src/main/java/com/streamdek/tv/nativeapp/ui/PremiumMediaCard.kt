@@ -71,16 +71,20 @@ fun PremiumMediaCard(
 ) {
     val portrait = variant == TvMediaCardVariant.Poster
     val shape = if (portrait) RoundedCornerShape(12.dp) else AppCardShape
-    val image = if (portrait) item.poster ?: item.backdrop else item.backdrop ?: item.poster
+    val image = highResolutionCardArtwork(
+        if (portrait) item.poster ?: item.backdrop else item.backdrop ?: item.poster,
+        portrait = portrait,
+    )
     val focusScale = TvMotion.focusScale()
     val context = LocalContext.current
-    val imageRequest = remember(image) {
+    val imageRequest = remember(image, portrait) {
         ImageRequest.Builder(context)
             .data(image)
             .memoryCacheKey(image)
             .diskCacheKey(image)
             .allowHardware(true)
-            .allowRgb565(true)
+            // Preserve fine poster detail; RGB_565 is reserved for landscape thumbnails.
+            .allowRgb565(!portrait)
             .crossfade(false)
             .build()
     }
@@ -145,7 +149,6 @@ fun PremiumMediaCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 if (favourite) CardBadge("★")
-                if (variant == TvMediaCardVariant.ContinueWatching) CardBadge("CONTINUE")
                 if (variant == TvMediaCardVariant.Live) CardBadge("LIVE")
             }
             // Plain text, no pill: the badge shape competed with the poster art it sits on.
@@ -179,6 +182,12 @@ fun PremiumMediaCard(
             }
         }
     }
+}
+
+/** Upgrades legacy TMDB thumbnail URLs when a poster is rendered at TV-card size. */
+private fun highResolutionCardArtwork(url: String?, portrait: Boolean): String? {
+    if (!portrait || url.isNullOrBlank() || !url.contains("image.tmdb.org/t/p/")) return url
+    return url.replace(Regex("/t/p/w(?:92|154|185|300|342|500)/"), "/t/p/w780/")
 }
 
 @Composable

@@ -121,6 +121,11 @@ private data class LiveBrowseSelection(
     val catalogId: String? = null,
 )
 private const val ExitBackPressWindowMs = 2500L
+
+private fun detailRoute(mediaType: String, mediaId: String): String {
+    val canonicalType = if (mediaType == "series") "tv" else mediaType
+    return "detail/$canonicalType/$mediaId"
+}
 @Composable
 fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.repository }) {
     val navController = rememberNavController()
@@ -392,7 +397,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         repository = repository,
                         entryFocusRequester = homeContentRequester,
                         onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate("detail/$mediaType/$mediaId")
+                            navController.navigate(detailRoute(mediaType, mediaId))
                         },
                         onOpenNetwork = { networkId, networkName ->
                             navController.navigate("network/$networkId/${Uri.encode(networkName)}")
@@ -418,7 +423,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         repository = repository,
                         entryFocusRequester = searchContentRequester,
                         onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate("detail/$mediaType/$mediaId")
+                            navController.navigate(detailRoute(mediaType, mediaId))
                         },
                         onPlayLive = playLiveItem,
                     )
@@ -463,7 +468,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         repository = repository,
                         entryFocusRequester = libraryContentRequester,
                         onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate("detail/$mediaType/$mediaId")
+                            navController.navigate(detailRoute(mediaType, mediaId))
                         },
                     )
                 }
@@ -483,7 +488,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         networkName = Uri.decode(backStackEntryInner.arguments?.getString("name").orEmpty()),
                         onBack = { navController.popBackStack() },
                         onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate("detail/$mediaType/$mediaId")
+                            navController.navigate(detailRoute(mediaType, mediaId))
                         },
                     )
                 }
@@ -540,10 +545,12 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         mediaId = backStackEntryInner.arguments?.getString("id").orEmpty(),
                         onBack = { navController.popBackStack() },
                         onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate("detail/$mediaType/$mediaId")
+                            navController.navigate(detailRoute(mediaType, mediaId))
                         },
                         onPlay = { request: PlaybackRequest ->
-                            val useAutoSelection = bootstrap?.preferences?.playback?.manualStreamSelectionEnabled == false
+                            val preferences = bootstrap?.preferences
+                            val useAutoSelection = preferences?.streams?.showStreamsList == false ||
+                                preferences?.playback?.manualStreamSelectionEnabled == false
                             repository.savePlaybackRequest(
                                 if (useAutoSelection) request.copy(returnToDetailOnBack = true) else request.copy(returnToDetailOnBack = false)
                             )

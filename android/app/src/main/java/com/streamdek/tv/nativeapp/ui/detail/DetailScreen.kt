@@ -29,7 +29,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
@@ -52,6 +51,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -69,6 +69,7 @@ import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.SeasonDetail
+import com.streamdek.tv.nativeapp.data.SeasonEpisode
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TraktCommentItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
@@ -121,8 +122,12 @@ fun DetailScreen(
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
     var markedWatched by remember(mediaType, mediaId) { mutableStateOf(false) }
     var watchedEpisodesInSeason by remember(mediaType, mediaId, selectedSeasonNumber) { mutableStateOf<Set<Int>>(emptySet()) }
+    var markingSeasonWatched by remember(mediaType, mediaId, selectedSeasonNumber) { mutableStateOf(false) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
     var shareSheet by remember(mediaType, mediaId) { mutableStateOf<ShareSheetState?>(null) }
+    var episodeAction by remember(mediaType, mediaId) { mutableStateOf<SeasonEpisode?>(null) }
+    var episodeActionLoading by remember(mediaType, mediaId) { mutableStateOf(false) }
+    var episodeActionError by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     /** Set when no installed app could take an intent, so the press is not silently swallowed. */
     var externalIntentNotice by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
 
@@ -153,6 +158,9 @@ fun DetailScreen(
         markedWatched = false
         watchedEpisodesInSeason = emptySet()
         shareSheet = null
+        episodeAction = null
+        episodeActionLoading = false
+        episodeActionError = null
         resumeEpisodeContext = null
         runCatching { repository.refreshBootstrap() }
 
@@ -188,6 +196,9 @@ fun DetailScreen(
 
     val selectedEpisode = selectedSeason?.episodes?.getOrNull(selectedEpisodeIndex)
     val selectedEpisodeContext = selectedEpisode?.toEpisodeContext(selectedSeasonNumber)
+    val selectedSeasonWatched = selectedSeason?.episodes
+        ?.takeIf { it.isNotEmpty() }
+        ?.all { watchedEpisodesInSeason.contains(it.episodeNumber) } == true
 
     LaunchedEffect(selectedSeasonNumber, detail?.id) {
         if (detail?.type == "tv") selectedSeason = repository.fetchSeason(detail.id, selectedSeasonNumber)
@@ -239,9 +250,21 @@ fun DetailScreen(
     LaunchedEffect(detail?.id, comments) {
         detail ?: return@LaunchedEffect
         delay(220)
+        detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logoUrl ->
+            context.imageLoader.enqueue(
+                ImageRequest.Builder(context)
+                    .data(logoUrl)
+                    .memoryCacheKey(logoUrl)
+                    .diskCacheKey(logoUrl)
+                    .size(640, 180)
+                    .crossfade(false)
+                    .allowHardware(true)
+                    .allowRgb565(false)
+                    .build(),
+            )
+        }
         buildList {
             detail.poster?.let(::add)
-            detail.titleLogo?.let(::add)
             detail.cast.take(3).forEach { it.photo?.let(::add) }
             detail.similarTitles.take(4).forEach { it.poster?.let(::add) }
         }.distinct().take(8).forEach { url ->
@@ -444,11 +467,32 @@ fun DetailScreen(
                                 selectedSeasonNumber = selectedSeasonNumber,
                                 seasonDetail = selectedSeason,
                                 watchedEpisodes = watchedEpisodesInSeason,
+                                seasonWatched = selectedSeasonWatched,
+                                markingSeason = markingSeasonWatched,
                                 firstChipRequester = seasonChipRequester,
                                 onSelectSeason = {
                                     if (selectedSeasonNumber != it) {
                                         selectedSeasonNumber = it
                                         selectedEpisodeIndex = 0
+                                    }
+                                },
+                                onMarkSeasonWatched = markSeason@{
+                                    val season = selectedSeason ?: return@markSeason
+                                    if (markingSeasonWatched || selectedSeasonWatched) return@markSeason
+                                    markingSeasonWatched = true
+                                    scope.launch {
+                                        val marked = repository.markSeasonWatched(
+                                            mediaId = d.id,
+                                            title = d.title,
+                                            year = d.year,
+                                            seasonNumber = selectedSeasonNumber,
+                                        )
+                                        if (marked) {
+                                            watchedEpisodesInSeason = season.episodes
+                                                .map { it.episodeNumber }
+                                                .toSet()
+                                        }
+                                        markingSeasonWatched = false
                                     }
                                 },
                                 onEpisodeFocused = { selectedEpisodeIndex = it },
@@ -464,6 +508,10 @@ fun DetailScreen(
                                             ),
                                         )
                                     }
+                                },
+                                onEpisodeMenu = { episode ->
+                                    episodeActionError = null
+                                    episodeAction = episode
                                 },
                             )
                         }
@@ -485,7 +533,7 @@ fun DetailScreen(
                                 items = d.similarTitles,
                                 compact = focusedRow != null && focusedRow != "similar",
                                 onFocusChanged = { if (it) focusedRow = "similar" },
-                                onOpen = { onOpenDetail(it.type, it.id) },
+                                onOpen = { onOpenDetail(it.type, it.detailLookupId()) },
                             )
                         }
                     }
@@ -530,6 +578,49 @@ fun DetailScreen(
             )
         }
 
+        episodeAction?.let { episode ->
+            val currentDetail = detail
+            if (currentDetail != null) {
+                EpisodeActionDialog(
+                    episode = episode,
+                    seasonNumber = selectedSeasonNumber,
+                    watched = watchedEpisodesInSeason.contains(episode.episodeNumber),
+                    loading = episodeActionLoading,
+                    error = episodeActionError,
+                    onDismiss = {
+                        if (!episodeActionLoading) {
+                            episodeAction = null
+                            episodeActionError = null
+                        }
+                    },
+                    onMarkWatched = {
+                        if (!episodeActionLoading) {
+                            episodeActionLoading = true
+                            episodeActionError = null
+                            scope.launch {
+                                val context = episode.toEpisodeContext(selectedSeasonNumber)
+                                val marked = repository.markWatched(
+                                    mediaType = "tv",
+                                    mediaId = currentDetail.id,
+                                    title = currentDetail.title,
+                                    year = currentDetail.year,
+                                    episode = context,
+                                    imdbId = currentDetail.imdbId,
+                                )
+                                if (marked) {
+                                    repository.clearProgress("tv", currentDetail.id, context)
+                                    watchedEpisodesInSeason = watchedEpisodesInSeason + episode.episodeNumber
+                                    episodeAction = null
+                                } else {
+                                    episodeActionError = "Could not mark this episode watched."
+                                }
+                                episodeActionLoading = false
+                            }
+                        }
+                    },
+                )
+            }
+        }
         externalIntentNotice?.let { message ->
             NoticeDialog(
                 title = "Nothing can open this",
@@ -560,6 +651,20 @@ private fun DetailHero(
     onTrailer: () -> Unit,
     onShare: () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val titleLogoRequest = remember(detail.titleLogo) {
+        detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logoUrl ->
+            ImageRequest.Builder(context)
+                .data(logoUrl)
+                .memoryCacheKey(logoUrl)
+                .diskCacheKey(logoUrl)
+                .size(640, 180)
+                .crossfade(90)
+                .allowHardware(true)
+                .allowRgb565(false)
+                .build()
+        }
+    }
     val heroTween = androidx.compose.animation.core.tween<Dp>(220)
     val posterWidth by androidx.compose.animation.core.animateDpAsState(
         targetValue = if (compact) 0.dp else 188.dp,
@@ -595,9 +700,9 @@ private fun DetailHero(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(heroSpacing),
         ) {
-            if (!detail.titleLogo.isNullOrBlank()) {
+            if (titleLogoRequest != null) {
                 AsyncImage(
-                    model = detail.titleLogo,
+                    model = titleLogoRequest,
                     contentDescription = detail.title,
                     modifier = Modifier.height(logoHeight),
                     contentScale = ContentScale.Fit,
@@ -671,7 +776,7 @@ private fun DetailHero(
                     // Roughly a third wider than the label needs, and 15% shorter than it was. It
                     // is the one action that matters on this screen and should read as the primary
                     // target rather than the first of five equal buttons.
-                    modifier = Modifier.focusRequester(playRequester).height(41.dp).widthIn(min = 196.dp),
+                    modifier = Modifier.focusRequester(playRequester).height(41.dp).width(208.dp),
                     shape = ButtonDefaults.shape(AppPillShape),
                     // Stays white in every state. Tinting it with the theme accent on focus made
                     // the primary action change identity as the highlight landed on it; a slight
@@ -686,9 +791,14 @@ private fun DetailHero(
                     ),
                 ) {
                     Text(
-                        text = if ((progressFraction ?: 0f) > 0f) "Resume" else "Play",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
-                        modifier = Modifier.padding(horizontal = 18.dp),
+                        text = if ((progressFraction ?: 0f) > 0f) {
+                            progressLabel?.substringBefore(" / ")?.takeIf { it.isNotBlank() }?.let { "Resume · $it" } ?: "Resume"
+                        } else {
+                            "Play"
+                        },
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp),
                     )
                 }
                 // Secondary actions are labelled but compact, so the whole row is reachable in a
@@ -750,7 +860,6 @@ private fun HeroAction(
             .size(48.dp)
             .onFocusChanged { focused = it.isFocused }
             .semantics { contentDescription = label }
-            .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -813,6 +922,67 @@ internal fun DetailError(message: String, onRetry: (() -> Unit)? = null, onBack:
     }
 }
 
+@Composable
+private fun EpisodeActionDialog(
+    episode: SeasonEpisode,
+    seasonNumber: Int,
+    watched: Boolean,
+    loading: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onMarkWatched: () -> Unit,
+) {
+    val actionRequester = remember { FocusRequester() }
+
+    LaunchedEffect(episode.id, watched) {
+        delay(80)
+        runCatching { actionRequester.requestFocus() }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .width(520.dp)
+                .background(MaterialTheme.colorScheme.surface, AppCardShape)
+                .padding(28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = "S${seasonNumber} E${episode.episodeNumber} - ${episode.name}",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = when {
+                    watched -> "This episode is already marked watched."
+                    loading -> "Updating your watched history..."
+                    else -> "Choose an action for this episode."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
+            )
+            error?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFFFB4AB))
+            }
+            Button(
+                onClick = onMarkWatched,
+                enabled = !watched && !loading,
+                modifier = Modifier.fillMaxWidth().focusRequester(actionRequester),
+                shape = ButtonDefaults.shape(AppPillShape),
+            ) {
+                Text(if (watched) "Episode watched" else if (loading) "Marking..." else "Mark episode watched")
+            }
+            OutlinedButton(
+                onClick = onDismiss,
+                enabled = !loading,
+                modifier = Modifier.fillMaxWidth(),
+                shape = ButtonDefaults.shape(AppPillShape),
+            ) { Text("Close") }
+        }
+    }
+}
 @Composable
 private fun ShareDialog(
     sheet: ShareSheetState,

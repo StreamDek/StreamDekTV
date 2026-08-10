@@ -66,6 +66,14 @@ data class MediaItem(
     val sourceCatalogName: String? = null,
     val directStreamUrl: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+) {
+    /** TMDB detail routes require the numeric TMDB id, while add-ons often expose IMDb as id. */
+    fun detailLookupId(): String = tmdbId.takeIf { it > 0 }?.toString() ?: id
+}
+
+data class TmdbFindResponse(
+    val id: Int = 0,
+    val type: String? = null,
 )
 
 data class LiveFavouriteChannelsEnvelope(
@@ -323,6 +331,8 @@ data class PlaybackPreferences(
     val subtitleSources: List<SubtitleSourcePreference> = emptyList(),
     val customSubtitleSources: List<SubtitleSourcePreference> = emptyList(),
     val manualStreamSelectionEnabled: Boolean = true,
+    /** Initial visibility of the seek/progress row for live and live-style VOD playback. */
+    val liveProgressBarEnabled: Boolean = false,
 ) {
     fun isAutoPlayNextEpisodeEnabled(): Boolean = autoPlayNextEpisodeEnabled ?: autoplayNextEpisode
 
@@ -526,6 +536,31 @@ data class AddonsIntegration(
     val items: List<AddonManifest> = emptyList(),
 )
 
+data class ProfilePluginRepo(
+    val url: String = "",
+    val name: String = "",
+    val version: String = "",
+    val description: String? = null,
+    val enabled: Boolean = true,
+)
+
+data class ProfilePluginProvider(
+    val id: String = "",
+    @SerializedName("repo") val repoUrl: String = "",
+    val name: String = "",
+    val types: List<String> = emptyList(),
+    val enabled: Boolean = true,
+    val code: String? = null,
+    val hasSettings: Boolean = false,
+)
+
+data class ProfilePluginState(
+    val enabled: Boolean = true,
+    val repos: List<ProfilePluginRepo> = emptyList(),
+    val providers: List<ProfilePluginProvider> = emptyList(),
+    val updatedAt: Long = 0L,
+)
+
 data class IntegrationsEnvelope(
     val trakt: TraktIntegration = TraktIntegration(),
     val simkl: SyncServiceIntegration = SyncServiceIntegration(),
@@ -539,6 +574,8 @@ data class AccountBootstrap(
     val streamProfiles: List<StreamProfile> = emptyList(),
     val preferences: PreferencesEnvelope = PreferencesEnvelope(),
     val integrations: IntegrationsEnvelope = IntegrationsEnvelope(),
+    /** Profile-scoped plugin snapshot synced by mobile and the control center. */
+    val profilePlugins: ProfilePluginState = ProfilePluginState(),
     val devices: List<DeviceInfo> = emptyList(),
     val sessions: List<SessionInfo> = emptyList(),
     val syncStatus: SyncStatus? = null,

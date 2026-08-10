@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.background
@@ -16,8 +17,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,10 +37,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -70,6 +75,8 @@ import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvSkeletonBox
 import com.streamdek.tv.nativeapp.ui.TvSpacing
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
+import kotlin.math.roundToInt
 
 /** Shared page inset. Matches the rest of the app rather than the bespoke value this replaced. */
 internal val DetailInset = TvSpacing.ScreenHorizontal
@@ -84,23 +91,49 @@ internal val DetailInset = TvSpacing.ScreenHorizontal
 internal const val DetailCompactScale = 0.4f
 
 /**
- * Animates a dimension between its full and collapsed size.
- *
- * Call this **once per band**, never inside a lazy item lambda. Every call is a running animation
- * that re-measures its subtree each frame, so putting it on the card meant eight-odd animations per
- * row and thirty-odd across the screen, all driving layout at once — which is exactly what made
- * moving between rows stutter on a stick. Hoisted, it is four.
+ * A single GPU transform per band. Card geometry stays fixed, so focus movement no longer causes
+ * every lazy item to be measured on every animation frame.
  */
 @Composable
-internal fun collapsingSize(full: Dp, compact: Boolean): Dp {
-    val target = if (compact) full * DetailCompactScale else full
-    val animated by androidx.compose.animation.core.animateDpAsState(
-        targetValue = target,
+internal fun detailBandScale(compact: Boolean): Float {
+    val scale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (compact) DetailCompactScale else 1f,
         animationSpec = androidx.compose.animation.core.tween(TvMotion.duration(170)),
-        label = "detail-collapse",
+        label = "detail-band-scale",
     )
-    return animated
+    return scale
 }
+
+internal fun Modifier.detailBandScale(scale: Float, compact: Boolean): Modifier =
+    layout { measurable, constraints ->
+        // A scaled LazyRow otherwise composes only one unscaled viewport, which becomes 40% of the
+        // screen and looks clipped on the right. Compact rows get one wider measurement up front;
+        // the animation itself remains a single GPU layer with no per-card transforms.
+        val contentWidth = if (compact && constraints.hasBoundedWidth) {
+            (constraints.maxWidth / DetailCompactScale).roundToInt()
+        } else {
+            constraints.maxWidth
+        }
+        val childConstraints = if (constraints.hasBoundedWidth) {
+            constraints.copy(minWidth = contentWidth, maxWidth = contentWidth)
+        } else {
+            constraints
+        }
+        val placeable = measurable.measure(childConstraints)
+        val layoutWidth = if (constraints.hasBoundedWidth) constraints.maxWidth else placeable.width
+        layout(layoutWidth, (placeable.height * scale).roundToInt()) {
+            placeable.placeRelativeWithLayer(0, 0) {
+                scaleX = scale
+                scaleY = scale
+                val insetFraction = if (placeable.width > 0) {
+                    (DetailInset.toPx() / placeable.width).coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
+                transformOrigin = TransformOrigin(insetFraction, 0f)
+            }
+        }
+    }
 
 /**
  * One focusable surface used by every card on this screen, so focus reads identically everywhere:
@@ -151,9 +184,9 @@ internal fun DetailFocusCard(
  * "nearest child in the direction of travel", which lands wherever the row happened to be scrolled
  * to — so moving down the page arrived at a different horizontal position in every row.
  */
-internal class RowFocusMemory {
+internal class RowFocusMemory(initialIndex: Int = 0) {
     /** Index the row is currently on, used to drive the anchored scroll. */
-    var focusedIndex by mutableIntStateOf(0)
+    var focusedIndex by mutableIntStateOf(initialIndex)
         private set
     private val requesters = mutableMapOf<Int, FocusRequester>()
 
@@ -161,16 +194,24 @@ internal class RowFocusMemory {
 
     fun remember(index: Int) { focusedIndex = index }
 
-    /** Always the first card. Falls back to Compose's choice before the row has been laid out. */
-    fun entryTarget(): FocusRequester = requesters[0] ?: FocusRequester.Default
 }
 
-@Composable
-internal fun rememberRowFocus(key: Any?): RowFocusMemory = remember(key) { RowFocusMemory() }
+private val RowFocusMemorySaver = Saver<RowFocusMemory, Int>(
+    save = { it.focusedIndex },
+    restore = { RowFocusMemory(it) },
+)
 
+@Composable
+internal fun rememberRowFocus(key: Any?): RowFocusMemory =
+    rememberSaveable(key, saver = RowFocusMemorySaver) { RowFocusMemory() }
+
+/**
+ * Vertical entry uses the first card until the viewer deliberately moves within this row. The
+ * remembered requester then becomes the entry point when they return from another section.
+ */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 internal fun Modifier.rowFocusEntry(memory: RowFocusMemory): Modifier =
-    this.focusProperties { enter = { memory.entryTarget() } }
+    focusGroup().focusProperties { enter = { memory.requester(memory.focusedIndex) } }
 
 /**
  * Keeps the focused card at the leading edge, so travelling right scrolls the row under a fixed
@@ -273,10 +314,11 @@ internal fun EpisodeCard(
     modifier: Modifier = Modifier,
     onFocused: () -> Unit,
     onClick: () -> Unit,
+    onLongPress: () -> Unit,
 ) {
     DetailFocusCard(
         onClick = { if (released) onClick() },
-        modifier = modifier.width(cardWidth),
+        modifier = modifier.width(cardWidth).tvCardLongPress(onLongPress),
         onFocused = onFocused,
         description = buildString {
             append("Season $seasonNumber episode ${episode.episodeNumber}, ${episode.name}")
@@ -306,31 +348,33 @@ internal fun EpisodeCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     MetaChip("E${episode.episodeNumber}")
-                    if (watched) MetaChip("WATCHED", emphasised = true)
-                    if (!released) MetaChip("SOON")
+                    if (!compact && watched) MetaChip("WATCHED", emphasised = true)
+                    if (!compact && !released) MetaChip("SOON")
                 }
-                episode.runtime?.takeIf { it > 0 }?.let {
+                if (!compact) episode.runtime?.takeIf { it > 0 }?.let {
                     Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)) { MetaChip(formatRuntime(it)) }
                 }
             }
-            Column(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = if (compact) 7.dp else 10.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                Text(
-                    text = episode.name,
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (!compact) Text(
-                    text = episode.overview?.takeIf { it.isNotBlank() } ?: "No synopsis available.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            if (!compact) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        text = episode.name,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = episode.overview?.takeIf { it.isNotBlank() } ?: "No synopsis available.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
@@ -342,12 +386,35 @@ internal fun SeasonChipRow(
     seasons: List<SeasonRef>,
     selected: Int,
     firstChipRequester: FocusRequester?,
+    seasonWatched: Boolean,
+    markingSeason: Boolean,
     onSelect: (Int) -> Unit,
+    onMarkSeasonWatched: () -> Unit,
 ) {
     LazyRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
     ) {
+        item("mark-season-watched") {
+            val label = when {
+                seasonWatched -> "Season watched"
+                markingSeason -> "Marking season..."
+                else -> "Mark season watched"
+            }
+            DetailFocusCard(
+                onClick = { if (!seasonWatched && !markingSeason) onMarkSeasonWatched() },
+                shape = AppPillShape,
+                description = label,
+            ) {
+                Text(
+                    text = label,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = if (seasonWatched) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            }
+        }
         itemsIndexed(seasons, key = { _, season -> season.seasonNumber }) { index, season ->
             val active = season.seasonNumber == selected
             DetailFocusCard(
@@ -378,13 +445,18 @@ internal fun EpisodesBand(
     selectedSeasonNumber: Int,
     seasonDetail: SeasonDetail?,
     watchedEpisodes: Set<Int>,
+    seasonWatched: Boolean,
+    markingSeason: Boolean,
     firstChipRequester: FocusRequester?,
     onSelectSeason: (Int) -> Unit,
+    onMarkSeasonWatched: () -> Unit,
     onEpisodeFocused: (Int) -> Unit,
     onEpisodePressed: (SeasonEpisode) -> Unit,
+    onEpisodeMenu: (SeasonEpisode) -> Unit,
 ) {
-    val cardWidth = collapsingSize(268.dp, compact)
-    val stillHeight = collapsingSize(150.dp, compact)
+    val scale = detailBandScale(compact)
+    val cardWidth = 268.dp
+    val stillHeight = 150.dp
     val rowFocus = rememberRowFocus(seasonDetail?.episodes)
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     AnchorRowToFocus(rowState, rowFocus, seasonDetail?.episodes?.size ?: 0)
@@ -396,8 +468,16 @@ internal fun EpisodesBand(
             title = "Episodes",
             trailing = seasonDetail?.episodes?.size?.takeIf { it > 0 }?.let { "$it episodes" },
         )
-        if (seasons.size > 1) {
-            SeasonChipRow(seasons, selectedSeasonNumber, firstChipRequester, onSelectSeason)
+        if (!compact) {
+            SeasonChipRow(
+                seasons = seasons,
+                selected = selectedSeasonNumber,
+                firstChipRequester = firstChipRequester,
+                seasonWatched = seasonWatched,
+                markingSeason = markingSeason,
+                onSelect = onSelectSeason,
+                onMarkSeasonWatched = onMarkSeasonWatched,
+            )
         }
         val episodes = seasonDetail?.episodes.orEmpty()
         if (episodes.isEmpty()) {
@@ -405,12 +485,13 @@ internal fun EpisodesBand(
             // collapsing to nothing and then shoving the sections below it back down.
             Row(
                 horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
-                modifier = Modifier.padding(horizontal = DetailInset),
+                modifier = Modifier.padding(horizontal = DetailInset).detailBandScale(scale, compact),
             ) {
                 repeat(4) { TvSkeletonBox(Modifier.width(cardWidth).height(stillHeight + 82.dp)) }
             }
         } else {
             LazyRow(
+                modifier = Modifier.detailBandScale(scale, compact),
                 state = rowState,
                 horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
@@ -427,6 +508,7 @@ internal fun EpisodesBand(
                         released = isEpisodeReleased(episode.airDate),
                         onFocused = { onEpisodeFocused(index) },
                         onClick = { onEpisodePressed(episode) },
+                        onLongPress = { onEpisodeMenu(episode) },
                     )
                 }
             }
@@ -441,8 +523,9 @@ internal fun SimilarBand(
     onFocusChanged: (Boolean) -> Unit = {},
     onOpen: (MediaItem) -> Unit,
 ) {
-    val cardWidth = collapsingSize(106.dp, compact)
-    val cardHeight = collapsingSize(159.dp, compact)
+    val scale = detailBandScale(compact)
+    val cardWidth = 106.dp
+    val cardHeight = 159.dp
     val rowFocus = rememberRowFocus(items)
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     AnchorRowToFocus(rowState, rowFocus, items.size)
@@ -452,6 +535,7 @@ internal fun SimilarBand(
     ) {
         DetailSectionHeader("More Like This")
         LazyRow(
+            modifier = Modifier.detailBandScale(scale, compact),
             state = rowState,
             horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
@@ -478,8 +562,9 @@ internal fun CastBand(cast: List<CastMember>, compact: Boolean = false, onFocusC
     // point, and the space buys the row below enough height to sit fully on screen.
     // 15% down on the full-size portrait: the row was heavier than the section warranted next to
     // the recommendations below it. The collapsed size follows from this automatically.
-    val photoSize = collapsingSize(82.dp, compact)
-    val columnWidth = collapsingSize(99.dp, compact)
+    val scale = detailBandScale(compact)
+    val photoSize = 82.dp
+    val columnWidth = 99.dp
     val rowFocus = rememberRowFocus(cast)
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     AnchorRowToFocus(rowState, rowFocus, cast.size)
@@ -489,6 +574,7 @@ internal fun CastBand(cast: List<CastMember>, compact: Boolean = false, onFocusC
     ) {
         DetailSectionHeader("Cast")
         LazyRow(
+            modifier = Modifier.detailBandScale(scale, compact),
             state = rowState,
             horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
             contentPadding = PaddingValues(horizontal = DetailInset),
@@ -582,8 +668,9 @@ private fun CastPortrait(
 
 @Composable
 internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = false, onFocusChanged: (Boolean) -> Unit = {}) {
-    val cardWidth = collapsingSize(340.dp, compact)
-    val cardHeight = collapsingSize(150.dp, compact)
+    val scale = detailBandScale(compact)
+    val cardWidth = 340.dp
+    val cardHeight = 150.dp
     val rowFocus = rememberRowFocus(comments)
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     AnchorRowToFocus(rowState, rowFocus, comments.size)
@@ -593,6 +680,7 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
     ) {
         DetailSectionHeader("Reviews", trailing = "${comments.size}")
         LazyRow(
+            modifier = Modifier.detailBandScale(scale, compact),
             state = rowState,
             horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),

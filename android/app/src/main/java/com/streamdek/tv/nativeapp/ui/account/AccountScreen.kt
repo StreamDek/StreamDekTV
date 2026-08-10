@@ -69,7 +69,6 @@ import com.streamdek.tv.nativeapp.data.SessionInfo
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamProfile
 import com.streamdek.tv.nativeapp.data.StreamsPreferences
-import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.countEnabledFilters
 import com.streamdek.tv.nativeapp.data.countGroupsWithFilters
@@ -89,7 +88,7 @@ private enum class SettingsSection(val label: String, val searchTerms: String) {
     Tv("Appearance", "theme density cards navigation grid animation blur home"),
     Accessibility("Accessibility", "contrast large text reduced motion colour screen reader"),
     Devices("Devices", "sync sessions connected televisions"),
-    Diagnostics("Diagnostics", "performance storage cache network playback providers logs health"),
+    Diagnostics("Diagnostics", "performance storage cache network playback providers health"),
     About("About", "version update application"),
 }
 
@@ -518,16 +517,6 @@ fun AccountScreen(
                             TextLine("Playback engine", playbackPrefs?.playerEngine ?: "Auto")
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                 OutlinedButton(onClick = { scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(); status = "Health checks refreshed." } }, modifier = Modifier.focusRequester(devicesActionRequester), shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Run Again") }
-                            }
-                        }
-                    }
-                    item {
-                        CompactCard("Recent App Events") {
-                            val events = TvDebugLogger.snapshot(12)
-                            if (events.isEmpty()) Text("No diagnostic events have been recorded in this session.", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f))
-                            else events.asReversed().forEach { event -> TextLine("${event.level}  ${event.tag}", event.message) }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                OutlinedButton(onClick = { TvDebugLogger.clear(); status = "Diagnostic log cleared." }, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Clear Log") }
                             }
                         }
                     }

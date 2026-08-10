@@ -55,6 +55,7 @@ import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamsPreferences
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.flattenFusionBadges
 import com.streamdek.tv.nativeapp.data.matchFusionBadges
 import com.streamdek.tv.nativeapp.ui.AppCardShape
@@ -67,7 +68,7 @@ import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.search.SearchChip
 
 private sealed interface PlaybackStreamsUiState {
-    data object Loading : PlaybackStreamsUiState
+    data class Loading(val pendingSources: Int = 0) : PlaybackStreamsUiState
     data class Ready(
         val detail: MediaDetail?,
         val candidate: ResolvedPlaybackCandidate,
@@ -122,7 +123,7 @@ fun PlaybackStreamsScreen(
     val cachedCandidate = remember(request) { repository.peekCachedResolvedPlayback(request) }
     var uiState by remember(request) {
         mutableStateOf<PlaybackStreamsUiState>(
-            cachedCandidate?.let { PlaybackStreamsUiState.Ready(cachedDetail, it) } ?: PlaybackStreamsUiState.Loading,
+            cachedCandidate?.let { PlaybackStreamsUiState.Ready(cachedDetail, it) } ?: PlaybackStreamsUiState.Loading(),
         )
     }
     var detail by remember(request) { mutableStateOf(cachedDetail) }
@@ -160,7 +161,11 @@ fun PlaybackStreamsScreen(
             uiState = PlaybackStreamsUiState.Ready(detail, candidate)
             return@LaunchedEffect
         }
-        uiState = PlaybackStreamsUiState.Loading
+        uiState = PlaybackStreamsUiState.Loading()
+        TvDebugLogger.i(
+            "Streams",
+            "lookup start title=${request.title.orEmpty()} media=${request.mediaType}:${request.mediaId} generation=$refreshGeneration",
+        )
         runCatching {
             repository.streamCandidates(
                 mediaType = request.mediaType,
@@ -175,8 +180,17 @@ fun PlaybackStreamsScreen(
                 sourceAddonName = request.sourceAddonName,
                 forceRefresh = refreshGeneration > 0,
             ).collect { progress ->
+                TvDebugLogger.i(
+                    "Streams",
+                    "lookup progress media=${request.mediaType}:${request.mediaId} generation=$refreshGeneration " +
+                        "streams=${progress.streams.size} addons=${progress.streams.map { it.addonId.ifBlank { it.addonName } }.distinct().size} " +
+                        "pending=${progress.pendingSources} done=${progress.done}",
+                )
                 // Stay on the loading state only until the first stream arrives.
-                if (progress.streams.isEmpty() && !progress.done) return@collect
+                if (progress.streams.isEmpty() && !progress.done) {
+                    uiState = PlaybackStreamsUiState.Loading(progress.pendingSources)
+                    return@collect
+                }
                 uiState = PlaybackStreamsUiState.Ready(
                     detail = detail,
                     candidate = ResolvedPlaybackCandidate(null, null, progress.streams),
@@ -215,6 +229,11 @@ fun PlaybackStreamsScreen(
     }
 
     val ready = uiState as? PlaybackStreamsUiState.Ready
+    val pendingSourceCount = when (val state = uiState) {
+        is PlaybackStreamsUiState.Loading -> state.pendingSources
+        is PlaybackStreamsUiState.Ready -> state.pendingSources
+        is PlaybackStreamsUiState.Error -> 0
+    }
     val streamRows = ready?.candidate?.streams.orEmpty().filter { stream ->
         if (!repository.isPlayableStreamOption(stream)) {
             false
@@ -283,12 +302,12 @@ fun PlaybackStreamsScreen(
             StreamsHeader(
                 detail = detail,
                 request = request,
-                pendingSources = ready?.pendingSources ?: 0,
+                pendingSources = pendingSourceCount,
                 streamCount = filteredStreams.size,
                 onReload = {
                     selectedTab = "All"
                     initialFocusApplied = false
-                    uiState = PlaybackStreamsUiState.Loading
+                    uiState = PlaybackStreamsUiState.Loading()
                     refreshGeneration += 1
                 },
             )
@@ -314,13 +333,13 @@ fun PlaybackStreamsScreen(
             }
 
             when (val state = uiState) {
-                PlaybackStreamsUiState.Loading -> StreamsSkeleton()
+                is PlaybackStreamsUiState.Loading -> StreamsSkeleton()
 
                 is PlaybackStreamsUiState.Error -> DetailError(
                     message = state.message,
                     onRetry = {
                         initialFocusApplied = false
-                        uiState = PlaybackStreamsUiState.Loading
+                        uiState = PlaybackStreamsUiState.Loading()
                         refreshGeneration += 1
                     },
                     onBack = onBack,
@@ -412,12 +431,16 @@ private fun StreamsHeader(
             // Width pinned deliberately. A tv-material3 Card fills the space offered to it, and
             // unweighted children are measured first — so in a bounded row the chip swallowed the
             // whole width and the weighted title next to it was measured at zero.
-            SearchChip(
-                label = if (pendingSources > 0) "Searching…" else "Reload sources",
-                selected = false,
-                modifier = Modifier.width(186.dp),
-                onClick = onReload,
-            )
+            if (pendingSources > 0) {
+                StreamsSearchStatus(Modifier.width(186.dp))
+            } else {
+                SearchChip(
+                    label = "Reload sources",
+                    selected = false,
+                    modifier = Modifier.width(186.dp),
+                    onClick = onReload,
+                )
+            }
         }
         Text(
             text = buildString {
@@ -435,6 +458,22 @@ private fun StreamsHeader(
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** Loading status is deliberately not focusable: OK must not restart a lookup mid fan-out. */
+@Composable
+private fun StreamsSearchStatus(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.height(40.dp)
+            .background(Color.White.copy(alpha = 0.07f), AppPillShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "Searching...",
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
         )
     }
 }

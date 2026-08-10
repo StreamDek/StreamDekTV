@@ -36,9 +36,9 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -152,27 +152,53 @@ internal fun PlayerBottomBar(
     subtitlesRequester: FocusRequester,
     audioRequester: FocusRequester,
     sourcesRequester: FocusRequester,
-    rewindRequester: FocusRequester,
     nextRequester: FocusRequester,
     watchedRequester: FocusRequester,
     speedRequester: FocusRequester,
     progressRequester: FocusRequester,
+    liveProgressRequester: FocusRequester,
     onInteract: () -> Unit,
     onPlayPause: () -> Unit,
-    onRewind: () -> Unit,
     onNext: () -> Unit,
     onMarkWatched: () -> Unit,
     onSeekRelative: (Double) -> Unit,
     onOpenPanel: (OverlayPanel) -> Unit,
     modifier: Modifier = Modifier,
     isLive: Boolean = false,
+    isVod: Boolean = false,
+    showLiveProgress: Boolean = false,
+    onToggleLiveProgress: () -> Unit = {},
 ) {
     // Live broadcasts have no seekable timeline — the progress bar is replaced
     // by a LIVE indicator, so focus targets that pointed at it move to Play.
-    val timelineUpRequester = if (isLive) playRequester else progressRequester
+    val hasSeekableTimeline = !isLive || (showLiveProgress && durationSec > 0.0)
+    val timelineUpRequester = if (hasSeekableTimeline) progressRequester else playRequester
+    // Read the state object directly in the key handler. Capturing the delegated Boolean leaves
+    // the first key press after focus with the previous composition's value; left appeared to
+    // "arm" scrubbing only because it gave recomposition time to catch up before right was used.
+    val timelineFocused = remember { mutableStateOf(false) }
+    val timelineSeekStep = when {
+        durationSec >= 7200.0 -> 20.0
+        durationSec >= 3600.0 -> 12.0
+        else -> 8.0
+    }
     Box(
         modifier = modifier
             .fillMaxWidth()
+            .onPreviewKeyEvent { event ->
+                if (!timelineFocused.value) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> {
+                        if (event.type == KeyEventType.KeyDown) onSeekRelative(-timelineSeekStep)
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        if (event.type == KeyEventType.KeyDown) onSeekRelative(timelineSeekStep)
+                        true
+                    }
+                    else -> false
+                }
+            }
             .background(
                 Brush.verticalGradient(
                     colors = listOf(Color.Transparent, Color(0xBB000000), Color(0xF2000000)),
@@ -210,27 +236,48 @@ internal fun PlayerBottomBar(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                AnimatedVisibility(
+                    visible = timelineFocused.value,
+                    enter = fadeIn(animationSpec = tween(100)),
+                    exit = fadeOut(animationSpec = tween(80)),
+                ) {
+                    Text(
+                        text = "Hold down Left/Right button to scrub",
+                        style = androidx.tv.material3.MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.42f),
+                        maxLines = 1,
+                    )
+                }
             }
 
-            if (isLive) {
+            if (isLive && !showLiveProgress) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(vertical = 8.dp),
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFFEF4444)),
-                    )
+                    if (isVod) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = Color(0xFF60A5FA),
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFEF4444)),
+                        )
+                    }
                     Text(
-                        text = "LIVE",
+                        text = if (isVod) "VOD" else "LIVE",
                         style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
                         color = Color.White,
                     )
                 }
-            } else {
+            } else if (hasSeekableTimeline) {
                 PlayerTimeline(
                     positionSec = positionSec,
                     durationSec = durationSec,
@@ -238,8 +285,30 @@ internal fun PlayerBottomBar(
                     downRequester = playRequester,
                     onInteract = onInteract,
                     onSeekRelative = onSeekRelative,
+                    onFocusedChanged = { timelineFocused.value = it },
                     modifier = Modifier.fillMaxWidth(),
                 )
+            } else if (isLive) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = formatPlaybackClock(positionSec),
+                        style = androidx.tv.material3.MaterialTheme.typography.labelLarge,
+                        color = Color.White.copy(alpha = 0.9f),
+                    )
+                    Box(
+                        modifier = Modifier.weight(1f).height(3.dp).clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.22f)),
+                    )
+                    Text(
+                        text = if (isVod) "VOD" else "LIVE",
+                        style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+                        color = if (isVod) Color(0xFF60A5FA) else Color.White,
+                    )
+                }
             }
 
             Row(
@@ -253,62 +322,66 @@ internal fun PlayerBottomBar(
                     primary = true,
                     requester = playRequester,
                     upRequester = timelineUpRequester,
-                    rightRequester = subtitlesRequester,
+                    rightRequester = if (isLive) liveProgressRequester else subtitlesRequester,
                     onFocused = onInteract,
                     onClick = onPlayPause,
                 )
                 Spacer(Modifier.width(8.dp))
-                PlayerControlIconButton(
-                    icon = Icons.Filled.ClosedCaption,
-                    label = "Subtitles",
-                    active = selectedPanel == OverlayPanel.Subtitles,
-                    requester = subtitlesRequester,
-                    upRequester = timelineUpRequester,
-                    leftRequester = playRequester,
-                    rightRequester = audioRequester,
-                    onFocused = onInteract,
-                    onClick = { onOpenPanel(OverlayPanel.Subtitles) },
-                )
-                PlayerControlIconButton(
-                    icon = Icons.Filled.VolumeUp,
-                    label = "Audio",
-                    active = selectedPanel == OverlayPanel.Audio,
-                    requester = audioRequester,
-                    upRequester = timelineUpRequester,
-                    leftRequester = subtitlesRequester,
-                    rightRequester = sourcesRequester,
-                    onFocused = onInteract,
-                    onClick = { onOpenPanel(OverlayPanel.Audio) },
-                )
+                if (isLive) {
+                    PlayerControlIconButton(
+                        icon = Icons.Filled.Timeline,
+                        label = "Progress",
+                        active = showLiveProgress,
+                        requester = liveProgressRequester,
+                        upRequester = timelineUpRequester,
+                        leftRequester = playRequester,
+                        rightRequester = sourcesRequester,
+                        onFocused = onInteract,
+                        onClick = onToggleLiveProgress,
+                    )
+                } else {
+                    PlayerControlIconButton(
+                        icon = Icons.Filled.ClosedCaption,
+                        label = "Subtitles",
+                        active = selectedPanel == OverlayPanel.Subtitles,
+                        requester = subtitlesRequester,
+                        upRequester = timelineUpRequester,
+                        leftRequester = playRequester,
+                        rightRequester = audioRequester,
+                        onFocused = onInteract,
+                        onClick = { onOpenPanel(OverlayPanel.Subtitles) },
+                    )
+                    PlayerControlIconButton(
+                        icon = Icons.Filled.VolumeUp,
+                        label = "Audio",
+                        active = selectedPanel == OverlayPanel.Audio,
+                        requester = audioRequester,
+                        upRequester = timelineUpRequester,
+                        leftRequester = subtitlesRequester,
+                        rightRequester = sourcesRequester,
+                        onFocused = onInteract,
+                        onClick = { onOpenPanel(OverlayPanel.Audio) },
+                    )
+                }
                 PlayerControlIconButton(
                     icon = Icons.Filled.Cloud,
                     label = "Sources",
                     active = selectedPanel == OverlayPanel.Streams,
                     requester = sourcesRequester,
                     upRequester = timelineUpRequester,
-                    leftRequester = audioRequester,
-                    rightRequester = if (isLive) sourcesRequester else rewindRequester,
+                    leftRequester = if (isLive) liveProgressRequester else audioRequester,
+                    rightRequester = if (isLive) sourcesRequester else if (hasNext) nextRequester else watchedRequester,
                     onFocused = onInteract,
                     onClick = { onOpenPanel(OverlayPanel.Streams) },
                 )
                 if (!isLive) {
-                    PlayerControlIconButton(
-                        icon = Icons.Filled.Replay10,
-                        label = "Rewind",
-                        requester = rewindRequester,
-                        upRequester = timelineUpRequester,
-                        leftRequester = sourcesRequester,
-                        rightRequester = if (hasNext) nextRequester else watchedRequester,
-                        onFocused = onInteract,
-                        onClick = onRewind,
-                    )
                     if (hasNext) {
                         PlayerControlIconButton(
                             icon = Icons.Filled.SkipNext,
                             label = "Next",
                             requester = nextRequester,
                             upRequester = timelineUpRequester,
-                            leftRequester = rewindRequester,
+                            leftRequester = sourcesRequester,
                             rightRequester = watchedRequester,
                             onFocused = onInteract,
                             onClick = onNext,
@@ -319,7 +392,7 @@ internal fun PlayerBottomBar(
                         label = "Watched",
                         requester = watchedRequester,
                         upRequester = timelineUpRequester,
-                        leftRequester = if (hasNext) nextRequester else rewindRequester,
+                        leftRequester = if (hasNext) nextRequester else sourcesRequester,
                         rightRequester = speedRequester,
                         onFocused = onInteract,
                         onClick = onMarkWatched,
@@ -418,6 +491,7 @@ internal fun PlayerTimeline(
     downRequester: FocusRequester,
     onInteract: () -> Unit,
     onSeekRelative: (Double) -> Unit,
+    onFocusedChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -430,13 +504,7 @@ internal fun PlayerTimeline(
 
     Column(
         modifier = modifier
-            .focusRequester(requester)
-            .focusable()
             .focusProperties { down = downRequester }
-            .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onInteract()
-            }
             .onPreviewKeyEvent { event ->
                 when (event.key) {
                     // Both edges are consumed so a held button keeps repeating into
@@ -460,18 +528,16 @@ internal fun PlayerTimeline(
                     }
                     else -> false
                 }
-            },
+            }
+            .focusRequester(requester)
+            .onFocusChanged {
+                focused = it.isFocused
+                onFocusedChanged(it.isFocused)
+                if (it.isFocused) onInteract()
+            }
+            .focusable(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (focused) {
-            Text(
-                text = "Scrub with left  /  right",
-                style = androidx.tv.material3.MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                color = Color(0xFFF0BA66),
-                modifier = Modifier.padding(start = 2.dp),
-            )
-        }
-
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()

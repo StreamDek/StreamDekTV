@@ -1,5 +1,10 @@
 package com.streamdek.tv.nativeapp.ui.home
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -48,6 +54,7 @@ import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
+import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.glideToItem
 import kotlinx.coroutines.delay
@@ -57,6 +64,16 @@ private data class BrowseActionState(
     val item: MediaItem,
     val restoreFocusRequester: FocusRequester,
 )
+
+/** Stable, null-safe AnimatedContent key for addon items whose decoded fields may be absent. */
+private class HomeHeroPresentation(val item: MediaItem?) {
+    private val itemKey = "${item?.type.orEmpty()}:${item?.id.orEmpty()}"
+
+    override fun equals(other: Any?): Boolean =
+        other is HomeHeroPresentation && itemKey == other.itemKey
+
+    override fun hashCode(): Int = itemKey.hashCode()
+}
 
 /**
  * Home.
@@ -71,6 +88,7 @@ private data class BrowseActionState(
  * go back up to a legible size, and rows the viewer is not on shrink instead, so more of the
  * screen is doing useful work at any moment.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     repository: StreamDekRepository,
@@ -112,8 +130,15 @@ fun HomeScreen(
     var focusedItem by remember { mutableStateOf<MediaItem?>(null) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
 
-    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
-        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}"
+    val homeContentConfiguration = remember(bootstrap) {
+        val builtIns = bootstrap?.preferences?.home?.defaultAppCatalogsEnabled != false
+        val addons = bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
+            "${it.id}:${it.enabled}:${it.position}"
+        }
+        "$builtIns:$addons"
+    }
+    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration) {
+        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration"
     }
     LaunchedEffect(loadKey) { homeViewModel.load(loadKey) }
 
@@ -127,14 +152,28 @@ fun HomeScreen(
     val backgroundColor = MaterialTheme.colorScheme.background
 
     Box(Modifier.fillMaxSize().background(backgroundColor)) {
-        val art = spotlightItem?.backdrop ?: spotlightItem?.poster
-        if (!art.isNullOrBlank() && spotlightItem?.type != "network") {
-            AsyncImage(
-                model = art,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
+        val art = (spotlightItem?.backdrop ?: spotlightItem?.poster)
+            ?.takeIf { spotlightItem?.type != "network" }
+        AnimatedContent(
+            targetState = art,
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(110)) },
+            label = "home-hero-backdrop",
+        ) { imageUrl ->
+            if (!imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(imageUrl)
+                        .memoryCacheKey(imageUrl)
+                        .diskCacheKey(imageUrl)
+                        .crossfade(false)
+                        .allowHardware(true)
+                        .build(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
         }
 
         Box(
@@ -180,23 +219,48 @@ fun HomeScreen(
                 val localFirstCard = remember { FocusRequester() }
                 val firstCardRequester = entryFocusRequester ?: localFirstCard
 
-                LaunchedEffect(content.rails.size) {
+                LaunchedEffect(content.rails.size, screenState.prefetchedTitleLogos) {
                     // Only the first few images of the visible rows; a stick has little memory to
                     // spend speculatively and the rest arrive as the viewer travels.
-                    buildList {
+                    val artwork = buildList {
                         content.featured?.backdrop?.let(::add)
                         rows.take(3).forEach { rail ->
                             rail.items.take(5).forEach { item ->
                                 (if (portraitCards) item.poster else item.backdrop)?.let(::add)
                             }
                         }
-                    }.distinct().take(14).forEach { url ->
+                    }.distinct().take(14)
+                    val titleLogos = buildList {
+                        content.featured?.titleLogo?.let(::add)
+                        rows.take(3).forEach { rail ->
+                            rail.items.take(6).forEach { item -> item.titleLogo?.let(::add) }
+                        }
+                        addAll(screenState.prefetchedTitleLogos)
+                    }.distinct().take(20)
+                    titleLogos.forEach { url ->
+                        context.imageLoader.enqueue(
+                            ImageRequest.Builder(context)
+                                .data(url).memoryCacheKey(url).diskCacheKey(url)
+                                .size(640, 180)
+                                .crossfade(false).allowHardware(true).allowRgb565(false).build(),
+                        )
+                    }
+                    artwork.forEach { url ->
                         context.imageLoader.enqueue(
                             ImageRequest.Builder(context)
                                 .data(url).memoryCacheKey(url).diskCacheKey(url)
                                 .crossfade(false).allowHardware(true).allowRgb565(true).build(),
                         )
                     }
+                }
+
+                LaunchedEffect(content.rails.size) {
+                    homeViewModel.prefetchHeroCandidates(
+                        buildList {
+                            content.featured?.let(::add)
+                            rows.take(3).forEach { rail -> addAll(rail.items.take(6)) }
+                        },
+                    )
                 }
 
                 // Full "rowId:itemKey" of the card that should take focus once the shelves compose.
@@ -234,14 +298,37 @@ fun HomeScreen(
                 }
 
                 Column(Modifier.fillMaxSize()) {
-                    HomeSpotlight(item = spotlightItem, detail = screenState.heroDetail)
+                    AnimatedContent(
+                        // The focused item owns the transition. Detail metadata arrives shortly
+                        // afterwards and must update in place; treating it as a second target made
+                        // the title/logo replay the whole hero crossfade and visibly flicker.
+                        targetState = HomeHeroPresentation(spotlightItem),
+                        transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(110)) },
+                        label = "home-hero-copy",
+                    ) { hero ->
+                        val heroItem = hero.item
+                        val matchingDetail = screenState.heroDetail?.takeIf { detail ->
+                            heroItem != null && (
+                                detail.id == heroItem.id ||
+                                    (detail.tmdbId > 0 && detail.tmdbId == heroItem.tmdbId) ||
+                                    detail.id == heroItem.detailLookupId()
+                                )
+                        }
+                        HomeSpotlight(item = heroItem, detail = matchingDetail)
+                    }
 
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides SuppressBringIntoView,
+                    ) {
                     LazyColumn(
                         state = shelfListState,
                         // weight, not fillMaxSize: as a Column child, filling the parent would put
                         // the list viewport partly off-screen and the lower shelves out of reach.
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                        contentPadding = PaddingValues(top = 4.dp, bottom = 64.dp),
+                        modifier = Modifier.weight(1f).fillMaxWidth().clipToBounds(),
+                        // Enough trailing range for even the final shelf to align with the top of
+                        // this viewport. A short footer makes LazyColumn clamp near the end and
+                        // leaves the preceding shelf visible, regardless of later scroll retries.
+                        contentPadding = PaddingValues(bottom = SpotlightHeight + 48.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         itemsIndexed(rows, key = { _, row -> row.id }) { rowIndex, row ->
@@ -268,7 +355,7 @@ fun HomeScreen(
                                         // Live broadcasts skip detail and play straight away.
                                         item.type == "live" -> onPlayLive(item)
                                         row.id == "continue-watching" -> onResumePlayback(item)
-                                        else -> onOpenDetail(item.type, item.id)
+                                        else -> onOpenDetail(item.type, item.detailLookupId())
                                     }
                                 },
                                 onItemMenu = { item, requester ->
@@ -285,6 +372,7 @@ fun HomeScreen(
                             HomeSkeletonShelf(pending = pending, portraitCards = portraitCards)
                         }
                     }
+                    }
                 }
 
                 LaunchedEffect(activeRowId, rows.size) {
@@ -298,6 +386,9 @@ fun HomeScreen(
                     //
                     // Safe to do unconditionally now that the active shelf is tracked by id: the
                     // earlier version chased a shifting index while rows were still arriving.
+                    // One uninterrupted curve owns the vertical move. Shelf geometry stays fixed
+                    // while compact/full-size presentation runs as a GPU scale, so no correction
+                    // or layout snap is needed after the animation.
                     shelfListState.glideToItem(target)
                 }
             }
@@ -317,7 +408,7 @@ fun HomeScreen(
                         runCatching { restoreRequester.requestFocus() }
                     }
                 },
-                onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
+                onOpenDetail = { onOpenDetail(state.item.type, state.item.detailLookupId()) },
                 onChanged = { homeViewModel.forceRefresh(loadKey) },
             )
         }

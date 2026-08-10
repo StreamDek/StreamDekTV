@@ -92,14 +92,13 @@ val SuppressBringIntoView = object : androidx.compose.foundation.gestures.BringI
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
 }
 
-/** Scrolls [index] to the top of the viewport on one easing curve. */
+/** Scrolls [index] to the top on one easing curve. */
 suspend fun androidx.compose.foundation.lazy.LazyListState.glideToItem(
     index: Int,
     durationMs: Int = TvScroll.DurationMs,
 ) {
     val entry = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
     if (entry != null && entry.offset != 0) {
-        // Already on screen: scroll by the exact delta so the curve is ours end to end.
         animateScrollBy(
             value = entry.offset.toFloat(),
             animationSpec = TvScroll.spec<Float>(durationMs),

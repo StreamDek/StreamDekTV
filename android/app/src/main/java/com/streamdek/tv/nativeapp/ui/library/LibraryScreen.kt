@@ -293,7 +293,7 @@ fun LibraryScreen(
                                 .height(LibraryCardHeight)
                                 .focusProperties { if (index < gridColumns) up = firstChipRequester }
                                 .tvCardLongPress { actionState = BrowseActionState(item, effective) },
-                            onClick = { onOpenDetail(item.type, item.id) },
+                            onClick = { onOpenDetail(item.type, item.detailLookupId()) },
                             onLongPress = { actionState = BrowseActionState(item, effective) },
                         )
                     }
@@ -313,7 +313,7 @@ fun LibraryScreen(
                         runCatching { restoreRequester.requestFocus() }
                     }
                 },
-                onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
+                onOpenDetail = { onOpenDetail(state.item.type, state.item.detailLookupId()) },
                 onChanged = { library = repository.fetchLibrary(forceRefresh = true) },
             )
         }

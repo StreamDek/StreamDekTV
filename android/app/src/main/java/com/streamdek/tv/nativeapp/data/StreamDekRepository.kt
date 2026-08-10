@@ -166,6 +166,8 @@ class StreamDekRepository(
     private val episodeSegmentCache = lruCache<String, List<PlaybackSegment>>(32)
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
+    /** Prevent an older bootstrap response from publishing after a newer settings mutation. */
+    private val bootstrapRefreshMutex = kotlinx.coroutines.sync.Mutex()
 
     /**
      * The active profile's stored blob exactly as the backend holds it. Kept raw because it also
@@ -376,11 +378,11 @@ class StreamDekRepository(
         api.clearSessionExpired()
     }
 
-    suspend fun refreshBootstrap(): AccountBootstrap? {
+    suspend fun refreshBootstrap(): AccountBootstrap? = bootstrapRefreshMutex.withLock {
         val session = currentSession() ?: run {
             bootstrapState.value = null
             TvDebugLogger.w("Bootstrap", "refreshBootstrap skipped: no session")
-            return null
+            return@withLock null
         }
         TvDebugLogger.i("Bootstrap", "refreshBootstrap start user=${session.user.uid}")
         var bootstrap = fetchBootstrap(session)
@@ -408,7 +410,7 @@ class StreamDekRepository(
         bootstrapState.value = bootstrap
         reloadFavouriteChannels()
         refreshFavouriteChannelsFromCloud()
-        return bootstrap
+        return@withLock bootstrap
     }
 
     /**
@@ -429,7 +431,7 @@ class StreamDekRepository(
 
     suspend fun updatePlaybackPreferences(partial: Map<String, Any?>): AccountBootstrap? {
         val existing = bootstrapState.value?.preferences?.playback ?: PlaybackPreferences()
-        patchPreferences(
+        if (!patchPreferences(
             mapOf(
                 "playback" to mapOf(
                     "autoplayNextEpisode" to (partial["autoplayNextEpisode"] ?: existing.autoplayNextEpisode),
@@ -462,15 +464,16 @@ class StreamDekRepository(
                     "playerEngine" to (partial["playerEngine"] ?: existing.playerEngine),
                     "rememberLastSource" to (partial["rememberLastSource"] ?: existing.rememberLastSource),
                     "manualStreamSelectionEnabled" to (partial["manualStreamSelectionEnabled"] ?: existing.manualStreamSelectionEnabled),
+                    "liveProgressBarEnabled" to (partial["liveProgressBarEnabled"] ?: existing.liveProgressBarEnabled),
                 ),
             ),
-        )
+        )) return null
         return refreshBootstrap()
     }
 
     suspend fun updateAppPreferences(partial: Map<String, Any?>): AccountBootstrap? {
         val existing = bootstrapState.value?.preferences?.app ?: AppPreferences()
-        patchPreferences(
+        if (!patchPreferences(
             mapOf(
                 "app" to mapOf(
                     "theme" to (partial["theme"] ?: existing.theme),
@@ -479,15 +482,46 @@ class StreamDekRepository(
                     "homeRowCardStyle" to (partial["homeRowCardStyle"] ?: existing.homeRowCardStyle),
                     "compactMode" to (partial["compactMode"] ?: existing.compactMode),
                     "syncOverCellular" to (partial["syncOverCellular"] ?: existing.syncOverCellular),
+                    "cardDensity" to (partial["cardDensity"] ?: existing.cardDensity),
+                    "animationSpeed" to (partial["animationSpeed"] ?: existing.animationSpeed),
+                    "navigationStyle" to (partial["navigationStyle"] ?: existing.navigationStyle),
+                    "gridSize" to (partial["gridSize"] ?: existing.gridSize),
+                    "backgroundBlur" to (partial["backgroundBlur"] ?: existing.backgroundBlur),
+                    "highContrast" to (partial["highContrast"] ?: existing.highContrast),
+                    "largeText" to (partial["largeText"] ?: existing.largeText),
+                    "reducedMotion" to (partial["reducedMotion"] ?: existing.reducedMotion),
                 ),
             ),
-        )
+        )) return null
+        return refreshBootstrap()
+    }
+
+    suspend fun updateHomePreferences(partial: Map<String, Any?>): AccountBootstrap? {
+        val existing = bootstrapState.value?.preferences?.home ?: HomePreferences()
+        if (!patchPreferences(
+            mapOf(
+                "home" to mapOf(
+                    "primarySyncService" to (partial["primarySyncService"] ?: existing.primarySyncService),
+                    "defaultAppCatalogsEnabled" to (partial["defaultAppCatalogsEnabled"] ?: existing.defaultAppCatalogsEnabled),
+                    "continueWatchingStyle" to (partial["continueWatchingStyle"] ?: existing.continueWatchingStyle),
+                    "liveCategoriesEnabled" to (partial["liveCategoriesEnabled"] ?: existing.liveCategoriesEnabled),
+                    "liveLandscapeCards" to (partial["liveLandscapeCards"] ?: existing.liveLandscapeCards),
+                    "liveFavouriteDrawerCards" to (partial["liveFavouriteDrawerCards"] ?: existing.liveFavouriteDrawerCards),
+                    "showHeroSynopsis" to (partial["showHeroSynopsis"] ?: existing.showHeroSynopsis),
+                    "detailPageStyle" to (partial["detailPageStyle"] ?: existing.detailPageStyle),
+                    "vividAmbient" to (partial["vividAmbient"] ?: existing.vividAmbient),
+                    "ambientTintPercent" to (partial["ambientTintPercent"] ?: existing.ambientTintPercent),
+                    "homeCatalogRows" to (partial["homeCatalogRows"] ?: existing.homeCatalogRows),
+                ),
+            ),
+        )) return null
+        homeCache.clear()
         return refreshBootstrap()
     }
 
     suspend fun updateStreamsPreferences(partial: Map<String, Any?>): AccountBootstrap? {
         val existing = bootstrapState.value?.preferences?.streams ?: StreamsPreferences()
-        patchPreferences(
+        if (!patchPreferences(
             mapOf(
                 "streams" to mapOf(
                     "fusionBadgesEnabled" to (partial["fusionBadgesEnabled"] ?: existing.fusionBadgesEnabled),
@@ -504,7 +538,7 @@ class StreamDekRepository(
                     "showAddonTmdbRatings" to (partial["showAddonTmdbRatings"] ?: existing.showAddonTmdbRatings),
                 ),
             ),
-        )
+        )) return null
         return refreshBootstrap()
     }
 
@@ -536,16 +570,52 @@ class StreamDekRepository(
     }
 
     suspend fun fetchAddonManifests(forceRefresh: Boolean = false): List<AddonManifest> {
-        if (forceRefresh) {
-            refreshBootstrap()
-        }
-        return api.get<List<AddonManifest>>("/addons/manifests")
-            ?: bootstrapState.value?.integrations?.addons?.items.orEmpty()
+        val fetched = api.get<List<AddonManifest>>(
+            "/addons/manifests" + if (forceRefresh) "?refresh=true" else "",
+        )
+        if (fetched != null) applyAddonSnapshot(fetched)
+        return fetched ?: bootstrapState.value?.integrations?.addons?.items.orEmpty()
     }
 
-    suspend fun toggleAddon(id: String, enabled: Boolean) {
-        api.post<Map<String, String>>("/addons/toggle", mapOf("id" to id, "enabled" to enabled))
+    suspend fun toggleAddon(id: String, enabled: Boolean): Boolean {
+        val response = api.post<JsonObject>("/addons/toggle", mapOf("id" to id, "enabled" to enabled))
+            ?: return false
+        val saved = response.get("success")?.asBoolean == true ||
+            response.has("id") || response.has("enabled")
+        if (!saved) return false
+        homeCache.clear()
         refreshBootstrap()
+        return true
+    }
+
+    suspend fun updateProfilePlugins(state: ProfilePluginState): AccountBootstrap? {
+        val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return null
+        val next = state.copy(updatedAt = System.currentTimeMillis())
+        val response = api.put<JsonObject>(
+            "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/plugins",
+            mapOf("plugins" to next),
+        ) ?: return null
+        if (response.get("success")?.asBoolean != true) return null
+        return refreshBootstrap()
+    }
+
+    private fun applyAddonSnapshot(addons: List<AddonManifest>) {
+        val current = bootstrapState.value ?: return
+        bootstrapState.value = current.copy(
+            integrations = current.integrations.copy(
+                addons = current.integrations.addons.copy(items = addons),
+            ),
+        )
+    }
+
+    suspend fun setDebridAccountEnabled(provider: String, enabled: Boolean): Boolean {
+        val encoded = URLEncoder.encode(provider, "UTF-8")
+        val response = api.patch<JsonObject>(
+            "/debrid/accounts/$encoded",
+            mapOf("enabled" to enabled),
+        ) ?: return false
+        refreshBootstrap()
+        return response.get("success")?.asBoolean == true
     }
 
     suspend fun uninstallAddon(id: String) {
@@ -763,7 +833,11 @@ class StreamDekRepository(
      * The last value emitted is the complete screen, which is what gets cached.
      */
     fun homeContentStream(forceRefresh: Boolean = false): Flow<HomeContent> = channelFlow {
-        val cacheKey = buildSessionProfileCacheKey()
+        val homePreferences = bootstrapState.value?.preferences?.home
+        val addonConfiguration = bootstrapState.value?.integrations?.addons?.items.orEmpty()
+            .joinToString("|") { "${it.id}:${it.enabled}:${it.position}" }
+        val cacheKey = buildSessionProfileCacheKey() +
+            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration"
         if (!forceRefresh) {
             homeCache[cacheKey]?.let {
                 send(it)
@@ -944,11 +1018,22 @@ class StreamDekRepository(
 
 
     suspend fun fetchDetail(id: String, type: String, forceRefresh: Boolean = false): MediaDetail? {
-        val cacheKey = "$type:$id"
+        val canonicalType = if (type == "series") "tv" else type
+        val imdbId = Regex("tt\\d+", RegexOption.IGNORE_CASE).find(id)?.value
+        val resolved = if (imdbId != null) {
+            runCatching {
+                api.get<TmdbFindResponse>("/tmdb/find/imdb/$imdbId?type=$canonicalType")
+            }.getOrNull()?.takeIf { it.id > 0 }
+        } else {
+            null
+        }
+        val resolvedType = resolved?.type?.let { if (it == "series") "tv" else it } ?: canonicalType
+        val resolvedId = resolved?.id?.toString() ?: id
+        val cacheKey = "$resolvedType:$resolvedId"
         if (!forceRefresh) {
             detailsCache[cacheKey]?.let { return it }
         }
-        val detail = api.get<MediaDetail>("/tmdb/details/$type/$id")
+        val detail = api.get<MediaDetail>("/tmdb/details/$resolvedType/$resolvedId")
         if (detail != null) {
             detailsCache[cacheKey] = detail
         }
@@ -1940,7 +2025,7 @@ class StreamDekRepository(
      */
     private fun rememberLastSourceEnabled(): Boolean {
         val preferences = bootstrapState.value?.preferences ?: return true
-        return preferences.streams.rememberLastSource && preferences.playback.rememberLastSource
+        return preferences.streams.rememberLastSource
     }
 
     /** Searches OpenSubtitles, installed subtitle addons, and mobile-managed cloud sources. */
@@ -2441,13 +2526,14 @@ class StreamDekRepository(
     }
 
     private fun preferredQualityScore(quality: String?, preferredQuality: String): Int {
-        if (preferredQuality == "best") return 0
+        val preference = preferredQuality.trim().lowercase(Locale.US)
+        if (preference == "best" || preference == "auto") return 0
         val normalized = quality.orEmpty().lowercase()
         val is4k = "2160" in normalized || "4k" in normalized || "uhd" in normalized
         val is1080 = "1080" in normalized
         val is720 = "720" in normalized
-        return when (preferredQuality) {
-            "4k" -> if (is4k) 4 else -1
+        return when (preference) {
+            "4k", "2160p" -> if (is4k) 4 else -1
             "1080p" -> when {
                 is1080 -> 4
                 is4k -> -3
@@ -2692,34 +2778,36 @@ class StreamDekRepository(
      * Sending only the account copy would leave the change invisible to them, and a later profile
      * write from another client would silently undo it.
      */
-    private suspend fun patchPreferences(payload: Map<String, Any?>) {
-        api.patch<Map<String, PreferencesEnvelope>>(
+    private suspend fun patchPreferences(payload: Map<String, Any?>): Boolean {
+        val response = api.patch<JsonObject>(
             "/account/preferences",
             mapOf("preferences" to payload),
-        )
-        writeProfilePreferences(payload)
+        ) ?: return false
+        if (!response.has("preferences")) return false
+        return writeProfilePreferences(payload)
     }
 
-    private suspend fun writeProfilePreferences(payload: Map<String, Any?>) {
-        val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return
-        if (currentSession() == null) return
-        val changed = runCatching { api.gson.toJsonTree(payload).asJsonObject }.getOrNull() ?: return
+    private suspend fun writeProfilePreferences(payload: Map<String, Any?>): Boolean {
+        val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return true
+        if (currentSession() == null) return true
+        val changed = runCatching { api.gson.toJsonTree(payload).asJsonObject }.getOrNull() ?: return false
         // The whole blob is resent, so it has to be current: another client may have changed a
         // favourite channel since this one last read it, and settings writes are rare enough that
         // one extra read costs nothing.
         val current = api.get<ProfilePreferencesEnvelope>(
             "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/preferences",
         )?.preferences ?: profilePreferencesState.value
-        val next = PreferenceScopes.applyToProfileBlob(current, changed) ?: return
+        val next = PreferenceScopes.applyToProfileBlob(current, changed) ?: return true
         val response = api.put<ProfilePreferencesEnvelope>(
             "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/preferences",
             mapOf("preferences" to next),
         )
         if (response == null) {
             TvDebugLogger.w("Preferences", "profile preference sync failed; account copy was still saved")
-            return
+            return false
         }
         profilePreferencesState.value = response.preferences ?: next
+        return true
     }
 
     /**

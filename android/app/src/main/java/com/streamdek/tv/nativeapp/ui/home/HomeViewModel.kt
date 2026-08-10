@@ -9,6 +9,8 @@ import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +21,7 @@ data class HomeScreenUiState(
     val content: HomeContent? = null,
     val error: String? = null,
     val heroDetail: MediaDetail? = null,
+    val prefetchedTitleLogos: List<String> = emptyList(),
 )
 
 class HomeViewModel(
@@ -31,6 +34,8 @@ class HomeViewModel(
     private var heroKey: String? = null
     private var heroDetailJob: Job? = null
     private var loadJob: Job? = null
+    private val heroDetailRequests = mutableMapOf<String, Deferred<MediaDetail?>>()
+    private val heroDetailCache = mutableMapOf<String, MediaDetail>()
 
     fun load(loadKey: String) {
         if (lastLoadKey == loadKey && (loadJob?.isActive == true || _uiState.value.content != null || _uiState.value.error != null)) {
@@ -93,20 +98,72 @@ class HomeViewModel(
         if (nextKey == heroKey) return
         heroKey = nextKey
         heroDetailJob?.cancel()
+        // Never let the newly focused title briefly render the previous title's metadata.
+        val cachedDetail = heroDetailCache[nextKey]
+        _uiState.value = _uiState.value.copy(heroDetail = cachedDetail)
 
         if (item == null || item.type == "network" || item.type == "live") {
             _uiState.value = _uiState.value.copy(heroDetail = null)
             return
         }
+        if (cachedDetail != null) return
 
         heroDetailJob = viewModelScope.launch {
-            delay(140)
-            val detail = runCatching { repository.fetchDetail(item.id, item.type) }.getOrNull()
+            // A short focus debounce prevents accidental fly-over requests without making logos
+            // feel late. Coil preloads logos already present on catalogue items in parallel.
+            delay(45)
+            val detail = requestHeroDetail(item).await()
+            if (detail != null) heroDetailCache[nextKey] = detail
             if (heroKey == nextKey) {
                 _uiState.value = _uiState.value.copy(heroDetail = detail)
             }
         }
     }
+
+    /**
+     * Catalogue items often omit titleLogo and expose it only from the detail endpoint. Warm a
+     * small set of likely hero candidates so both their metadata and logo URLs are ready before
+     * focus reaches them. The UI feeds the discovered URLs into Coil's memory/disk cache.
+     */
+    fun prefetchHeroCandidates(items: List<MediaItem>) {
+        val candidates = items
+            .asSequence()
+            .filter { it.type != "network" && it.type != "live" && it.titleLogo.isNullOrBlank() }
+            .distinctBy(::heroItemKey)
+            .take(8)
+            .toList()
+        if (candidates.isEmpty()) return
+
+        viewModelScope.launch {
+            val pending = candidates.map { item -> item to requestHeroDetail(item) }
+            pending.forEach { (item, request) ->
+                val detail = request.await() ?: return@forEach
+                val key = heroItemKey(item)
+                heroDetailCache[key] = detail
+                detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logo ->
+                    if (logo !in _uiState.value.prefetchedTitleLogos) {
+                        _uiState.value = _uiState.value.copy(
+                            prefetchedTitleLogos = (_uiState.value.prefetchedTitleLogos + logo).takeLast(20),
+                        )
+                    }
+                }
+                if (heroKey == key) {
+                    _uiState.value = _uiState.value.copy(heroDetail = detail)
+                }
+            }
+        }
+    }
+
+    private fun requestHeroDetail(item: MediaItem): Deferred<MediaDetail?> {
+        val key = heroItemKey(item)
+        return heroDetailRequests.getOrPut(key) {
+            viewModelScope.async {
+                runCatching { repository.fetchDetail(item.detailLookupId(), item.type) }.getOrNull()
+            }
+        }
+    }
+
+    private fun heroItemKey(item: MediaItem): String = "${item.type}:${item.id}"
 }
 
 class HomeViewModelFactory(

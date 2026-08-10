@@ -23,6 +23,17 @@ data class TvExperienceSettings(
 
 val LocalTvExperienceSettings = staticCompositionLocalOf { TvExperienceSettings() }
 
+/** Accent shown in the theme picker; kept beside the actual schemes so the swatch cannot drift. */
+internal fun streamDekThemeAccent(themeKey: String?): Color = when (themeKey) {
+    "streamdek" -> Color(0xFFF0BA66)
+    "carbon-gold" -> Color(0xFFE7B75D)
+    "frost-neon" -> Color(0xFF7CE9FF)
+    "ember-red" -> Color(0xFFFF8C6A)
+    "aurora-green" -> Color(0xFF82F2BF)
+    "violet-pulse" -> Color(0xFFC6A3FF)
+    else -> Color(0xFF7FB7FF)
+}
+
 private fun streamDekColorScheme(themeKey: String?, highContrast: Boolean): ColorScheme {
     val scheme = when (themeKey) {
         "streamdek" -> darkColorScheme(primary = Color(0xFFF0BA66), onPrimary = Color(0xFF17120B), secondary = Color(0xFF2A2D36), onSecondary = Color(0xFFF5F1E8), surface = Color(0xFF090A0D), onSurface = Color(0xFFF5F1E8), background = Color(0xFF040404), onBackground = Color(0xFFF5F1E8))

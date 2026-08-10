@@ -461,7 +461,7 @@ fun SearchScreen(
                                     if (item.type != "live") actionState = BrowseActionState(item, effective)
                                 },
                             onClick = {
-                                if (item.type == "live") onPlayLive(item) else onOpenDetail(item.type, item.id)
+                                if (item.type == "live") onPlayLive(item) else onOpenDetail(item.type, item.detailLookupId())
                             },
                             onLongPress = {
                                 if (item.type != "live") actionState = BrowseActionState(item, effective)
@@ -484,7 +484,7 @@ fun SearchScreen(
                         runCatching { restoreRequester.requestFocus() }
                     }
                 },
-                onOpenDetail = { onOpenDetail(state.item.type, state.item.id) },
+                onOpenDetail = { onOpenDetail(state.item.type, state.item.detailLookupId()) },
                 onChanged = {
                     if (hasQuery) results = repository.searchMedia(query.trim(), forceRefresh = true)
                 },

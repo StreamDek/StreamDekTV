@@ -24,9 +24,7 @@ suspend fun LazyListState.animateToAnchoredItem(
         return
     }
 
-    if (abs(firstVisibleItemIndex - targetFirstVisible) <= 1) {
-        animateScrollToItem(targetFirstVisible, scrollOffset)
-    } else {
-        scrollToItem(targetFirstVisible, scrollOffset)
-    }
+    // Never snap when the viewer presses quickly. A new focus move cancels this animation and
+    // starts another from the current position, preserving momentum instead of teleporting.
+    animateScrollToItem(targetFirstVisible, scrollOffset)
 }

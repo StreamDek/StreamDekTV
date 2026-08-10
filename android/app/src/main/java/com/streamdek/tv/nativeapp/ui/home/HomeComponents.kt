@@ -24,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,7 +33,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -46,6 +50,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.HomeRail
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
@@ -57,6 +62,7 @@ import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvMotion
+import com.streamdek.tv.nativeapp.ui.TvScroll
 import com.streamdek.tv.nativeapp.ui.TvSkeletonBox
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
@@ -111,11 +117,25 @@ internal fun HomeSpotlight(
 
     val synopsis = detail?.description?.takeIf { it.isNotBlank() } ?: item.description?.takeIf { it.isNotBlank() }
     val logo = detail?.titleLogo ?: item.titleLogo
+    val context = LocalContext.current
+    val logoRequest = remember(logo) {
+        logo?.let {
+            ImageRequest.Builder(context)
+                .data(it)
+                .memoryCacheKey(it)
+                .diskCacheKey(it)
+                .size(640, 180)
+                .crossfade(90)
+                .allowHardware(true)
+                .allowRgb565(false)
+                .build()
+        }
+    }
 
     Column(
         modifier = modifier
             .height(SpotlightHeight)
-            .fillMaxWidth(0.56f)
+            .fillMaxWidth(0.68f)
             .padding(start = HomeInset, top = 34.dp, end = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -140,18 +160,23 @@ internal fun HomeSpotlight(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (!logo.isNullOrBlank()) {
-            SubcomposeAsyncImage(
-                model = logo,
-                contentDescription = item.title,
-                modifier = Modifier.height(68.dp),
-                contentScale = ContentScale.Fit,
-                alignment = Alignment.CenterStart,
-                loading = { titleText() },
-                error = { titleText() },
-            )
-        } else {
-            titleText()
+        // Keep a fixed title slot while detail metadata supplies a logo. Without this container,
+        // the fallback text and the 68dp logo measured at different heights and the hero copy
+        // visibly jumped as users moved quickly across cards.
+        Box(modifier = Modifier.height(68.dp).fillMaxWidth()) {
+            if (logoRequest != null) {
+                SubcomposeAsyncImage(
+                    model = logoRequest,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                    alignment = Alignment.CenterStart,
+                    loading = { titleText() },
+                    error = { titleText() },
+                )
+            } else {
+                titleText()
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -253,15 +278,27 @@ internal fun HomeShelf(
 
     val titleAlpha by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (compact) 0.55f else 1f,
-        animationSpec = tween(TvMotion.duration(160)),
+        animationSpec = TvScroll.spec(TvMotion.duration(220)),
         label = "shelf-title",
     )
 
-    Column(verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp)) {
+    val shelfScale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (compact) 0.72f else 1f,
+        animationSpec = TvScroll.spec(TvMotion.duration(220)),
+        label = "shelf-scale",
+    )
+    // GPU scaling keeps row-to-row motion smooth, but the lazy row still reserves each card's
+    // full unscaled width. Translate each successive card by the animated unused width so scale
+    // and spacing move together; changing the LazyRow spacing itself would snap before the scale
+    // animation finishes and briefly make the exiting row overlap.
+    val representativeWidth = rowItems.firstOrNull()
+        ?.let { homeCardSize(it, portraitCards, compact = false, dense = dense).width }
+        ?: 208.dp
+    val representativeWidthPx = with(LocalDensity.current) { representativeWidth.toPx() }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
             text = row.title,
-            style = (if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium)
-                .copy(fontWeight = FontWeight.Bold),
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = titleAlpha),
             modifier = Modifier.padding(start = HomeInset),
             maxLines = 1,
@@ -277,21 +314,23 @@ internal fun HomeShelf(
                 val key = "${row.id}:${homeItemKey(item)}"
                 val requester = requesters.getOrPut(key) { FocusRequester() }
                 val effective = if (index == 0 && firstCardRequester != null) firstCardRequester else requester
-                val size by animateDpAsState(
-                    targetValue = homeCardSize(item, portraitCards, compact, dense).width,
-                    animationSpec = tween(TvMotion.duration(160)),
-                    label = "card-width",
-                )
-                val cardHeight by animateDpAsState(
-                    targetValue = homeCardSize(item, portraitCards, compact, dense).height,
-                    animationSpec = tween(TvMotion.duration(160)),
-                    label = "card-height",
-                )
+                val cardSize = homeCardSize(item, portraitCards, compact = false, dense = dense)
+                val size = cardSize.width
+                val cardHeight = cardSize.height
 
                 if (item.type == "network") {
                     NetworkCard(
                         item = item,
-                        modifier = Modifier.focusRequester(effective).width(size).height(cardHeight),
+                        modifier = Modifier
+                            .focusRequester(effective)
+                            .width(size)
+                            .height(cardHeight)
+                            .graphicsLayer {
+                                scaleX = shelfScale
+                                scaleY = shelfScale
+                                translationX = -index * representativeWidthPx * (1f - shelfScale)
+                                transformOrigin = TransformOrigin(0f, 0f)
+                            },
                         onFocused = {
                             focusedIndex = index
                             onItemFocused(index, item)
@@ -311,6 +350,12 @@ internal fun HomeShelf(
                             .focusRequester(effective)
                             .width(size)
                             .height(cardHeight)
+                            .graphicsLayer {
+                                scaleX = shelfScale
+                                scaleY = shelfScale
+                                translationX = -index * representativeWidthPx * (1f - shelfScale)
+                                transformOrigin = TransformOrigin(0f, 0f)
+                            }
                             .tvCardLongPress { onItemMenu(item, effective) },
                         onClick = { onItemPressed(item) },
                         onLongPress = { onItemMenu(item, effective) },

@@ -74,6 +74,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Icon
@@ -171,6 +172,7 @@ fun PlayerScreen(
     var activeLiveRequest by remember(request) { mutableStateOf<PlaybackRequest?>(null) }
     var liveChannelHistory by remember(request) { mutableStateOf<List<PlaybackRequest>>(emptyList()) }
     val playbackRequest = activeLiveRequest ?: request
+    val isVod = isLive && playbackRequest.streamType.equals("movie", ignoreCase = true)
     val favouriteChannels by repository.favouriteChannels.collectAsState()
     val liveAddonFavourites = if (isLive) favouriteChannels else emptyList()
     val favouriteChannelKeys = favouriteChannels.mapTo(linkedSetOf()) { "${it.sourceAddonId}:${it.id}" }
@@ -210,6 +212,9 @@ fun PlayerScreen(
     var pendingEngineResumePositionSec by remember(currentSourceUrl) { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
+    var showLiveProgress by remember(playbackRequest.mediaId, playbackPreferences.liveProgressBarEnabled) {
+        mutableStateOf(playbackPreferences.liveProgressBarEnabled)
+    }
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
     var liveChannelInfoVisible by remember { mutableStateOf(false) }
     var liveChannelInfoHideJob by remember { mutableStateOf<Job?>(null) }
@@ -275,11 +280,11 @@ fun PlayerScreen(
     val subtitlesRequester = remember { FocusRequester() }
     val audioRequester = remember { FocusRequester() }
     val sourcesRequester = remember { FocusRequester() }
-    val rewindRequester = remember { FocusRequester() }
     val nextRequester = remember { FocusRequester() }
     val watchedRequester = remember { FocusRequester() }
     val speedRequester = remember { FocusRequester() }
     val progressRequester = remember { FocusRequester() }
+    val liveProgressRequester = remember { FocusRequester() }
     val panelCloseRequester = remember { FocusRequester() }
     val panelFirstItemRequester = remember { FocusRequester() }
     val playerRootRequester = remember { FocusRequester() }
@@ -476,10 +481,6 @@ fun PlayerScreen(
     }
 
     fun showControls(focusPlay: Boolean = false) {
-        if (isLive) {
-            showLiveChannelInfo()
-            return
-        }
         pauseInfoVisible = false
         controlsVisible = true
         scheduleControlsHide()
@@ -487,10 +488,6 @@ fun PlayerScreen(
     }
 
     fun registerInteraction() {
-        if (isLive) {
-            showLiveChannelInfo()
-            return
-        }
         pauseInfoVisible = false
         if (!controlsVisible) controlsVisible = true
         scheduleControlsHide()
@@ -1100,12 +1097,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         liveAddonFavourites.size,
         loading,
         error,
+        controlsVisible,
+        panel,
         playbackRequest.mediaId,
     ) {
         TvRemoteKeyRouter.onKeyUp = { keyCode ->
             when (keyCode) {
                 AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (isLive && !liveChannelRowVisible && !liveFavouritesDrawerVisible) {
+                    if (isLive && !controlsVisible && panel == null && !liveChannelRowVisible && !liveFavouritesDrawerVisible) {
                         showLiveChannelRow()
                         true
                     } else {
@@ -1113,16 +1112,17 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     }
                 }
                 AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (isLive && !liveChannelRowVisible && !liveFavouritesDrawerVisible && liveAddonFavourites.isNotEmpty()) {
+                    if (isLive && !controlsVisible && panel == null && !liveChannelRowVisible && !liveFavouritesDrawerVisible && liveAddonFavourites.isNotEmpty()) {
                         showLiveFavouritesDrawer()
                         true
                     } else {
                         false
                     }
-                }                AndroidKeyEvent.KEYCODE_DPAD_CENTER,
+                }
+                AndroidKeyEvent.KEYCODE_DPAD_CENTER,
                 AndroidKeyEvent.KEYCODE_ENTER -> {
-                    if (isLive && !liveChannelRowVisible && !liveFavouritesDrawerVisible) {
-                        showLiveChannelInfo()
+                    if (isLive && !controlsVisible && panel == null && !liveChannelRowVisible && !liveFavouritesDrawerVisible) {
+                        showControls(focusPlay = true)
                         true
                     } else {
                         false
@@ -1165,6 +1165,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         } else if (panel != null) {
             panel = null
             showControls(focusPlay = !isLive)
+        } else if (controlsVisible) {
+            hideControlsNow()
+            scope.launch { runCatching { playerRootRequester.requestFocus() } }
         } else if (isLive && liveChannelHistory.isNotEmpty()) {
             val previousRequest = liveChannelHistory.last()
             liveChannelHistory = liveChannelHistory.dropLast(1)
@@ -1228,7 +1231,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
-                if (isLive && !loading && error == null && !watchlistPromptVisible && !liveFavouritesDrawerVisible) {
+                if (isLive && !controlsVisible && panel == null && !loading && error == null && !watchlistPromptVisible && !liveFavouritesDrawerVisible) {
                     if (liveChannelRowVisible) return@onPreviewKeyEvent false
                     when (event.key) {
                         Key.DirectionDown -> {
@@ -1236,10 +1239,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             return@onPreviewKeyEvent true
                         }
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter, Key.Menu -> {
-                            showLiveChannelInfo()
+                            showControls(focusPlay = true)
                             return@onPreviewKeyEvent true
                         }
-                        Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp -> {
+                        Key.DirectionRight -> {
+                            if (liveAddonFavourites.isNotEmpty()) showLiveFavouritesDrawer() else showLiveChannelInfo()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.DirectionLeft, Key.DirectionUp -> {
                             showLiveChannelInfo()
                             return@onPreviewKeyEvent true
                         }
@@ -1281,7 +1288,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     setHeaders(currentRequestHeaders)
                     onRemoteCenterCallback = {
                         if (isLive) {
-                            showLiveChannelInfo()
+                            showControls(focusPlay = true)
                             true
                         } else if (!controlsVisible || panel != null) {
                             showControls(focusPlay = true)
@@ -1494,7 +1501,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 controller.setDecoderMode(playbackPreferences.decoderMode)
                 controller.onRemoteCenterCallback = {
                     if (isLive) {
-                        showLiveChannelInfo()
+                        showControls(focusPlay = true)
                         true
                     } else if (!controlsVisible || panel != null) {
                         showControls(focusPlay = true)
@@ -1722,6 +1729,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         // Playback controls — bottom bar
         if (isLive && !loading && error == null) {
             LiveStatusBadge(
+                isVod = isVod,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(bottom = 26.dp, start = 26.dp),
@@ -1790,7 +1798,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        if (!isLive && !loading && error == null) {
+        if (!loading && error == null) {
             PlayerOverlayVisibility(
                 visible = controlsVisible || panel != null || (paused && !pauseInfoVisible),
                 modifier = Modifier.align(Alignment.BottomCenter),
@@ -1810,12 +1818,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     subtitlesRequester = subtitlesRequester,
                     audioRequester = audioRequester,
                     sourcesRequester = sourcesRequester,
-                    rewindRequester = rewindRequester,
                     nextRequester = nextRequester,
                     watchedRequester = watchedRequester,
                     speedRequester = speedRequester,
                     progressRequester = progressRequester,
-                    onInteract = { if (!isLive) registerInteraction() },
+                    liveProgressRequester = liveProgressRequester,
+                    onInteract = ::registerInteraction,
                     onPlayPause = {
                         // tv-material fires onClick on key-up without requiring the
                         // matching key-down, so the release that confirmed a panel
@@ -1825,10 +1833,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             paused = !paused
                             if (!paused) scheduleControlsHide()
                         }
-                    },
-                    onRewind = {
-                        scheduleSeek(positionSec - 10.0)
-                        registerInteraction()
                     },
                     onNext = {
                         nextEpisode?.let { currentEpisode = it }
@@ -1849,6 +1853,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         controlsVisible = true
                     },
                     isLive = isLive,
+                    isVod = isVod,
+                    showLiveProgress = showLiveProgress,
+                    onToggleLiveProgress = {
+                        showLiveProgress = !showLiveProgress
+                        registerInteraction()
+                    },
                 )
             }
         }
@@ -2105,6 +2115,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
 
 @Composable
 private fun LiveStatusBadge(
+    isVod: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -2115,16 +2126,25 @@ private fun LiveStatusBadge(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .clip(androidx.compose.foundation.shape.CircleShape)
-                .background(Color(0xFFEF4444)),
-        )
+        if (isVod) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = Color(0xFF60A5FA),
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(Color(0xFFEF4444)),
+            )
+        }
         Text(
-            text = "LIVE",
+            text = if (isVod) "VOD" else "LIVE",
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
-            color = Color.White,
+            color = if (isVod) Color(0xFF93C5FD) else Color.White,
         )
     }
 }
