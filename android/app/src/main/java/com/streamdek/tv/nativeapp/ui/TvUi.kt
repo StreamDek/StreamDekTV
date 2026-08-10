@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -21,7 +22,27 @@ import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 
-val AppCardShape = RoundedCornerShape(20.dp)
+/** Shared vNext geometry keeps every content surface visually related and limits focus zoom. */
+val AppCardShape = RoundedCornerShape(14.dp)
+
+object TvSpacing {
+    val ScreenHorizontal = 48.dp
+    val ScreenTop = 56.dp
+    val Section = 24.dp
+    val Card = 14.dp
+    val Compact = 8.dp
+}
+
+object TvMotion {
+    @Composable
+    fun duration(baseMillis: Int): Int {
+        val settings = LocalTvExperienceSettings.current
+        return if (settings.reducedMotion) 0 else (baseMillis * settings.animationScale).toInt()
+    }
+
+    @Composable
+    fun focusScale(): Float = if (LocalTvExperienceSettings.current.reducedMotion) 1f else 1.025f
+}
 val AppPillShape = RoundedCornerShape(999.dp)
 
 private val CurrentTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
@@ -80,3 +101,22 @@ fun ProgressMeter(
     }
 }
 
+
+@Composable
+fun TvSectionHeading(title: String, subtitle: String? = null, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.layout.Column(modifier = modifier, verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.onBackground)
+        subtitle?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f)) }
+    }
+}
+
+@Composable
+fun TvStatePanel(title: String, message: String, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.layout.Column(
+        modifier = modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), AppCardShape).padding(horizontal = 24.dp, vertical = 20.dp),
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black))
+        Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+    }
+}

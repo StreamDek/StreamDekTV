@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.live
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.rememberScrollState
@@ -32,7 +33,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -44,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
+import androidx.compose.ui.zIndex
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
@@ -56,6 +61,9 @@ import coil.compose.AsyncImage
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
+import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
+import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 
 private fun liveItemStableKey(item: MediaItem, index: Int): String {
@@ -78,6 +86,11 @@ fun LiveScreen(
 ) {
     val localEntryRequester = remember { FocusRequester() }
     val sidebarEntryRequester = entryFocusRequester ?: localEntryRequester
+    var controlsHaveFocus by remember { mutableStateOf(true) }
+    val expandedControlWidth = if (compactMode) 204.dp else 218.dp
+    val expandedContentStart = if (compactMode) 234.dp else 250.dp
+    val controlRailWidth by animateDpAsState(if (controlsHaveFocus) expandedControlWidth else 40.dp, label = "live-control-rail")
+    val contentStart by animateDpAsState(if (controlsHaveFocus) expandedContentStart else 22.dp, label = "live-content-start")
     val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
     val allItems = remember(sections) {
@@ -122,10 +135,14 @@ fun LiveScreen(
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
             modifier = Modifier
-                .width(if (compactMode) 204.dp else 218.dp)
+                .width(controlRailWidth)
                 .fillMaxSize()
+                .clipToBounds()
+                .background(Color(0xF207090D)).drawWithContent { if (controlsHaveFocus) drawContent() }
+                .zIndex(3f)
+                .onFocusChanged { controlsHaveFocus = it.hasFocus }
                 .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 12.dp, top = 72.dp, bottom = 24.dp),
+                .padding(start = 20.dp, end = 12.dp, top = 18.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text("LIVE TV", color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black), modifier = Modifier.padding(bottom = 4.dp))
@@ -160,7 +177,7 @@ fun LiveScreen(
         }
 
         Column(
-            modifier = Modifier.fillMaxSize().padding(start = if (compactMode) 234.dp else 250.dp, top = 88.dp, end = 44.dp),
+            modifier = Modifier.fillMaxSize().padding(start = contentStart, top = 18.dp, end = 92.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(selectedTitle, color = Color.White, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
@@ -173,7 +190,7 @@ fun LiveScreen(
                 isLoading && allItems.isEmpty() -> LivePageState("Loading live channels…")
                 visibleItems.isEmpty() -> LivePageState(if (favouritesOnly) "No favourite channels yet." else "No channels match this source.")
                 else -> androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
-                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(5),
+                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(3),
                     state = gridState,
                     modifier = Modifier.fillMaxSize().focusGroup(),
                     contentPadding = PaddingValues(top = 8.dp, bottom = 140.dp),
@@ -183,14 +200,14 @@ fun LiveScreen(
                     gridItemsIndexed(
                         items = visibleItems,
                         key = { _, item -> "${item.sourceAddonId}:${item.sourceCatalogId}:${item.id}" },
-                    ) { _, item ->
+                    ) { index, item ->
                         val sourceIndex = allItems.indexOf(item).coerceAtLeast(0)
                         val key = liveItemStableKey(item, sourceIndex)
                         val requester = cardRequesters.getOrPut(key) { FocusRequester() }
                         LiveChannelCard(
                             item = item,
                             favourite = "${item.sourceAddonId}:${item.sourceCatalogId}:${item.id}" in favouriteKeys,
-                            modifier = Modifier.focusRequester(requester),
+                            modifier = Modifier.focusRequester(requester).focusProperties { if (index % 3 == 0) left = sidebarEntryRequester },
                             onFocused = { onItemFocused(key) },
                             onLongPress = { onToggleFavourite(item) },
                             onPressed = { onPlayLive(item) },
@@ -318,87 +335,13 @@ private fun LiveChannelCard(
     onLongPress: () -> Unit,
     onPressed: () -> Unit,
 ) {
-    Card(
+    PremiumMediaCard(
+        item = item,
+        variant = TvMediaCardVariant.Live,
+        favourite = favourite,
+        modifier = modifier.fillMaxWidth().height(250.dp),
         onClick = onPressed,
-        modifier = modifier
-            .fillMaxWidth()
-            .height(250.dp)
-            .tvCardLongPress(onLongPress)
-            .onFocusChanged { if (it.isFocused) onFocused() },
-        shape = CardDefaults.shape(AppCardShape),
-        colors = CardDefaults.colors(
-            containerColor = Color(0xFF181A1F),
-            focusedContainerColor = Color(0xFF181A1F),
-        ),
-        border = CardDefaults.border(
-            focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
-                shape = AppCardShape,
-            ),
-        ),
-        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
-        scale = CardDefaults.scale(focusedScale = 1.02f),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(AppCardShape),
-        ) {
-            AsyncImage(
-                model = item.poster ?: item.backdrop,
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color(0x22000000), Color(0xE0000000)),
-                        ),
-                    ),
-            )
-            if (favourite) {
-                Icon(
-                    imageVector = Icons.Filled.Star,
-                    contentDescription = "Favourite channel",
-                    tint = Color(0xFFFACC15),
-                    modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(22.dp),
-                )
-            }
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = item.streamType?.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() } ?: "Live",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onBackground,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                item.description?.takeIf { it.isNotBlank() }?.let { description ->
-                    Text(
-                        text = description,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-    }
+        onLongPress = onLongPress,
+        onFocused = onFocused,
+    )
 }
-
-

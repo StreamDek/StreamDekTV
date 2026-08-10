@@ -240,6 +240,16 @@ data class AppPreferences(
     val homeRowCardStyle: String = "landscape",
     val compactMode: Boolean = false,
     val syncOverCellular: Boolean = false,
+    // TV-first presentation preferences. Older payloads omit these fields, so defaults
+    // remain conservative and backwards compatible.
+    val cardDensity: String = "comfortable",
+    val animationSpeed: String = "normal",
+    val navigationStyle: String = "adaptive",
+    val gridSize: Int = 5,
+    val backgroundBlur: Boolean = true,
+    val highContrast: Boolean = false,
+    val largeText: Boolean = false,
+    val reducedMotion: Boolean = false,
 )
 
 data class SubtitleSourcePreference(

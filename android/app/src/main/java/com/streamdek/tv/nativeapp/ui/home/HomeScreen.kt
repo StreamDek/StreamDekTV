@@ -71,6 +71,9 @@ import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
+import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
@@ -711,20 +714,37 @@ private fun MediaPosterCard(
     val networkStyle = remember(item.title) { networkSurfaceStyle(item.title) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val usePortraitCard = cardStyle == "portrait" && !isNetworkCard
+    val densityScale = if (LocalTvExperienceSettings.current.denseCards) 0.88f else 1f
     // Cards are deliberately compact: the height reclaimed here is what gives the hero
     // room to breathe above the rails while still leaving the next row peeking below.
     val cardWidth = when {
-        isNetworkCard -> 196.dp
-        usePortraitCard -> 74.dp
-        else -> 174.dp
+        isNetworkCard -> 196.dp * densityScale
+        usePortraitCard -> 74.dp * densityScale
+        else -> 174.dp * densityScale
     }
-    val cardHeight = if (usePortraitCard) 111.dp else 103.dp
+    val cardHeight = (if (usePortraitCard) 111.dp else 103.dp) * densityScale
     val cardShape = if (usePortraitCard) RoundedCornerShape(16.dp) else AppCardShape
     // Only network tiles use a light surface. Poster/backdrop cards keep a transparent
     // container so the card surface can never bleed a light rim past the artwork at the
     // antialiased rounded corners; the clipped inner Box supplies the placeholder fill.
     val cardContainerColor = if (isNetworkCard) networkStyle.background else Color.Transparent
     val cardPlaceholderColor = if (isNetworkCard) networkStyle.background else Color(0xFF101216)
+
+    if (!isNetworkCard) {
+        PremiumMediaCard(
+            item = item,
+            variant = when {
+                (item.progress ?: 0.0) > 0.0 -> TvMediaCardVariant.ContinueWatching
+                usePortraitCard -> TvMediaCardVariant.Poster
+                else -> TvMediaCardVariant.Landscape
+            },
+            modifier = modifier.size(width = cardWidth, height = cardHeight),
+            onClick = onPressed,
+            onLongPress = onMenuPressed,
+            onFocused = onFocused,
+        )
+        return
+    }
 
     Card(
         onClick = onPressed,

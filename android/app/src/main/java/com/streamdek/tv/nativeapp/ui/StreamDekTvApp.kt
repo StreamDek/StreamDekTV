@@ -4,14 +4,22 @@ import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.LiveTv
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,6 +49,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -70,7 +79,7 @@ import com.streamdek.tv.nativeapp.data.PlaybackHandoff
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
-import com.streamdek.tv.nativeapp.ui.account.AccountScreen
+import com.streamdek.tv.nativeapp.ui.account.SettingsScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
 import com.streamdek.tv.nativeapp.ui.detail.DetailScreen
 import com.streamdek.tv.nativeapp.ui.detail.PlaybackStreamsScreen
@@ -86,12 +95,17 @@ import com.streamdek.tv.nativeapp.update.AppUpdateUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private enum class TopLevelDestination(val route: String, val label: String, val width: androidx.compose.ui.unit.Dp) {
-    Home("home", "Home", 84.dp),
-    Search("search", "Search", 90.dp),
-    Live("live", "Live", 74.dp),
-    Library("library", "Library", 92.dp),
-    Profile("profile", "", 42.dp),
+private enum class TopLevelDestination(
+    val route: String,
+    val label: String,
+    val width: androidx.compose.ui.unit.Dp,
+    val icon: ImageVector?,
+) {
+    Home("home", "Home", 92.dp, Icons.Outlined.Home),
+    Search("search", "Search", 98.dp, Icons.Outlined.Search),
+    Live("live", "Live", 82.dp, Icons.Outlined.LiveTv),
+    Library("library", "Library", 104.dp, Icons.Outlined.VideoLibrary),
+    Profile("profile", "Profile", 42.dp, null),
 }
 
 private data class LiveNavigationState(
@@ -123,6 +137,8 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val searchContentRequester = remember { FocusRequester() }
     val liveContentRequester = remember { FocusRequester() }
     val libraryContentRequester = remember { FocusRequester() }
+    val profileNavRequester = remember { FocusRequester() }
+    val settingsContentRequester = remember { FocusRequester() }
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
     var liveBrowseSelection by remember { mutableStateOf(LiveBrowseSelection()) }
@@ -355,7 +371,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         }
     }
 
-    StreamDekTvTheme(themeKey = appPrefs?.theme) {
+    StreamDekTvTheme(appPreferences = appPrefs) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -364,6 +380,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             NavHost(
                 navController = navController,
                 startDestination = TopLevelDestination.Home.route,
+                modifier = Modifier.padding(
+                    start = if (currentRoute in topLevelDestinations.map { it.route }) 68.dp else 0.dp,
+                ),
             ) {
                 composable(TopLevelDestination.Home.route) {
                     HomeScreen(
@@ -446,15 +465,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     )
                 }
                 composable(TopLevelDestination.Profile.route) {
-                    AccountScreen(
+                    SettingsScreen(
                         repository = repository,
                         appUpdateManager = appUpdateManager,
-                        onBack = {
-                            navController.navigate(TopLevelDestination.Home.route) {
-                                popUpTo(TopLevelDestination.Home.route) { inclusive = false }
-                                launchSingleTop = true
-                            }
-                        },
+                        navFocusRequester = profileNavRequester,
+                        entryFocusRequester = settingsContentRequester,
                         onSignIn = { navController.navigate("auth") },
                     )
                 }
@@ -553,20 +568,20 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             )
 
             if (currentRoute in topLevelDestinations.map { it.route } && !showUpdatePrompt) {
-                TvFloatingNav(
+                TvSideNav(
                     destinations = topLevelDestinations,
                     avatarIndex = activeProfile?.avatarIndex ?: 0,
                     avatarLabel = activeProfile?.name ?: "P",
+                    profileFocusRequester = profileNavRequester,
                     currentRoute = currentRoute.orEmpty(),
-                    downRequesters = mapOf(
+                    contentRequesters = mapOf(
                         TopLevelDestination.Home.route to homeContentRequester,
                         TopLevelDestination.Search.route to searchContentRequester,
                         TopLevelDestination.Live.route to liveContentRequester,
                         TopLevelDestination.Library.route to libraryContentRequester,
+                        TopLevelDestination.Profile.route to settingsContentRequester,
                     ),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 16.dp),
+                    modifier = Modifier.align(Alignment.CenterStart),
                     onNavigate = { route ->
                         if (route != currentRoute) {
                             navController.navigate(route) {
@@ -939,124 +954,108 @@ private fun AppUpdatePrompt(
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-private fun TvFloatingNav(
+private fun TvSideNav(
     destinations: List<TopLevelDestination>,
     avatarIndex: Int,
     avatarLabel: String,
+    profileFocusRequester: FocusRequester,
     currentRoute: String,
-    downRequesters: Map<String, FocusRequester>,
+    contentRequesters: Map<String, FocusRequester>,
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
 ) {
-    val slotWidths = destinations.map { it.width }
     var highlightedRoute by remember { mutableStateOf(currentRoute) }
     var navHasFocus by remember { mutableStateOf(false) }
-    val itemRequesters = remember(destinations) { destinations.associateWith { FocusRequester() } }
+    val itemRequesters = remember(destinations, profileFocusRequester) {
+        destinations.associateWith { destination ->
+            if (destination == TopLevelDestination.Profile) profileFocusRequester else FocusRequester()
+        }
+    }
+    val railWidth by animateDpAsState(
+        targetValue = if (navHasFocus) 196.dp else 64.dp,
+        animationSpec = tween(TvMotion.duration(150)),
+        label = "side-nav-width",
+    )
 
     LaunchedEffect(currentRoute) {
         highlightedRoute = currentRoute
     }
+
     val displayedRoute = if (navHasFocus) highlightedRoute else currentRoute
-    val activeIndex = destinations.indexOfFirst { it.route == displayedRoute }.let { if (it >= 0) it else 0 }
-    val activeOffset = slotWidths.take(activeIndex).fold(0.dp) { acc, width -> acc + width + 4.dp }
-    val animatedOffset by animateDpAsState(activeOffset, label = "nav-pill-offset")
-    Box(
+    Column(
         modifier = modifier
-            // Focus entering this group from below (pressing Up from page content) would
-            // otherwise land on whichever child Compose's default focus search finds nearest,
-            // which is not necessarily the destination the user is actually on. Redirect it to
-            // the current route's own item so the pill never appears to snap back to Home.
+            .width(railWidth)
+            .fillMaxHeight()
             .focusProperties {
                 enter = {
-                    itemRequesters[destinations.firstOrNull { it.route == currentRoute }] ?: FocusRequester.Default
+                    itemRequesters[destinations.firstOrNull { it.route == currentRoute }]
+                        ?: FocusRequester.Default
                 }
             }
             .onFocusChanged { navHasFocus = it.hasFocus }
-            .border(
-                width = if (navHasFocus) 2.dp else 0.dp,
-                color = if (navHasFocus) MaterialTheme.colorScheme.primary.copy(alpha = 0.56f) else Color.Transparent,
-                shape = RoundedCornerShape(999.dp),
-            )
-            .clip(RoundedCornerShape(999.dp))
-            .background(Color(0xE611141B))
-            .padding(horizontal = 6.dp, vertical = 5.dp),
+            .background(Color(0xD907090D))
+            .padding(horizontal = 8.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.Center,
     ) {
-        Box(
-            modifier = Modifier
-                .offset(x = animatedOffset)
-                .height(34.dp)
-                .width(slotWidths[activeIndex])
-                .clip(RoundedCornerShape(999.dp))
-                .background(MaterialTheme.colorScheme.primary),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            destinations.forEach { destination ->
-                val active = destination.route == displayedRoute
-                if (destination == TopLevelDestination.Profile) {
-                    Box(
-                        modifier = Modifier
-                            .height(34.dp)
-                            .width(destination.width)
-                            .clip(RoundedCornerShape(999.dp))
-                            .focusRequester(itemRequesters.getValue(destination))
-                            .onPreviewKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
-                                    runCatching { downRequesters[destination.route]?.requestFocus() }.isSuccess
-                                } else {
-                                    false
-                                }
-                            }
-                            .onFocusChanged { if (it.isFocused) highlightedRoute = destination.route }
-                            .clickable { onNavigate(destination.route) },
-                        contentAlignment = Alignment.Center,
-                    ) {
+        destinations.forEach { destination ->
+            val highlighted = destination.route == displayedRoute
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent,
+                    )
+                    .focusRequester(itemRequesters.getValue(destination))
+                    .onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
+                            contentRequesters[destination.route]
+                                ?.let { requester -> runCatching { requester.requestFocus() }.isSuccess }
+                                ?: false
+                        } else {
+                            false
+                        }
+                    }
+                    .onFocusChanged {
+                        if (it.isFocused) highlightedRoute = destination.route
+                    }
+                    .clickable { onNavigate(destination.route) }
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier.width(24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (destination == TopLevelDestination.Profile) {
                         ProfileAvatarCircle(
                             avatarIndex = avatarIndex,
                             fallbackLabel = avatarLabel,
                             size = 24.dp,
                         )
+                    } else {
+                        destination.icon?.let { icon ->
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = destination.label,
+                                tint = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
-                } else {
-                    NavTextItem(
-                        destination = destination,
-                        active = active,
-                        modifier = Modifier
-                            .height(34.dp)
-                            .width(destination.width)
-                            .clip(RoundedCornerShape(999.dp))
-                            .focusRequester(itemRequesters.getValue(destination))
-                            .onPreviewKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
-                                    runCatching { downRequesters[destination.route]?.requestFocus() }.isSuccess
-                                } else {
-                                    false
-                                }
-                            }
-                            .onFocusChanged { if (it.isFocused) highlightedRoute = destination.route }
-                            .clickable { onNavigate(destination.route) },
+                }
+                if (navHasFocus) {
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        text = destination.label,
+                        color = if (highlighted) Color.White else MaterialTheme.colorScheme.onBackground,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 1,
                     )
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun NavTextItem(
-    destination: TopLevelDestination,
-    active: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            destination.label,
-            color = if (active) Color(0xFF18120A) else MaterialTheme.colorScheme.onBackground,
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-        )
     }
 }
 

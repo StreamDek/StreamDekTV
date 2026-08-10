@@ -1,10 +1,13 @@
 package com.streamdek.tv.nativeapp.ui.player
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -76,6 +79,8 @@ import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
+import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
 
 internal enum class OverlayPanel {
@@ -98,11 +103,13 @@ internal fun PlayerOverlayVisibility(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
+    val reducedMotion = LocalTvExperienceSettings.current.reducedMotion
+    val duration = TvMotion.duration(180)
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
-        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }),
-        exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 5 }),
+        enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(duration)) + slideInVertically(tween(duration), initialOffsetY = { it / 6 }),
+        exit = if (reducedMotion) ExitTransition.None else fadeOut(tween(duration)) + slideOutVertically(tween(duration), targetOffsetY = { it / 8 }),
     ) {
         content()
     }
@@ -119,7 +126,7 @@ internal fun PlayerGlassSurface(
             .clip(PlayerPanelShape)
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(Color(0xED12141C), Color(0xF1181B24)),
+                    colors = if (LocalTvExperienceSettings.current.backgroundBlur) listOf(Color(0xED12141C), Color(0xF1181B24)) else listOf(Color(0xFF101218), Color(0xFF161921)),
                 ),
             )
             .border(1.dp, Color(0x1FFFFFFF), PlayerPanelShape)
@@ -374,7 +381,7 @@ private fun PlayerControlIconButton(
                 shape = CircleShape,
             ),
         ),
-        scale = ButtonDefaults.scale(focusedScale = 1.04f),
+        scale = ButtonDefaults.scale(focusedScale = TvMotion.focusScale()),
         modifier = Modifier
             .size(size)
             .focusRequester(requester)
@@ -925,7 +932,7 @@ private fun OptionButton(
     var focused by remember { mutableStateOf(false) }
     OutlinedButton(
         onClick = onClick,
-        scale = ButtonDefaults.scale(focusedScale = 1.02f),
+        scale = ButtonDefaults.scale(focusedScale = TvMotion.focusScale()),
         shape = ButtonDefaults.shape(RoundedCornerShape(14.dp)),
         modifier = Modifier
             .fillMaxWidth()

@@ -1,6 +1,7 @@
 package com.streamdek.tv.nativeapp.ui.live
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.Icons
@@ -37,9 +39,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -52,6 +57,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
@@ -63,6 +69,9 @@ import coil.compose.AsyncImage
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
+import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlinx.coroutines.delay
 
@@ -106,6 +115,9 @@ fun LiveBrowseScreen(
     var searchEditing by remember { mutableStateOf(false) }
     val searchRequester = remember { FocusRequester() }
     val firstCardRequester = remember { FocusRequester() }
+    var controlsHaveFocus by remember { mutableStateOf(true) }
+    val controlRailWidth by animateDpAsState(if (controlsHaveFocus) 218.dp else 40.dp, label = "live-browse-control-rail")
+    val contentStart by animateDpAsState(if (controlsHaveFocus) 250.dp else 22.dp, label = "live-browse-content-start")
     val focusManager = LocalFocusManager.current
     val normalizedQuery = query.trim()
     val filteredItems = remember(allItems, selectedAddonId, selectedCatalogId, normalizedQuery, favouritesOnly, favouriteKeys) {
@@ -126,10 +138,13 @@ fun LiveBrowseScreen(
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
             modifier = Modifier
-                .width(218.dp)
+                .width(controlRailWidth)
                 .fillMaxSize()
-                .background(Color.Transparent)
-                .padding(start = 20.dp, end = 12.dp, top = 72.dp, bottom = 24.dp),
+                .clipToBounds()
+                .background(Color(0xF207090D)).drawWithContent { if (controlsHaveFocus) drawContent() }
+                .zIndex(3f)
+                .onFocusChanged { controlsHaveFocus = it.hasFocus }
+                .padding(start = 20.dp, end = 12.dp, top = 18.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("LIVE TV", color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
@@ -168,7 +183,7 @@ fun LiveBrowseScreen(
                 }
             }
         }
-        Column(modifier = Modifier.padding(start = 250.dp, top = 88.dp)) {
+        Column(modifier = Modifier.padding(start = contentStart, top = 18.dp)) {
             Text(if (favouritesOnly) "Favourite Channels" else "All Live Channels", color = Color.White, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
             Text("${filteredItems.size} channels  •  Hold OK to add or remove a favourite", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f))
         }
@@ -182,18 +197,18 @@ fun LiveBrowseScreen(
             )
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(5),
-                modifier = Modifier.fillMaxSize().padding(start = 218.dp, top = 158.dp),
-                contentPadding = PaddingValues(start = 32.dp, end = 48.dp, bottom = 120.dp),
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.fillMaxSize().padding(start = contentStart, top = 88.dp),
+                contentPadding = PaddingValues(end = 92.dp, bottom = 120.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                items(filteredItems, key = ::liveBrowseKey) { item ->
+                itemsIndexed(filteredItems, key = { _, item -> liveBrowseKey(item) }) { index, item ->
                     val favourite = liveBrowseKey(item) in favouriteKeys
                     LiveBrowseCard(
                         item = item,
                         favourite = favourite,
-                        modifier = if (item == filteredItems.first()) Modifier.focusRequester(firstCardRequester) else Modifier,
+                        modifier = (if (index == 0) Modifier.focusRequester(firstCardRequester) else Modifier).focusProperties { if (index % 3 == 0) left = searchRequester },
                         onClick = { onPlayLive(item) },
                         onLongPress = { onToggleFavourite(item) },
                     )
@@ -262,27 +277,12 @@ private fun LiveBrowseCard(
     onClick: () -> Unit,
     onLongPress: () -> Unit,
 ) {
-    Card(
+    PremiumMediaCard(
+        item = item,
+        variant = TvMediaCardVariant.Live,
+        favourite = favourite,
+        modifier = modifier.fillMaxWidth().height(250.dp),
         onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(250.dp).tvCardLongPress(onLongPress),
-        shape = CardDefaults.shape(AppCardShape),
-        colors = CardDefaults.colors(containerColor = Color(0xFF181A1F), focusedContainerColor = Color(0xFF20242C)),
-        border = CardDefaults.border(focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = AppCardShape)),
-        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
-        scale = CardDefaults.scale(focusedScale = 1.025f),
-    ) {
-        Box(Modifier.fillMaxSize().clip(AppCardShape)) {
-            AsyncImage(item.poster ?: item.backdrop, item.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xEE000000)))))
-            if (favourite) {
-                Icon(Icons.Filled.Star, "Favourite channel", tint = Color(0xFFFACC15), modifier = Modifier.align(Alignment.TopEnd).padding(12.dp).size(24.dp))
-            } else {
-                Icon(Icons.Outlined.StarOutline, "Hold OK to favourite", tint = Color.White.copy(alpha = 0.62f), modifier = Modifier.align(Alignment.TopEnd).padding(12.dp).size(22.dp))
-            }
-            Column(Modifier.align(Alignment.BottomStart).padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(item.sourceAddonName ?: "Live", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, maxLines = 1)
-                Text(item.title, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    }
+        onLongPress = onLongPress,
+    )
 }

@@ -41,6 +41,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -67,6 +69,7 @@ import com.streamdek.tv.nativeapp.data.SessionInfo
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamProfile
 import com.streamdek.tv.nativeapp.data.StreamsPreferences
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.countEnabledFilters
 import com.streamdek.tv.nativeapp.data.countGroupsWithFilters
@@ -76,22 +79,26 @@ import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private enum class SettingsSection(val label: String) {
-    Profile("Profile"),
-    Services("Services"),
-    Playback("Playback"),
-    Streams("Streams"),
-    Tv("TV Interface"),
-    Devices("Devices"),
-    About("About"),
+private enum class SettingsSection(val label: String, val searchTerms: String) {
+    Profile("Profile", "account household pin switch"),
+    Services("Services", "tracking trakt simkl mdblist addons providers"),
+    Playback("Playback", "player decoder audio autoplay intro recap credits"),
+    Streams("Streams", "sources quality badges filters fusion"),
+    Tv("Appearance", "theme density cards navigation grid animation blur home"),
+    Accessibility("Accessibility", "contrast large text reduced motion colour screen reader"),
+    Devices("Devices", "sync sessions connected televisions"),
+    Diagnostics("Diagnostics", "performance storage cache network playback providers logs health"),
+    About("About", "version update application"),
 }
 
 private const val SettingsFocusGuardMs = 250L
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun AccountScreen(
     repository: StreamDekRepository,
     appUpdateManager: AppUpdateManager,
+    topNavFocusRequester: FocusRequester,
     onBack: () -> Unit,
     onSignIn: () -> Unit,
 ) {
@@ -100,6 +107,7 @@ fun AccountScreen(
     var addons by remember { mutableStateOf<List<AddonManifest>>(emptyList()) }
     var status by remember { mutableStateOf<String?>(null) }
     var selectedSection by remember { mutableStateOf(SettingsSection.Profile) }
+    var settingsQuery by remember { mutableStateOf("") }
     val fusionBadgeSourcesByUrl by repository.fusionBadgeSources.collectAsState()
     var badgeUrlDraft by remember { mutableStateOf("") }
     var badgeUrlError by remember { mutableStateOf<String?>(null) }
@@ -107,6 +115,7 @@ fun AccountScreen(
     var loadingBadgeUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
     var previewBadgeUrl by remember { mutableStateOf<String?>(null) }
     val firstSectionRequester = remember { FocusRequester() }
+    val sidebarSearchRequester = remember { FocusRequester() }
     val contentEntryRequester = remember { FocusRequester() }
     val profileContentRequester = remember { FocusRequester() }
     val profileActionRequester = remember { FocusRequester() }
@@ -123,6 +132,8 @@ fun AccountScreen(
     val aboutContentRequester = remember { FocusRequester() }
     val aboutActionRequester = remember { FocusRequester() }
     val appUpdateState by appUpdateManager.uiState.collectAsState()
+    val reachability by repository.reachability.collectAsState()
+    val context = LocalContext.current
 
     LaunchedEffect(Unit) {
         bootstrap = repository.refreshBootstrap()
@@ -158,19 +169,11 @@ fun AccountScreen(
             sessionPresent = session != null,
             selectedSection = selectedSection,
             firstSectionRequester = firstSectionRequester,
+            sidebarSearchRequester = sidebarSearchRequester,
             contentEntryRequester = contentEntryRequester,
-            sectionContentRequester = when (selectedSection) {
-                SettingsSection.Profile -> when {
-                    session == null || bootstrap?.streamProfiles?.isNotEmpty() == true -> profileActionRequester
-                    else -> profileContentRequester
-                }
-                SettingsSection.Services -> if (addons.isNotEmpty()) servicesActionRequester else servicesContentRequester
-                SettingsSection.Playback -> playbackActionRequester
-                SettingsSection.Streams -> streamsActionRequester
-                SettingsSection.Tv -> tvActionRequester
-                SettingsSection.Devices -> devicesActionRequester
-                SettingsSection.About -> aboutActionRequester
-            },
+            topNavFocusRequester = topNavFocusRequester,
+            query = settingsQuery,
+            onQueryChange = { settingsQuery = it },
             onSelectSection = { selectedSection = it },
             onSignIn = onSignIn,
             onSignOut = {
@@ -202,7 +205,7 @@ fun AccountScreen(
                         modifier = Modifier
                             .focusRequester(contentEntryRequester)
                             .focusProperties {
-                                left = firstSectionRequester
+                                left = sidebarSearchRequester
                             }
                             .focusable(),
                     )
@@ -414,35 +417,39 @@ fun AccountScreen(
 
                 SettingsSection.Tv -> {
                     item {
-                        CompactCard("TV Interface", modifier = Modifier.focusRequester(tvContentRequester)) {
-                            ChoiceRow("Theme", appPrefs?.theme ?: "cinema-blue", requester = tvActionRequester) {
-                                scope.launch {
-                                    repository.updateAppPreferences(mapOf("theme" to nextOf(listOf("streamdek", "cinema-blue", "carbon-gold", "frost-neon", "ember-red", "aurora-green", "violet-pulse"), appPrefs?.theme ?: "cinema-blue")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Start Screen", appPrefs?.startScreen ?: "home") {
-                                scope.launch {
-                                    repository.updateAppPreferences(mapOf("startScreen" to nextOf(listOf("home", "library", "continue-watching"), appPrefs?.startScreen ?: "home")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            ChoiceRow("Home Row Style", appPrefs?.homeRowCardStyle ?: "landscape") {
-                                scope.launch {
-                                    repository.updateAppPreferences(mapOf("homeRowCardStyle" to nextOf(listOf("landscape", "portrait"), appPrefs?.homeRowCardStyle ?: "landscape")))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
-                            PreferenceRow("Compact Mode", appPrefs?.compactMode == true) {
-                                scope.launch {
-                                    repository.updateAppPreferences(mapOf("compactMode" to !(appPrefs?.compactMode == true)))
-                                    bootstrap = repository.bootstrap.value
-                                }
-                            }
+                        CompactCard("Appearance & Layout", modifier = Modifier.focusRequester(tvContentRequester)) {
+                            Text("Changes apply immediately and sync with this profile.", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall)
+                            ChoiceRow("Theme", appPrefs?.theme ?: "cinema-blue", requester = tvActionRequester) { scope.launch { repository.updateAppPreferences(mapOf("theme" to nextOf(listOf("streamdek", "cinema-blue", "carbon-gold", "frost-neon", "ember-red", "aurora-green", "violet-pulse"), appPrefs?.theme ?: "cinema-blue"))); bootstrap = repository.bootstrap.value } }
+                            ChoiceRow("Start screen", appPrefs?.startScreen ?: "home") { scope.launch { repository.updateAppPreferences(mapOf("startScreen" to nextOf(listOf("home", "library", "continue-watching"), appPrefs?.startScreen ?: "home"))); bootstrap = repository.bootstrap.value } }
+                            ChoiceRow("Card format", appPrefs?.homeRowCardStyle ?: "landscape") { scope.launch { repository.updateAppPreferences(mapOf("homeRowCardStyle" to nextOf(listOf("landscape", "portrait"), appPrefs?.homeRowCardStyle ?: "landscape"))); bootstrap = repository.bootstrap.value } }
+                            ChoiceRow("Card density", appPrefs?.cardDensity ?: "comfortable") { scope.launch { repository.updateAppPreferences(mapOf("cardDensity" to nextOf(listOf("comfortable", "compact"), appPrefs?.cardDensity ?: "comfortable"))); bootstrap = repository.bootstrap.value } }
+                            ChoiceRow("Grid columns", (appPrefs?.gridSize ?: 5).toString()) { scope.launch { val next = if ((appPrefs?.gridSize ?: 5) >= 7) 4 else (appPrefs?.gridSize ?: 5) + 1; repository.updateAppPreferences(mapOf("gridSize" to next)); bootstrap = repository.bootstrap.value } }
+                            ChoiceRow("Animation speed", appPrefs?.animationSpeed ?: "normal") { scope.launch { repository.updateAppPreferences(mapOf("animationSpeed" to nextOf(listOf("normal", "fast", "slow"), appPrefs?.animationSpeed ?: "normal"))); bootstrap = repository.bootstrap.value } }
+                            ChoiceRow("Navigation", appPrefs?.navigationStyle ?: "adaptive") { scope.launch { repository.updateAppPreferences(mapOf("navigationStyle" to nextOf(listOf("adaptive", "compact"), appPrefs?.navigationStyle ?: "adaptive"))); bootstrap = repository.bootstrap.value } }
+                            PreferenceRow("Background depth", appPrefs?.backgroundBlur != false) { scope.launch { repository.updateAppPreferences(mapOf("backgroundBlur" to (appPrefs?.backgroundBlur == false))); bootstrap = repository.bootstrap.value } }
+                            PreferenceRow("Legacy compact mode", appPrefs?.compactMode == true) { scope.launch { repository.updateAppPreferences(mapOf("compactMode" to !(appPrefs?.compactMode == true))); bootstrap = repository.bootstrap.value } }
                         }
                     }
                 }
 
+                SettingsSection.Accessibility -> {
+                    item {
+                        CompactCard("Vision & Motion", modifier = Modifier.focusRequester(tvContentRequester)) {
+                            Text("Recommended on smaller televisions and for viewers sensitive to motion.", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall)
+                            PreferenceRow("High contrast", appPrefs?.highContrast == true, requester = tvActionRequester) { scope.launch { repository.updateAppPreferences(mapOf("highContrast" to !(appPrefs?.highContrast == true))); bootstrap = repository.bootstrap.value } }
+                            PreferenceRow("Large text", appPrefs?.largeText == true) { scope.launch { repository.updateAppPreferences(mapOf("largeText" to !(appPrefs?.largeText == true))); bootstrap = repository.bootstrap.value } }
+                            PreferenceRow("Reduced motion", appPrefs?.reducedMotion == true) { scope.launch { repository.updateAppPreferences(mapOf("reducedMotion" to !(appPrefs?.reducedMotion == true))); bootstrap = repository.bootstrap.value } }
+                        }
+                    }
+                    item {
+                        CompactCard("TV Navigation") {
+                            TextLine("Focus ring", "Always visible")
+                            TextLine("Focused scale", if (appPrefs?.reducedMotion == true) "Off" else "Subtle")
+                            TextLine("Screen reader labels", "Enabled")
+                            TextLine("Colour use", "Never the only status signal")
+                        }
+                    }
+                }
                 SettingsSection.Devices -> {
                     item {
                         CompactCard("Sync Status", modifier = Modifier.focusRequester(devicesContentRequester)) {
@@ -499,6 +506,30 @@ fun AccountScreen(
                     }
                 }
 
+                SettingsSection.Diagnostics -> {
+                    item {
+                        CompactCard("Health Check", modifier = Modifier.focusRequester(devicesContentRequester)) {
+                            TextLine("Backend", reachability.name.lowercase().replaceFirstChar { it.uppercase() })
+                            TextLine("Authentication", if (session != null) "Healthy" else "Guest mode")
+                            TextLine("Providers", "${addons.count { it.enabled }} enabled / ${addons.size} installed")
+                            TextLine("Image & response cache", formatBytes(directorySize(context.cacheDir)))
+                            TextLine("Playback engine", playbackPrefs?.playerEngine ?: "Auto")
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                OutlinedButton(onClick = { scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(); status = "Health checks refreshed." } }, modifier = Modifier.focusRequester(devicesActionRequester), shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Run Again") }
+                            }
+                        }
+                    }
+                    item {
+                        CompactCard("Recent App Events") {
+                            val events = TvDebugLogger.snapshot(12)
+                            if (events.isEmpty()) Text("No diagnostic events have been recorded in this session.", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f))
+                            else events.asReversed().forEach { event -> TextLine("${event.level}  ${event.tag}", event.message) }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                OutlinedButton(onClick = { TvDebugLogger.clear(); status = "Diagnostic log cleared." }, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) { Text("Clear Log") }
+                            }
+                        }
+                    }
+                }
                 SettingsSection.About -> {
                     item {
                         CompactCard("App Updates", modifier = Modifier.focusRequester(aboutContentRequester)) {
@@ -587,12 +618,29 @@ private fun SettingsSidebar(
     sessionPresent: Boolean,
     selectedSection: SettingsSection,
     firstSectionRequester: FocusRequester,
+    sidebarSearchRequester: FocusRequester,
     contentEntryRequester: FocusRequester,
-    sectionContentRequester: FocusRequester,
+    topNavFocusRequester: FocusRequester,
+    query: String,
+    onQueryChange: (String) -> Unit,
     onSelectSection: (SettingsSection) -> Unit,
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val searchEditorRequester = remember { FocusRequester() }
+    var searchEditing by remember { mutableStateOf(false) }
+    var searchFieldWasFocused by remember { mutableStateOf(false) }
+    var searchLauncherFocused by remember { mutableStateOf(false) }
+
+    LaunchedEffect(searchEditing) {
+        if (searchEditing) {
+            delay(60)
+            runCatching { searchEditorRequester.requestFocus() }
+            keyboardController?.show()
+        }
+    }
+
     Column(
         modifier = Modifier.width(210.dp).fillMaxHeight(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -604,35 +652,107 @@ private fun SettingsSidebar(
             modifier = Modifier.padding(bottom = 8.dp),
         )
 
-        SettingsSection.entries.forEachIndexed { index, section ->
+        if (searchEditing) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                label = { androidx.compose.material3.Text("Find settings") },
+                singleLine = true,
+                shape = RoundedCornerShape(999.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color(0xFF11151C),
+                    unfocusedContainerColor = Color(0xFF0D1015),
+                    focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                    unfocusedIndicatorColor = Color(0x20FFFFFF),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .focusRequester(searchEditorRequester)
+                    .focusProperties {
+                        left = topNavFocusRequester
+                        right = contentEntryRequester
+                    }
+                    .onFocusChanged { state ->
+                        if (state.isFocused) {
+                            searchFieldWasFocused = true
+                        } else if (searchFieldWasFocused) {
+                            searchFieldWasFocused = false
+                            searchEditing = false
+                        }
+                    }
+,
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .background(
+                        color = if (searchLauncherFocused) Color(0xFF11151C) else Color(0xFF0D1015),
+                        shape = RoundedCornerShape(999.dp),
+                    )
+                    .border(
+                        width = if (searchLauncherFocused) 2.dp else 1.dp,
+                        color = if (searchLauncherFocused) MaterialTheme.colorScheme.primary else Color(0x20FFFFFF),
+                        shape = RoundedCornerShape(999.dp),
+                    )
+                    .focusRequester(sidebarSearchRequester)
+                    .focusProperties {
+                        left = topNavFocusRequester
+                        right = contentEntryRequester
+                    }
+                    .onFocusChanged { searchLauncherFocused = it.isFocused }
+
+                    .clickable { searchEditing = true },
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    text = query.ifBlank { "Find settings" },
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = if (query.isBlank()) Color.White.copy(alpha = 0.68f) else Color.White,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        val visibleSections = SettingsSection.entries.filter {
+            query.isBlank() || it.label.contains(query, true) || it.searchTerms.contains(query, true)
+        }
+        visibleSections.forEachIndexed { index, section ->
             SidebarItem(
                 title = section.label,
                 selected = selectedSection == section,
                 requester = if (index == 0) firstSectionRequester else null,
-                rightRequester = if (selectedSection == section) sectionContentRequester else contentEntryRequester,
-                // onFocused does NOT change the section — only onClick does.
-                // This prevents navigation returning from content from jumping to a different section.
+                leftRequester = topNavFocusRequester,
+                rightRequester = contentEntryRequester,
                 onFocused = {},
                 onClick = { onSelectSection(section) },
             )
+        }
+        if (visibleSections.isEmpty()) {
+            Text("No settings match", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
         }
 
         Spacer(modifier = Modifier.height(10.dp))
 
         if (!sessionPresent) {
-            SidebarItem(title = "Sign In", selected = false, rightRequester = contentEntryRequester, onFocused = {}, onClick = onSignIn)
+            SidebarItem(title = "Sign In", selected = false, leftRequester = topNavFocusRequester, rightRequester = contentEntryRequester, onFocused = {}, onClick = onSignIn)
         } else {
-            SignOutButton(onSignOut = onSignOut)
+            SignOutButton(leftRequester = topNavFocusRequester, onSignOut = onSignOut)
         }
     }
 }
 
 @Composable
-private fun SignOutButton(onSignOut: () -> Unit) {
+private fun SignOutButton(leftRequester: FocusRequester, onSignOut: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     Button(
         onClick = onSignOut,
-        modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused },
+        modifier = Modifier.fillMaxWidth().focusProperties { left = leftRequester }.onFocusChanged { focused = it.isFocused },
         shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
         colors = ButtonDefaults.colors(
             containerColor = Color(0x28FF3030),
@@ -663,6 +783,7 @@ private fun SidebarItem(
     title: String,
     selected: Boolean,
     requester: FocusRequester? = null,
+    leftRequester: FocusRequester? = null,
     rightRequester: FocusRequester? = null,
     onFocused: () -> Unit,
     onClick: () -> Unit,
@@ -682,6 +803,7 @@ private fun SidebarItem(
             )
             .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
             .focusProperties {
+                if (leftRequester != null) left = leftRequester
                 if (rightRequester != null) right = rightRequester
             }
             .onFocusChanged {
@@ -1161,4 +1283,15 @@ private fun FusionBadgePreviewDialog(source: FusionBadgeSource?, onDismiss: () -
             }
         }
     }
+}
+
+private fun directorySize(root: java.io.File): Long = runCatching {
+    root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+}.getOrDefault(0L)
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
+    bytes >= 1_048_576L -> "%.1f MB".format(bytes / 1_048_576.0)
+    bytes >= 1024L -> "%.1f KB".format(bytes / 1024.0)
+    else -> "$bytes B"
 }

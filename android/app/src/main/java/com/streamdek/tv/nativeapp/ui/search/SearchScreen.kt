@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.search
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.rememberScrollState
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,6 +37,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -51,7 +55,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.tv.material3.Card
+import androidx.compose.ui.zIndex
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Border
@@ -64,6 +70,9 @@ import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
+import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
+import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
@@ -121,6 +130,10 @@ fun SearchScreen(
     val firstResultRequester = remember { FocusRequester() }
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val searchHistoryStore = remember { context.getSharedPreferences("streamdek_tv_search", android.content.Context.MODE_PRIVATE) }
+    var recentSearches by remember {
+        mutableStateOf(searchHistoryStore.getString("recent", "").orEmpty().split('\u001F').filter { it.isNotBlank() }.take(6))
+    }
 
     var discoverType by remember { mutableStateOf("movie") }
     var discoverGenreId by remember { mutableStateOf<Int?>(null) }
@@ -136,6 +149,9 @@ fun SearchScreen(
     val discoverGridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val discoverFirstCardRequester = remember { FocusRequester() }
     val typeFieldRequester = remember { FocusRequester() }
+    var controlsHaveFocus by remember { mutableStateOf(true) }
+    val controlRailWidth by animateDpAsState(if (controlsHaveFocus) 218.dp else 40.dp, label = "search-control-rail")
+    val contentStart by animateDpAsState(if (controlsHaveFocus) 250.dp else 22.dp, label = "search-content-start")
     val discoverCardRequesters = remember { mutableMapOf<String, FocusRequester>() }
 
     val discoverGenreLabel = discoverGenres.firstOrNull { it.id == discoverGenreId }?.name ?: "All Genres"
@@ -205,6 +221,10 @@ fun SearchScreen(
         loading = true
         delay(260)
         results = repository.searchMedia(normalized)
+        if (results.isNotEmpty()) {
+            recentSearches = (listOf(normalized) + recentSearches.filterNot { it.equals(normalized, true) }).take(6)
+            searchHistoryStore.edit().putString("recent", recentSearches.joinToString("\u001F")).apply()
+        }
         loading = false
     }
 
@@ -219,156 +239,85 @@ fun SearchScreen(
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
-            modifier = Modifier
-                .width(if (compactMode) 204.dp else 218.dp)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 12.dp, top = 72.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.width(controlRailWidth).fillMaxSize().clipToBounds().background(Color(0xF207090D)).drawWithContent { if (controlsHaveFocus) drawContent() }.zIndex(3f)
+                .onFocusChanged { controlsHaveFocus = it.hasFocus }.verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 12.dp, top = 18.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
         ) {
-            Text("SEARCH", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black), color = Color.White)
-            Text("Find movies, series and channels", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+            Text("SEARCH", color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
+            Text("FIND SOMETHING", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(bottom = 3.dp))
             OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                label = { androidx.compose.material3.Text("Title or channel") },
-                singleLine = true,
-                readOnly = !searchEditing,
-                shape = RoundedCornerShape(16.dp),
-                keyboardActions = KeyboardActions(onDone = {
-                    searchEditing = false
-                    runCatching { searchBoxRequester.requestFocus() }
-                }),
+                value = query, onValueChange = { query = it }, label = { androidx.compose.material3.Text("Title or channel") }, singleLine = true,
+                readOnly = !searchEditing, shape = RoundedCornerShape(15.dp),
+                keyboardActions = KeyboardActions(onDone = { searchEditing = false; runCatching { searchBoxRequester.requestFocus() } }),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color(0xFF1A1F28),
-                    unfocusedContainerColor = Color(0xFF11151C),
-                    focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    cursorColor = MaterialTheme.colorScheme.primary,
-                    focusedLabelColor = Color.White,
-                    unfocusedLabelColor = Color.White.copy(alpha = 0.68f),
+                    focusedContainerColor = Color(0xD9181D27), unfocusedContainerColor = Color(0xC611151C), focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                    unfocusedIndicatorColor = Color.Transparent, focusedTextColor = Color.White, unfocusedTextColor = Color.White, cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedLabelColor = Color.White, unfocusedLabelColor = Color.White.copy(alpha = 0.62f),
                 ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(58.dp)
-                    .focusRequester(searchBoxRequester)
-                    .focusProperties {
-                        right = if (showDiscover) discoverFirstCardRequester else firstResultRequester
-                        down = if (showDiscover) typeFieldRequester else FocusRequester.Default
-                    }
-                    .onPreviewKeyEvent { event ->
-                        if (!searchEditing && event.type == KeyEventType.KeyUp &&
-                            (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)
-                        ) {
-                            searchEditing = true
-                            true
-                        } else false
-                    }
+                modifier = Modifier.fillMaxWidth().height(54.dp).focusRequester(searchBoxRequester)
+                    .focusProperties { right = if (showDiscover) discoverFirstCardRequester else firstResultRequester; down = if (showDiscover) typeFieldRequester else FocusRequester.Default }
+                    .onPreviewKeyEvent { event -> if (!searchEditing && event.type == KeyEventType.KeyUp && (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)) { searchEditing = true; true } else false }
                     .onFocusChanged { if (!it.isFocused) searchEditing = false },
             )
-
             if (showDiscover) {
-                SidebarSectionLabel("DISCOVER")
-                DiscoverField(
-                    label = "Content",
-                    value = discoverTypeLabel(discoverType),
-                    onClick = { openFilter = DiscoverFilter.Type },
-                    modifier = Modifier.focusRequester(typeFieldRequester).focusProperties { up = searchBoxRequester; right = discoverFirstCardRequester },
-                )
-                DiscoverField(
-                    label = "Genre",
-                    value = if (discoverType != "documentary" && discoverGenres.isNotEmpty()) discoverGenreLabel else "Not available",
-                    enabled = discoverType != "documentary" && discoverGenres.isNotEmpty(),
-                    onClick = { openFilter = DiscoverFilter.Genre },
-                    modifier = Modifier.focusProperties { right = discoverFirstCardRequester },
-                )
-                DiscoverField(
-                    label = "Release year",
-                    value = discoverYearLabel,
-                    onClick = { openFilter = DiscoverFilter.Year },
-                    modifier = Modifier.focusProperties { right = discoverFirstCardRequester },
-                )
-                Text(discoverItems.size.toString() + " titles loaded", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.primary)
-            } else {
-                SidebarSectionLabel("SHOW RESULTS")
-                SearchScope.entries.forEach { option ->
-                    SearchScopeRow(
-                        label = option.label,
-                        selected = searchScope == option,
-                        onClick = { searchScope = option },
-                        modifier = Modifier.focusProperties { right = firstResultRequester },
-                    )
+                Text("DISCOVER", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(top = 4.dp))
+                DiscoverField("Content", discoverTypeLabel(discoverType), { openFilter = DiscoverFilter.Type }, Modifier.focusRequester(typeFieldRequester).focusProperties { up = searchBoxRequester; right = discoverFirstCardRequester })
+                DiscoverField("Genre", if (discoverType != "documentary" && discoverGenres.isNotEmpty()) discoverGenreLabel else "Not available", { openFilter = DiscoverFilter.Genre }, Modifier.focusProperties { right = discoverFirstCardRequester }, discoverType != "documentary" && discoverGenres.isNotEmpty())
+                DiscoverField("Release year", discoverYearLabel, { openFilter = DiscoverFilter.Year }, Modifier.focusProperties { right = discoverFirstCardRequester })
+                if (recentSearches.isNotEmpty()) {
+                    Text("RECENT", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(top = 4.dp))
+                    recentSearches.take(4).forEach { recent -> SearchScopeRow(recent, false, { query = recent }, Modifier.focusProperties { right = discoverFirstCardRequester }) }
                 }
-                Text(
-                    visibleResults.size.toString() + if (visibleResults.size == 1) " result" else " results",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.primary,
-                )
+            } else {
+                Text("SHOW RESULTS", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(top = 4.dp))
+                SearchScope.entries.forEach { option -> SearchScopeRow(option.label, searchScope == option, { searchScope = option }, Modifier.focusProperties { right = firstResultRequester }) }
+                Text("${visibleResults.size} results", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(8.dp))
             }
         }
 
         Column(
-            modifier = Modifier.fillMaxSize().padding(start = if (compactMode) 234.dp else 250.dp, top = 88.dp, end = 44.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.fillMaxSize().padding(start = contentStart, end = 92.dp, top = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            Text(if (showDiscover) "Discover" else "Search results", color = Color.White, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
             Text(
-                if (showDiscover) "Explore what to watch" else if (loading) "Searching…" else "Results for “" + query.trim() + "”",
-                color = Color.White,
-                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black),
+                if (showDiscover) "Recommendations from every connected source · ${discoverItems.size} titles loaded"
+                else if (loading) "Searching every StreamDek source..." else "Matches for \"${query.trim()}\"",
+                color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium,
             )
-            Text(
-                if (showDiscover) "Use the filters on the left, then move right to browse."
-                else "Movies, series and matching Live TV addon channels appear together.",
-                color = Color.White.copy(alpha = 0.70f),
-                style = MaterialTheme.typography.bodyLarge,
-            )
-
             if (showDiscover) {
                 DiscoverSection(
-                    gridState = discoverGridState,
-                    items = discoverItems,
-                    loading = discoverLoading,
-                    loadingMore = discoverLoadingMore,
-                    firstCardRequester = discoverFirstCardRequester,
-                    leftRequester = typeFieldRequester,
+                    gridState = discoverGridState, items = discoverItems, loading = discoverLoading, loadingMore = discoverLoadingMore,
+                    firstCardRequester = discoverFirstCardRequester, leftRequester = typeFieldRequester,
                     cardRequesterFor = { key -> discoverCardRequesters.getOrPut(key) { FocusRequester() } },
-                    onOpenDetail = onOpenDetail,
-                    onItemMenu = { item, requester -> actionState = BrowseActionState(item, requester) },
-                    modifier = Modifier.fillMaxSize(),
+                    onOpenDetail = onOpenDetail, onItemMenu = { item, requester -> actionState = BrowseActionState(item, requester) },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
             } else {
                 when {
-                    loading -> SearchEmptyState("Searching every StreamDek source…")
-                    visibleResults.isEmpty() -> SearchEmptyState("No matching titles or live channels. Try a shorter channel name.")
+                    loading -> SearchEmptyState("Searching every StreamDek source...")
+                    visibleResults.isEmpty() -> SearchEmptyState("No matches yet. Try a shorter title or channel name.")
                     else -> androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
-                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(5),
-                        modifier = Modifier.fillMaxSize().focusGroup(),
-                        contentPadding = PaddingValues(top = 8.dp, bottom = 140.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(3),
+                        modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+                        contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
-                        itemsIndexed(visibleResults, key = { _, item ->
-                            listOf(item.type, item.sourceAddonId.orEmpty(), item.sourceCatalogId.orEmpty(), item.id).joinToString(":")
-                        }) { index, item ->
+                        itemsIndexed(visibleResults, key = { _, item -> listOf(item.type, item.sourceAddonId.orEmpty(), item.sourceCatalogId.orEmpty(), item.id).joinToString(":") }) { index, item ->
                             val key = listOf(item.type, item.sourceAddonId.orEmpty(), item.id).joinToString(":")
                             val requester = cardRequesters.getOrPut(key) { FocusRequester() }
                             SearchResultCard(
                                 item = item,
-                                modifier = (if (index == 0) Modifier.focusRequester(firstResultRequester) else Modifier.focusRequester(requester))
-                                    .focusProperties { left = searchBoxRequester },
+                                modifier = (if (index == 0) Modifier.focusRequester(firstResultRequester) else Modifier.focusRequester(requester)).focusProperties { left = searchBoxRequester },
                                 onPressed = { if (item.type == "live") onPlayLive(item) else onOpenDetail(item.type, item.id) },
-                                onMenuPressed = {
-                                    if (item.type != "live") actionState = BrowseActionState(item, if (index == 0) firstResultRequester else requester)
-                                },
+                                onMenuPressed = { if (item.type != "live") actionState = BrowseActionState(item, if (index == 0) firstResultRequester else requester) },
                             )
                         }
                     }
                 }
             }
         }
-
         openFilter?.let { filter ->
             DiscoverFilterDialog(
                 filter = filter,
@@ -437,9 +386,7 @@ private fun SearchScopeRow(label: String, selected: Boolean, onClick: () -> Unit
             containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent,
             focusedContainerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else Color(0xFF202630),
         ),
-        border = CardDefaults.border(
-            focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(14.dp)),
-        ),
+        border = CardDefaults.border(border = Border.None, focusedBorder = Border.None),
         scale = CardDefaults.scale(focusedScale = 1.035f),
     ) {
         Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -456,70 +403,15 @@ private fun SearchResultCard(
     onPressed: () -> Unit,
     onMenuPressed: () -> Unit,
 ) {
-    Card(
+    PremiumMediaCard(
+        item = item,
+        variant = if (item.type == "live") TvMediaCardVariant.Live else TvMediaCardVariant.Poster,
+        modifier = modifier.fillMaxWidth().height(250.dp),
         onClick = onPressed,
-        modifier = modifier
-            .fillMaxWidth()
-            .height(250.dp)
-            .tvCardLongPress(onMenuPressed)
-            .onFocusChanged { if (it.isFocused) onFocused() },
-        shape = CardDefaults.shape(AppCardShape),
-        colors = CardDefaults.colors(
-            containerColor = Color(0xFF181A1F),
-            focusedContainerColor = Color(0xFF181A1F),
-        ),
-        border = CardDefaults.border(
-            focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
-                shape = AppCardShape,
-            ),
-        ),
-        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
-        scale = CardDefaults.scale(focusedScale = 1.02f),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(AppCardShape),
-        ) {
-            AsyncImage(
-                model = item.poster ?: item.backdrop,
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color(0xD9000000)),
-                        ),
-                    ),
-            )
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = when (item.type) { "live" -> "Live TV"; "tv" -> "Series"; else -> "Movie" },
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
+        onLongPress = onMenuPressed,
+        onFocused = onFocused,
+    )
 }
-
 private data class DiscoverOption(
     val label: String,
     val selected: Boolean,
@@ -547,7 +439,7 @@ private fun DiscoverSection(
         loading -> SearchEmptyState("Loading recommendations…")
         items.isEmpty() -> SearchEmptyState("No titles match these filters.")
         else -> androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
-            columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(5),
+            columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(3),
             state = gridState,
             modifier = modifier.focusGroup(),
             contentPadding = PaddingValues(top = 8.dp, bottom = 140.dp),
@@ -592,13 +484,7 @@ private fun DiscoverField(
             focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
             focusedContentColor = Color(0xFFF5F1E8),
         ),
-        border = CardDefaults.border(
-            border = Border.None,
-            focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
-                shape = RoundedCornerShape(14.dp),
-            ),
-        ),
+        border = CardDefaults.border(border = Border.None, focusedBorder = Border.None),
         glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = 1.02f),
     ) {
@@ -636,63 +522,13 @@ private fun DiscoverPosterCard(
     onPressed: () -> Unit,
     onMenuPressed: () -> Unit,
 ) {
-    Card(
+    PremiumMediaCard(
+        item = item,
+        variant = TvMediaCardVariant.Poster,
+        modifier = modifier.fillMaxWidth().height(250.dp),
         onClick = onPressed,
-        modifier = modifier
-            .fillMaxWidth()
-            .height(250.dp)
-            .tvCardLongPress(onMenuPressed),
-        shape = CardDefaults.shape(AppCardShape),
-        colors = CardDefaults.colors(
-            // Transparent container so no light rim can leak at the rounded corners.
-            containerColor = Color.Transparent,
-            contentColor = Color.White,
-            focusedContainerColor = Color.Transparent,
-            focusedContentColor = Color.White,
-        ),
-        border = CardDefaults.border(
-            border = Border.None,
-            focusedBorder = Border(
-                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
-                shape = AppCardShape,
-            ),
-        ),
-        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
-        scale = CardDefaults.scale(focusedScale = 1.04f),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(AppCardShape)
-                .background(Color(0xFF101216)),
-        ) {
-            AsyncImage(
-                model = item.poster ?: item.backdrop,
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color(0x00000000), Color(0xE6000000)),
-                        ),
-                    ),
-            )
-            Text(
-                text = item.title,
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                color = Color.White,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(10.dp),
-            )
-        }
-    }
+        onLongPress = onMenuPressed,
+    )
 }
 
 @OptIn(ExperimentalTvMaterial3Api::class)
