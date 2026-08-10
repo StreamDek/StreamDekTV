@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp
 
 import android.content.Context
 import com.streamdek.tv.nativeapp.data.AuthSessionStore
+import com.streamdek.tv.nativeapp.data.PluginSourceEngine
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 
@@ -15,6 +16,7 @@ object AppGraph {
     val repository: StreamDekRepository by lazy {
         StreamDekRepository(
             sessionStore = AuthSessionStore(appContext),
+            pluginEngine = PluginSourceEngine(appContext),
         )
     }
 

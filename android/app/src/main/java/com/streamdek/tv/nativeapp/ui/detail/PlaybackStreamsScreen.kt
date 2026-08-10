@@ -58,6 +58,7 @@ import com.streamdek.tv.nativeapp.data.StreamsPreferences
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.flattenFusionBadges
 import com.streamdek.tv.nativeapp.data.matchFusionBadges
+import com.streamdek.tv.nativeapp.data.mergeProgressiveStreamSnapshot
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.FusionBadgeRow
@@ -162,6 +163,7 @@ fun PlaybackStreamsScreen(
             return@LaunchedEffect
         }
         uiState = PlaybackStreamsUiState.Loading()
+        var accumulatedStreams = emptyList<AddonStream>()
         TvDebugLogger.i(
             "Streams",
             "lookup start title=${request.title.orEmpty()} media=${request.mediaType}:${request.mediaId} generation=$refreshGeneration",
@@ -180,20 +182,21 @@ fun PlaybackStreamsScreen(
                 sourceAddonName = request.sourceAddonName,
                 forceRefresh = refreshGeneration > 0,
             ).collect { progress ->
+                accumulatedStreams = mergeProgressiveStreamSnapshot(accumulatedStreams, progress.streams)
                 TvDebugLogger.i(
                     "Streams",
                     "lookup progress media=${request.mediaType}:${request.mediaId} generation=$refreshGeneration " +
-                        "streams=${progress.streams.size} addons=${progress.streams.map { it.addonId.ifBlank { it.addonName } }.distinct().size} " +
+                        "streams=${accumulatedStreams.size} addons=${accumulatedStreams.map { it.addonId.ifBlank { it.addonName } }.distinct().size} " +
                         "pending=${progress.pendingSources} done=${progress.done}",
                 )
                 // Stay on the loading state only until the first stream arrives.
-                if (progress.streams.isEmpty() && !progress.done) {
+                if (accumulatedStreams.isEmpty() && !progress.done) {
                     uiState = PlaybackStreamsUiState.Loading(progress.pendingSources)
                     return@collect
                 }
                 uiState = PlaybackStreamsUiState.Ready(
                     detail = detail,
-                    candidate = ResolvedPlaybackCandidate(null, null, progress.streams),
+                    candidate = ResolvedPlaybackCandidate(null, null, accumulatedStreams),
                     pendingSources = progress.pendingSources,
                 )
             }

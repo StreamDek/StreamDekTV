@@ -127,5 +127,9 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // Synced plugin sources are JavaScript scrapers: they run in the same QuickJS sandbox the
+    // mobile app uses, and parse HTML through the same Jsoup-backed cheerio shim.
+    implementation("org.jsoup:jsoup:1.18.3")
+    implementation files("libs/quickjs-runtime.aar")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -56,6 +56,32 @@ internal fun effectiveRememberedStreamKey(
     rememberLastSource: Boolean,
 ): String? = explicitKey ?: storedKey.takeIf { rememberLastSource }
 
+/** Identity used while progressively merging results from independently completing add-ons. */
+internal fun streamAggregationKey(stream: AddonStream): String = listOf(
+    stream.addonId,
+    stream.addonName,
+    stream.name,
+    stream.title,
+    stream.infoHash?.lowercase(Locale.US),
+    stream.url?.trim(),
+    stream.behaviorHints?.filename?.trim(),
+    stream.quality,
+    stream.size,
+).joinToString("|")
+
+/**
+ * A progressive stream page is append-only for the lifetime of one lookup. If concurrent
+ * publishers arrive out of order, retain anything already shown and let the newest snapshot
+ * determine the ordering of entries it contains.
+ */
+internal fun mergeProgressiveStreamSnapshot(
+    previous: List<AddonStream>,
+    incoming: List<AddonStream>,
+): List<AddonStream> {
+    val incomingKeys = incoming.mapTo(linkedSetOf(), ::streamAggregationKey)
+    return incoming + previous.filter { streamAggregationKey(it) !in incomingKeys }
+}
+
 
 internal fun playbackRequestFromHandoff(payload: PlaybackHandoffPayload): PlaybackRequest {
     require(payload.mediaId.isNotBlank()) { "The handoff did not include a media id." }
@@ -106,6 +132,15 @@ fun mapAddonCatalogType(rawType: String): String? = when {
     else -> null
 }
 
+/** AIOStreams exposes provider failures as synthetic meta items; they are not playable titles. */
+internal fun isAddonCatalogDiagnosticMeta(meta: AddonCatalogMetaItem): Boolean {
+    val id = meta.id.orEmpty().trim()
+    val name = meta.name.orEmpty().trim()
+    return id.startsWith("aiostreamserror", ignoreCase = true) ||
+        (meta.poster.isNullOrBlank() && name.contains("AIOStreams", ignoreCase = true) &&
+            name.contains("Error", ignoreCase = true))
+}
+
 private fun truncateAtWordBoundary(text: String, maxLength: Int): String {
     if (text.length <= maxLength) return text
     val cut = text.take(maxLength - 1)
@@ -143,6 +178,11 @@ private fun buildLiveRailTitle(rawType: String, catalogName: String?): String {
 class StreamDekRepository(
     private val sessionStore: AuthSessionStore,
     private val api: StreamDekApi = StreamDekApi(sessionStore),
+    /**
+     * Runs the profile's synced plugin sources. Absent in unit tests and on any build without a
+     * Context to hand, in which case plugin results simply do not participate in a lookup.
+     */
+    private val pluginEngine: PluginSourceEngine? = null,
 ) {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val detailsCache = lruCache<String, MediaDetail>(48)
@@ -647,13 +687,22 @@ class StreamDekRepository(
                     val catalogId = catalog.id.trim()
                     if (catalogId.isBlank()) return@mapIndexedNotNull null
                     async {
-                        val metas = runCatching {
+                        val proxiedMetas = runCatching {
                             api.get<AddonCatalogResponse>(
                                 "/addons/${URLEncoder.encode(addon.id, "UTF-8")}/catalog/$rawType/${URLEncoder.encode(catalogId, "UTF-8")}",
                             )?.metas.orEmpty()
                         }.onFailure {
                             TvDebugLogger.w("Home", "addon catalog fetch failed addon=${addon.id} type=$rawType id=$catalogId")
                         }.getOrDefault(emptyList())
+                        val usableProxiedMetas = proxiedMetas.filterNot(::isAddonCatalogDiagnosticMeta)
+                        val shouldTryDirect = proxiedMetas.isEmpty() || usableProxiedMetas.size != proxiedMetas.size
+                        val directMetas = if (shouldTryDirect) {
+                            fetchAddonCatalogDirect(addon, rawType, catalogId)
+                                .filterNot(::isAddonCatalogDiagnosticMeta)
+                        } else {
+                            emptyList()
+                        }
+                        val metas = directMetas.takeIf { it.isNotEmpty() } ?: usableProxiedMetas
                         val items = metas.mapNotNull {
                             normalizeAddonCatalogMeta(
                                 meta = it,
@@ -681,6 +730,32 @@ class StreamDekRepository(
                 }
             }.mapNotNull { it.await() }
         }
+    }
+
+    private suspend fun fetchAddonCatalogDirect(
+        addon: AddonManifest,
+        rawType: String,
+        catalogId: String,
+    ): List<AddonCatalogMetaItem> = withContext(Dispatchers.IO) {
+        val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: return@withContext emptyList()
+        val addonBaseUrl = manifestUrl
+            .substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl.trimEnd('/'))
+            .trimEnd('/')
+        val endpoint = "$addonBaseUrl/catalog/${encodePathSegment(rawType)}/${encodePathSegment(catalogId)}.json"
+        runCatching {
+            val request = okhttp3.Request.Builder()
+                .url(endpoint)
+                .header("Accept", "application/json")
+                .header("User-Agent", "Stremio/4.4.168")
+                .build()
+            directStreamClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use emptyList()
+                api.gson.fromJson(response.body?.charStream(), AddonCatalogResponse::class.java)
+                    ?.metas.orEmpty()
+            }
+        }.onFailure {
+            TvDebugLogger.w("Home", "direct addon catalog retry failed addon=${addon.id} type=$rawType id=$catalogId")
+        }.getOrDefault(emptyList())
     }
 
     /**
@@ -1698,8 +1773,16 @@ class StreamDekRepository(
                 forceRefresh = mediaType == "live",
             )
         }
-        val (streamLookupType, streams) = targetedStreams
+        val (streamLookupType, addonStreams) = targetedStreams
             ?: fetchStreamsForPlayback(lookupTypes, videoId, isLive = mediaType == "live")
+        // Plugin sources join the pool the same way they do on mobile — except when a specific
+        // add-on already answered, which only happens for a live channel or a remembered source
+        // the viewer explicitly picked, and where waiting on scrapers would just delay playback.
+        val streams = if (targetedStreams != null) {
+            addonStreams
+        } else {
+            dedupeStreams(addonStreams + pluginStreams(mediaType, mediaId, imdbId, episode))
+        }
         for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {
             val resolvedUrl = resolveStreamToUrl(stream, streamLookupType, videoId)
             if (!resolvedUrl.isNullOrBlank()) {
@@ -1789,6 +1872,64 @@ class StreamDekRepository(
             }
         }
         return lookupTypes.firstOrNull() to emptyList()
+    }
+
+    /**
+     * Whether the active profile has a synced plugin source that could answer this lookup.
+     *
+     * Plugin sources are movie/series scrapers, so live channels never consult them — the same
+     * rule the mobile app applies.
+     */
+    private fun hasPluginSourcesFor(mediaType: String): Boolean {
+        if (mediaType == "live") return false
+        val engine = pluginEngine ?: return false
+        return engine.eligibleProviders(bootstrapState.value?.profilePlugins, mediaType).isNotEmpty()
+    }
+
+    /**
+     * Streams from the profile's synced plugin sources, alongside the add-on results.
+     *
+     * [onProviderResults] fires as each provider finishes so the picker can show partial results
+     * rather than waiting for the slowest scraper.
+     */
+    private suspend fun pluginStreams(
+        mediaType: String,
+        mediaId: String,
+        imdbId: String?,
+        episode: EpisodeContext?,
+        onProviderResults: suspend (List<AddonStream>) -> Unit = {},
+    ): List<AddonStream> {
+        val engine = pluginEngine ?: return emptyList()
+        if (!hasPluginSourcesFor(mediaType)) return emptyList()
+        val lookupId = pluginLookupId(mediaType, mediaId, imdbId)?.takeIf { it.isNotBlank() } ?: return emptyList()
+        return runCatching {
+            engine.streams(
+                state = bootstrapState.value?.profilePlugins,
+                id = lookupId,
+                type = mediaType,
+                season = episode?.seasonNumber,
+                episode = episode?.episodeNumber,
+                onProviderResults = onProviderResults,
+            )
+        }.onFailure { TvDebugLogger.w("Plugins", "lookup failed media=$mediaType:$mediaId", it) }
+            .getOrDefault(emptyList())
+    }
+
+    /**
+     * Plugin scrapers are keyed by TMDB id, so an IMDb-only id is resolved first — mirroring the
+     * mobile app's resolvePluginMediaId.
+     */
+    private suspend fun pluginLookupId(mediaType: String, mediaId: String, imdbId: String?): String? {
+        val candidate = mediaId.substringBefore(':').trim()
+        if (candidate.isNotBlank() && !candidate.startsWith("tt", ignoreCase = true)) return candidate
+        val imdb = Regex("tt\\d+", RegexOption.IGNORE_CASE)
+            .find(candidate.ifBlank { imdbId.orEmpty() })?.value
+            ?: return candidate.ifBlank { null }
+        val canonicalType = if (mediaType == "series") "tv" else mediaType
+        val resolved = runCatching {
+            api.get<TmdbFindResponse>("/tmdb/find/imdb/$imdb?type=$canonicalType")
+        }.getOrNull()?.takeIf { it.id > 0 }
+        return resolved?.id?.toString() ?: candidate.ifBlank { null }
     }
 
     private suspend fun fetchStreamsFromSingleAddon(
@@ -1931,81 +2072,82 @@ class StreamDekRepository(
             }
         }.orEmpty()
 
-        if (primaryType == null || supportingAddons.isEmpty()) {
-            val (_, fallback) = fetchStreamsForPlayback(lookupTypes, videoId, isLive)
-            send(
-                StreamCandidatesProgress(
-                    rankStreams(fallback, effectivePreferredStreamKey),
-                    pendingSources = 0,
-                    done = true,
-                ),
-            )
-            return@channelFlow
-        }
+        // Every enabled plugin provider is counted as one source, the way mobile presents them:
+        // they publish together as the scrapers finish rather than one row per provider.
+        val pluginSourceCount = if (hasPluginSourcesFor(mediaType)) 1 else 0
 
         val merged = java.util.concurrent.ConcurrentHashMap<String, AddonStream>()
         val order = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size)
+        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginSourceCount)
         val mutex = kotlinx.coroutines.sync.Mutex()
+        // Snapshot creation and channel publication must be one serialized operation. Otherwise
+        // an earlier, smaller snapshot can suspend in send() and arrive after a later, larger one.
+        val publishMutex = kotlinx.coroutines.sync.Mutex()
         // Cap concurrent addon requests so a large addon list cannot saturate the
         // TV's limited network stack and slow down the first results.
         val gate = kotlinx.coroutines.sync.Semaphore(4)
 
-        suspend fun publish(done: Boolean) {
-            val snapshot = mutex.withLock { order.mapNotNull { merged[it] } }
-            send(
-                StreamCandidatesProgress(
-                    streams = rankStreams(snapshot, effectivePreferredStreamKey),
-                    pendingSources = remaining.get().coerceAtLeast(0),
-                    done = done,
-                ),
-            )
+        suspend fun mergeStreams(streams: List<AddonStream>) {
+            mutex.withLock {
+                streams.forEach { stream ->
+                    val key = streamMergeKey(stream)
+                    if (merged.putIfAbsent(key, stream) == null) order.add(key)
+                }
+            }
         }
 
-        send(StreamCandidatesProgress(emptyList(), pendingSources = supportingAddons.size, done = false))
+        suspend fun publish(done: Boolean) {
+            publishMutex.withLock {
+                val snapshot = mutex.withLock { order.mapNotNull { merged[it] } }
+                send(
+                    StreamCandidatesProgress(
+                        streams = rankStreams(snapshot, effectivePreferredStreamKey),
+                        pendingSources = remaining.get().coerceAtLeast(0),
+                        done = done,
+                    ),
+                )
+            }
+        }
+
+        send(StreamCandidatesProgress(emptyList(), pendingSources = remaining.get(), done = false))
 
         supervisorScope {
-            supportingAddons.forEach { addon ->
+            if (pluginSourceCount > 0) {
                 launch {
-                    val streams = runCatching {
-                        gate.withPermit { fetchStreamsFromSingleAddon(addon, primaryType, videoId, baseId, isLive, forceRefresh) }
-                    }.getOrDefault(emptyList())
-                    mutex.withLock {
-                        streams.forEach { stream ->
-                            val key = streamMergeKey(stream)
-                            if (merged.putIfAbsent(key, stream) == null) order.add(key)
-                        }
+                    val streams = pluginStreams(mediaType, mediaId, imdbId, episode) { providerStreams ->
+                        mergeStreams(providerStreams)
+                        publish(done = false)
                     }
+                    mergeStreams(streams)
                     remaining.decrementAndGet()
                     publish(done = false)
+                }
+            }
+            if (primaryType != null) {
+                supportingAddons.forEach { addon ->
+                    launch {
+                        val streams = runCatching {
+                            gate.withPermit { fetchStreamsFromSingleAddon(addon, primaryType, videoId, baseId, isLive, forceRefresh) }
+                        }.getOrDefault(emptyList())
+                        mergeStreams(streams)
+                        remaining.decrementAndGet()
+                        publish(done = false)
+                    }
                 }
             }
         }
 
         remaining.set(0)
         if (merged.isEmpty()) {
-            // Nothing from the per-addon fan-out — fall back to the aggregated route
+            // Nothing from the per-addon or plugin fan-out — fall back to the aggregated route
             // and any remaining lookup types before declaring the list empty.
             val (_, fallback) = fetchStreamsForPlayback(lookupTypes, videoId, isLive)
-            fallback.forEach { stream ->
-                val key = streamMergeKey(stream)
-                if (merged.putIfAbsent(key, stream) == null) order.add(key)
-            }
+            mergeStreams(fallback)
         }
         publish(done = true)
     }
 
-    private fun streamMergeKey(stream: AddonStream): String = listOf(
-        stream.addonId,
-        stream.addonName,
-        stream.name,
-        stream.title,
-        effectiveInfoHash(stream),
-        stream.url,
-        effectiveFilename(stream),
-        stream.quality,
-        stream.size,
-    ).joinToString("|")
+    private fun streamMergeKey(stream: AddonStream): String = streamAggregationKey(stream)
 
     private fun streamLookupTypes(mediaType: String, streamType: String?): List<String> = when (mediaType) {
         "live" -> {
