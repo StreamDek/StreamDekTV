@@ -311,7 +311,12 @@ fun PlayerScreen(
     // Keep screen on while the player is active
     DisposableEffect(Unit) {
         view.keepScreenOn = true
-        onDispose { view.keepScreenOn = false }
+        onDispose {
+            view.keepScreenOn = false
+            // Closes the news server connections and drops the partially assembled file. A no-op
+            // unless what was playing came from a usenet source.
+            com.streamdek.tv.nativeapp.usenet.UsenetPlayback.release()
+        }
     }
 
     fun hideControlsNow() {
@@ -2135,7 +2140,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 }
                                 if (selected.source == null) {
                                     error = if (repository.isUsenetStream(stream)) {
-                                        "This is a usenet source. StreamDek cannot download NZBs yet — pick another source."
+                                        "This usenet source could not be opened. The news server may be unreachable, or the post may be incomplete."
                                     } else {
                                         "This source could not be resolved. Please try another."
                                     }

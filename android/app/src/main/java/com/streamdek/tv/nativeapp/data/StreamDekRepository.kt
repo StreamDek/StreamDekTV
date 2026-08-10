@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp.data
 
 import com.google.gson.JsonObject
 import com.streamdek.tv.BuildConfig
+import com.streamdek.tv.nativeapp.usenet.UsenetPlayback
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -219,6 +220,8 @@ class StreamDekRepository(
      * Context to hand, in which case plugin results simply do not participate in a lookup.
      */
     private val pluginEngine: PluginSourceEngine? = null,
+    /** Application context, for the on-device usenet assembler's cache. Absent in unit tests. */
+    private val appContext: android.content.Context? = null,
 ) {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val detailsCache = lruCache<String, MediaDetail>(48)
@@ -2591,10 +2594,17 @@ class StreamDekRepository(
         if (!isPlayableStreamOption(playbackStream)) return null
         normalizedDirectUrl(playbackStream)?.let { return it }
         if (isUsenetStream(playbackStream)) {
-            // Listed, but there is nothing to hand the player: an NZB has to be fetched from a
-            // news server and reassembled first, which no StreamDek client or service does yet.
-            TvDebugLogger.i("Playback", "skipping usenet source ${playbackStream.addonName}: no NZB resolver")
-            return null
+            // Assembled here on the TV: the NZB names the articles, the stream's own `servers`
+            // list says where to pull them from, and the player is handed a loopback URL into the
+            // local assembler. Nothing about it touches a StreamDek server.
+            val context = appContext ?: return null
+            return runCatching {
+                withContext(Dispatchers.IO) {
+                    UsenetPlayback.open(context, playbackStream.nzbUrl.orEmpty(), playbackStream.servers)
+                }
+            }.onFailure {
+                TvDebugLogger.w("Playback", "usenet source ${playbackStream.addonName} could not be opened", it)
+            }.getOrNull()
         }
         val infoHash = effectiveInfoHash(playbackStream) ?: return null
         val filename = effectiveFilename(playbackStream)
@@ -2625,9 +2635,9 @@ class StreamDekRepository(
 
     /** Reject archive/download payloads that addons occasionally mislabel as playable videos. */
     fun isPlayableStreamOption(stream: AddonStream): Boolean {
-        // Usenet results are listed like the mobile app lists them. They cannot be resolved yet,
-        // so resolveStreamToUrl skips them and the picker labels them — but hiding them outright
-        // left titles whose results are all usenet looking as though nothing was found at all.
+        // Usenet results are playable: resolveStreamToUrl assembles them on the device and hands
+        // the player a loopback URL. They carry neither a direct url nor an info hash, so they
+        // have to be admitted here explicitly.
         if (isUsenetStream(stream)) return true
         if (!effectiveInfoHash(stream).isNullOrBlank()) return true
         val url = normalizedDirectUrl(stream) ?: return false

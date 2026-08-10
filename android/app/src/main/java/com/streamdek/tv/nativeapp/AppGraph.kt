@@ -17,6 +17,7 @@ object AppGraph {
         StreamDekRepository(
             sessionStore = AuthSessionStore(appContext),
             pluginEngine = PluginSourceEngine(appContext),
+            appContext = appContext,
         )
     }
 
