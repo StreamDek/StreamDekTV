@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -20,21 +22,29 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
@@ -116,6 +126,10 @@ fun LiveScreen(
 
     var selectedSourceId by remember(sections) { mutableStateOf<String?>(null) }
     var favouritesOnly by remember { mutableStateOf(false) }
+    // A channel list runs to thousands of entries, where a grid of artwork is slower to read than
+    // a column of names. Session-local, as the equivalent toggle is on mobile.
+    var listView by rememberSaveable { mutableStateOf(false) }
+    val listState = rememberLazyListState()
 
     val allItems = remember(sections) {
         sections.flatMap { it.rails }.flatMap { it.items }.distinctBy(::liveKey)
@@ -131,7 +145,10 @@ fun LiveScreen(
                         id = rail.id,
                         title = rail.title,
                         sourceTitle = section.title,
-                        addonId = section.id,
+                        // Taken off an item rather than off the section id: sections built from a
+                        // playlist are keyed differently from add-on ones, and this is the id the
+                        // browse screen matches its items against.
+                        addonId = rail.items.firstOrNull()?.sourceAddonId.orEmpty(),
                         keys = rail.items.mapTo(hashSetOf(), ::liveKey),
                     )
                 }
@@ -141,7 +158,7 @@ fun LiveScreen(
                         id = section.id,
                         title = section.title,
                         sourceTitle = null,
-                        addonId = section.id,
+                        addonId = section.rails.firstOrNull()?.items?.firstOrNull()?.sourceAddonId.orEmpty(),
                         keys = section.rails.flatMap { rail -> rail.items.map(::liveKey) }.toHashSet(),
                     ),
                 )
@@ -163,17 +180,30 @@ fun LiveScreen(
         else -> "All live channels"
     }
 
+    /**
+     * Where "right" goes from the sidebar.
+     *
+     * [firstCardRequester] is only attached while the pane on the right is actually drawing
+     * channels. Pointing at it while the skeleton or the empty state is up leaves focus search
+     * resolving to a requester no node has claimed, which throws rather than doing nothing —
+     * pressing right on a loading or empty Live TV page took the app down. Default hands the press
+     * back to ordinary focus search, which finds nothing to the right and stays put.
+     */
+    val contentFocusTarget = if (visibleItems.isEmpty()) FocusRequester.Default else firstCardRequester
+
     LaunchedEffect(isLoading) {
         if (isLoading) return@LaunchedEffect
         kotlinx.coroutines.delay(160)
         runCatching { sidebarEntry.requestFocus() }
     }
 
-    LaunchedEffect(restoreFocusToken, restoreFocusedItemKey, visibleItems.size) {
+    LaunchedEffect(restoreFocusToken, restoreFocusedItemKey, visibleItems.size, listView) {
         if (restoreFocusToken <= 0 || restoreFocusedItemKey.isNullOrBlank()) return@LaunchedEffect
         val index = visibleItems.indexOfFirst { liveKey(it) == restoreFocusedItemKey }
         if (index < 0) return@LaunchedEffect
-        gridState.scrollToItem(index)
+        // Whichever list is actually on screen — scrolling the grid while the list view is up left
+        // the channel being restored off screen with its requester never composed.
+        if (listView) listState.scrollToItem(index) else gridState.scrollToItem(index)
         kotlinx.coroutines.delay(120)
         runCatching { cardRequesters[restoreFocusedItemKey]?.requestFocus() }
     }
@@ -203,7 +233,7 @@ fun LiveScreen(
                     label = "All channels",
                     count = allItems.size,
                     selected = !favouritesOnly && selectedSourceId == null,
-                    modifier = Modifier.focusRequester(sidebarEntry).focusProperties { right = firstCardRequester },
+                    modifier = Modifier.focusRequester(sidebarEntry).focusProperties { right = contentFocusTarget },
                     onClick = { favouritesOnly = false; selectedSourceId = null },
                 )
             }
@@ -212,7 +242,7 @@ fun LiveScreen(
                     label = "Favourites",
                     count = favouriteKeys.size,
                     selected = favouritesOnly,
-                    modifier = Modifier.focusProperties { right = firstCardRequester },
+                    modifier = Modifier.focusProperties { right = contentFocusTarget },
                     onClick = { favouritesOnly = true; selectedSourceId = null },
                 )
             }
@@ -232,8 +262,18 @@ fun LiveScreen(
                     caption = bucket.sourceTitle,
                     count = bucket.keys.size,
                     selected = !favouritesOnly && selectedSourceId == bucket.id,
-                    modifier = Modifier.focusProperties { right = firstCardRequester },
+                    modifier = Modifier.focusProperties { right = contentFocusTarget },
                     onClick = { favouritesOnly = false; selectedSourceId = bucket.id },
+                )
+            }
+            item("view") {
+                LiveSourceRow(
+                    label = if (listView) "List view" else "Card view",
+                    caption = "Press OK to switch",
+                    count = null,
+                    selected = false,
+                    modifier = Modifier.padding(top = 14.dp).focusProperties { right = contentFocusTarget },
+                    onClick = { listView = !listView },
                 )
             }
             item("browse") {
@@ -241,14 +281,14 @@ fun LiveScreen(
                     label = "Browse all",
                     count = null,
                     selected = false,
-                    modifier = Modifier.padding(top = 14.dp).focusProperties { right = firstCardRequester },
+                    modifier = Modifier.padding(top = 14.dp).focusProperties { right = contentFocusTarget },
                     onClick = {
                         // Carries whatever the sidebar has narrowed to. The selected entry is a
                         // category id when categories are on, so the source comes off the bucket
                         // rather than off the selection, which is only a source id when they are off.
                         val bucket = selectedSourceId?.let { id -> buckets.firstOrNull { it.id == id } }
                         onViewAll(
-                            bucket?.addonId?.removePrefix("live:"),
+                            bucket?.addonId?.takeIf { it.isNotBlank() },
                             bucket?.id?.takeIf { categoriesEnabled },
                         )
                     },
@@ -293,9 +333,8 @@ fun LiveScreen(
                     },
                 )
 
-                else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(gridColumns),
-                    state = gridState,
+                listView -> LazyColumn(
+                    state = listState,
                     modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
                     contentPadding = PaddingValues(
                         start = TvSpacing.ScreenHorizontal,
@@ -303,31 +342,18 @@ fun LiveScreen(
                         top = 16.dp,
                         bottom = 72.dp,
                     ),
-                    horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
-                    verticalArrangement = Arrangement.spacedBy(TvSpacing.Card),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     itemsIndexed(visibleItems, key = { _, item -> liveKey(item) }) { index, item ->
                         val key = liveKey(item)
                         val requester = cardRequesters.getOrPut(key) { FocusRequester() }
                         val effective = if (index == 0) firstCardRequester else requester
-                        PremiumMediaCard(
+                        LiveChannelRow(
                             item = item,
-                            variant = if (landscapeCards) TvMediaCardVariant.Live else TvMediaCardVariant.Poster,
                             favourite = key in favouriteKeys,
-                            showProvider = true,
                             modifier = Modifier
                                 .focusRequester(effective)
-                                // Portrait cards are taller than wide. The card crops to whatever box
-                                // it is given, so the height is what makes it read as a poster: at
-                                // this grid's card width these land near the usual 2:3.
-                                .height(
-                                    when {
-                                        !landscapeCards -> if (compactMode) 176.dp else 196.dp
-                                        compactMode -> 108.dp
-                                        else -> 122.dp
-                                    },
-                                )
-                                .focusProperties { if (index % gridColumns == 0) left = sidebarEntry }
+                                .focusProperties { left = sidebarEntry }
                                 .tvCardLongPress { onToggleFavourite(item) },
                             onClick = { onPlayLive(item) },
                             onLongPress = { onToggleFavourite(item) },
@@ -335,6 +361,135 @@ fun LiveScreen(
                         )
                     }
                 }
+
+                else -> BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                    // Card height comes off the measured card width so portrait channels are a true
+                    // 2:3 rather than a guess that only holds at one column count.
+                    val available = maxWidth - TvSpacing.ScreenHorizontal * 2 - TvSpacing.Card * (gridColumns - 1)
+                    val cardWidth = available / gridColumns
+                    val cardHeight = when {
+                        !landscapeCards -> cardWidth * 3f / 2f
+                        compactMode -> 108.dp
+                        else -> 122.dp
+                    }
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(gridColumns),
+                        state = gridState,
+                        modifier = Modifier.fillMaxSize().focusGroup(),
+                        contentPadding = PaddingValues(
+                            start = TvSpacing.ScreenHorizontal,
+                            end = TvSpacing.ScreenHorizontal,
+                            top = 16.dp,
+                            bottom = 72.dp,
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
+                        verticalArrangement = Arrangement.spacedBy(TvSpacing.Card),
+                    ) {
+                        itemsIndexed(visibleItems, key = { _, item -> liveKey(item) }) { index, item ->
+                            val key = liveKey(item)
+                            val requester = cardRequesters.getOrPut(key) { FocusRequester() }
+                            val effective = if (index == 0) firstCardRequester else requester
+                            PremiumMediaCard(
+                                item = item,
+                                variant = if (landscapeCards) TvMediaCardVariant.Live else TvMediaCardVariant.Poster,
+                                favourite = key in favouriteKeys,
+                                showProvider = true,
+                                modifier = Modifier
+                                    .focusRequester(effective)
+                                    .height(cardHeight)
+                                    .focusProperties { if (index % gridColumns == 0) left = sidebarEntry }
+                                    .tvCardLongPress { onToggleFavourite(item) },
+                                onClick = { onPlayLive(item) },
+                                onLongPress = { onToggleFavourite(item) },
+                                onFocused = { onItemFocused(key) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One channel as a text row.
+ *
+ * The list view exists because a channel list is long: names are what a viewer scans for, and a
+ * row per channel puts far more of them on screen than artwork does. The logo stays as a small
+ * leading thumbnail, since it is what makes a channel recognisable at a glance.
+ */
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun LiveChannelRow(
+    item: MediaItem,
+    favourite: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit,
+    onFocused: () -> Unit,
+) {
+    val highContrast = LocalTvExperienceSettings.current.highContrast
+    var focused by remember { mutableStateOf(false) }
+    Card(
+        onClick = onClick,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() },
+        shape = CardDefaults.shape(AppCardShape),
+        colors = CardDefaults.colors(
+            containerColor = Color.White.copy(alpha = 0.04f),
+            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
+            pressedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
+        ),
+        border = CardDefaults.border(
+            border = Border.None,
+            focusedBorder = Border(
+                BorderStroke(if (highContrast) 3.dp else 2.dp, MaterialTheme.colorScheme.primary),
+                shape = AppCardShape,
+            ),
+        ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = 1f),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            AsyncImage(
+                model = item.poster ?: item.backdrop,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .size(width = 56.dp, height = 34.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.White.copy(alpha = 0.06f)),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                item.sourceCatalogName?.takeIf { it.isNotBlank() }?.let { catalog ->
+                    Text(
+                        text = catalog,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (favourite) {
+                Text(
+                    text = "★",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
     }

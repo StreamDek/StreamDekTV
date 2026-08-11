@@ -116,7 +116,9 @@ fun HomeScreen(
     val portraitCards = appPrefs?.homeRowCardStyle == "portrait"
     // Whatever the shelves do not need. See [spotlightHeight].
     val heroHeight = spotlightHeight(portraitCards)
-    val hideHomeSynopsis = appPrefs?.hideHomeSynopsis == true
+    // Default-on, so it also holds before preferences have loaded: starting hidden and staying
+    // hidden beats showing a paragraph that vanishes a moment later.
+    val hideHomeSynopsis = appPrefs?.hideHomeSynopsis != false
 
     val shelfListState = rememberLazyListState()
     val rowStates = remember { mutableMapOf<String, LazyListState>() }

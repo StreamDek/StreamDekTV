@@ -277,9 +277,10 @@ data class AppPreferences(
     val reducedMotion: Boolean = false,
     /**
      * Drops the synopsis from the Home spotlight, leaving the badge, title and metadata centred in
-     * the band. Off by default, so an account that has never seen this setting is unchanged.
+     * the band. On by default: at sofa distance a paragraph under the spotlight is rarely read and
+     * costs the artwork the room it earns.
      */
-    val hideHomeSynopsis: Boolean = false,
+    val hideHomeSynopsis: Boolean = true,
     /**
      * Lets the backdrop show through the navigation rail. Capped at 15% by design: the rail carries
      * the only persistent sense of where you are in the app, and past that it stops reading as a
@@ -493,6 +494,23 @@ data class DebridAccount(
 
 data class DebridIntegration(
     val accounts: List<DebridAccount> = emptyList(),
+)
+
+/**
+ * One IPTV playlist saved against the profile. Only the pointer syncs — the channels are fetched
+ * and parsed on this device by [M3uPlaylistEngine], since a playlist can carry tens of thousands
+ * of entries and goes stale on the provider's schedule.
+ */
+data class RemotePlaylist(
+    val id: String = "",
+    val name: String = "",
+    val url: String = "",
+    val enabled: Boolean = true,
+    val position: Int = 0,
+)
+
+data class RemotePlaylistResponse(
+    val playlists: List<RemotePlaylist> = emptyList(),
 )
 
 data class AddonCatalogRef(

@@ -374,7 +374,7 @@ fun SettingsScreen(
                     SettingsToggleRow("Built-in catalogs", "Show StreamDek's default movie and series rows alongside add-ons", homePrefs?.defaultAppCatalogsEnabled != false, selectedRequester) { next, complete ->
                         savePreference("Built-in catalogs", complete) { repository.updateHomePreferences(mapOf("defaultAppCatalogsEnabled" to next)) }
                     }
-                    SettingsToggleRow("Hide home synopsis", "Drop the description from the Home spotlight and centre the title and its details", appPrefs?.hideHomeSynopsis == true, selectedRequester) { next, complete ->
+                    SettingsToggleRow("Hide home synopsis", "Drop the description from the Home spotlight and centre the title and its details", appPrefs?.hideHomeSynopsis != false, selectedRequester) { next, complete ->
                         savePreference("Hide home synopsis", complete) { repository.updateAppPreferences(mapOf("hideHomeSynopsis" to next)) }
                     }
                     SettingsDropdownRow("Home row cards", "Use landscape or portrait artwork on the Home screen", appPrefs?.homeRowCardStyle ?: "landscape", listOf("landscape" to "Landscape", "portrait" to "Portrait")) { value ->

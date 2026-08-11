@@ -232,6 +232,7 @@ class StreamDekRepository(
     private val libraryCache = lruCache<String, LibraryResponse>(4)
     private val searchCache = lruCache<String, List<MediaItem>>(16)
     private val addonSearchCache = lruCache<String, List<MediaItem>>(16)
+    private val playlistCache = lruCache<String, List<RemotePlaylist>>(4)
     private val networkCache = lruCache<String, PagedRailResponse>(12)
     private val genreCache = lruCache<String, List<GenreItem>>(8)
     private val resolvedPlaybackCache = lruCache<String, ResolvedPlaybackCandidate>(16)
@@ -455,6 +456,7 @@ class StreamDekRepository(
         libraryCache.clear()
         searchCache.clear()
         addonSearchCache.clear()
+        playlistCache.clear()
         networkCache.clear()
         genreCache.clear()
         resolvedPlaybackCache.clear()
@@ -847,7 +849,7 @@ class StreamDekRepository(
     }
 
     suspend fun fetchLiveCatalogSections(): List<LiveCatalogSection> {
-        return fetchAddonCatalogCollections { _, mappedType -> mappedType == "live" }
+        val addonSections = fetchAddonCatalogCollections { _, mappedType -> mappedType == "live" }
             .groupBy { it.addonId }
             .map { (addonId, collections) ->
                 LiveCatalogSection(
@@ -863,6 +865,69 @@ class StreamDekRepository(
                 )
             }
             .filter { section -> section.rails.any { it.items.isNotEmpty() } }
+        // Playlists are one more source of live channels, so they arrive as sections alongside the
+        // add-ons rather than anywhere separate — the sidebar, favourites and search all treat them
+        // the same way once they are here.
+        return addonSections + fetchPlaylistLiveSections()
+    }
+
+    // ── IPTV playlists ───────────────────────────────────────────────────────────────────────────
+
+    /** The playlists saved against this profile, newest state from the account. */
+    suspend fun fetchPlaylists(forceRefresh: Boolean = false): List<RemotePlaylist> {
+        if (!forceRefresh) {
+            playlistCache[buildSessionProfileCacheKey()]?.let { return it }
+        }
+        // The profile header is attached by the API client from the active profile, the same way
+        // every other profile-scoped call gets it.
+        if (activeStreamProfile(bootstrapState.value) == null) return emptyList()
+        val response = runCatching { api.get<RemotePlaylistResponse>("/playlists") }.getOrNull()
+        val playlists = response?.playlists.orEmpty().filter { it.url.isNotBlank() }.sortedBy { it.position }
+        playlistCache[buildSessionProfileCacheKey()] = playlists
+        return playlists
+    }
+
+    /**
+     * One section per enabled playlist, its channels grouped into rails by `group-title`.
+     *
+     * Each playlist is loaded from its stored copy when there is one, so a cold start shows
+     * channels without waiting on the provider; a copy older than half a day is refetched. A
+     * playlist that fails is dropped rather than failing the others — an expired IPTV subscription
+     * must not empty the Live page for the add-ons that are still working.
+     */
+    private suspend fun fetchPlaylistLiveSections(): List<LiveCatalogSection> {
+        val playlists = fetchPlaylists().filter { it.enabled }
+        if (playlists.isEmpty()) return emptyList()
+        appContext?.let { M3uPlaylistEngine.initialize(it) }
+
+        return supervisorScope {
+            playlists.map { playlist ->
+                async(Dispatchers.IO) {
+                    val channels = M3uPlaylistEngine
+                        .fetchChannels(playlist, forceRefresh = M3uPlaylistEngine.needsRefresh(playlist))
+                        .onFailure { TvDebugLogger.w("Live", "playlist ${playlist.name} failed to load") }
+                        .getOrDefault(emptyList())
+                        .filter { it.type == "live" }
+                    if (channels.isEmpty()) return@async null
+                    val rails = channels
+                        .groupBy { it.sourceCatalogName ?: playlist.name }
+                        .entries
+                        .sortedBy { it.key.lowercase(Locale.US) }
+                        .mapIndexed { index, (category, items) ->
+                            LiveCatalogRail(
+                                id = "playlist:${playlist.id}:$index",
+                                title = category,
+                                items = items,
+                            )
+                        }
+                    LiveCatalogSection(
+                        id = "playlist:${playlist.id}",
+                        title = playlist.name,
+                        rails = rails,
+                    )
+                }
+            }.awaitAll().filterNotNull()
+        }
     }
 
     suspend fun fetchRelatedLiveChannels(
