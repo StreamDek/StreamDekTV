@@ -149,6 +149,8 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val currentRoute = backStackEntry?.destination?.route
     val activeProfile = repository.activeStreamProfile(bootstrap)
     val appPrefs = bootstrap?.preferences?.app
+    // Live presentation is synced with mobile under `home`, not `app`.
+    val homePrefs = bootstrap?.preferences?.home
     val homeContentRequester = remember { FocusRequester() }
     val searchContentRequester = remember { FocusRequester() }
     val liveContentRequester = remember { FocusRequester() }
@@ -441,6 +443,8 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         sections = liveNavigationState.sections,
                         isLoading = liveNavigationState.loading,
                         compactMode = appPrefs?.compactMode == true,
+                        landscapeCards = homePrefs?.liveLandscapeCards != false,
+                        categoriesEnabled = homePrefs?.liveCategoriesEnabled != false,
                         entryFocusRequester = liveContentRequester,
                         restoreFocusedItemKey = lastLiveFocusedItemKey,
                         restoreFocusToken = liveFocusRestoreToken,

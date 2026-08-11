@@ -499,7 +499,61 @@ data class AddonCatalogRef(
     val type: String = "",
     val id: String = "",
     val name: String? = null,
-)
+    /**
+     * The catalog's declared extra properties. Typed as `Any` for the same reason [resources] is:
+     * entries are normally objects (`{ "name": "search" }`) but some manifests list plain strings,
+     * and one odd add-on must not fail the whole manifest parse.
+     */
+    val extra: List<Any> = emptyList(),
+    /** Older, flat spelling of the same thing, still used by plenty of installed add-ons. */
+    val extraSupported: List<String> = emptyList(),
+    val extraRequired: List<String> = emptyList(),
+    /** Genre options as older manifests list them, beside `extraSupported` rather than in `extra`. */
+    val genres: List<String> = emptyList(),
+) {
+    /** Whether this catalog answers a `search` extra, in either manifest spelling. */
+    val supportsSearch: Boolean
+        get() = extra.any { addonExtraName(it).equals("search", ignoreCase = true) } ||
+            extraSupported.any { it.equals("search", ignoreCase = true) }
+
+    /**
+     * Whether the catalog cannot be listed at all without a genre. Only a *required* genre is
+     * filled in automatically: supplying one where it is optional would narrow the search.
+     */
+    val requiresGenre: Boolean
+        get() = extra.any { entry ->
+            addonExtraName(entry).equals("genre", ignoreCase = true) && addonExtraRequired(entry)
+        } || extraRequired.any { it.equals("genre", ignoreCase = true) }
+
+    /** The genre to send when one is required, or null when the catalog does not need one. */
+    val defaultGenre: String?
+        get() = if (!requiresGenre) null else genreOptions.firstOrNull()
+
+    private val genreOptions: List<String>
+        get() {
+            extra.forEach { entry ->
+                if (!addonExtraName(entry).equals("genre", ignoreCase = true)) return@forEach
+                addonExtraOptions(entry).takeIf { it.isNotEmpty() }?.let { return it }
+            }
+            return genres
+        }
+}
+
+private fun addonExtraName(entry: Any?): String = when (entry) {
+    is String -> entry
+    is Map<*, *> -> entry["name"]?.toString().orEmpty()
+    else -> ""
+}
+
+private fun addonExtraRequired(entry: Any?): Boolean = when (entry) {
+    is Map<*, *> -> entry["isRequired"] == true
+    else -> false
+}
+
+private fun addonExtraOptions(entry: Any?): List<String> = when (entry) {
+    is Map<*, *> -> (entry["options"] as? List<*>).orEmpty().mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }
+    else -> emptyList()
+}
 
 data class AddonManifestMeta(
     val id: String = "",

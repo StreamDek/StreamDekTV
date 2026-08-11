@@ -126,7 +126,10 @@ fun SearchScreen(
     var editing by remember { mutableStateOf(false) }
     var queryFocused by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    /** Add-on catalog matches, kept apart so they can land after the faster TMDB pass. */
+    var addonResults by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
+    var addonSearching by remember { mutableStateOf(false) }
     var searchScope by remember { mutableStateOf(SearchScope.All) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
     var openTray by remember { mutableStateOf(OpenTray.None) }
@@ -161,8 +164,11 @@ fun SearchScreen(
     }
 
     val hasQuery = query.trim().length >= 2
-    val visibleResults = remember(results, searchScope) {
-        results.filter {
+    // Add-on matches follow the TMDB ones rather than interleaving: the ordering stays stable as
+    // the slower add-on pass lands, so nothing shifts under a viewer already moving through the grid.
+    val allResults = remember(results, addonResults) { results + addonResults }
+    val visibleResults = remember(allResults, searchScope) {
+        allResults.filter {
             when (searchScope) {
                 SearchScope.All -> true
                 SearchScope.Movies -> it.type == "movie"
@@ -172,11 +178,14 @@ fun SearchScreen(
         }
     }
     val rawItems = if (hasQuery) visibleResults else discoverItems
+    // Only a spinner while nothing is on screen yet. Once the TMDB pass has landed, add-ons still
+    // answering must not blank out results the viewer can already act on.
+    val searchingAnything = searching || addonSearching
     // Same guard as Library: a repeated entry must not take the screen down.
     val items = remember(rawItems) {
         rawItems.distinctBy { listOf(it.type, it.sourceAddonId.orEmpty(), it.sourceCatalogId.orEmpty(), it.id) }
     }
-    val loading = if (hasQuery) searching else discoverLoading
+    val loading = if (hasQuery) searchingAnything && items.isEmpty() else discoverLoading
 
     LaunchedEffect(discoverType) {
         discoverGenreId = null
@@ -241,6 +250,21 @@ fun SearchScreen(
             searchHistory.edit().putString("recent", recentSearches.joinToString("")).apply()
         }
         searching = false
+    }
+
+    // Add-on catalogs answer the same query in their own effect, so one slow provider delays only
+    // its own results. Cancelled and restarted with the query like the pass above.
+    LaunchedEffect(query) {
+        val normalized = query.trim()
+        if (normalized.length < 2) {
+            addonResults = emptyList()
+            addonSearching = false
+            return@LaunchedEffect
+        }
+        addonSearching = true
+        delay(260)
+        addonResults = runCatching { repository.searchAddonCatalogs(normalized) }.getOrDefault(emptyList())
+        addonSearching = false
     }
 
     LaunchedEffect(items.size) {

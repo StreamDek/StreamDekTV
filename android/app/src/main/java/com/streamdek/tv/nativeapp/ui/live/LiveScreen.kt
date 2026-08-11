@@ -57,6 +57,19 @@ import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 
 private val LiveSidebarWidth = 236.dp
 
+/**
+ * One selectable entry in the sidebar: a source, or a single category within one when categories
+ * are on. [sourceTitle] is the owning source, shown only when the entry is a category, so two
+ * add-ons both offering "Sport" stay tellable apart.
+ */
+private data class LiveBucket(
+    val id: String,
+    val title: String,
+    val sourceTitle: String?,
+    val addonId: String,
+    val keys: Set<String>,
+)
+
 /** Identity used for favourites and for restoring focus. */
 private fun liveKey(item: MediaItem): String = "${item.sourceAddonId}:${item.sourceCatalogId}:${item.id}"
 
@@ -81,6 +94,10 @@ fun LiveScreen(
     sections: List<LiveCatalogSection>,
     isLoading: Boolean,
     compactMode: Boolean = false,
+    /** Wide channel artwork, as synced from mobile. Off uses portrait cards. */
+    landscapeCards: Boolean = true,
+    /** List each source's categories in the sidebar. Off lists one entry per source. */
+    categoriesEnabled: Boolean = true,
     entryFocusRequester: FocusRequester? = null,
     restoreFocusedItemKey: String? = null,
     restoreFocusToken: Int = 0,
@@ -103,25 +120,46 @@ fun LiveScreen(
     val allItems = remember(sections) {
         sections.flatMap { it.rails }.flatMap { it.items }.distinctBy(::liveKey)
     }
-    // Channel ids per source, resolved once. The old filter walked every rail of the selected
-    // section for every item on screen.
-    val idsBySource = remember(sections) {
-        sections.associate { section ->
-            section.id to section.rails.flatMap { rail -> rail.items.map(::liveKey) }.toHashSet()
-        }
+    // What the sidebar lists below the fixed entries: one row per category when categories are on,
+    // otherwise one per source. Ids are resolved once here — the old filter walked every rail of
+    // the selected section for every item on screen.
+    val buckets = remember(sections, categoriesEnabled) {
+        sections.flatMap { section ->
+            if (categoriesEnabled) {
+                section.rails.map { rail ->
+                    LiveBucket(
+                        id = rail.id,
+                        title = rail.title,
+                        sourceTitle = section.title,
+                        addonId = section.id,
+                        keys = rail.items.mapTo(hashSetOf(), ::liveKey),
+                    )
+                }
+            } else {
+                listOf(
+                    LiveBucket(
+                        id = section.id,
+                        title = section.title,
+                        sourceTitle = null,
+                        addonId = section.id,
+                        keys = section.rails.flatMap { rail -> rail.items.map(::liveKey) }.toHashSet(),
+                    ),
+                )
+            }
+        }.filter { it.keys.isNotEmpty() }
     }
 
-    val visibleItems = remember(allItems, selectedSourceId, favouritesOnly, favouriteKeys, idsBySource) {
-        val sourceIds = selectedSourceId?.let { idsBySource[it] }
+    val visibleItems = remember(allItems, selectedSourceId, favouritesOnly, favouriteKeys, buckets) {
+        val bucketKeys = selectedSourceId?.let { id -> buckets.firstOrNull { it.id == id }?.keys }
         allItems.filter { item ->
             val key = liveKey(item)
-            (!favouritesOnly || key in favouriteKeys) && (sourceIds == null || key in sourceIds)
+            (!favouritesOnly || key in favouriteKeys) && (bucketKeys == null || key in bucketKeys)
         }
     }
 
     val heading = when {
         favouritesOnly -> "Favourite channels"
-        selectedSourceId != null -> sections.firstOrNull { it.id == selectedSourceId }?.title ?: "Live TV"
+        selectedSourceId != null -> buckets.firstOrNull { it.id == selectedSourceId }?.title ?: "Live TV"
         else -> "All live channels"
     }
 
@@ -178,23 +216,24 @@ fun LiveScreen(
                     onClick = { favouritesOnly = true; selectedSourceId = null },
                 )
             }
-            if (sections.isNotEmpty()) {
+            if (buckets.isNotEmpty()) {
                 item("sources-label") {
                     Text(
-                        text = "SOURCES",
+                        text = if (categoriesEnabled) "CATEGORIES" else "SOURCES",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(start = 6.dp, top = 14.dp, bottom = 4.dp),
                     )
                 }
             }
-            items(sections, key = { it.id }) { section ->
+            items(buckets, key = { it.id }) { bucket ->
                 LiveSourceRow(
-                    label = section.title,
-                    count = section.rails.sumOf { it.items.size },
-                    selected = !favouritesOnly && selectedSourceId == section.id,
+                    label = bucket.title,
+                    caption = bucket.sourceTitle,
+                    count = bucket.keys.size,
+                    selected = !favouritesOnly && selectedSourceId == bucket.id,
                     modifier = Modifier.focusProperties { right = firstCardRequester },
-                    onClick = { favouritesOnly = false; selectedSourceId = section.id },
+                    onClick = { favouritesOnly = false; selectedSourceId = bucket.id },
                 )
             }
             item("browse") {
@@ -203,7 +242,16 @@ fun LiveScreen(
                     count = null,
                     selected = false,
                     modifier = Modifier.padding(top = 14.dp).focusProperties { right = firstCardRequester },
-                    onClick = { onViewAll(selectedSourceId?.removePrefix("live:"), null) },
+                    onClick = {
+                        // Carries whatever the sidebar has narrowed to. The selected entry is a
+                        // category id when categories are on, so the source comes off the bucket
+                        // rather than off the selection, which is only a source id when they are off.
+                        val bucket = selectedSourceId?.let { id -> buckets.firstOrNull { it.id == id } }
+                        onViewAll(
+                            bucket?.addonId?.removePrefix("live:"),
+                            bucket?.id?.takeIf { categoriesEnabled },
+                        )
+                    },
                 )
             }
         }
@@ -264,12 +312,21 @@ fun LiveScreen(
                         val effective = if (index == 0) firstCardRequester else requester
                         PremiumMediaCard(
                             item = item,
-                            variant = TvMediaCardVariant.Live,
+                            variant = if (landscapeCards) TvMediaCardVariant.Live else TvMediaCardVariant.Poster,
                             favourite = key in favouriteKeys,
                             showProvider = true,
                             modifier = Modifier
                                 .focusRequester(effective)
-                                .height(if (compactMode) 108.dp else 122.dp)
+                                // Portrait cards are taller than wide. The card crops to whatever box
+                                // it is given, so the height is what makes it read as a poster: at
+                                // this grid's card width these land near the usual 2:3.
+                                .height(
+                                    when {
+                                        !landscapeCards -> if (compactMode) 176.dp else 196.dp
+                                        compactMode -> 108.dp
+                                        else -> 122.dp
+                                    },
+                                )
                                 .focusProperties { if (index % gridColumns == 0) left = sidebarEntry }
                                 .tvCardLongPress { onToggleFavourite(item) },
                             onClick = { onPlayLive(item) },
@@ -291,12 +348,13 @@ private fun LiveSourceRow(
     count: Int?,
     selected: Boolean,
     modifier: Modifier = Modifier,
+    caption: String? = null,
     onClick: () -> Unit,
 ) {
     val highContrast = LocalTvExperienceSettings.current.highContrast
     Card(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(44.dp),
+        modifier = modifier.fillMaxWidth().height(if (caption == null) 44.dp else 52.dp),
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
             containerColor = if (selected) {
@@ -322,14 +380,24 @@ private fun LiveSourceRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
+            Column(modifier = Modifier.weight(1f, fill = false)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                caption?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             count?.let {
                 Text(
                     text = it.toString(),

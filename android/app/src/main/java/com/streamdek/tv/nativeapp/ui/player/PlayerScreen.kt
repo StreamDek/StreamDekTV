@@ -224,7 +224,11 @@ fun PlayerScreen(
     var liveChannelsLoading by remember { mutableStateOf(false) }
     var liveChannelRowVisible by remember { mutableStateOf(false) }
     var liveFavouritesDrawerVisible by remember { mutableStateOf(false) }
-    var liveFavouritesCardView by remember { mutableStateOf(false) }
+    // Opens in whichever view the profile has synced from mobile. The in-player toggle below still
+    // switches it for this session; it just no longer starts from nothing every time.
+    var liveFavouritesCardView by remember(bootstrap?.preferences?.home?.liveFavouriteDrawerCards) {
+        mutableStateOf(bootstrap?.preferences?.home?.liveFavouriteDrawerCards == true)
+    }
     var liveHintsVisible by remember { mutableStateOf(true) }
     var liveRefetchGeneration by remember { mutableIntStateOf(0) }
     var lastLiveProgressAtMs by remember { mutableStateOf(0L) }

@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -229,6 +231,7 @@ class StreamDekRepository(
     private val homeCache = lruCache<String, HomeContent>(4)
     private val libraryCache = lruCache<String, LibraryResponse>(4)
     private val searchCache = lruCache<String, List<MediaItem>>(16)
+    private val addonSearchCache = lruCache<String, List<MediaItem>>(16)
     private val networkCache = lruCache<String, PagedRailResponse>(12)
     private val genreCache = lruCache<String, List<GenreItem>>(8)
     private val resolvedPlaybackCache = lruCache<String, ResolvedPlaybackCandidate>(16)
@@ -451,6 +454,7 @@ class StreamDekRepository(
         homeCache.clear()
         libraryCache.clear()
         searchCache.clear()
+        addonSearchCache.clear()
         networkCache.clear()
         genreCache.clear()
         resolvedPlaybackCache.clear()
@@ -795,12 +799,21 @@ class StreamDekRepository(
         addon: AddonManifest,
         rawType: String,
         catalogId: String,
+        genre: String? = null,
+        search: String? = null,
     ): List<AddonCatalogMetaItem> = withContext(Dispatchers.IO) {
         val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: return@withContext emptyList()
         val addonBaseUrl = manifestUrl
             .substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl.trimEnd('/'))
             .trimEnd('/')
-        val endpoint = "$addonBaseUrl/catalog/${encodePathSegment(rawType)}/${encodePathSegment(catalogId)}.json"
+        // Stremio takes extras as one more path segment before .json, not a query string:
+        // /catalog/movie/{id}/search=blade%20runner.json
+        val extras = buildList {
+            genre?.takeIf { it.isNotBlank() }?.let { add("genre=" + addonPathSegment(it)) }
+            search?.takeIf { it.isNotBlank() }?.let { add("search=" + addonPathSegment(it)) }
+        }
+        val extraSegment = extras.takeIf { it.isNotEmpty() }?.joinToString("&", prefix = "/").orEmpty()
+        val endpoint = "$addonBaseUrl/catalog/${addonPathSegment(rawType)}/${addonPathSegment(catalogId)}$extraSegment.json"
         runCatching {
             val request = okhttp3.Request.Builder()
                 .url(endpoint)
@@ -1313,6 +1326,95 @@ class StreamDekRepository(
         searchCache[cacheKey] = results
         return results
     }
+    /**
+     * Asks every enabled add-on catalog that advertises search to answer the same query.
+     *
+     * Kept apart from [searchMedia] rather than folded into it: TMDB answers in one round trip
+     * while add-ons answer at their own pace, and waiting for the slowest add-on before showing
+     * anything would make every search feel as slow as the worst provider. The Search screen runs
+     * the two side by side and appends these when they land.
+     *
+     * Goes straight to each add-on. The backend's catalog route takes no extras, so there is no
+     * way to pass a query through it, and this works for locally-reachable add-ons unchanged.
+     */
+    suspend fun searchAddonCatalogs(query: String, forceRefresh: Boolean = false): List<MediaItem> {
+        val normalized = query.trim()
+        if (normalized.length < 2) return emptyList()
+        val cacheKey = buildSessionProfileCacheKey() + ":addon:" + normalized.lowercase(Locale.US)
+        if (!forceRefresh) {
+            addonSearchCache[cacheKey]?.let { return it }
+        }
+        val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
+            .filter { it.enabled }
+            .sortedBy { it.position }
+        val searchable = addons.flatMap { addon ->
+            addon.manifest.catalogs.filter { it.supportsSearch }.map { addon to it }
+        }
+        if (searchable.isEmpty()) return emptyList()
+
+        // Enough to keep a wall of add-ons from queueing behind each other, few enough not to
+        // open a socket per catalog on a TV box.
+        val gate = Semaphore(5)
+        val found = supervisorScope {
+            searchable.map { (addon, catalog) ->
+                async(Dispatchers.IO) {
+                    gate.withPermit {
+                        val rawType = catalog.type.trim().lowercase(Locale.US)
+                        val mappedType = mapAddonCatalogType(rawType) ?: return@withPermit emptyList()
+                        val catalogId = catalog.id.trim()
+                        if (catalogId.isBlank()) return@withPermit emptyList()
+                        fetchAddonCatalogDirect(
+                            addon = addon,
+                            rawType = rawType,
+                            catalogId = catalogId,
+                            // A catalog that insists on a genre still needs one alongside the query.
+                            genre = catalog.defaultGenre,
+                            search = normalized,
+                        )
+                            .filterNot(::isAddonCatalogDiagnosticMeta)
+                            .mapNotNull { meta ->
+                                normalizeAddonCatalogMeta(
+                                    meta = meta,
+                                    fallbackType = mappedType,
+                                    nativeFallbackType = rawType,
+                                    addonId = addon.id,
+                                    addonName = addon.manifest.name,
+                                    catalogId = catalogId,
+                                    catalogName = catalog.name,
+                                )
+                            }
+                    }
+                }
+            }.awaitAll().flatten()
+        }
+        // Add-ons answer their own way and some ignore the query entirely, returning their default
+        // listing, so matches are checked here rather than trusted wholesale.
+        val results = found
+            .mapNotNull { item -> addonSearchRank(item, normalized)?.let { it to item } }
+            .sortedWith(compareBy({ it.first }, { it.second.title.lowercase(Locale.US) }))
+            .map { it.second }
+            .distinctBy { item ->
+                listOf(item.type, item.sourceAddonId.orEmpty(), item.sourceCatalogId.orEmpty(), item.id).joinToString(":")
+            }
+        TvDebugLogger.i("Search", "addon catalog search '$normalized' catalogs=${searchable.size} results=${results.size}")
+        addonSearchCache[cacheKey] = results
+        return results
+    }
+
+    /**
+     * How well an add-on result answers the query, lowest first, or null when it does not.
+     *
+     * Title and catalog name only. An add-on's descriptions are often built from its own name and
+     * group, so matching those too would let one matching word pull in the whole catalog.
+     */
+    private fun addonSearchRank(item: MediaItem, needle: String): Int? = when {
+        item.title.equals(needle, ignoreCase = true) -> 0
+        item.title.startsWith(needle, ignoreCase = true) -> 1
+        item.title.contains(needle, ignoreCase = true) -> 2
+        item.sourceCatalogName?.contains(needle, ignoreCase = true) == true -> 3
+        else -> null
+    }
+
     suspend fun fetchGenres(type: String, forceRefresh: Boolean = false): List<GenreItem> {
         val normalized = if (type == "tv") "tv" else "movie"
         if (!forceRefresh) {
@@ -2110,6 +2212,15 @@ class StreamDekRepository(
     }
 
     private fun encodePathSegment(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    /**
+     * Percent-encoding for a path segment sent straight to a third-party add-on.
+     *
+     * [encodePathSegment] form-encodes, turning a space into "+", which a server decoding a path
+     * segment does not turn back into a space. That is harmless for StreamDek's own routes but
+     * breaks add-on catalog ids containing spaces, and would break every multi-word search.
+     */
+    private fun addonPathSegment(value: String): String = android.net.Uri.encode(value)
 
     /**
      * Streams the addon results for a title as they arrive instead of waiting for every

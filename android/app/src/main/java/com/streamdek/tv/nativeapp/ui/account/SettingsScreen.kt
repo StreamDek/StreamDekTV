@@ -24,16 +24,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Accessibility
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.ArrowDropDown
-import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -112,18 +112,28 @@ private fun pluginSourceSection(
     }
 }
 
+/**
+ * The rail, grouped and ordered to match the mobile app's settings home: the account, then what
+ * plays, then how it looks, then where content comes from, what the TV is connected to, and the
+ * app itself.
+ *
+ * Kept to ten entries. Every extra destination is another press away from the one being looked
+ * for, so pages that held a single control were folded into the page that owns the subject:
+ * subtitles and the live progress bar sit in Playback, legacy compact mode in Accessibility, and
+ * the old Diagnostics health check in About.
+ */
 private enum class SettingsDestination(val label: String, val description: String, val terms: String, val icon: ImageVector) {
-    Accounts("Accounts", "Profiles and household access", "profile pin sign in", Icons.Outlined.AccountCircle),
-    Tracking("Tracking", "Watch history and cloud services", "trakt simkl mdblist sync", Icons.Outlined.Sync),
-    Playback("Playback", "Player, quality, audio and episodes", "decoder subtitles autoplay intro", Icons.Outlined.PlayArrow),
-    Library("Library & Home", "Catalogs, cards and browsing layout", "poster landscape grid collections home", Icons.Outlined.VideoLibrary),
-    Providers("Providers", "Add-ons, streams and debrid status", "sources fusion badges", Icons.Outlined.Extension),
-    Appearance("Appearance", "Theme, motion and presentation", "accent animation blur start", Icons.Outlined.Palette),
-    Accessibility("Accessibility", "Contrast, text and reduced motion", "vision screen reader", Icons.Outlined.Accessibility),
-    Devices("Devices", "Connected televisions and sessions", "cloud sync", Icons.Outlined.Devices),
-    Advanced("Advanced", "Navigation and TV behaviour", "developer experimental compact", Icons.Outlined.Settings),
-    Diagnostics("Diagnostics", "Health, cache and connectivity", "performance network health", Icons.Outlined.BugReport),
-    About("About", "Version information and updates", "release", Icons.Outlined.Info),
+    Account("Account", "Profiles, sign-in and household access", "accounts profile pin sign in switch household", Icons.Outlined.AccountCircle),
+    Playback("Playback", "Player, audio, subtitles and compatibility", "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
+    SkipAndAutoplay("Skip & Autoplay", "Intros, recaps and the next episode", "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
+    Streams("Streams & Quality", "Preferred quality, limits and result labels", "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
+    Library("Home & Layout", "Rows, cards and browsing layout", "home catalogs rows poster landscape grid columns density start screen", Icons.Outlined.VideoLibrary),
+    LiveTv("Live TV", "Channel lists, cards and the live player", "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
+    Appearance("Appearance", "Theme, motion and presentation", "accent colour theme animation blur transparent navigation", Icons.Outlined.Palette),
+    Accessibility("Accessibility", "Contrast, text and reduced motion", "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
+    Sources("Sources", "Add-ons, plugins and premium services", "providers addon plugin cloudstream debrid premium install", Icons.Outlined.Extension),
+    Connections("Connections", "Tracking services, devices and sessions", "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
+    About("About", "Version, updates and health", "release update version diagnostics health cache network runtime", Icons.Outlined.Info),
 }
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -142,7 +152,7 @@ fun SettingsScreen(
     val updateState by appUpdateManager.uiState.collectAsState()
     var bootstrap by remember { mutableStateOf<AccountBootstrap?>(repository.bootstrap.value) }
     var addons by remember { mutableStateOf<List<AddonManifest>>(emptyList()) }
-    var selected by remember { mutableStateOf(SettingsDestination.Accounts) }
+    var selected by remember { mutableStateOf(SettingsDestination.Account) }
     var query by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var expandedPluginParents by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -150,7 +160,7 @@ fun SettingsScreen(
     var editingPluginProvider by remember { mutableStateOf<ProfilePluginProvider?>(null) }
     val contentEntryRequester = remember { FocusRequester() }
     val destinationRequesters = remember(entryFocusRequester) {
-        SettingsDestination.entries.associateWith { if (it == SettingsDestination.Accounts) entryFocusRequester else FocusRequester() }
+        SettingsDestination.entries.associateWith { if (it == SettingsDestination.Account) entryFocusRequester else FocusRequester() }
     }
     val contentScroll = rememberScrollState()
 
@@ -158,7 +168,7 @@ fun SettingsScreen(
         bootstrap = repository.refreshBootstrap()
         addons = repository.fetchAddonManifests()
         delay(120)
-        runCatching { destinationRequesters.getValue(SettingsDestination.Accounts).requestFocus() }
+        runCatching { destinationRequesters.getValue(SettingsDestination.Account).requestFocus() }
     }
     LaunchedEffect(selected) { contentScroll.scrollTo(0) }
     LaunchedEffect(status) {
@@ -252,7 +262,7 @@ fun SettingsScreen(
         ) {
             SettingsOverviewCard(selected, status, contentEntryRequester, selectedRequester)
             when (selected) {
-                SettingsDestination.Accounts -> {
+                SettingsDestination.Account -> {
                     SettingsPanel("Active profile") {
                         if (activeProfile != null) {
                             var profileSummaryFocused by remember(activeProfile.id) { mutableStateOf(false) }
@@ -284,47 +294,12 @@ fun SettingsScreen(
                         }
                     }
                 }
-                SettingsDestination.Tracking -> {
-                    val integrations = bootstrap?.integrations
-                    SettingsDropdownRow(
-                        "Primary library service",
-                        "Choose which connected service supplies watchlist and continue watching",
-                        SyncServiceId.normalize(homePrefs?.primarySyncService),
-                        trackingOptions,
-                    ) { value ->
-                        savePreference("Primary library service") {
-                            repository.updateHomePreferences(mapOf("primarySyncService" to value))
-                        }
-                    }
-                    SettingsPanel("Cloud tracking") {
-                        InfoLine("Primary", SyncServiceId.label(SyncServiceId.normalize(homePrefs?.primarySyncService)))
-                        InfoLine("Trakt", serviceStatus(integrations?.trakt?.connected == true, integrations?.trakt?.username))
-                        InfoLine("Simkl", serviceStatus(integrations?.simkl?.connected == true, integrations?.simkl?.username))
-                        InfoLine("MDBList", serviceStatus(integrations?.mdblist?.connected == true, integrations?.mdblist?.username))
-                        InfoLine("Connect services", "Use StreamDek Mobile for OAuth sign-in")
-                    }
-                    SettingsActionRow("Refresh tracking", "Pull the latest cloud connections", "Refresh", selectedRequester) {
-                        scope.launch { bootstrap = repository.refreshBootstrap(); status = "Tracking refreshed." }
-                    }
-                }
                 SettingsDestination.Playback -> {
                     SettingsPanel("Synced TV playback") {
                         InfoLine("Cloud scope", "Changes apply on this TV and sync to mobile")
                     }
-                    SettingsDropdownRow("Player engine", "Auto uses Media3 first with one MPV fallback", normalizePlayerEngine(playbackPrefs?.playerEngine), listOf("Auto" to "Auto", "ExoPlayer" to "Media3 / ExoPlayer", "MPV" to "MPV")) { value ->
-                        savePreference("Player engine") { repository.updatePlaybackPreferences(mapOf("playerEngine" to value)) }
-                    }
-                    SettingsDropdownRow("Video compatibility", "Choose hardware acceleration or safe software decoding", normalizeDecoderMode(playbackPrefs?.decoderMode), listOf("HW+" to "Recommended (HW+)", "HW" to "Device (HW)", "SW" to "Safe (SW)")) { value ->
-                        savePreference("Video compatibility") { repository.updatePlaybackPreferences(mapOf("decoderMode" to value)) }
-                    }
-                    SettingsDropdownRow("Player display", "Compatibility mode uses a texture-backed video surface", normalizeRenderSurface(playbackPrefs?.renderSurface), listOf("Standard" to "Standard", "Compatibility" to "Compatibility")) { value ->
-                        savePreference("Player display") { repository.updatePlaybackPreferences(mapOf("renderSurface" to value)) }
-                    }
-                    SettingsDropdownRow("Preferred quality", "Rank matching streams first across TV and mobile", normalizePreferredQuality(playbackPrefs?.preferredQuality), listOf("Auto" to "Auto", "2160p" to "4K / 2160p", "1080p" to "1080p", "720p" to "720p")) { value ->
-                        savePreference("Preferred quality") { repository.updatePlaybackPreferences(mapOf("preferredQuality" to value)) }
-                    }
-                    SettingsDropdownRow("Maximum file size", "Hide larger streams when size metadata is available", playbackPrefs?.maxFileSizeGB ?: "0", listOf("0" to "Unlimited", "2" to "2 GB", "5" to "5 GB", "10" to "10 GB", "20" to "20 GB")) { value ->
-                        savePreference("Maximum file size") { repository.updatePlaybackPreferences(mapOf("maxFileSizeGB" to value)) }
+                    SettingsDropdownRow("Default player", "Auto uses Media3 first with one MPV fallback", normalizePlayerEngine(playbackPrefs?.playerEngine), listOf("Auto" to "Auto", "ExoPlayer" to "Media3 / ExoPlayer", "MPV" to "MPV")) { value ->
+                        savePreference("Default player") { repository.updatePlaybackPreferences(mapOf("playerEngine" to value)) }
                     }
                     SettingsDropdownRow("Default audio", "Select the first matching audio track", normalizeLanguage(playbackPrefs?.defaultAudioLanguage), languageOptions(includeOff = false)) { value ->
                         savePreference("Default audio") { repository.updatePlaybackPreferences(mapOf("defaultAudioLanguage" to value)) }
@@ -335,12 +310,18 @@ fun SettingsScreen(
                     SettingsToggleRow("Auto-load subtitles", "Automatically select matching subtitles when playback starts", playbackPrefs?.autoLoadSubtitles != false, selectedRequester) { next, complete ->
                         savePreference("Auto-load subtitles", complete) { repository.updatePlaybackPreferences(mapOf("autoLoadSubtitles" to next)) }
                     }
-                    SettingsToggleRow("Live progress", "Show the timeline when Live TV or playlist VOD playback opens", playbackPrefs?.liveProgressBarEnabled == true, selectedRequester) { next, complete ->
-                        savePreference("Live progress", complete) { repository.updatePlaybackPreferences(mapOf("liveProgressBarEnabled" to next)) }
+                    // Last on the page: only worth opening when something will not play.
+                    SettingsPanel("If a video will not play") {
+                        InfoLine("When these apply", "Used when MPV is selected, or Auto falls back to it")
                     }
-                    SettingsToggleRow("Auto-play next episode", "Start the next episode near the configured threshold", playbackPrefs?.isAutoPlayNextEpisodeEnabled() != false, selectedRequester) { next, complete ->
-                        savePreference("Auto-play next episode", complete) { repository.updatePlaybackPreferences(mapOf("autoPlayNextEpisodeEnabled" to next)) }
+                    SettingsDropdownRow("MPV video compatibility", "Choose hardware acceleration or safe software decoding", normalizeDecoderMode(playbackPrefs?.decoderMode), listOf("HW+" to "Recommended (HW+)", "HW" to "Device (HW)", "SW" to "Safe (SW)")) { value ->
+                        savePreference("MPV video compatibility") { repository.updatePlaybackPreferences(mapOf("decoderMode" to value)) }
                     }
+                    SettingsDropdownRow("MPV display", "Compatibility mode uses a texture-backed video surface", normalizeRenderSurface(playbackPrefs?.renderSurface), listOf("Standard" to "Standard", "Compatibility" to "Compatibility")) { value ->
+                        savePreference("MPV display") { repository.updatePlaybackPreferences(mapOf("renderSurface" to value)) }
+                    }
+                }
+                SettingsDestination.SkipAndAutoplay -> {
                     SettingsToggleRow("Skip intro", "Show the skip control when an intro is detected", playbackPrefs?.isSegmentEnabled("intro") != false, selectedRequester) { next, complete ->
                         savePreference("Skip intro", complete) { repository.updatePlaybackPreferences(mapOf("skipIntroEnabled" to next)) }
                     }
@@ -349,6 +330,9 @@ fun SettingsScreen(
                     }
                     SettingsToggleRow("Skip ending", "Show the skip control when an ending is detected", playbackPrefs?.isSegmentEnabled("outro") != false, selectedRequester) { next, complete ->
                         savePreference("Skip ending", complete) { repository.updatePlaybackPreferences(mapOf("skipEndingEnabled" to next)) }
+                    }
+                    SettingsToggleRow("Auto-play next episode", "Start the next episode near the configured threshold", playbackPrefs?.isAutoPlayNextEpisodeEnabled() != false, selectedRequester) { next, complete ->
+                        savePreference("Auto-play next episode", complete) { repository.updatePlaybackPreferences(mapOf("autoPlayNextEpisodeEnabled" to next)) }
                     }
                     SettingsToggleRow("Keep the same source", "Prefer the current provider and release group for the next episode", playbackPrefs?.preferBingeGroupNextEpisode != false, selectedRequester) { next, complete ->
                         savePreference("Next-episode source", complete) { repository.updatePlaybackPreferences(mapOf("preferBingeGroupNextEpisode" to next)) }
@@ -364,6 +348,26 @@ fun SettingsScreen(
                         SettingsDropdownRow("Minutes remaining", "Remaining time before the next episode starts", (playbackPrefs?.nextEpisodeThresholdMinutes ?: 2).toString(), listOf(1, 2, 3, 5, 10, 15).map { it.toString() to "$it minutes" }) { value ->
                             savePreference("Minutes remaining") { repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdMinutes" to value.toInt())) }
                         }
+                    }
+                }
+                SettingsDestination.Streams -> {
+                    SettingsDropdownRow("Preferred quality", "Rank matching streams first across TV and mobile", normalizePreferredQuality(playbackPrefs?.preferredQuality), listOf("Auto" to "Auto", "2160p" to "4K / 2160p", "1080p" to "1080p", "720p" to "720p")) { value ->
+                        savePreference("Preferred quality") { repository.updatePlaybackPreferences(mapOf("preferredQuality" to value)) }
+                    }
+                    SettingsDropdownRow("Maximum file size", "Hide larger streams when size metadata is available", playbackPrefs?.maxFileSizeGB ?: "0", listOf("0" to "Unlimited", "2" to "2 GB", "5" to "5 GB", "10" to "10 GB", "20" to "20 GB")) { value ->
+                        savePreference("Maximum file size") { repository.updatePlaybackPreferences(mapOf("maxFileSizeGB" to value)) }
+                    }
+                    SettingsToggleRow("Show stream picker", "Choose a source before playback instead of selecting automatically", streamsPrefs?.showStreamsList != false, selectedRequester) { next, complete ->
+                        savePreference("Stream picker", complete) { repository.updateStreamsPreferences(mapOf("showStreamsList" to next)) }
+                    }
+                    SettingsToggleRow("Remember last source", "Prefer the source previously used for the same title", streamsPrefs?.rememberLastSource != false, selectedRequester) { next, complete ->
+                        savePreference("Remember last source", complete) { repository.updateStreamsPreferences(mapOf("rememberLastSource" to next)) }
+                    }
+                    SettingsToggleRow("Stream detail badges", "Show quality, source, codec and HDR labels", streamsPrefs?.fusionBadgesEnabled != false, selectedRequester) { next, complete ->
+                        savePreference("Stream detail badges", complete) { repository.updateStreamsPreferences(mapOf("fusionBadgesEnabled" to next)) }
+                    }
+                    SettingsToggleRow("Size badges", "Show file sizes on stream choices", streamsPrefs?.showSizeBadges != false, selectedRequester) { next, complete ->
+                        savePreference("Size badges", complete) { repository.updateStreamsPreferences(mapOf("showSizeBadges" to next)) }
                     }
                 }
                 SettingsDestination.Library -> {
@@ -382,8 +386,32 @@ fun SettingsScreen(
                     SettingsDropdownRow("Grid columns", "Balance artwork size and visible items", (appPrefs?.gridSize ?: 5).toString(), (4..7).map { it.toString() to "$it columns" }) { value ->
                         savePreference("Grid columns") { repository.updateAppPreferences(mapOf("gridSize" to value.toInt())) }
                     }
+                    // Sits with Home rather than Appearance: it picks which screen opens, not how it looks.
+                    SettingsDropdownRow("Start screen", "Choose where StreamDek opens", appPrefs?.startScreen ?: "home", listOf("home" to "Home", "library" to "Library", "continue-watching" to "Continue watching")) { value ->
+                        savePreference("Start screen") { repository.updateAppPreferences(mapOf("startScreen" to value)) }
+                    }
                 }
-                SettingsDestination.Providers -> {
+                SettingsDestination.LiveTv -> {
+                    SettingsPanel("Channel list") {
+                        InfoLine("Synced with mobile", "These match the Live TV page in StreamDek Mobile")
+                    }
+                    SettingsToggleRow("Landscape channel cards", "Show channels as wide cards. Off uses portrait artwork.", homePrefs?.liveLandscapeCards != false, selectedRequester) { next, complete ->
+                        savePreference("Landscape channel cards", complete) { repository.updateHomePreferences(mapOf("liveLandscapeCards" to next)) }
+                    }
+                    SettingsToggleRow("Group channels into categories", "List each source's categories in the sidebar. Off lists one entry per source.", homePrefs?.liveCategoriesEnabled != false, selectedRequester) { next, complete ->
+                        savePreference("Channel categories", complete) { repository.updateHomePreferences(mapOf("liveCategoriesEnabled" to next)) }
+                    }
+                    SettingsToggleRow("Card-style favourites", "Show channel artwork in the player's favourites drawer. Off uses the compact text list.", homePrefs?.liveFavouriteDrawerCards == true, selectedRequester) { next, complete ->
+                        savePreference("Card-style favourites", complete) { repository.updateHomePreferences(mapOf("liveFavouriteDrawerCards" to next)) }
+                    }
+                    SettingsToggleRow("Live progress bar", "Show the timeline when Live TV or playlist VOD playback opens", playbackPrefs?.liveProgressBarEnabled == true, selectedRequester) { next, complete ->
+                        savePreference("Live progress bar", complete) { repository.updatePlaybackPreferences(mapOf("liveProgressBarEnabled" to next)) }
+                    }
+                    SettingsPanel("Where channels come from") {
+                        InfoLine("Add-ons and playlists", "Manage these under Sources")
+                    }
+                }
+                SettingsDestination.Sources -> {
                     SettingsPanel("Synced providers") {
                         InfoLine("Enabled add-ons", "${addons.count { it.enabled }} of ${addons.size}")
                         addons.forEach { addon ->
@@ -587,28 +615,13 @@ fun SettingsScreen(
                             }
                         }
                     }
-                    SettingsToggleRow("Show stream picker", "Choose a source before playback instead of selecting automatically", streamsPrefs?.showStreamsList != false, selectedRequester) { next, complete ->
-                        savePreference("Stream picker", complete) { repository.updateStreamsPreferences(mapOf("showStreamsList" to next)) }
-                    }
-                    SettingsToggleRow("Remember last source", "Prefer the source previously used for the same title", streamsPrefs?.rememberLastSource != false, selectedRequester) { next, complete ->
-                        savePreference("Remember last source", complete) { repository.updateStreamsPreferences(mapOf("rememberLastSource" to next)) }
-                    }
-                    SettingsToggleRow("Stream detail badges", "Show quality, source, codec and HDR labels", streamsPrefs?.fusionBadgesEnabled != false, selectedRequester) { next, complete ->
-                        savePreference("Stream detail badges", complete) { repository.updateStreamsPreferences(mapOf("fusionBadgesEnabled" to next)) }
-                    }
-                    SettingsToggleRow("Size badges", "Show file sizes on stream choices", streamsPrefs?.showSizeBadges != false, selectedRequester) { next, complete ->
-                        savePreference("Size badges", complete) { repository.updateStreamsPreferences(mapOf("showSizeBadges" to next)) }
-                    }
-                    SettingsActionRow("Refresh providers", "Pull add-ons and stream settings from the cloud", "Refresh", selectedRequester) {
-                        scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(forceRefresh = true); status = "Providers refreshed." }
+                    SettingsActionRow("Refresh sources", "Pull add-ons, plugins and premium services from the cloud", "Refresh", selectedRequester) {
+                        scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(forceRefresh = true); status = "Sources refreshed." }
                     }
                 }
                 SettingsDestination.Appearance -> {
                     SettingsDropdownRow("Theme", "Change the visual colour system", appPrefs?.theme ?: "cinema-blue", themeOptions, themeColors) { value ->
                         savePreference("Theme") { repository.updateAppPreferences(mapOf("theme" to value)) }
-                    }
-                    SettingsDropdownRow("Start screen", "Choose where StreamDek opens", appPrefs?.startScreen ?: "home", listOf("home" to "Home", "library" to "Library", "continue-watching" to "Continue watching")) { value ->
-                        savePreference("Start screen") { repository.updateAppPreferences(mapOf("startScreen" to value)) }
                     }
                     SettingsDropdownRow("Animation speed", "GPU-friendly transitions for this device", appPrefs?.animationSpeed ?: "normal", listOf("normal" to "Normal", "fast" to "Fast", "slow" to "Slow")) { value ->
                         savePreference("Animation speed") { repository.updateAppPreferences(mapOf("animationSpeed" to value)) }
@@ -630,9 +643,31 @@ fun SettingsScreen(
                     SettingsToggleRow("Reduced motion", "Limit scaling and transitions", appPrefs?.reducedMotion == true, selectedRequester) { next, complete ->
                         savePreference("Reduced motion", complete) { repository.updateAppPreferences(mapOf("reducedMotion" to next)) }
                     }
+                    // Sat alone under the old Advanced page. It is a comfort setting like the rest here.
+                    SettingsToggleRow("Legacy compact mode", "Reduce spacing on older low-memory devices", appPrefs?.compactMode == true, selectedRequester) { next, complete ->
+                        savePreference("Legacy compact mode", complete) { repository.updateAppPreferences(mapOf("compactMode" to next)) }
+                    }
                     SettingsPanel("TV navigation") { InfoLine("Focus indicator", "Always visible"); InfoLine("Screen reader labels", "Enabled"); InfoLine("Colour-only status", "Never used") }
                 }
-                SettingsDestination.Devices -> {
+                SettingsDestination.Connections -> {
+                    val integrations = bootstrap?.integrations
+                    SettingsDropdownRow(
+                        "Primary library service",
+                        "Choose which connected service supplies watchlist and continue watching",
+                        SyncServiceId.normalize(homePrefs?.primarySyncService),
+                        trackingOptions,
+                    ) { value ->
+                        savePreference("Primary library service") {
+                            repository.updateHomePreferences(mapOf("primarySyncService" to value))
+                        }
+                    }
+                    SettingsPanel("Cloud tracking") {
+                        InfoLine("Primary", SyncServiceId.label(SyncServiceId.normalize(homePrefs?.primarySyncService)))
+                        InfoLine("Trakt", serviceStatus(integrations?.trakt?.connected == true, integrations?.trakt?.username))
+                        InfoLine("Simkl", serviceStatus(integrations?.simkl?.connected == true, integrations?.simkl?.username))
+                        InfoLine("MDBList", serviceStatus(integrations?.mdblist?.connected == true, integrations?.mdblist?.username))
+                        InfoLine("Connect services", "Use StreamDek Mobile for OAuth sign-in")
+                    }
                     SettingsPanel("Sync status") { InfoLine("Settings", bootstrap?.syncStatus?.lastSettingsSyncAt ?: "Ready"); InfoLine("Cloud sync", onOff(bootstrap?.syncStatus?.cloudSyncEnabled != false)); InfoLine("Playback sync", onOff(bootstrap?.syncStatus?.playbackSyncEnabled != false)) }
                     bootstrap?.devices.orEmpty().take(6).forEach { device ->
                         SettingsPanel(device.name ?: "StreamDek device") { InfoLine("Platform", device.platform ?: device.deviceType ?: "Unknown"); InfoLine("Version", device.appVersion ?: "Unknown"); InfoLine("Status", if (device.isCurrent) "This TV" else device.lastSeenAt ?: "Connected") }
@@ -640,18 +675,7 @@ fun SettingsScreen(
                     bootstrap?.sessions.orEmpty().take(6).forEach { activeSession ->
                         SettingsPanel(activeSession.clientName ?: "Active session") { InfoLine("Platform", activeSession.clientPlatform ?: "Unknown"); InfoLine("Device", activeSession.deviceId ?: "Not reported"); InfoLine("Status", if (activeSession.isCurrent) "Current session" else activeSession.lastSeenAt ?: "Active") }
                     }
-                    SettingsActionRow("Refresh devices", "Update devices, sessions and sync status", "Refresh", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); status = "Devices refreshed." } }
-                }
-                SettingsDestination.Advanced -> {
-                    SettingsPanel("Navigation") { InfoLine("Style", "Collapsible left rail"); InfoLine("Behaviour", "Expands on focus • collapses on exit"); InfoLine("Focus memory", "Current destination") }
-                    SettingsToggleRow("Legacy compact mode", "Reduce spacing on older low-memory devices", appPrefs?.compactMode == true, selectedRequester) { next, complete ->
-                        savePreference("Legacy compact mode", complete) { repository.updateAppPreferences(mapOf("compactMode" to next)) }
-                    }
-                    SettingsPanel("Runtime") { InfoLine("Hardware acceleration", "Enabled"); InfoLine("Progressive loading", "Enabled") }
-                }
-                SettingsDestination.Diagnostics -> {
-                    SettingsPanel("Health check") { InfoLine("Backend", reachability.name.lowercase().replaceFirstChar { it.uppercase() }); InfoLine("Authentication", if (session == null) "Guest mode" else "Healthy"); InfoLine("Providers", "${addons.count { it.enabled }} enabled"); InfoLine("Cache", formatBytes(directorySize(context.cacheDir))); InfoLine("Playback", playbackPrefs?.playerEngine ?: "Auto") }
-                    SettingsActionRow("Run health check", "Refresh cloud, providers and connectivity", "Run", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(); status = "Health checks refreshed." } }
+                    SettingsActionRow("Refresh connections", "Update tracking services, devices and sync status", "Refresh", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); status = "Connections refreshed." } }
                 }
                 SettingsDestination.About -> {
                     SettingsPanel("StreamDek TV") { InfoLine("Version", BuildConfig.VERSION_NAME); InfoLine("Client", "Android TV / Fire TV"); InfoLine("Profile", activeProfile?.name ?: "Not selected"); InfoLine("Update", updateState.statusText ?: updateState.errorMessage ?: "Ready") }
@@ -661,6 +685,11 @@ fun SettingsScreen(
                     }
                     SettingsActionRow("Check for updates", "Query the production TV update channel", "Check", selectedRequester) { scope.launch { appUpdateManager.checkForUpdates(showPromptOnAvailable = false, force = true) } }
                     updateState.availableRelease?.let { release -> SettingsActionRow("Install ${release.versionName}", release.requiredReason ?: "Download the available update", "Install", selectedRequester) { scope.launch { appUpdateManager.startUpdate() } } }
+                    // The old Diagnostics page, folded in: two panels and one button did not earn a
+                    // rail entry of their own, and this is where someone reporting a problem looks.
+                    SettingsPanel("Health check") { InfoLine("Backend", reachability.name.lowercase().replaceFirstChar { it.uppercase() }); InfoLine("Authentication", if (session == null) "Guest mode" else "Healthy"); InfoLine("Sources", "${addons.count { it.enabled }} enabled"); InfoLine("Cache", formatBytes(directorySize(context.cacheDir))); InfoLine("Playback", playbackPrefs?.playerEngine ?: "Auto") }
+                    SettingsActionRow("Run health check", "Refresh cloud, sources and connectivity", "Run", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(); status = "Health checks refreshed." } }
+                    SettingsPanel("Runtime") { InfoLine("Hardware acceleration", "Enabled"); InfoLine("Progressive loading", "Enabled"); InfoLine("Navigation", "Collapsible left rail") }
                 }
             }
             Spacer(Modifier.height(24.dp))
