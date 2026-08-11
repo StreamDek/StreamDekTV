@@ -113,6 +113,29 @@ class M3uPlaylistParsingTest {
     }
 
     @Test
+    fun `progress is reported as entries are parsed`() {
+        // What the Live page shows instead of a silent skeleton. Reported per entry; the caller
+        // decides how often to surface it.
+        val seen = mutableListOf<Int>()
+        val items = parseM3uLines(
+            """
+            #EXTM3U
+            #EXTINF:-1,One
+            https://provider.example/1.ts
+            #EXTINF:-1,Two
+            https://provider.example/2.ts
+            #EXTINF:-1,Three
+            https://provider.example/3.ts
+            """.trimIndent().lineSequence(),
+            "pl1",
+            "My Provider",
+        ) { parsed -> seen += parsed }
+
+        assertEquals(3, items.size)
+        assertEquals(listOf(1, 2, 3), seen)
+    }
+
+    @Test
     fun `entries without a title still parse`() {
         val items = parse("#EXTM3U\n#EXTINF:-1,\nhttps://provider.example/nameless.ts")
 

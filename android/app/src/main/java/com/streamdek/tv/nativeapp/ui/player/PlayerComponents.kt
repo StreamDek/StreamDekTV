@@ -34,6 +34,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -176,6 +178,7 @@ internal fun PlayerBottomBar(
     brightnessRequester: FocusRequester,
     progressRequester: FocusRequester,
     liveProgressRequester: FocusRequester,
+    favouriteRequester: FocusRequester,
     onInteract: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
@@ -187,6 +190,9 @@ internal fun PlayerBottomBar(
     isVod: Boolean = false,
     showLiveProgress: Boolean = false,
     onToggleLiveProgress: () -> Unit = {},
+    /** Whether the channel playing is already a favourite. Live only. */
+    isFavourite: Boolean = false,
+    onToggleFavourite: () -> Unit = {},
 ) {
     // Live broadcasts have no seekable timeline — the progress bar is replaced
     // by a LIVE indicator, so focus targets that pointed at it move to Play.
@@ -389,10 +395,25 @@ internal fun PlayerBottomBar(
                     requester = sourcesRequester,
                     upRequester = timelineUpRequester,
                     leftRequester = if (isLive) liveProgressRequester else audioRequester,
-                    rightRequester = if (isLive) brightnessRequester else if (hasNext) nextRequester else watchedRequester,
+                    rightRequester = if (isLive) favouriteRequester else if (hasNext) nextRequester else watchedRequester,
                     onFocused = onInteract,
                     onClick = { onOpenPanel(OverlayPanel.Streams) },
                 )
+                if (isLive) {
+                    // Favouriting was only possible by holding OK on a channel in the grid, which
+                    // is no use once you are watching it — this is where you decide you want it.
+                    PlayerControlIconButton(
+                        icon = if (isFavourite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        label = if (isFavourite) "Favourited" else "Favourite",
+                        active = isFavourite,
+                        requester = favouriteRequester,
+                        upRequester = timelineUpRequester,
+                        leftRequester = sourcesRequester,
+                        rightRequester = brightnessRequester,
+                        onFocused = onInteract,
+                        onClick = onToggleFavourite,
+                    )
+                }
                 if (!isLive) {
                     if (hasNext) {
                         PlayerControlIconButton(
@@ -435,7 +456,7 @@ internal fun PlayerBottomBar(
                     active = selectedPanel == OverlayPanel.Brightness,
                     requester = brightnessRequester,
                     upRequester = timelineUpRequester,
-                    leftRequester = if (isLive) sourcesRequester else speedRequester,
+                    leftRequester = if (isLive) favouriteRequester else speedRequester,
                     onFocused = onInteract,
                     onClick = { onOpenPanel(OverlayPanel.Brightness) },
                 )

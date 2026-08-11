@@ -136,6 +136,12 @@ fun LiveBrowseScreen(
         }
     }
 
+    // A search or filter empties this grid as often as not, and [firstCardRequester] is only
+    // attached while there are cards. Pointing "down" at it regardless left focus search resolving
+    // to a requester no node had claimed, which throws rather than doing nothing — the same crash
+    // the Live page's sidebar had. Default falls back to ordinary focus search.
+    val gridFocusTarget = if (filteredItems.isEmpty()) FocusRequester.Default else firstCardRequester
+
     LaunchedEffect(Unit) {
         delay(160)
         runCatching { queryRequester.requestFocus() }
@@ -227,14 +233,14 @@ fun LiveBrowseScreen(
                     selected = openTray == OpenTray.Source,
                     leading = "Source",
                     modifier = Modifier.focusRequester(firstChipRequester)
-                        .focusProperties { up = queryRequester; down = firstCardRequester },
+                        .focusProperties { up = queryRequester; down = gridFocusTarget },
                     onClick = { openTray = if (openTray == OpenTray.Source) OpenTray.None else OpenTray.Source },
                 )
                 SearchChip(
                     label = catalogues.firstOrNull { it.first == selectedCatalogId }?.second ?: "All collections",
                     selected = openTray == OpenTray.Catalogue,
                     leading = "Collection",
-                    modifier = Modifier.focusProperties { up = queryRequester; down = firstCardRequester },
+                    modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                     onClick = {
                         if (catalogues.isNotEmpty()) {
                             openTray = if (openTray == OpenTray.Catalogue) OpenTray.None else OpenTray.Catalogue
@@ -245,7 +251,7 @@ fun LiveBrowseScreen(
                     label = if (favouritesOnly) "Favourites only" else "All channels",
                     selected = favouritesOnly,
                     leading = favouriteKeys.size.toString(),
-                    modifier = Modifier.focusProperties { up = queryRequester; down = firstCardRequester },
+                    modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                     onClick = { favouritesOnly = !favouritesOnly },
                 )
             }

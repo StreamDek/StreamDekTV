@@ -34,6 +34,20 @@ import java.util.zip.GZIPOutputStream
  * Not carried over from the phone: KODIPROP ClearKey DRM. The TV's [MediaItem] has nowhere to put
  * a licence key, so those entries play only if they are not actually encrypted.
  */
+/**
+ * What the engine is doing right now, for the screen to show.
+ *
+ * A provider playlist is not quick: tens of megabytes to download and hundreds of thousands of
+ * entries to parse. [fraction] is only known while downloading, and only when the server sent a
+ * content length — a cached read reports items instead, which is the honest thing to show rather
+ * than inventing a percentage.
+ */
+data class M3uLoadProgress(
+    val message: String,
+    val fraction: Float? = null,
+    val itemCount: Int = 0,
+)
+
 object M3uPlaylistEngine {
     private const val TAG = "M3uPlaylists"
     private const val CACHE_DIRECTORY = "m3u_playlists"
@@ -88,12 +102,13 @@ object M3uPlaylistEngine {
     suspend fun fetchChannels(
         playlist: RemotePlaylist,
         forceRefresh: Boolean = false,
+        onProgress: (M3uLoadProgress) -> Unit = {},
     ): Result<List<MediaItem>> = withContext(Dispatchers.IO) {
         runCatching {
             if (!forceRefresh) {
-                parseCached(playlist)?.let { return@runCatching it }
+                parseCached(playlist, onProgress)?.let { return@runCatching it }
             }
-            streamAndParse(playlist)
+            streamAndParse(playlist, onProgress)
         }
     }
 
@@ -108,12 +123,20 @@ object M3uPlaylistEngine {
     }
 
     /** The stored copy, or null when there isn't a usable one. An unreadable cache counts as absent. */
-    private fun parseCached(playlist: RemotePlaylist): List<MediaItem>? {
+    private fun parseCached(playlist: RemotePlaylist, onProgress: (M3uLoadProgress) -> Unit): List<MediaItem>? {
         val file = cacheFile(playlist.id)?.takeIf { it.isFile && it.length() > 0L } ?: return null
         return runCatching {
             GZIPInputStream(FileInputStream(file), 64 * 1024).use { gzip ->
                 val reader = BufferedReader(InputStreamReader(gzip, StandardCharsets.UTF_8), 128 * 1024)
-                parseM3uLines(reader.lineSequence(), playlist.id, playlist.name)
+                var lastReported = 0
+                val items = parseM3uLines(reader.lineSequence(), playlist.id, playlist.name) { parsed ->
+                    if (parsed - lastReported >= 5_000) {
+                        lastReported = parsed
+                        onProgress(M3uLoadProgress("Opening ${playlist.name}: ${parsed.formatted()} channels", null, parsed))
+                    }
+                }
+                onProgress(M3uLoadProgress("${playlist.name}: ${items.size.formatted()} saved channels", 1f, items.size))
+                items
             }
         }.onFailure {
             TvDebugLogger.w(TAG, "saved copy of ${playlist.name} was unreadable; refetching")
@@ -127,23 +150,36 @@ object M3uPlaylistEngine {
      * Storing the copy costs one pass rather than a second download, and compresses well because
      * playlist text is extremely repetitive — a 60 MB provider list lands at a few megabytes.
      */
-    private fun streamAndParse(playlist: RemotePlaylist): List<MediaItem> {
+    private fun streamAndParse(playlist: RemotePlaylist, onProgress: (M3uLoadProgress) -> Unit): List<MediaItem> {
         val target = cacheFile(playlist.id)
         val temp = target?.let { File(it.parentFile, "${it.name}.tmp") }
         val sink = temp?.let {
             runCatching { GZIPOutputStream(BufferedOutputStream(FileOutputStream(it), 64 * 1024)) }.getOrNull()
         }
         var parsedCleanly = false
+        onProgress(M3uLoadProgress("Connecting to ${playlist.name}…", 0f))
         try {
             openPlaylist(playlist.url).use { response ->
                 val body = response.body ?: throw IllegalStateException("Empty playlist response.")
+                val total = body.contentLength().takeIf { it > 0L }
                 val counting = CountingInputStream(body.byteStream(), sink)
                 // A large read buffer matters: at ~2 lines per channel this reader is asked for a
                 // line 400k times for one big playlist.
                 val reader = BufferedReader(InputStreamReader(counting, StandardCharsets.UTF_8), 128 * 1024)
-                val items = parseM3uLines(reader.lineSequence(), playlist.id, playlist.name)
+                var lastReported = 0L
+                val items = parseM3uLines(reader.lineSequence(), playlist.id, playlist.name) { parsed ->
+                    val read = counting.bytesRead
+                    if (read - lastReported >= 512 * 1024) {
+                        lastReported = read
+                        // Held below 1.0 while bytes are still arriving: a bar that sits full for
+                        // the rest of a long parse is worse than one that never quite gets there.
+                        val fraction = total?.let { (read.toDouble() / it).toFloat().coerceIn(0f, 0.99f) }
+                        onProgress(M3uLoadProgress("Reading ${playlist.name}: ${parsed.formatted()} channels found", fraction, parsed))
+                    }
+                }
                 if (counting.bytesRead == 0L) throw IllegalStateException("Empty playlist response.")
                 parsedCleanly = true
+                onProgress(M3uLoadProgress("${playlist.name}: ${items.size.formatted()} channels", 1f, items.size))
                 TvDebugLogger.i(TAG, "parsed ${items.size} entries from ${playlist.name}")
                 return items
             }
@@ -269,10 +305,13 @@ private fun isM3uVodEntry(title: String, group: String?, declaredType: String?, 
  * built from those, so without interning a 200k-entry playlist holds close to a million
  * near-duplicate strings.
  */
+internal fun Int.formatted(): String = String.format("%,d", this)
+
 internal fun parseM3uLines(
     lines: Sequence<String>,
     playlistId: String,
     playlistName: String,
+    onProgress: (itemsParsed: Int) -> Unit = {},
 ): List<MediaItem> {
     val items = mutableListOf<MediaItem>()
     var pendingTitle: String? = null
@@ -359,6 +398,9 @@ internal fun parseM3uLines(
                 pendingMediaType = null
                 pendingDuration = null
                 pendingHeaders.clear()
+                // Reported off the entry count rather than per line: the caller throttles on bytes
+                // or thousands of items, so this stays a comparison in the hot loop.
+                onProgress(index)
             }
         }
     }

@@ -103,6 +103,9 @@ private fun liveKey(item: MediaItem): String = "${item.sourceAddonId}:${item.sou
 fun LiveScreen(
     sections: List<LiveCatalogSection>,
     isLoading: Boolean,
+    /** What the load is doing, shown in place of a silent skeleton while nothing is on screen. */
+    loadingStatus: String? = null,
+    loadingProgress: Float? = null,
     compactMode: Boolean = false,
     /** Wide channel artwork, as synced from mobile. Off uses portrait cards. */
     landscapeCards: Boolean = true,
@@ -126,9 +129,10 @@ fun LiveScreen(
 
     var selectedSourceId by remember(sections) { mutableStateOf<String?>(null) }
     var favouritesOnly by remember { mutableStateOf(false) }
-    // A channel list runs to thousands of entries, where a grid of artwork is slower to read than
-    // a column of names. Session-local, as the equivalent toggle is on mobile.
-    var listView by rememberSaveable { mutableStateOf(false) }
+    // Opens as a list. A channel lineup runs to thousands of entries and names are what people scan
+    // for, so artwork is the deliberate choice rather than the default. Session-local, as the
+    // equivalent toggle is on mobile.
+    var listView by rememberSaveable { mutableStateOf(true) }
     val listState = rememberLazyListState()
 
     val allItems = remember(sections) {
@@ -215,6 +219,12 @@ fun LiveScreen(
                 .width(LiveSidebarWidth)
                 .fillMaxHeight()
                 .background(TvChromeSurface)
+                // The requester sits on the group, not on a row inside it. Rows here are lazy: with
+                // a provider playlist the category list is long, and once "All channels" scrolled
+                // out of view a requester attached to it was no longer attached to anything —
+                // pressing left out of the grid then resolved to nothing and took the app down.
+                // A focus group hands the request to whichever of its children is composed.
+                .focusRequester(sidebarEntry)
                 .focusGroup()
                 .padding(horizontal = 16.dp),
             contentPadding = PaddingValues(top = 30.dp, bottom = 40.dp),
@@ -233,7 +243,7 @@ fun LiveScreen(
                     label = "All channels",
                     count = allItems.size,
                     selected = !favouritesOnly && selectedSourceId == null,
-                    modifier = Modifier.focusRequester(sidebarEntry).focusProperties { right = contentFocusTarget },
+                    modifier = Modifier.focusProperties { right = contentFocusTarget },
                     onClick = { favouritesOnly = false; selectedSourceId = null },
                 )
             }
@@ -244,6 +254,18 @@ fun LiveScreen(
                     selected = favouritesOnly,
                     modifier = Modifier.focusProperties { right = contentFocusTarget },
                     onClick = { favouritesOnly = true; selectedSourceId = null },
+                )
+            }
+            // Above the categories rather than below them: with a provider playlist the list under
+            // this runs to hundreds of entries, and a control past all of them may as well not exist.
+            item("view") {
+                LiveSourceRow(
+                    label = if (listView) "List view" else "Card view",
+                    caption = "Press OK to switch",
+                    count = null,
+                    selected = false,
+                    modifier = Modifier.focusProperties { right = contentFocusTarget },
+                    onClick = { listView = !listView },
                 )
             }
             if (buckets.isNotEmpty()) {
@@ -264,16 +286,6 @@ fun LiveScreen(
                     selected = !favouritesOnly && selectedSourceId == bucket.id,
                     modifier = Modifier.focusProperties { right = contentFocusTarget },
                     onClick = { favouritesOnly = false; selectedSourceId = bucket.id },
-                )
-            }
-            item("view") {
-                LiveSourceRow(
-                    label = if (listView) "List view" else "Card view",
-                    caption = "Press OK to switch",
-                    count = null,
-                    selected = false,
-                    modifier = Modifier.padding(top = 14.dp).focusProperties { right = contentFocusTarget },
-                    onClick = { listView = !listView },
                 )
             }
             item("browse") {
@@ -321,8 +333,10 @@ fun LiveScreen(
             }
 
             when {
-                isLoading && allItems.isEmpty() ->
+                isLoading && allItems.isEmpty() -> Column(Modifier.fillMaxWidth()) {
+                    LiveLoadingStatus(status = loadingStatus, progress = loadingProgress)
                     TvSkeletonGrid(columns = gridColumns, rows = 3, portrait = false)
+                }
 
                 visibleItems.isEmpty() -> TvEmptyState(
                     title = if (favouritesOnly) "No favourite channels yet" else "No channels here",
@@ -406,6 +420,50 @@ fun LiveScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * What the live load is doing, above the skeleton.
+ *
+ * A provider playlist is tens of megabytes and hundreds of thousands of entries, so the wait is
+ * long enough that a skeleton alone reads as a hang. The bar only appears when the size of the
+ * download was known — the rest of the time the channel count moving is the honest signal, and a
+ * made-up percentage would be worse than none.
+ */
+@Composable
+private fun LiveLoadingStatus(status: String?, progress: Float?) {
+    if (status.isNullOrBlank()) return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = TvSpacing.ScreenHorizontal, end = TvSpacing.ScreenHorizontal, top = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = status,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (progress != null) {
+            Box(
+                Modifier
+                    .fillMaxWidth(0.42f)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color.White.copy(alpha = 0.12f)),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(progress.coerceIn(0f, 1f))
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.primary),
+                )
             }
         }
     }

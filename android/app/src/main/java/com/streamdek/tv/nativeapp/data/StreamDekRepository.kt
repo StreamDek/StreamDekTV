@@ -848,7 +848,15 @@ class StreamDekRepository(
         }
     }
 
-    suspend fun fetchLiveCatalogSections(): List<LiveCatalogSection> {
+    /**
+     * @param onProgress what is happening, for the Live page to show. A provider playlist takes
+     *   long enough that a silent skeleton reads as a hang, so every stage reports: the add-on
+     *   catalogs, each playlist as it downloads and parses, and the grouping afterwards.
+     */
+    suspend fun fetchLiveCatalogSections(
+        onProgress: (M3uLoadProgress) -> Unit = {},
+    ): List<LiveCatalogSection> {
+        onProgress(M3uLoadProgress("Loading channels from your add-ons…"))
         val addonSections = fetchAddonCatalogCollections { _, mappedType -> mappedType == "live" }
             .groupBy { it.addonId }
             .map { (addonId, collections) ->
@@ -868,7 +876,7 @@ class StreamDekRepository(
         // Playlists are one more source of live channels, so they arrive as sections alongside the
         // add-ons rather than anywhere separate — the sidebar, favourites and search all treat them
         // the same way once they are here.
-        return addonSections + fetchPlaylistLiveSections()
+        return addonSections + fetchPlaylistLiveSections(onProgress)
     }
 
     // ── IPTV playlists ───────────────────────────────────────────────────────────────────────────
@@ -910,39 +918,55 @@ class StreamDekRepository(
      * playlist that fails is dropped rather than failing the others — an expired IPTV subscription
      * must not empty the Live page for the add-ons that are still working.
      */
-    private suspend fun fetchPlaylistLiveSections(): List<LiveCatalogSection> {
+    private suspend fun fetchPlaylistLiveSections(
+        onProgress: (M3uLoadProgress) -> Unit,
+    ): List<LiveCatalogSection> {
         val playlists = fetchPlaylists().filter { it.enabled }
         if (playlists.isEmpty()) return emptyList()
         appContext?.let { M3uPlaylistEngine.initialize(it) }
 
-        return supervisorScope {
-            playlists.map { playlist ->
-                async(Dispatchers.IO) {
-                    val channels = M3uPlaylistEngine
-                        .fetchChannels(playlist, forceRefresh = M3uPlaylistEngine.needsRefresh(playlist))
-                        .onFailure { TvDebugLogger.w("Live", "playlist ${playlist.name} failed to load") }
-                        .getOrDefault(emptyList())
-                        .filter { it.type == "live" }
-                    if (channels.isEmpty()) return@async null
-                    val rails = channels
-                        .groupBy { it.sourceCatalogName ?: playlist.name }
-                        .entries
-                        .sortedBy { it.key.lowercase(Locale.US) }
-                        .mapIndexed { index, (category, items) ->
-                            LiveCatalogRail(
-                                id = "playlist:${playlist.id}:$index",
-                                title = category,
-                                items = items,
-                            )
-                        }
-                    LiveCatalogSection(
-                        id = "playlist:${playlist.id}",
-                        title = playlist.name,
-                        rails = rails,
-                    )
+        // Playlists are loaded one after another rather than at once. Two 200k-channel lists
+        // parsing in parallel is the worst case this box handles, and it makes progress
+        // unreportable: two sets of counts interleaving says less than one that moves.
+        val sections = mutableListOf<LiveCatalogSection>()
+        playlists.forEachIndexed { playlistIndex, playlist ->
+            val prefix = if (playlists.size > 1) "Playlist ${playlistIndex + 1} of ${playlists.size} · " else ""
+            val channels = M3uPlaylistEngine
+                .fetchChannels(playlist, forceRefresh = M3uPlaylistEngine.needsRefresh(playlist)) { progress ->
+                    onProgress(progress.copy(message = prefix + progress.message))
                 }
-            }.awaitAll().filterNotNull()
+                .onFailure {
+                    TvDebugLogger.w("Live", "playlist ${playlist.name} failed to load")
+                    onProgress(M3uLoadProgress("${playlist.name} could not be loaded"))
+                }
+                .getOrDefault(emptyList())
+                .filter { it.type == "live" }
+            if (channels.isEmpty()) return@forEachIndexed
+
+            // Grouping a 200k-channel playlist is real work, and it happens after the counts have
+            // stopped moving — without a word here the screen looks stuck at the last number.
+            onProgress(M3uLoadProgress("${prefix}Sorting ${channels.size.formatted()} channels into categories", null, channels.size))
+            val rails = withContext(Dispatchers.Default) {
+                channels
+                    .groupBy { it.sourceCatalogName ?: playlist.name }
+                    .entries
+                    .sortedBy { it.key.lowercase(Locale.US) }
+                    .mapIndexed { index, (category, items) ->
+                        LiveCatalogRail(
+                            id = "playlist:${playlist.id}:$index",
+                            title = category,
+                            items = items,
+                        )
+                    }
+            }
+            onProgress(M3uLoadProgress("${playlist.name}: ${rails.size} categories, ${channels.size.formatted()} channels", 1f, channels.size))
+            sections += LiveCatalogSection(
+                id = "playlist:${playlist.id}",
+                title = playlist.name,
+                rails = rails,
+            )
         }
+        return sections
     }
 
     suspend fun fetchRelatedLiveChannels(

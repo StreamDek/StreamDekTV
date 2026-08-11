@@ -114,6 +114,9 @@ private enum class TopLevelDestination(
 private data class LiveNavigationState(
     val loading: Boolean = true,
     val sections: List<LiveCatalogSection> = emptyList(),
+    /** What the load is doing, shown while the page has nothing yet. Null once it is done. */
+    val statusMessage: String? = null,
+    val progress: Float? = null,
 )
 
 private data class LiveBrowseSelection(
@@ -209,8 +212,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         if (loadedLiveCatalogKey == catalogKey && liveNavigationState.sections.isNotEmpty()) {
             return@LaunchedEffect
         }
-        liveNavigationState = liveNavigationState.copy(loading = true)
-        val sections = runCatching { repository.fetchLiveCatalogSections() }.getOrDefault(emptyList())
+        liveNavigationState = liveNavigationState.copy(loading = true, statusMessage = null, progress = null)
+        val sections = runCatching {
+            repository.fetchLiveCatalogSections { progress ->
+                liveNavigationState = liveNavigationState.copy(
+                    statusMessage = progress.message,
+                    progress = progress.fraction,
+                )
+            }
+        }.getOrDefault(emptyList())
         loadedLiveCatalogKey = catalogKey
         liveNavigationState = LiveNavigationState(
             loading = false,
@@ -442,6 +452,8 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     LiveScreen(
                         sections = liveNavigationState.sections,
                         isLoading = liveNavigationState.loading,
+                        loadingStatus = liveNavigationState.statusMessage,
+                        loadingProgress = liveNavigationState.progress,
                         compactMode = appPrefs?.compactMode == true,
                         landscapeCards = homePrefs?.liveLandscapeCards != false,
                         categoriesEnabled = homePrefs?.liveCategoriesEnabled != false,

@@ -186,6 +186,10 @@ fun SearchScreen(
         rawItems.distinctBy { listOf(it.type, it.sourceAddonId.orEmpty(), it.sourceCatalogId.orEmpty(), it.id) }
     }
     val loading = if (hasQuery) searchingAnything && items.isEmpty() else discoverLoading
+    // A query with no matches leaves nothing holding [firstCardRequester], and focus search
+    // resolving to an unclaimed requester throws rather than doing nothing. Default hands the press
+    // back to ordinary search, which finds nothing below the chips and stays put.
+    val gridFocusTarget = if (items.isEmpty()) FocusRequester.Default else firstCardRequester
 
     LaunchedEffect(discoverType) {
         discoverGenreId = null
@@ -364,7 +368,7 @@ fun SearchScreen(
                             label = option.label,
                             selected = searchScope == option,
                             modifier = (if (index == 0) Modifier.focusRequester(firstChipRequester) else Modifier)
-                                .focusProperties { up = queryRequester; down = firstCardRequester },
+                                .focusProperties { up = queryRequester; down = gridFocusTarget },
                             onClick = { searchScope = option },
                         )
                     }
@@ -374,7 +378,7 @@ fun SearchScreen(
                         selected = openTray == OpenTray.Type,
                         leading = "Show",
                         modifier = Modifier.focusRequester(firstChipRequester)
-                            .focusProperties { up = queryRequester; down = firstCardRequester },
+                            .focusProperties { up = queryRequester; down = gridFocusTarget },
                         onClick = { openTray = if (openTray == OpenTray.Type) OpenTray.None else OpenTray.Type },
                     )
                     val genreLabel = discoverGenres.firstOrNull { it.id == discoverGenreId }?.name ?: "All Genres"
@@ -382,7 +386,7 @@ fun SearchScreen(
                         label = if (discoverGenres.isEmpty()) "No genres" else genreLabel,
                         selected = openTray == OpenTray.Genre,
                         leading = "Genre",
-                        modifier = Modifier.focusProperties { up = queryRequester; down = firstCardRequester },
+                        modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                         onClick = {
                             if (discoverGenres.isNotEmpty()) {
                                 openTray = if (openTray == OpenTray.Genre) OpenTray.None else OpenTray.Genre
@@ -393,7 +397,7 @@ fun SearchScreen(
                         label = yearOptions.firstOrNull { it.value == discoverYear }?.label ?: "Any Year",
                         selected = openTray == OpenTray.Year,
                         leading = "Year",
-                        modifier = Modifier.focusProperties { up = queryRequester; down = firstCardRequester },
+                        modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                         onClick = { openTray = if (openTray == OpenTray.Year) OpenTray.None else OpenTray.Year },
                     )
                     recentSearches.take(3).forEach { recent ->
@@ -401,7 +405,7 @@ fun SearchScreen(
                             label = recent,
                             selected = false,
                             leading = "Recent",
-                            modifier = Modifier.focusProperties { up = queryRequester; down = firstCardRequester },
+                            modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                             onClick = { query = recent },
                         )
                     }

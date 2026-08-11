@@ -311,6 +311,7 @@ fun PlayerScreen(
     val liveChannelListState = rememberLazyListState()
     val liveFavouriteFirstRequester = remember { FocusRequester() }
     val liveFavouriteListState = rememberLazyListState()
+    val favouriteRequester = remember { FocusRequester() }
 
     // Keep screen on while the player is active
     DisposableEffect(Unit) {
@@ -354,6 +355,37 @@ fun PlayerScreen(
             runCatching { liveChannelFirstRequester.requestFocus() }
         }
     }
+
+    /**
+     * The channel playing, as something that can be favourited.
+     *
+     * Prefers the item from the loaded channel list, which carries artwork and category — the
+     * favourites drawer draws cards from what is stored, so a stub saved from the playback request
+     * alone would come back as a blank tile. The stub is the fallback for a channel opened from
+     * somewhere the list was never loaded.
+     */
+    fun currentChannelAsItem(): MediaItem =
+        liveChannels.firstOrNull {
+            it.id == playbackRequest.mediaId && it.sourceAddonId == playbackRequest.sourceAddonId
+        } ?: liveAddonFavourites.firstOrNull {
+            it.id == playbackRequest.mediaId && it.sourceAddonId == playbackRequest.sourceAddonId
+        } ?: MediaItem(
+            id = playbackRequest.mediaId,
+            title = currentChannelTitle,
+            type = "live",
+            streamType = playbackRequest.streamType,
+            sourceAddonId = playbackRequest.sourceAddonId,
+            sourceAddonName = playbackRequest.sourceAddonName,
+            sourceCatalogId = playbackRequest.sourceCatalogId,
+            sourceCatalogName = playbackRequest.sourceCatalogName,
+            // Carried so a playlist channel still plays when it is picked out of favourites later:
+            // those have no add-on to resolve a stream from, only this URL.
+            directStreamUrl = playbackRequest.directStreamUrl,
+            requestHeaders = playbackRequest.requestHeaders,
+        )
+
+    val currentChannelIsFavourite = isLive &&
+        "${playbackRequest.sourceAddonId}:${playbackRequest.mediaId}" in favouriteChannelKeys
 
     fun showLiveFavouritesDrawer() {
         if (!isLive || liveAddonFavourites.isEmpty() || loading || error != null) return
@@ -519,6 +551,13 @@ fun PlayerScreen(
         pauseInfoVisible = false
         if (!controlsVisible) controlsVisible = true
         scheduleControlsHide()
+    }
+
+    fun toggleCurrentChannelFavourite() {
+        if (!isLive) return
+        repository.toggleFavouriteChannel(currentChannelAsItem())
+        // Keeps the control bar up so the star is seen to change rather than vanishing with it.
+        registerInteraction()
     }
 
     fun traktProgressPercent(): Double {
@@ -1921,6 +1960,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     brightnessRequester = brightnessRequester,
                     progressRequester = progressRequester,
                     liveProgressRequester = liveProgressRequester,
+                    favouriteRequester = favouriteRequester,
+                    isFavourite = currentChannelIsFavourite,
+                    onToggleFavourite = ::toggleCurrentChannelFavourite,
                     onInteract = ::registerInteraction,
                     onPlayPause = {
                         // tv-material fires onClick on key-up without requiring the
