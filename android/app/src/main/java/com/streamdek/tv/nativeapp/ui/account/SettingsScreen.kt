@@ -83,6 +83,7 @@ import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
 import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
 import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
+import com.streamdek.tv.nativeapp.data.RemotePlaylist
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
@@ -152,6 +153,7 @@ fun SettingsScreen(
     val updateState by appUpdateManager.uiState.collectAsState()
     var bootstrap by remember { mutableStateOf<AccountBootstrap?>(repository.bootstrap.value) }
     var addons by remember { mutableStateOf<List<AddonManifest>>(emptyList()) }
+    var playlists by remember { mutableStateOf<List<RemotePlaylist>>(emptyList()) }
     var selected by remember { mutableStateOf(SettingsDestination.Account) }
     var query by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
@@ -167,6 +169,7 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         bootstrap = repository.refreshBootstrap()
         addons = repository.fetchAddonManifests()
+        playlists = repository.fetchPlaylists()
         delay(120)
         runCatching { destinationRequesters.getValue(SettingsDestination.Account).requestFocus() }
     }
@@ -408,7 +411,15 @@ fun SettingsScreen(
                         savePreference("Live progress bar", complete) { repository.updatePlaybackPreferences(mapOf("liveProgressBarEnabled" to next)) }
                     }
                     SettingsPanel("Where channels come from") {
-                        InfoLine("Add-ons and playlists", "Manage these under Sources")
+                        InfoLine("Add-ons", "${addons.count { it.enabled }} enabled · listed under Sources")
+                        InfoLine(
+                            "IPTV playlists",
+                            if (playlists.isEmpty()) {
+                                "None yet · add one from StreamDek Mobile or the web portal"
+                            } else {
+                                "${playlists.count { it.enabled }} of ${playlists.size} on · turn them on and off under Sources"
+                            },
+                        )
                     }
                 }
                 SettingsDestination.Sources -> {
@@ -591,6 +602,36 @@ fun SettingsScreen(
                             }
                         }
                     }
+                    SettingsPanel("IPTV playlists") {
+                        if (playlists.isEmpty()) {
+                            InfoLine("Playlists", "Add one from StreamDek Mobile or the web portal")
+                        } else {
+                            InfoLine("Enabled playlists", "${playlists.count { it.enabled }} of ${playlists.size}")
+                            playlists.forEach { playlist ->
+                                key(playlist.id) {
+                                    SettingsToggleRow(
+                                        playlist.name,
+                                        playlist.url.substringAfter("://").substringBefore('/'),
+                                        playlist.enabled,
+                                        selectedRequester,
+                                    ) { next, complete ->
+                                        scope.launch {
+                                            status = "Updating ${playlist.name}..."
+                                            val saved = repository.setPlaylistEnabled(playlist.id, next)
+                                            if (saved) {
+                                                playlists = repository.fetchPlaylists(forceRefresh = true)
+                                                status = "${playlist.name} ${if (next) "on" else "off"}."
+                                            } else {
+                                                status = "${playlist.name} could not be updated."
+                                            }
+                                            complete(saved)
+                                        }
+                                    }
+                                }
+                            }
+                            InfoLine("Adding and removing", "Use StreamDek Mobile or the web portal")
+                        }
+                    }
                     SettingsPanel("Debrid accounts") {
                         val accounts = bootstrap?.integrations?.debrid?.accounts.orEmpty()
                         if (accounts.isEmpty()) InfoLine("Accounts", "Link an account from StreamDek Mobile")
@@ -615,8 +656,13 @@ fun SettingsScreen(
                             }
                         }
                     }
-                    SettingsActionRow("Refresh sources", "Pull add-ons, plugins and premium services from the cloud", "Refresh", selectedRequester) {
-                        scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(forceRefresh = true); status = "Sources refreshed." }
+                    SettingsActionRow("Refresh sources", "Pull add-ons, plugins, playlists and premium services from the cloud", "Refresh", selectedRequester) {
+                        scope.launch {
+                            bootstrap = repository.refreshBootstrap()
+                            addons = repository.fetchAddonManifests(forceRefresh = true)
+                            playlists = repository.fetchPlaylists(forceRefresh = true)
+                            status = "Sources refreshed."
+                        }
                     }
                 }
                 SettingsDestination.Appearance -> {

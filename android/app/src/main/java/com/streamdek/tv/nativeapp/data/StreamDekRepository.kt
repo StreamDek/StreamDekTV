@@ -888,6 +888,21 @@ class StreamDekRepository(
     }
 
     /**
+     * Turns one playlist on or off for this profile.
+     *
+     * Adding and removing stay on the phone and the web portal — typing a provider URL carrying
+     * credentials on a remote is miserable — but turning one off is a single press and is the
+     * thing someone actually reaches for on the TV.
+     */
+    suspend fun setPlaylistEnabled(id: String, enabled: Boolean): Boolean {
+        val response = runCatching {
+            api.patch<RemotePlaylistResponse>("/playlists/${encodePathSegment(id)}", mapOf("enabled" to enabled))
+        }.getOrNull() ?: return false
+        playlistCache[buildSessionProfileCacheKey()] = response.playlists.sortedBy { it.position }
+        return true
+    }
+
+    /**
      * One section per enabled playlist, its channels grouped into rails by `group-title`.
      *
      * Each playlist is loaded from its stored copy when there is one, so a cold start shows
