@@ -56,6 +56,7 @@ import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
 import com.streamdek.tv.nativeapp.ui.TvMotion
+import com.streamdek.tv.nativeapp.ui.TvNavRailInset
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.glideToItem
 import kotlinx.coroutines.delay
@@ -197,6 +198,11 @@ fun HomeScreen(
             },
         )
 
+        // The artwork above runs to the edge of the screen; everything the viewer can reach starts
+        // clear of the navigation rail. Insetting the whole route instead — which is what the shell
+        // used to do — left a band of flat background down the left for the rail to sit on, so a
+        // transparent rail had nothing to be transparent against and read as solid.
+        Box(Modifier.fillMaxSize().padding(start = TvNavRailInset)) {
         if (reachability == ApiReachability.Cached && content != null) {
             OfflineNotice(
                 Modifier.align(Alignment.TopEnd).padding(top = 22.dp, end = HomeInset),
@@ -298,6 +304,10 @@ fun HomeScreen(
                     rowFocusIndices[row.id] = itemIndex
                     focusedItem = row.items.getOrNull(itemIndex)
                     shelfListState.scrollToItem(rowIndex)
+                    // Let the navigation transition finish restoring its outgoing focus before
+                    // applying Home's saved card. Otherwise the rail can win the final focus pass
+                    // and remain expanded even though the viewer has already returned Home.
+                    delay(320)
                     pendingRestoreKey = "${row.id}:${homeItemKey(row.items[itemIndex])}"
                 }
 
@@ -427,6 +437,7 @@ fun HomeScreen(
                 onOpenDetail = { onOpenDetail(state.item.type, state.item.detailLookupId()) },
                 onChanged = { homeViewModel.forceRefresh(loadKey) },
             )
+        }
         }
     }
 }

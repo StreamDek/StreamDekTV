@@ -1,11 +1,14 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CheckCircleOutline
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.tv.material3.Icon
@@ -30,6 +33,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -43,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -64,6 +69,7 @@ import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.streamdek.tv.nativeapp.data.DetailPreferences
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
@@ -72,7 +78,13 @@ import com.streamdek.tv.nativeapp.data.SeasonDetail
 import com.streamdek.tv.nativeapp.data.SeasonEpisode
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TraktCommentItem
+import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
+import com.streamdek.tv.nativeapp.data.resolveTrailerPlaybackSource
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.LocalImmersiveContent
+import com.streamdek.tv.nativeapp.ui.LocalNavRailFocus
+import com.streamdek.tv.nativeapp.ui.TvNavRailInset
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
 import com.streamdek.tv.nativeapp.ui.glideToItem
@@ -81,6 +93,34 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+
+/**
+ * Extra left inset on the page's content, so it starts clear of the navigation rail.
+ *
+ * The rail is drawn over this screen rather than beside it — the artwork is full-bleed and the
+ * shell deliberately does not inset the route — so without this the first card in every row sat on
+ * top of the rail. That is not only a collision: focus moves left by looking for something further
+ * left than what is focused, and a card overlapping the rail is not further left than it, which is
+ * why left never found the menu from anywhere below the hero.
+ */
+private val DetailNavRailClearance = (TvNavRailInset - DetailInset).coerceAtLeast(0.dp)
+
+/** How long a title page is left alone before its trailer is asked for. */
+private const val AutoTrailerDelayMs = 4_000L
+
+/**
+ * Marks a band as the place focus comes back to.
+ *
+ * The rail hands focus to one requester per screen, and pointing that permanently at Play meant
+ * every trip to the menu — however brief, whatever it was for — dumped the viewer back at the top
+ * of the page with the row they had been reading collapsed behind them. The requester moves to
+ * whichever band was last in use instead, so leaving and returning costs nothing.
+ *
+ * The group is what makes it land properly: requesting a group consults its `enter`, and each
+ * band's own row-focus entry then picks the card the viewer was actually on rather than the first.
+ */
+private fun Modifier.bandRestorePoint(active: Boolean, requester: FocusRequester): Modifier =
+    focusGroup().then(if (active) Modifier.focusRequester(requester) else Modifier)
 
 /**
  * Title detail.
@@ -97,12 +137,17 @@ import kotlinx.coroutines.supervisorScope
  *    (two of them large radial shaders) that was redrawn every frame over a full-bleed image.
  *    That stack was the main reason this screen felt heavier than the rest of the app on a stick.
  */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+    androidx.compose.ui.ExperimentalComposeUiApi::class,
+)
 @Composable
 fun DetailScreen(
     repository: StreamDekRepository,
     mediaType: String,
     mediaId: String,
+    /** Where the navigation rail sends focus on the way back in — the Play button. */
+    entryFocusRequester: FocusRequester,
     onBack: () -> Unit,
     onOpenDetail: (String, String) -> Unit,
     onPlay: (PlaybackRequest) -> Unit,
@@ -142,16 +187,56 @@ fun DetailScreen(
     /** Full synopsis the viewer asked to read, shown over the screen until they close it. */
     var expandedSynopsis by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
 
+    /**
+     * The trailer, from asking for one to it being on screen.
+     *
+     * [trailerRequest] is bumped to ask; resolving runs off it and lands in [trailerSource], and a
+     * source is what actually raises the trailer — a page whose content vanished the moment the
+     * viewer pressed the button, and then sat on black for the several seconds YouTube takes to
+     * answer, would read as the app having crashed. Nothing moves until there is something to show.
+     */
+    var trailerRequest by remember(mediaType, mediaId) { mutableIntStateOf(0) }
+    var trailerSource by remember(mediaType, mediaId) { mutableStateOf<TrailerPlaybackSource?>(null) }
+    /** Whether the trailer should be on screen. Cleared by Back; the source outlives it by one fade. */
+    var trailerRunning by remember(mediaType, mediaId) { mutableStateOf(false) }
+    var trailerResolving by remember(mediaType, mediaId) { mutableStateOf(false) }
+    /** True once a trailer has been raised for this title, which is what makes the action a replay. */
+    var trailerPlayed by rememberSaveable(mediaType, mediaId) { mutableStateOf(false) }
+    /**
+     * Auto-play fires once per title, and saved rather than remembered so that it stays fired.
+     *
+     * Leaving for the stream picker and coming back tears this screen down and builds it again, so
+     * ordinary state was gone by the time the page returned and the trailer played a second time —
+     * over a viewer who had just been choosing a source and was on their way to watching. After the
+     * first showing it is the replay button or nothing.
+     */
+    var autoTrailerFired by rememberSaveable(mediaType, mediaId) { mutableStateOf(false) }
+    /** Whether the pending request came from arriving on the page or from the button. */
+    var trailerRequestIsAuto by remember(mediaType, mediaId) { mutableStateOf(false) }
+    val pageOpenedAtMs = remember(mediaType, mediaId) { System.currentTimeMillis() }
+    val trailerRequester = remember(mediaType, mediaId) { FocusRequester() }
+    val setImmersiveContent = LocalImmersiveContent.current
+    /** Null wherever the rail is not on screen, in which case left out of the page stays put. */
+    val navRailRequester = LocalNavRailFocus.current
+
+    // Kept per title, so that opening one title page from another cannot leave two screens holding
+    // the same requester while the transition crossfades and land focus on the one going away.
+    // The shell's requester is attached to the same button alongside it.
     val playRequester = remember(mediaType, mediaId) { FocusRequester() }
     val synopsisMoreRequester = remember(mediaType, mediaId) { FocusRequester() }
-    /** Whether focus is still in the hero. Drives the collapse when the viewer moves below it. */
-    var heroFocused by remember(mediaType, mediaId) { mutableStateOf(true) }
     /**
      * Which row the viewer is on. Only that row is drawn at full size; the rest shrink, so moving
      * down the page keeps the row you are actually using on screen instead of pushing it under the
      * fold. Coming back up expands whatever you land on again.
+     *
+     * Null means the hero, and the hero is where the page sits whenever nothing below it has been
+     * chosen. That is what this drives rather than the hero's own focus: focus also leaves the hero
+     * for the navigation rail, the trailer, and a dialog, none of which are the viewer moving down
+     * the page — and collapsing the hero for those left the page rearranged behind whatever they
+     * had actually opened.
      */
     var focusedRow by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
+    val heroExpanded = focusedRow == null
     val seasonChipRequester = remember(mediaType, mediaId) { FocusRequester() }
     val listState = rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -205,6 +290,110 @@ fun DetailScreen(
         delay(140)
         runCatching { playRequester.requestFocus() }
     }
+
+    val bootstrap by repository.bootstrap.collectAsState()
+    val detailPrefs = bootstrap?.preferences?.detail ?: DetailPreferences()
+    // Clamped on the way in, the way the phone clamps it: the resolver would coerce this itself,
+    // but the player's track selector is handed the same figure and a synced value from a client
+    // that allowed something odd should not reach it unchecked.
+    val trailerMaxHeight = detailPrefs.heroTrailerResolution.coerceIn(360, 2160)
+
+    /**
+     * Every video this title has, with the metadata service's first pick at the front.
+     *
+     * All of them are handed to the resolver rather than just the first: that list is roughly
+     * newest first, which puts theatre stings and ticket spots ahead of the actual trailer, and the
+     * resolver reads their running times to tell them apart.
+     */
+    val trailerCandidateUrls = remember(detail?.id, detail?.trailerKey, detail?.trailerKeys) {
+        val current = detail ?: return@remember emptyList()
+        (listOfNotNull(current.trailerKey?.takeIf { it.isNotBlank() }) + current.trailerKeys)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .map { key -> "https://www.youtube.com/watch?v=$key" }
+    }
+    val hasTrailer = trailerCandidateUrls.isNotEmpty()
+    val trailerVisible = trailerSource != null && trailerRunning
+
+    // One value drives the whole handover, and the two halves of it do not overlap: the page leaves
+    // over the first half and the trailer arrives over the second. A straight crossfade had both
+    // half-visible in the middle, which on a full-screen takeover reads as a dissolve between two
+    // things rather than one making way for the other. Reversing the same value on the way out
+    // gives the trailer leaving before the page returns, for free.
+    val trailerTransition by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (trailerVisible) 1f else 0f,
+        animationSpec = TvMotion.standardSpec(TvMotion.Expand * 2),
+        // Held in composition until it has finished leaving, or the picture would cut out on the
+        // frame Back was pressed and only the page would animate.
+        finishedListener = { progress -> if (progress <= 0.001f) trailerSource = null },
+        label = "trailer-transition",
+    )
+    val pageAlpha = (1f - trailerTransition * 2f).coerceIn(0f, 1f)
+    val trailerStageAlpha = ((trailerTransition - 0.5f) * 2f).coerceIn(0f, 1f)
+    // A little way back into the screen as it goes, so the page reads as making room rather than
+    // simply dimming.
+    val pageScale = 1f - 0.04f * (1f - pageAlpha)
+
+    fun dismissTrailer() {
+        if (!trailerRunning) return
+        trailerRunning = false
+        scope.launch {
+            // Focus goes back once the page is on its way in. Any earlier and the request lands on
+            // a hero that is still invisible, and the viewer is left pointing at nothing.
+            delay(TvMotion.Expand.toLong() / 2)
+            runCatching { playRequester.requestFocus() }
+        }
+    }
+
+    LaunchedEffect(detail?.id, detailPrefs.heroTrailerAutoplay, hasTrailer) {
+        if (!hasTrailer || !detailPrefs.heroTrailerAutoplay || autoTrailerFired) return@LaunchedEffect
+        autoTrailerFired = true
+        trailerRequestIsAuto = true
+        trailerRequest += 1
+    }
+
+    LaunchedEffect(trailerRequest) {
+        if (trailerRequest == 0 || trailerCandidateUrls.isEmpty()) return@LaunchedEffect
+        trailerResolving = true
+        val resolved = runCatching {
+            resolveTrailerPlaybackSource(
+                url = trailerCandidateUrls.first(),
+                maxHeight = trailerMaxHeight,
+                alternates = trailerCandidateUrls.drop(1),
+            )
+        }.onFailure { TvDebugLogger.w("Trailer", "could not resolve a trailer", it) }.getOrNull()
+        trailerResolving = false
+        val source = resolved?.source
+        if (source == null) {
+            TvDebugLogger.i("Trailer", "no playable trailer for ${detail?.title.orEmpty()}")
+            // Nothing to raise, and nothing said about it: the page is what the viewer came for and
+            // it is already in front of them. The action stays, so a second press can try again.
+            return@LaunchedEffect
+        }
+        // A moment with the page to itself before it is taken away.
+        //
+        // Timed from arriving rather than from the source being ready, and the resolving happens
+        // inside it: waiting first and then resolving would have stacked one delay on the other and
+        // left the viewer looking at a page they had finished reading. Manual presses skip it —
+        // somebody who just asked for the trailer is not waiting four seconds to be shown it.
+        if (trailerRequestIsAuto) {
+            val elapsed = System.currentTimeMillis() - pageOpenedAtMs
+            if (elapsed < AutoTrailerDelayMs) delay(AutoTrailerDelayMs - elapsed)
+        }
+        trailerSource = source
+        trailerRunning = true
+        trailerPlayed = true
+    }
+
+    // Flipped on the same two edges the page's own fade turns on, so the shell can run the rail and
+    // the clock out and back on the same curve rather than blinking them off over a page that is
+    // still there.
+    DisposableEffect(trailerVisible) {
+        setImmersiveContent(trailerVisible)
+        onDispose { setImmersiveContent(false) }
+    }
+
+    BackHandler(enabled = trailerVisible) { dismissTrailer() }
 
     /** Every loaded season's episodes as one continuous run — what the episode row actually shows. */
     val episodeEntries = remember(loadedSeasons) {
@@ -348,6 +537,17 @@ fun DetailScreen(
     val backgroundColor = MaterialTheme.colorScheme.background
 
     Box(Modifier.fillMaxSize().background(backgroundColor)) {
+        // The page as one layer, so the trailer exchanges with the whole thing — artwork, scrims,
+        // hero and rows together — instead of each part fading on its own schedule.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    alpha = pageAlpha
+                    scaleX = pageScale
+                    scaleY = pageScale
+                },
+        ) {
         detail?.backdrop?.takeIf { it.isNotBlank() }?.let { backdrop ->
             AsyncImage(
                 model = backdrop,
@@ -431,18 +631,35 @@ fun DetailScreen(
                 // Pinning the hero removes the possibility rather than fighting it: only the
                 // sections below can move, and the title is always the first thing on screen.
                 val heroTop by androidx.compose.animation.core.animateDpAsState(
-                    targetValue = if (heroFocused) 72.dp else 28.dp,
+                    targetValue = if (heroExpanded) 72.dp else 28.dp,
                     // The same spec the hero's own sizes use, so the whole block settles as one.
                     animationSpec = TvMotion.standardSpec(TvMotion.Expand),
                     label = "hero-top",
                 )
-                Column(Modifier.fillMaxSize().padding(top = heroTop)) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(top = heroTop, start = DetailNavRailClearance)
+                        // One group around the whole page, purely so leaving it sideways can be
+                        // aimed. Everything inside still moves by ordinary focus search; this is
+                        // only consulted when focus is on its way out of the page entirely, which
+                        // to the left means the rail — and the rail is drawn on top of the page
+                        // rather than beside it, so a search for "something further left" found
+                        // nothing to hand it to from anywhere below the hero.
+                        .focusGroup()
+                        .focusProperties {
+                            exit = { direction ->
+                                if (direction == FocusDirection.Left && navRailRequester != null) {
+                                    navRailRequester
+                                } else {
+                                    FocusRequester.Default
+                                }
+                            }
+                        },
+                ) {
                     DetailHero(
-                            compact = !heroFocused,
-                            onFocusChanged = {
-                                heroFocused = it
-                                if (it) focusedRow = null
-                            },
+                            compact = !heroExpanded,
+                            onFocusChanged = { focused -> if (focused) focusedRow = null },
                             detail = d,
                             selectedEpisode = selectedEpisodeContext,
                             progressFraction = progressFraction,
@@ -508,7 +725,18 @@ fun DetailScreen(
                                 }
                             },
                             synopsisMoreRequester = synopsisMoreRequester,
+                            entryRequester = entryFocusRequester,
+                            heroIsRestorePoint = heroExpanded,
                             onExpandSynopsis = { expandedSynopsis = it },
+                            hasTrailer = hasTrailer,
+                            trailerPlayed = trailerPlayed,
+                            trailerLoading = trailerResolving,
+                            onPlayTrailer = {
+                                if (!trailerResolving) {
+                                    trailerRequestIsAuto = false
+                                    trailerRequest += 1
+                                }
+                            },
                         )
 
                         Spacer(Modifier.height(26.dp))
@@ -531,6 +759,7 @@ fun DetailScreen(
                         ) {
                     if (d.type == "tv" && d.seasons.isNotEmpty()) {
                         item("episodes") {
+                            Box(Modifier.bandRestorePoint(focusedRow == "episodes", entryFocusRequester)) {
                             EpisodesBand(
                                 compact = focusedRow != null && focusedRow != "episodes",
                                 onFocusChanged = { if (it) focusedRow = "episodes" },
@@ -600,43 +829,64 @@ fun DetailScreen(
                                     episodeAction = entry
                                 },
                             )
+                            }
                         }
                     }
 
                     if (d.cast.isNotEmpty()) {
                         item("cast") {
+                            Box(Modifier.bandRestorePoint(focusedRow == "cast", entryFocusRequester)) {
                             CastBand(
                                 cast = d.cast,
                                 compact = focusedRow != null && focusedRow != "cast",
                                 onFocusChanged = { if (it) focusedRow = "cast" },
                             )
+                            }
                         }
                     }
 
                     if (d.similarTitles.isNotEmpty()) {
                         item("similar") {
+                            Box(Modifier.bandRestorePoint(focusedRow == "similar", entryFocusRequester)) {
                             SimilarBand(
                                 items = d.similarTitles,
                                 compact = focusedRow != null && focusedRow != "similar",
                                 onFocusChanged = { if (it) focusedRow = "similar" },
                                 onOpen = { onOpenDetail(it.type, it.detailLookupId()) },
                             )
+                            }
                         }
                     }
 
                     if (comments.isNotEmpty()) {
                         item("comments") {
+                            Box(Modifier.bandRestorePoint(focusedRow == "comments", entryFocusRequester)) {
                             CommentsBand(
                                 comments = comments,
                                 compact = focusedRow != null && focusedRow != "comments",
                                 onFocusChanged = { if (it) focusedRow = "comments" },
                             )
+                            }
                         }
                     }
                         }
                 }
             }
         }
+        }
+        }
+
+        trailerSource?.let { source ->
+            TrailerStage(
+                source = source,
+                maxHeight = trailerMaxHeight,
+                active = trailerRunning,
+                focusRequester = trailerRequester,
+                onEnded = { dismissTrailer() },
+                onFailed = { dismissTrailer() },
+                onBack = { dismissTrailer() },
+                modifier = Modifier.graphicsLayer { alpha = trailerStageAlpha },
+            )
         }
 
         episodeAction?.let { entry ->
@@ -723,7 +973,15 @@ private fun DetailHero(
     onToggleWatchlist: () -> Unit,
     onMarkWatched: () -> Unit,
     synopsisMoreRequester: FocusRequester,
+    /** The shell's handle on this page, attached to Play alongside the page's own requester. */
+    entryRequester: FocusRequester,
     onExpandSynopsis: (String) -> Unit,
+    /** True while no band below has claimed [entryRequester]. */
+    heroIsRestorePoint: Boolean,
+    hasTrailer: Boolean,
+    trailerPlayed: Boolean,
+    trailerLoading: Boolean,
+    onPlayTrailer: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val titleLogoRequest = remember(detail.titleLogo) {
@@ -900,7 +1158,14 @@ private fun DetailHero(
                     // Roughly a third wider than the label needs, and 15% shorter than it was. It
                     // is the one action that matters on this screen and should read as the primary
                     // target rather than the first of five equal buttons.
-                    modifier = Modifier.focusRequester(playRequester).height(41.dp).width(208.dp),
+                    modifier = Modifier
+                        .focusRequester(playRequester)
+                        // Only while no band below has claimed it. A requester attached in two
+                        // places at once resolves to whichever node it finds first, which would
+                        // put the rail's exit back at the top of the page half the time.
+                        .then(if (heroIsRestorePoint) Modifier.focusRequester(entryRequester) else Modifier)
+                        .height(41.dp)
+                        .width(208.dp),
                     shape = ButtonDefaults.shape(AppPillShape),
                     // Stays white in every state. Tinting it with the theme accent on focus made
                     // the primary action change identity as the highlight landed on it; a slight
@@ -940,6 +1205,27 @@ private fun DetailHero(
                     active = markedWatched,
                     onClick = onMarkWatched,
                 )
+                // Last in the row, and only when the title actually has one. It is how a trailer is
+                // seen again after Back, and the only way to see it at all with auto-play off —
+                // which is why it is here before the trailer has run rather than appearing only
+                // afterwards.
+                //
+                // Written out rather than left as an icon like its neighbours. Watchlist and
+                // watched are bookmark and tick, which everyone reads at a glance; there is no
+                // glyph for "trailer" that does the same — a film clapper reads as "play the film"
+                // and a circular arrow reads as "watch this again", which is the opposite of what
+                // this does.
+                if (hasTrailer) {
+                    HeroTrailerAction(
+                        label = when {
+                            trailerLoading -> "Loading trailer…"
+                            trailerPlayed -> "Replay trailer"
+                            else -> "Watch trailer"
+                        },
+                        loading = trailerLoading,
+                        onClick = onPlayTrailer,
+                    )
+                }
             }
         }
     }
@@ -966,6 +1252,64 @@ private fun HeroDetailVisibility(visible: Boolean, content: @Composable () -> Un
             androidx.compose.animation.shrinkVertically(TvMotion.standardSpec(TvMotion.Expand)),
     ) {
         content()
+    }
+}
+
+/**
+ * The trailer action, as a pill with its name on it.
+ *
+ * The icon row beside it works because a bookmark and a tick are understood without being read.
+ * "Trailer" has no such glyph, and the two candidates both mislead: a clapperboard reads as playing
+ * the film and a circular arrow as watching it again. Four words of outline pill cost a little room
+ * at the end of a row that has it to spare, and are unambiguous from the back of a room.
+ */
+@Composable
+private fun HeroTrailerAction(
+    label: String,
+    loading: Boolean,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier
+            .height(41.dp)
+            .onFocusChanged { focused = it.isFocused },
+        shape = ButtonDefaults.shape(AppPillShape),
+        scale = ButtonDefaults.scale(focusedScale = TvMotion.focusScale()),
+        colors = ButtonDefaults.colors(
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.86f),
+            focusedContainerColor = MaterialTheme.colorScheme.primary,
+            focusedContentColor = Color(0xFF101013),
+        ),
+        border = ButtonDefaults.border(
+            border = androidx.tv.material3.Border(
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.onBackground.copy(alpha = if (loading) 0.55f else 0.34f),
+                ),
+                shape = AppPillShape,
+            ),
+            focusedBorder = androidx.tv.material3.Border.None,
+        ),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Movie,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = if (focused) Color(0xFF101013) else MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                maxLines = 1,
+            )
+        }
     }
 }
 

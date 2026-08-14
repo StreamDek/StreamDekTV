@@ -129,7 +129,7 @@ private enum class SettingsDestination(val label: String, val description: Strin
     Playback("Playback", "Player, audio, subtitles and compatibility", "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
     SkipAndAutoplay("Skip & Autoplay", "Intros, recaps and the next episode", "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
     Streams("Streams & Quality", "Preferred quality, limits and result labels", "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
-    Library("Home & Layout", "Rows, cards and browsing layout", "home catalogs rows poster landscape grid columns density start screen", Icons.Outlined.VideoLibrary),
+    Library("Home & Layout", "Rows, cards and browsing layout", "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page", Icons.Outlined.VideoLibrary),
     LiveTv("Live TV", "Channel lists, cards and the live player", "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
     Appearance("Appearance", "Theme, motion and presentation", "accent colour theme animation blur transparent navigation", Icons.Outlined.Palette),
     Accessibility("Accessibility", "Contrast, text and reduced motion", "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
@@ -168,8 +168,13 @@ fun SettingsScreen(
     var debridProviderChoice by remember { mutableStateOf(repository.supportedDebridProviders().first().first) }
     /** Set while a service that wants a typed key is being connected. */
     var debridKeyEntry by remember { mutableStateOf<Pair<String, String>?>(null) }
-    /** Add-on list opened by hand; a long synced list arrives collapsed. */
+    /** Long synced lists arrive collapsed; these track the ones opened by hand. */
     var addonsExpanded by remember { mutableStateOf(false) }
+    var pluginsExpanded by remember { mutableStateOf(false) }
+    var playlistsExpanded by remember { mutableStateOf(false) }
+    var rememberLastProfileAtStartup by remember {
+        mutableStateOf(repository.rememberLastProfileAtStartup())
+    }
     val contentEntryRequester = remember { FocusRequester() }
     val destinationRequesters = remember(entryFocusRequester) {
         SettingsDestination.entries.associateWith { if (it == SettingsDestination.Account) entryFocusRequester else FocusRequester() }
@@ -201,6 +206,7 @@ fun SettingsScreen(
     val playbackPrefs = prefs?.playback
     val streamsPrefs = prefs?.streams
     val homePrefs = prefs?.home
+    val detailPrefs = prefs?.detail
     val pluginState = bootstrap?.profilePlugins
     val themeOptions = listOf(
         "streamdek" to "StreamDek",
@@ -321,6 +327,16 @@ fun SettingsScreen(
                     if (session == null) {
                         SettingsActionRow("Sign in or link this TV", "Sync profiles, library and providers", "Open", selectedRequester, onClick = onSignIn)
                     } else {
+                        SettingsToggleRow(
+                            "Remember Last profile at startup",
+                            "Skip the profile picker when this TV opens and continue with the last profile used",
+                            rememberLastProfileAtStartup,
+                            selectedRequester,
+                        ) { next, complete ->
+                            repository.setRememberLastProfileAtStartup(next)
+                            rememberLastProfileAtStartup = next
+                            complete(true)
+                        }
                         bootstrap?.streamProfiles.orEmpty().forEach { profile ->
                             SettingsActionRow(profile.name, if (profile.id == activeProfile?.id) "Current household profile" else "Switch to this profile", if (profile.id == activeProfile?.id) "Active" else "Use", selectedRequester) {
                                 scope.launch { repository.setActiveStreamProfile(profile.id); bootstrap = repository.refreshBootstrap(); status = "Using ${profile.name}." }
@@ -426,6 +442,34 @@ fun SettingsScreen(
                     // Sits with Home rather than Appearance: it picks which screen opens, not how it looks.
                     SettingsDropdownRow("Start screen", "Choose where StreamDek opens", appPrefs?.startScreen ?: "home", listOf("home" to "Home", "library" to "Library", "continue-watching" to "Continue watching")) { value ->
                         savePreference("Start screen") { repository.updateAppPreferences(mapOf("startScreen" to value)) }
+                    }
+                    SettingsPanel("Title page") {
+                        SettingsToggleRow(
+                            "Play trailers automatically",
+                            "When a title page opens, play its trailer full screen as soon as one is ready. Back returns to the page, and the replay button on the page plays it again.",
+                            detailPrefs?.heroTrailerAutoplay != false,
+                            selectedRequester,
+                        ) { next, complete ->
+                            savePreference("Play trailers automatically", complete) {
+                                repository.updateDetailPreferences(mapOf("heroTrailerAutoplay" to next))
+                            }
+                        }
+                        // The same four steps the phone offers, against the same synced value, so a
+                        // household that has already chosen one does not find the television
+                        // quietly ignoring it — the TV was reading this setting and honouring it
+                        // with no way to change it here.
+                        SettingsDropdownRow(
+                            "Trailer quality",
+                            "The best picture a trailer may use. YouTube is asked for this and serves the closest it can.",
+                            (detailPrefs?.heroTrailerResolution ?: 2160).coerceIn(360, 2160).toString(),
+                            listOf("360" to "360p", "720" to "720p", "1080" to "1080p", "2160" to "2160p"),
+                        ) { value ->
+                            savePreference("Trailer quality") {
+                                repository.updateDetailPreferences(
+                                    mapOf("heroTrailerResolution" to (value.toIntOrNull() ?: 2160)),
+                                )
+                            }
+                        }
                     }
                 }
                 SettingsDestination.LiveTv -> {
@@ -659,54 +703,121 @@ fun SettingsScreen(
                                 val providers = pluginState.providers.filter { it.repoUrl == repo.url }
                                 Triple(pluginSourceSection(repo, providers), repo, providers)
                             }
-                            listOf(
-                                PluginSourceSection.Regular to "Regular plugin sources",
-                                PluginSourceSection.CloudStream to "CloudStream sources",
-                                PluginSourceSection.SkyStream to "SkyStream sources",
-                            ).forEach { (section, title) ->
-                                val groups = repoGroups.filter { it.first == section }
-                                val knownRepoUrls = pluginState.repos.mapTo(hashSetOf()) { it.url }
-                                val unparentedProviders = pluginState.providers.filter {
-                                    it.repoUrl !in knownRepoUrls && pluginSourceSection(ProfilePluginRepo(), listOf(it)) == section
-                                }
-                                if (groups.isNotEmpty() || unparentedProviders.isNotEmpty()) {
-                                    InfoLine(
-                                        title,
-                                        "${groups.size} collection${if (groups.size == 1) "" else "s"} · ${groups.sumOf { it.third.size } + unparentedProviders.size} sources",
-                                    )
-                                    groups.forEach { (_, repo, providers) ->
-                                        val parentKey = "repo:${repo.url}"
-                                        val expanded = parentKey in expandedPluginParents
-                                        key(parentKey) {
+                            // Same reasoning as the add-ons above, and it bites harder here: every
+                            // collection is itself an expandable row, so a handful of them turns
+                            // this panel into a page of its own and pushes playlists off the screen
+                            // for anyone who came to look at those.
+                            // Counted as rows that would actually appear, not as providers: a
+                            // collection is one row however many scrapers are inside it, and the
+                            // orphans fold into one "Other synced sources" row per section.
+                            val orphanSections = pluginState.providers
+                                .filter { provider -> pluginState.repos.none { it.url == provider.repoUrl } }
+                                .map { pluginSourceSection(ProfilePluginRepo(), listOf(it)) }
+                                .distinct()
+                            val collectionCount = repoGroups.size + orphanSections.size
+                            val collapsiblePlugins = collectionCount > 2
+                            if (collapsiblePlugins) {
+                                SettingsActionRow(
+                                    "Plugin collections",
+                                    "$collectionCount synced from your account",
+                                    if (pluginsExpanded) "Collapse" else "Expand",
+                                    selectedRequester,
+                                ) { pluginsExpanded = !pluginsExpanded }
+                            }
+                            if (!collapsiblePlugins || pluginsExpanded) {
+                                listOf(
+                                    PluginSourceSection.Regular to "Regular plugin sources",
+                                    PluginSourceSection.CloudStream to "CloudStream sources",
+                                    PluginSourceSection.SkyStream to "SkyStream sources",
+                                ).forEach { (section, title) ->
+                                    val groups = repoGroups.filter { it.first == section }
+                                    val knownRepoUrls = pluginState.repos.mapTo(hashSetOf()) { it.url }
+                                    val unparentedProviders = pluginState.providers.filter {
+                                        it.repoUrl !in knownRepoUrls && pluginSourceSection(ProfilePluginRepo(), listOf(it)) == section
+                                    }
+                                    if (groups.isNotEmpty() || unparentedProviders.isNotEmpty()) {
+                                        InfoLine(
+                                            title,
+                                            "${groups.size} collection${if (groups.size == 1) "" else "s"} · ${groups.sumOf { it.third.size } + unparentedProviders.size} sources",
+                                        )
+                                        groups.forEach { (_, repo, providers) ->
+                                            val parentKey = "repo:${repo.url}"
+                                            val expanded = parentKey in expandedPluginParents
+                                            key(parentKey) {
+                                                SettingsActionRow(
+                                                    repo.name.ifBlank { repo.url },
+                                                    "${providers.size} source${if (providers.size == 1) "" else "s"}" + repo.version.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                                                    if (expanded) "Collapse" else "Expand",
+                                                    selectedRequester,
+                                                ) {
+                                                    expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
+                                                }
+                                                if (expanded) {
+                                                    SettingsToggleRow(
+                                                        "Collection enabled",
+                                                        "Enable or disable ${repo.name.ifBlank { "this plugin collection" }} and its sources",
+                                                        repo.enabled,
+                                                        selectedRequester,
+                                                    ) { next, complete ->
+                                                        scope.launch {
+                                                            val nextState = pluginState.copy(
+                                                                repos = pluginState.repos.map { if (it.url == repo.url) it.copy(enabled = next) else it },
+                                                                providers = if (next) pluginState.providers else pluginState.providers.map {
+                                                                    if (it.repoUrl == repo.url) it.copy(enabled = false) else it
+                                                                },
+                                                            )
+                                                            val updated = repository.updateProfilePlugins(nextState)
+                                                            if (updated != null) bootstrap = updated
+                                                            status = if (updated != null) "${repo.name.ifBlank { "Plugin collection" }} updated." else "Plugin collection could not be updated."
+                                                            complete(updated != null)
+                                                        }
+                                                    }
+                                                    providers.forEach { provider ->
+                                                        key("provider:${provider.repoUrl}:${provider.id}") {
+                                                            SettingsToggleRow(
+                                                                provider.name.ifBlank { provider.id },
+                                                                provider.types.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: "Plugin provider",
+                                                                provider.enabled,
+                                                                selectedRequester,
+                                                            ) { next, complete ->
+                                                                scope.launch {
+                                                                    val nextState = pluginState.copy(
+                                                                        providers = pluginState.providers.map {
+                                                                            if (it.id == provider.id && it.repoUrl == provider.repoUrl) it.copy(enabled = next) else it
+                                                                        },
+                                                                    )
+                                                                    val updated = repository.updateProfilePlugins(nextState)
+                                                                    if (updated != null) bootstrap = updated
+                                                                    status = if (updated != null) "${provider.name.ifBlank { "Plugin provider" }} updated." else "Plugin provider could not be updated."
+                                                                    complete(updated != null)
+                                                                }
+                                                            }
+                                                            if (provider.hasSettings) {
+                                                                SettingsActionRow(
+                                                                    "${provider.name.ifBlank { "This source" }} settings",
+                                                                    "API keys and options this source asks for. Stored on this TV.",
+                                                                    "Open",
+                                                                    selectedRequester,
+                                                                ) { editingPluginProvider = provider }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (unparentedProviders.isNotEmpty()) {
+                                            val parentKey = "unparented:${section.name}"
+                                            val expanded = parentKey in expandedPluginParents
                                             SettingsActionRow(
-                                                repo.name.ifBlank { repo.url },
-                                                "${providers.size} source${if (providers.size == 1) "" else "s"}" + repo.version.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                                                "Other synced sources",
+                                                "${unparentedProviders.size} source${if (unparentedProviders.size == 1) "" else "s"} without repository metadata",
                                                 if (expanded) "Collapse" else "Expand",
                                                 selectedRequester,
                                             ) {
                                                 expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
                                             }
                                             if (expanded) {
-                                                SettingsToggleRow(
-                                                    "Collection enabled",
-                                                    "Enable or disable ${repo.name.ifBlank { "this plugin collection" }} and its sources",
-                                                    repo.enabled,
-                                                    selectedRequester,
-                                                ) { next, complete ->
-                                                    scope.launch {
-                                                        val nextState = pluginState.copy(
-                                                            repos = pluginState.repos.map { if (it.url == repo.url) it.copy(enabled = next) else it },
-                                                            providers = if (next) pluginState.providers else pluginState.providers.map {
-                                                                if (it.repoUrl == repo.url) it.copy(enabled = false) else it
-                                                            },
-                                                        )
-                                                        val updated = repository.updateProfilePlugins(nextState)
-                                                        if (updated != null) bootstrap = updated
-                                                        status = if (updated != null) "${repo.name.ifBlank { "Plugin collection" }} updated." else "Plugin collection could not be updated."
-                                                        complete(updated != null)
-                                                    }
-                                                }
-                                                providers.forEach { provider ->
+                                                unparentedProviders.forEach { provider ->
                                                     key("provider:${provider.repoUrl}:${provider.id}") {
                                                         SettingsToggleRow(
                                                             provider.name.ifBlank { provider.id },
@@ -739,50 +850,6 @@ fun SettingsScreen(
                                             }
                                         }
                                     }
-                                    if (unparentedProviders.isNotEmpty()) {
-                                        val parentKey = "unparented:${section.name}"
-                                        val expanded = parentKey in expandedPluginParents
-                                        SettingsActionRow(
-                                            "Other synced sources",
-                                            "${unparentedProviders.size} source${if (unparentedProviders.size == 1) "" else "s"} without repository metadata",
-                                            if (expanded) "Collapse" else "Expand",
-                                            selectedRequester,
-                                        ) {
-                                            expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
-                                        }
-                                        if (expanded) {
-                                            unparentedProviders.forEach { provider ->
-                                                key("provider:${provider.repoUrl}:${provider.id}") {
-                                                    SettingsToggleRow(
-                                                        provider.name.ifBlank { provider.id },
-                                                        provider.types.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: "Plugin provider",
-                                                        provider.enabled,
-                                                        selectedRequester,
-                                                    ) { next, complete ->
-                                                        scope.launch {
-                                                            val nextState = pluginState.copy(
-                                                                providers = pluginState.providers.map {
-                                                                    if (it.id == provider.id && it.repoUrl == provider.repoUrl) it.copy(enabled = next) else it
-                                                                },
-                                                            )
-                                                            val updated = repository.updateProfilePlugins(nextState)
-                                                            if (updated != null) bootstrap = updated
-                                                            status = if (updated != null) "${provider.name.ifBlank { "Plugin provider" }} updated." else "Plugin provider could not be updated."
-                                                            complete(updated != null)
-                                                        }
-                                                    }
-                                                    if (provider.hasSettings) {
-                                                        SettingsActionRow(
-                                                            "${provider.name.ifBlank { "This source" }} settings",
-                                                            "API keys and options this source asks for. Stored on this TV.",
-                                                            "Open",
-                                                            selectedRequester,
-                                                        ) { editingPluginProvider = provider }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -792,29 +859,40 @@ fun SettingsScreen(
                             InfoLine("Playlists", "Add one from StreamDek Mobile or the web portal")
                         } else {
                             InfoLine("Enabled playlists", "${playlists.count { it.enabled }} of ${playlists.size}")
-                            playlists.forEach { playlist ->
-                                key(playlist.id) {
-                                    SettingsToggleRow(
-                                        playlist.name,
-                                        playlist.url.substringAfter("://").substringBefore('/'),
-                                        playlist.enabled,
-                                        selectedRequester,
-                                    ) { next, complete ->
-                                        scope.launch {
-                                            status = "Updating ${playlist.name}..."
-                                            val saved = repository.setPlaylistEnabled(playlist.id, next)
-                                            if (saved) {
-                                                playlists = repository.fetchPlaylists(forceRefresh = true)
-                                                status = "${playlist.name} ${if (next) "on" else "off"}."
-                                            } else {
-                                                status = "${playlist.name} could not be updated."
+                            val collapsiblePlaylists = playlists.size > 2
+                            if (collapsiblePlaylists) {
+                                SettingsActionRow(
+                                    "Synced playlists",
+                                    "${playlists.size} on your account",
+                                    if (playlistsExpanded) "Collapse" else "Expand",
+                                    selectedRequester,
+                                ) { playlistsExpanded = !playlistsExpanded }
+                            }
+                            if (!collapsiblePlaylists || playlistsExpanded) {
+                                playlists.forEach { playlist ->
+                                    key(playlist.id) {
+                                        SettingsToggleRow(
+                                            playlist.name,
+                                            playlist.url.substringAfter("://").substringBefore('/'),
+                                            playlist.enabled,
+                                            selectedRequester,
+                                        ) { next, complete ->
+                                            scope.launch {
+                                                status = "Updating ${playlist.name}..."
+                                                val saved = repository.setPlaylistEnabled(playlist.id, next)
+                                                if (saved) {
+                                                    playlists = repository.fetchPlaylists(forceRefresh = true)
+                                                    status = "${playlist.name} ${if (next) "on" else "off"}."
+                                                } else {
+                                                    status = "${playlist.name} could not be updated."
+                                                }
+                                                complete(saved)
                                             }
-                                            complete(saved)
                                         }
                                     }
                                 }
+                                InfoLine("Adding and removing", "Use StreamDek Mobile or the web portal")
                             }
-                            InfoLine("Adding and removing", "Use StreamDek Mobile or the web portal")
                         }
                     }
                 }

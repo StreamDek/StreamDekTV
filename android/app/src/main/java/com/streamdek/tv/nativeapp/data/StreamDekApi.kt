@@ -27,6 +27,7 @@ class AuthSessionStore(
     private val deviceIdKey = "streamdek_tv_device_id"
     private val previousDeviceIdKey = "streamdek_tv_previous_device_id"
     private val activeProfileIdKey = "streamdek_tv_active_profile_id"
+    private val rememberLastProfileAtStartupKey = "streamdek_tv_remember_last_profile_at_startup"
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
     private val handoffPublicKeyKey = "streamdek_tv_handoff_public_key_v1"
@@ -72,6 +73,14 @@ class AuthSessionStore(
 
     fun setActiveProfileId(profileId: String?) {
         preferences.edit().putString(activeProfileIdKey, profileId).apply()
+    }
+
+    /** TV-local because this controls the startup experience of this television only. */
+    fun rememberLastProfileAtStartup(): Boolean =
+        preferences.getBoolean(rememberLastProfileAtStartupKey, false)
+
+    fun setRememberLastProfileAtStartup(remember: Boolean) {
+        preferences.edit().putBoolean(rememberLastProfileAtStartupKey, remember).apply()
     }
 
     fun loadFavouriteChannels(): List<MediaItem> {

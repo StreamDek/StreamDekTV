@@ -61,6 +61,27 @@ object TvSpacing {
     val Compact = 8.dp
 }
 
+/** The navigation rail at rest, before focus widens it. */
+val TvNavRailWidth = 64.dp
+
+/**
+ * How far content has to start from the left edge to clear the rail.
+ *
+ * A screen that lays out inside this is not just overlapped — it is unreachable from the rail and
+ * cannot reach it. Focus moves left by looking for something further left than what is focused, and
+ * a card sitting on top of the rail is not further left than anything.
+ */
+val TvNavRailInset = TvNavRailWidth + 4.dp
+
+/**
+ * The navigation rail, for a screen that wants left out of its content to land there.
+ *
+ * Null wherever the rail is not on screen, and that distinction is load-bearing: a focus redirect
+ * naming a requester with nothing attached to it cancels the move outright, so a screen that
+ * pointed at the rail unconditionally would trap focus on every surface the rail is hidden from.
+ */
+val LocalNavRailFocus = androidx.compose.runtime.staticCompositionLocalOf<FocusRequester?> { null }
+
 /**
  * The app's motion vocabulary.
  *

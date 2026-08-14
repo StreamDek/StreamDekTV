@@ -114,6 +114,10 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // A real org.json on the unit-test classpath. The android.jar stub throws from every method, so
+    // the trailer format-selection tests — which parse YouTube's player response — cannot run
+    // against it. Same version the mobile app tests these with.
+    testImplementation("org.json:json:20251224")
     implementation files("libs/libmpv-release.aar")
     implementation files("libs/lib-decoder-ffmpeg-release.aar")
     implementation("androidx.media3:media3-exoplayer:1.8.0")

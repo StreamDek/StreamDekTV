@@ -114,6 +114,14 @@ data class MediaDetail(
     val titleLogo: String? = null,
     val trailerKey: String? = null,
     val trailerSite: String? = null,
+    /**
+     * Every video the metadata service listed, roughly newest first.
+     *
+     * That order is not the useful one — it puts theatre stings and ticket spots ahead of the
+     * actual trailer — so the resolver reads their running times and picks. Without these it can
+     * only take [trailerKey], which is how a title opened on a fifteen-second notice.
+     */
+    val trailerKeys: List<String> = emptyList(),
     val genreNames: List<String> = emptyList(),
     val cast: List<CastMember> = emptyList(),
     val seasons: List<SeasonRef> = emptyList(),
@@ -542,6 +550,19 @@ data class AddonCatalogRef(
         get() = extra.any { entry ->
             addonExtraName(entry).equals("genre", ignoreCase = true) && addonExtraRequired(entry)
         } || extraRequired.any { it.equals("genre", ignoreCase = true) }
+
+    /**
+     * Whether the catalog answers nothing at all until it is given something to search for.
+     *
+     * Distinct from [supportsSearch]: plenty of browsable catalogs also accept a search term. One
+     * that *requires* it is a search endpoint wearing a catalog's clothes — Xperience and
+     * AIOStreams both publish one — and it has no business being a row on a home screen, where the
+     * best it can do is cost a round trip to answer with nothing.
+     */
+    val requiresSearch: Boolean
+        get() = extra.any { entry ->
+            addonExtraName(entry).equals("search", ignoreCase = true) && addonExtraRequired(entry)
+        } || extraRequired.any { it.equals("search", ignoreCase = true) }
 
     /** The genre to send when one is required, or null when the catalog does not need one. */
     val defaultGenre: String?

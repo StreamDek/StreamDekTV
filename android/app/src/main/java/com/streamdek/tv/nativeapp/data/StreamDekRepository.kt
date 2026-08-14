@@ -174,9 +174,28 @@ private data class AddonCatalogCollection(
 /** Maps a Stremio-native catalog type to the app-internal type, or null when unsupported. */
 fun mapAddonCatalogType(rawType: String): String? = when {
     rawType == "movie" -> "movie"
-    rawType == "series" -> "tv"
+    // Anime is published as its own catalog type by a good number of add-ons and is series-shaped
+    // in every other respect — episodes, seasons, a `series` meta resource. Dropping it meant those
+    // rows simply never appeared, with nothing on screen to say why.
+    rawType == "series" || rawType == "anime" -> "tv"
     rawType in LIVE_ADDON_CATALOG_TYPES -> "live"
     else -> null
+}
+
+/**
+ * How a row says which half of a two-type catalog it is.
+ *
+ * Add-ons routinely publish one catalog under both `movie` and `series` with the same name and the
+ * same id — AIOStreams alone ships ten such pairs, Xperience another handful — so the two arrive as
+ * identical rows stacked one above the other. Only added when a title is genuinely ambiguous; a
+ * catalog that exists under one type only keeps the name its author gave it.
+ */
+private fun addonRailTypeSuffix(rawType: String): String = when {
+    rawType == "movie" -> "Movies"
+    rawType == "series" -> "Series"
+    rawType == "anime" -> "Anime"
+    rawType in LIVE_ADDON_CATALOG_TYPES -> "Live"
+    else -> rawType.replaceFirstChar { it.uppercase(Locale.US) }
 }
 
 /** AIOStreams exposes provider failures as synthetic meta items; they are not playable titles. */
@@ -196,18 +215,23 @@ private fun truncateAtWordBoundary(text: String, maxLength: Int): String {
     return trimmed.trimEnd() + "…"
 }
 
-fun buildAddonRailTitle(addonName: String, catalogName: String?): String {
+fun buildAddonRailTitle(addonName: String, catalogName: String?, typeSuffix: String? = null): String {
     val addon = addonName.trim()
     val catalog = catalogName?.trim().orEmpty()
-    if (catalog.isBlank()) return truncateAtWordBoundary(addon, MAX_ADDON_RAIL_TITLE_LENGTH)
+    val suffix = typeSuffix?.trim()?.takeIf { it.isNotEmpty() }
+    // The suffix is never the part that gets cut: it is the only thing telling two otherwise
+    // identical rows apart.
+    val budget = MAX_ADDON_RAIL_TITLE_LENGTH - (suffix?.let { it.length + 1 } ?: 0)
+    fun finish(base: String) = listOfNotNull(base.takeIf { it.isNotBlank() }, suffix).joinToString(" ")
+    if (catalog.isBlank()) return finish(truncateAtWordBoundary(addon, budget))
     // Skip the addon prefix when the catalog name already identifies it.
     if (addon.isBlank() || catalog.contains(addon, ignoreCase = true)) {
-        return truncateAtWordBoundary(catalog, MAX_ADDON_RAIL_TITLE_LENGTH)
+        return finish(truncateAtWordBoundary(catalog, budget))
     }
     val combined = "$addon - $catalog"
-    if (combined.length <= MAX_ADDON_RAIL_TITLE_LENGTH) return combined
+    if (combined.length <= budget) return finish(combined)
     // Prefer the more descriptive catalog name over a truncated combination.
-    return truncateAtWordBoundary(catalog, MAX_ADDON_RAIL_TITLE_LENGTH)
+    return finish(truncateAtWordBoundary(catalog, budget))
 }
 
 private fun buildLiveRailTitle(rawType: String, catalogName: String?): String {
@@ -631,6 +655,26 @@ class StreamDekRepository(
         return refreshBootstrap()
     }
 
+    suspend fun updateDetailPreferences(partial: Map<String, Any?>): AccountBootstrap? {
+        val existing = bootstrapState.value?.preferences?.detail ?: DetailPreferences()
+        if (!patchPreferences(
+            mapOf(
+                "detail" to mapOf(
+                    "seasonTabStyle" to (partial["seasonTabStyle"] ?: existing.seasonTabStyle),
+                    "heroTrailerAutoplay" to (partial["heroTrailerAutoplay"] ?: existing.heroTrailerAutoplay),
+                    "heroTrailerResolution" to (partial["heroTrailerResolution"] ?: existing.heroTrailerResolution),
+                    "ratingsEnabled" to (partial["ratingsEnabled"] ?: existing.ratingsEnabled),
+                    "externalRatingsEnabled" to (partial["externalRatingsEnabled"] ?: existing.externalRatingsEnabled),
+                    "enabledRatingProviders" to (partial["enabledRatingProviders"] ?: existing.enabledRatingProviders),
+                    // Carried through rather than defaulted: it is an account-wide key the other
+                    // clients own, and writing a trailer setting from the TV must not blank it.
+                    "mdblistApiKey" to (partial["mdblistApiKey"] ?: existing.mdblistApiKey),
+                ),
+            ),
+        )) return null
+        return refreshBootstrap()
+    }
+
     suspend fun updateStreamsPreferences(partial: Map<String, Any?>): AccountBootstrap? {
         val existing = bootstrapState.value?.preferences?.streams ?: StreamsPreferences()
         if (!patchPreferences(
@@ -768,18 +812,30 @@ class StreamDekRepository(
                     if (!includeCatalog(rawType, mappedType)) return@mapIndexedNotNull null
                     val catalogId = catalog.id.trim()
                     if (catalogId.isBlank()) return@mapIndexedNotNull null
+                    // A catalog that cannot answer without a search term is a search endpoint, not
+                    // a row. Asking it anyway costs a round trip per add-on per load to be told
+                    // nothing, and an add-on less forgiving than the ones tested here could answer
+                    // with an error card instead of an empty list.
+                    if (catalog.requiresSearch) return@mapIndexedNotNull null
+                    // A required genre has to be supplied or the catalog is within its rights to
+                    // refuse. Only the backend proxy cannot carry one, so those go direct.
+                    val requiredGenre = catalog.defaultGenre
                     async {
-                        val proxiedMetas = runCatching {
-                            api.get<AddonCatalogResponse>(
-                                "/addons/${URLEncoder.encode(addon.id, "UTF-8")}/catalog/$rawType/${URLEncoder.encode(catalogId, "UTF-8")}",
-                            )?.metas.orEmpty()
-                        }.onFailure {
-                            TvDebugLogger.w("Home", "addon catalog fetch failed addon=${addon.id} type=$rawType id=$catalogId")
-                        }.getOrDefault(emptyList())
+                        val proxiedMetas = if (requiredGenre != null) {
+                            emptyList()
+                        } else {
+                            runCatching {
+                                api.get<AddonCatalogResponse>(
+                                    "/addons/${URLEncoder.encode(addon.id, "UTF-8")}/catalog/$rawType/${URLEncoder.encode(catalogId, "UTF-8")}",
+                                )?.metas.orEmpty()
+                            }.onFailure {
+                                TvDebugLogger.w("Home", "addon catalog fetch failed addon=${addon.id} type=$rawType id=$catalogId")
+                            }.getOrDefault(emptyList())
+                        }
                         val usableProxiedMetas = proxiedMetas.filterNot(::isAddonCatalogDiagnosticMeta)
                         val shouldTryDirect = proxiedMetas.isEmpty() || usableProxiedMetas.size != proxiedMetas.size
                         val directMetas = if (shouldTryDirect) {
-                            fetchAddonCatalogDirect(addon, rawType, catalogId)
+                            fetchAddonCatalogDirect(addon, rawType, catalogId, genre = requiredGenre)
                                 .filterNot(::isAddonCatalogDiagnosticMeta)
                         } else {
                             emptyList()
@@ -855,10 +911,27 @@ class StreamDekRepository(
      * 'tv' for live channels, 'events'/'sport' for live events).
      */
     suspend fun fetchAddonCatalogRails(): List<HomeRail> {
-        return fetchAddonCatalogCollections().mapIndexed { index, collection ->
+        val collections = fetchAddonCatalogCollections()
+        // Which titles land on more than one catalog type, and so need saying which they are.
+        // Worked out across every add-on at once rather than per add-on: two providers publishing
+        // a row called "Trending" are just as indistinguishable as one publishing it twice.
+        val ambiguousTitles = collections
+            .groupBy { buildAddonRailTitle(it.addonName, it.catalogName) }
+            .filterValues { group -> group.map { it.rawType }.distinct().size > 1 }
+            .keys
+        return collections.mapIndexed { index, collection ->
+            val plainTitle = buildAddonRailTitle(collection.addonName, collection.catalogName)
             HomeRail(
                 id = "addon:${collection.addonId}:${collection.rawType}:${collection.catalogId}:$index",
-                title = buildAddonRailTitle(collection.addonName, collection.catalogName),
+                title = if (plainTitle in ambiguousTitles) {
+                    buildAddonRailTitle(
+                        addonName = collection.addonName,
+                        catalogName = collection.catalogName,
+                        typeSuffix = addonRailTypeSuffix(collection.rawType),
+                    )
+                } else {
+                    plainTitle
+                },
                 items = collection.items.take(80),
                 isLive = mapAddonCatalogType(collection.rawType.lowercase(Locale.US)) == "live",
             )
@@ -1892,6 +1965,20 @@ class StreamDekRepository(
         return profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull { it.isDefault } ?: profiles.firstOrNull()
     }
 
+    fun rememberLastProfileAtStartup(): Boolean = sessionStore.rememberLastProfileAtStartup()
+
+    fun setRememberLastProfileAtStartup(remember: Boolean) {
+        sessionStore.setRememberLastProfileAtStartup(remember)
+    }
+
+    suspend fun verifyProfilePin(profileId: String, pin: String): Boolean {
+        if (pin.length != 4 || pin.any { !it.isDigit() }) return false
+        return api.post<JsonObject>(
+            "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/verify-pin",
+            mapOf("pin" to pin),
+        )?.get("valid")?.asBoolean == true
+    }
+
     fun setActiveStreamProfile(profileId: String?) {
         if (profileId == sessionStore.activeProfileId()) return
         sessionStore.setActiveProfileId(profileId)
@@ -2714,6 +2801,61 @@ class StreamDekRepository(
         return candidate
     }
 
+    /**
+     * Works down the ranked sources until one opens.
+     *
+     * A source can fail before a single frame is decoded — a usenet post packed into archives, a
+     * debrid link that has expired, an add-on whose host is down — and stopping at the first of
+     * those put the viewer back on the picker to choose again from a list that gives no clue which
+     * entries are dead. The list is already ranked, so the next one down is exactly what they would
+     * have picked anyway.
+     *
+     * [onAttempt] and [onAttemptFailed] are the caller's chance to say what is happening. This can
+     * take several seconds per source, and a screen that sits on a spinner through three of them
+     * looks like a hang rather than like progress.
+     */
+    suspend fun resolveFirstPlayableSource(
+        request: PlaybackRequest,
+        streams: List<AddonStream>,
+        skipKeys: Set<String> = emptySet(),
+        forceRefresh: Boolean = false,
+        onAttempt: suspend (stream: AddonStream) -> Unit = {},
+        onAttemptFailed: suspend (stream: AddonStream, failureKey: String) -> Unit = { _, _ -> },
+    ): ResolvedPlaybackCandidate? {
+        for (stream in streams) {
+            val key = streamSelectionKey(stream)
+            if (key in skipKeys) continue
+            onAttempt(stream)
+            val resolved = runCatching {
+                resolveSelectedPlayback(
+                    request = request,
+                    stream = stream,
+                    streams = streams,
+                    forceRefresh = forceRefresh,
+                )
+            }.onFailure {
+                TvDebugLogger.w("Playback", "source ${stream.addonName} threw while resolving", it)
+            }.getOrNull()
+            if (resolved?.source != null) return resolved
+            onAttemptFailed(stream, key)
+        }
+        return null
+    }
+
+    /**
+     * How a source delivers, in one word, for a status line that has to name what just failed.
+     *
+     * "Usenet" and "Torrent" fail for entirely different reasons and take different lengths of
+     * time to give up, so a viewer watching the player work through a list is owed the distinction.
+     */
+    fun streamDeliveryLabel(stream: AddonStream?): String = when {
+        stream == null -> "Source"
+        isUsenetStream(stream) -> "Usenet"
+        !normalizedDirectUrl(stream).isNullOrBlank() -> "Direct"
+        !effectiveInfoHash(stream).isNullOrBlank() -> "Torrent"
+        else -> "Source"
+    }
+
     suspend fun resolvePlaybackSource(
         stream: AddonStream,
         lookupType: String? = null,
@@ -2837,6 +2979,10 @@ class StreamDekRepository(
         } else {
             stream
         }
+        // Cleared for every attempt, not only usenet ones, so what it holds always belongs to the
+        // source that was tried last. Left standing it would outlive its own source and explain a
+        // torrent's failure with the reason a usenet post gave three sources ago.
+        lastUsenetFailureMessage = null
         if (!isPlayableStreamOption(playbackStream)) return null
         normalizedDirectUrl(playbackStream)?.let { return it }
         if (isUsenetStream(playbackStream)) {
@@ -2850,6 +2996,7 @@ class StreamDekRepository(
                 }
             }.onFailure {
                 TvDebugLogger.w("Playback", "usenet source ${playbackStream.addonName} could not be opened", it)
+                lastUsenetFailureMessage = it.message?.takeIf { message -> message.isNotBlank() }
             }.getOrNull()
         }
         val infoHash = effectiveInfoHash(playbackStream) ?: return null
@@ -3207,6 +3354,19 @@ class StreamDekRepository(
      * they are nearly all of them.
      */
     fun isUsenetStream(stream: AddonStream): Boolean = isUsenetAddonStream(stream)
+
+    /**
+     * Why the last usenet source failed to open, in the assembler's own words.
+     *
+     * A post packed into archives, a stream that named no news server, and a server that cannot be
+     * reached are three different problems with three different answers — and the player was
+     * flattening all of them into one sentence about the server possibly being unreachable, which
+     * is actively wrong for the first two. Held here because [resolveStreamToUrl] answers null for
+     * every kind of failure alike and the player has nothing else to read.
+     */
+    @Volatile
+    var lastUsenetFailureMessage: String? = null
+        private set
 
     /** Reject archive/download payloads that addons occasionally mislabel as playable videos. */
     fun isPlayableStreamOption(stream: AddonStream): Boolean {

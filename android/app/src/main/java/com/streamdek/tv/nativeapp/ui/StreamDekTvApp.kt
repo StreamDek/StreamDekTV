@@ -17,6 +17,8 @@ import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +41,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +55,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -60,6 +64,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -82,6 +89,7 @@ import com.streamdek.tv.nativeapp.data.PlaybackHandoff
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.StreamProfile
 import com.streamdek.tv.nativeapp.ui.account.SettingsScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
 import com.streamdek.tv.nativeapp.ui.detail.DetailScreen
@@ -137,6 +145,16 @@ private const val NavRailTransparentAlpha = 0.85f
 /** The navigation route the title page is registered under, kept in one place. */
 private const val DetailRoutePattern = "detail/{type}/{id}"
 
+/**
+ * Screens that hold their own content clear of the navigation rail.
+ *
+ * Every other route is inset by the shell, which is simpler and right for a screen laid out on a
+ * flat background. These two are full-bleed artwork, and an inset there paints a strip of
+ * background down the left for the rail to sit on — which is what made a transparent rail look
+ * solid on Home.
+ */
+private val SelfInsetRoutes = setOf(DetailRoutePattern, "home")
+
 private fun detailRoute(mediaType: String, mediaId: String): String {
     val canonicalType = if (mediaType == "series") "tv" else mediaType
     return "detail/$canonicalType/$mediaId"
@@ -164,6 +182,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val libraryContentRequester = remember { FocusRequester() }
     val profileNavRequester = remember { FocusRequester() }
     val settingsContentRequester = remember { FocusRequester() }
+    /** The title page's own way back in from the rail, and the rail's way of being reached. */
+    val detailContentRequester = remember { FocusRequester() }
+    val navRailRequester = remember { FocusRequester() }
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
     var liveBrowseSelection by remember { mutableStateOf(LiveBrowseSelection()) }
@@ -172,6 +193,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     var handoffProcessing by remember(session?.user?.uid) { mutableStateOf(false) }
     var handoffError by remember(session?.user?.uid) { mutableStateOf<String?>(null) }
     val handoffScope = rememberCoroutineScope()
+    val startupProfileScope = rememberCoroutineScope()
+    var startupProfileHandled by remember(session?.user?.uid) { mutableStateOf(false) }
+    var startupProfileSwitching by remember(session?.user?.uid) { mutableStateOf(false) }
+    val startupProfiles = bootstrap?.streamProfiles.orEmpty()
+    val showStartupProfilePicker = session != null &&
+        bootstrap != null &&
+        startupProfiles.isNotEmpty() &&
+        !repository.rememberLastProfileAtStartup() &&
+        !startupProfileHandled
     val liveAddonKey = remember(bootstrap) {
         bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
             "${it.id}:${it.enabled}:${it.position}:${it.manifest.catalogs.size}"
@@ -277,6 +307,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     var lastHomeRowId by remember { mutableStateOf<String?>(null) }
     var lastHomeItemKey by remember { mutableStateOf<String?>(null) }
     var homeFocusRestoreToken by remember { mutableStateOf(0) }
+    var pendingDestinationFocus by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(session?.user?.uid) {
         if (session != null) {
@@ -292,10 +323,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         appUpdateManager.runAutomaticCheck()
     }
 
-    LaunchedEffect(preferredStartRoute, currentRoute, startScreenApplied) {
-        if (!startScreenApplied && currentRoute == TopLevelDestination.Home.route) {
+    LaunchedEffect(preferredStartRoute, currentRoute, startScreenApplied, showStartupProfilePicker) {
+        if (!showStartupProfilePicker && !startScreenApplied && currentRoute == TopLevelDestination.Home.route) {
             startScreenApplied = true
             if (preferredStartRoute != TopLevelDestination.Home.route) {
+                pendingDestinationFocus = preferredStartRoute
                 navController.navigate(preferredStartRoute) {
                     popUpTo(TopLevelDestination.Home.route) { inclusive = true }
                     launchSingleTop = true
@@ -312,6 +344,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             !liveNavigationState.loading &&
             currentRoute == TopLevelDestination.Live.route
         ) {
+            pendingDestinationFocus = TopLevelDestination.Home.route
             navController.navigate(TopLevelDestination.Home.route) {
                 popUpTo(TopLevelDestination.Home.route) { inclusive = false }
                 launchSingleTop = true
@@ -338,11 +371,66 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         previousRoute = currentRoute
     }
 
+    val destinationContentRequesters = remember {
+        mapOf(
+            TopLevelDestination.Home.route to homeContentRequester,
+            TopLevelDestination.Search.route to searchContentRequester,
+            TopLevelDestination.Live.route to liveContentRequester,
+            TopLevelDestination.Library.route to libraryContentRequester,
+            TopLevelDestination.Profile.route to settingsContentRequester,
+            DetailRoutePattern to detailContentRequester,
+        )
+    }
+    LaunchedEffect(currentRoute, pendingDestinationFocus, showStartupProfilePicker) {
+        val route = pendingDestinationFocus ?: return@LaunchedEffect
+        if (showStartupProfilePicker || currentRoute != route) return@LaunchedEffect
+
+        // Navigation and the select-key release can both outlive the rail click. Wait until the
+        // destination is composed, then retry the hand-off instead of leaving focus on the rail
+        // when a single fixed delay happens to be too early on a slower TV.
+        repeat(6) { attempt ->
+            delay(if (attempt == 0) 180L else 80L)
+            val accepted = destinationContentRequesters[route]?.let { requester ->
+                runCatching { requester.requestFocus() }.getOrDefault(false)
+            } == true
+            if (accepted) {
+                pendingDestinationFocus = null
+                return@LaunchedEffect
+            }
+        }
+        pendingDestinationFocus = null
+    }
+
     LaunchedEffect(exitHintVisible) {
         if (!exitHintVisible) return@LaunchedEffect
         delay(ExitBackPressWindowMs)
         exitHintVisible = false
         lastExitBackPressAt = 0L
+    }
+
+    // This is a startup destination, not a dialog over Home. Keeping the NavHost composed behind
+    // it lets Home's late row loads request focus after the picker has appeared, leaving the
+    // highlight somewhere invisible underneath. Return here so profile cards are the only focus
+    // targets in the window until one is chosen.
+    if (showStartupProfilePicker) {
+        StartupProfilePicker(
+            profiles = startupProfiles,
+            activeProfileId = activeProfile?.id,
+            switching = startupProfileSwitching,
+            onVerifyPin = { profile, pin -> repository.verifyProfilePin(profile.id, pin) },
+            onChoose = { profile ->
+                if (!startupProfileSwitching) {
+                    startupProfileSwitching = true
+                    startupProfileScope.launch {
+                        repository.setActiveStreamProfile(profile.id)
+                        repository.refreshBootstrap()
+                        startupProfileHandled = true
+                        startupProfileSwitching = false
+                    }
+                }
+            },
+        )
+        return
     }
 
     val showUpdatePrompt =
@@ -385,6 +473,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         val isTopLevelRoute = currentRoute in topLevelDestinations.map { it.route }
         when {
             isTopLevelRoute && currentRoute != TopLevelDestination.Home.route -> {
+                pendingDestinationFocus = TopLevelDestination.Home.route
                 navController.navigate(TopLevelDestination.Home.route) {
                     popUpTo(TopLevelDestination.Home.route) { inclusive = false }
                     launchSingleTop = true
@@ -424,11 +513,40 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background),
         ) {
+            // Set by whichever screen has taken the display — today the title page, while a trailer
+            // is playing over it. The shell's own furniture stands down for the duration.
+            var immersiveContent by remember { mutableStateOf(false) }
+            // The shell's furniture leaves on the same curve the screen underneath is using, rather
+            // than blinking out from over a page that is still fading. One value for both pieces,
+            // so the clock and the rail go together.
+            val chromeAlpha by androidx.compose.animation.core.animateFloatAsState(
+                targetValue = if (immersiveContent) 0f else 1f,
+                animationSpec = TvMotion.standardSpec(TvMotion.Expand),
+                label = "app-chrome",
+            )
+            // A title page is somewhere you browse, not somewhere you commit to: you arrive on it
+            // from a row, decide against it, and want to be somewhere else. Without the rail the
+            // only way out was Back, and only back the way you came. It still stays off the player
+            // and the stream picker, where it would sit over the picture or over a decision.
+            val railRoutes = remember { topLevelDestinations.map { it.route } + DetailRoutePattern }
+            val railOnScreen = currentRoute in railRoutes && !showUpdatePrompt && chromeAlpha > 0.001f
+            CompositionLocalProvider(
+                LocalImmersiveContent provides { active -> immersiveContent = active },
+                LocalNavRailFocus provides navRailRequester.takeIf { railOnScreen },
+            ) {
             NavHost(
                 navController = navController,
                 startDestination = TopLevelDestination.Home.route,
+                // Screens whose artwork fills the frame are not inset here: a band of flat
+                // background down the left is exactly what a transparent rail has nothing to be
+                // transparent against. Those clear the rail from the inside, around their own
+                // content, so the picture still runs to the edge behind it.
                 modifier = Modifier.padding(
-                    start = if (currentRoute in topLevelDestinations.map { it.route }) 68.dp else 0.dp,
+                    start = if (currentRoute in topLevelDestinations.map { it.route } && currentRoute !in SelfInsetRoutes) {
+                        TvNavRailInset
+                    } else {
+                        0.dp
+                    },
                 ),
                 enterTransition = { screenEnter },
                 exitTransition = { screenExit },
@@ -599,6 +717,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         repository = repository,
                         mediaType = backStackEntryInner.arguments?.getString("type").orEmpty(),
                         mediaId = backStackEntryInner.arguments?.getString("id").orEmpty(),
+                        entryFocusRequester = detailContentRequester,
                         onBack = { navController.popBackStack() },
                         onOpenDetail = { mediaType, mediaId ->
                             navController.navigate(detailRoute(mediaType, mediaId))
@@ -622,39 +741,36 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     )
                 }
             }
+            }
 
-            CurrentTimePill(
-                modifier = Modifier
-                    .align(if (currentRoute == "player") Alignment.TopStart else Alignment.TopEnd)
-                    .padding(
-                        top = 22.dp,
-                        start = if (currentRoute == "player") 26.dp else 0.dp,
-                        end = if (currentRoute == "player") 0.dp else 26.dp,
-                    ),
-            )
+            if (chromeAlpha > 0.001f) {
+                CurrentTimePill(
+                    modifier = Modifier
+                        .align(if (currentRoute == "player") Alignment.TopStart else Alignment.TopEnd)
+                        .graphicsLayer { alpha = chromeAlpha }
+                        .padding(
+                            top = 22.dp,
+                            start = if (currentRoute == "player") 26.dp else 0.dp,
+                            end = if (currentRoute == "player") 0.dp else 26.dp,
+                        ),
+                )
+            }
 
-            // A title page is somewhere you browse, not somewhere you commit to: you arrive on it
-            // from a row, decide against it, and want to be somewhere else. Without the rail the
-            // only way out was Back, and only back the way you came. It still stays off the player
-            // and the stream picker, where it would sit over the picture or over a decision.
-            val railRoutes = remember { topLevelDestinations.map { it.route } + DetailRoutePattern }
-            if (currentRoute in railRoutes && !showUpdatePrompt) {
+            if (railOnScreen) {
                 TvSideNav(
                     destinations = topLevelDestinations,
                     avatarIndex = activeProfile?.avatarIndex ?: 0,
                     avatarLabel = activeProfile?.name ?: "P",
                     profileFocusRequester = profileNavRequester,
                     currentRoute = currentRoute.orEmpty(),
-                    contentRequesters = mapOf(
-                        TopLevelDestination.Home.route to homeContentRequester,
-                        TopLevelDestination.Search.route to searchContentRequester,
-                        TopLevelDestination.Live.route to liveContentRequester,
-                        TopLevelDestination.Library.route to libraryContentRequester,
-                        TopLevelDestination.Profile.route to settingsContentRequester,
-                    ),
+                    contentRequesters = destinationContentRequesters,
                     transparent = appPrefs?.transparentNavigation != false,
-                    modifier = Modifier.align(Alignment.CenterStart),
+                    railRequester = navRailRequester,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .graphicsLayer { alpha = chromeAlpha },
                     onNavigate = { route ->
+                        pendingDestinationFocus = route
                         if (route != currentRoute) {
                             navController.navigate(route) {
                                 popUpTo(TopLevelDestination.Home.route) { inclusive = false }
@@ -723,6 +839,190 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 34.dp),
                 )
+            }
+
+        }
+    }
+}
+
+@Composable
+private fun StartupProfilePicker(
+    profiles: List<StreamProfile>,
+    activeProfileId: String?,
+    switching: Boolean,
+    onVerifyPin: suspend (StreamProfile, String) -> Boolean,
+    onChoose: (StreamProfile) -> Unit,
+) {
+    val firstRequester = remember(profiles) { FocusRequester() }
+    val pinRequester = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    var lockedProfile by remember { mutableStateOf<StreamProfile?>(null) }
+    var pin by remember { mutableStateOf("") }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    var checkingPin by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = true) { /* A profile is required before entering the app. */ }
+    LaunchedEffect(profiles) {
+        delay(100)
+        runCatching { firstRequester.requestFocus() }
+    }
+
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 96.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(30.dp),
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    "Who's watching?",
+                    style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
+                    color = Color.White,
+                )
+                Text(
+                    "Choose a profile for this TV",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White.copy(alpha = 0.64f),
+                )
+            }
+            Row(
+                modifier = Modifier.focusGroup(),
+                horizontalArrangement = Arrangement.spacedBy(22.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                profiles.forEachIndexed { index, profile ->
+                    Card(
+                        onClick = {
+                            if (!switching) {
+                                if (profile.hasPinSet) {
+                                    lockedProfile = profile
+                                    pin = ""
+                                    pinError = null
+                                } else {
+                                    onChoose(profile)
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .width(210.dp)
+                            .height(220.dp)
+                            .then(if (index == 0) Modifier.focusRequester(firstRequester) else Modifier),
+                        colors = CardDefaults.colors(
+                            containerColor = Color.White.copy(alpha = 0.07f),
+                            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
+                        ),
+                        border = CardDefaults.border(
+                            focusedBorder = Border(
+                                androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.primary),
+                                shape = RoundedCornerShape(18.dp),
+                            ),
+                        ),
+                        scale = CardDefaults.scale(focusedScale = 1.04f),
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(22.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            ProfileAvatarCircle(profile.avatarIndex, profile.name, 92.dp)
+                            Spacer(Modifier.height(16.dp))
+                            Text(
+                                profile.name,
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White,
+                            )
+                            Text(
+                                when {
+                                    profile.hasPinSet -> "PIN required"
+                                    profile.id == activeProfileId -> "Last used"
+                                    profile.isDefault -> "Default"
+                                    else -> "Ready to watch"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White.copy(alpha = 0.58f),
+                            )
+                        }
+                    }
+                }
+            }
+            if (switching) {
+                Text(
+                    "Loading profile…",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+        }
+    }
+
+    lockedProfile?.let { profile ->
+        LaunchedEffect(profile.id) {
+            delay(80)
+            runCatching { pinRequester.requestFocus() }
+        }
+        Dialog(
+            onDismissRequest = { if (!checkingPin) lockedProfile = null },
+            properties = DialogProperties(dismissOnClickOutside = false, usePlatformDefaultWidth = false),
+        ) {
+            Box(Modifier.fillMaxSize().background(Color(0xC7000000)), contentAlignment = Alignment.Center) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth(0.42f)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(TvChromePanel)
+                        .padding(28.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    Text(
+                        "Enter PIN for ${profile.name}",
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    OutlinedTextField(
+                        value = pin,
+                        onValueChange = { value -> pin = value.filter(Char::isDigit).take(4); pinError = null },
+                        singleLine = true,
+                        enabled = !checkingPin,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        label = { androidx.compose.material3.Text("4-digit PIN") },
+                        colors = TextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedContainerColor = Color.White.copy(alpha = 0.08f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.05f),
+                        ),
+                        modifier = Modifier.fillMaxWidth().focusRequester(pinRequester),
+                    )
+                    pinError?.let {
+                        Text(it, color = Color(0xFFFFB4AB), style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            enabled = pin.length == 4 && !checkingPin,
+                            onClick = {
+                                checkingPin = true
+                                scope.launch {
+                                    if (onVerifyPin(profile, pin)) {
+                                        lockedProfile = null
+                                        onChoose(profile)
+                                    } else {
+                                        pinError = "That PIN is incorrect."
+                                        pin = ""
+                                    }
+                                    checkingPin = false
+                                }
+                            },
+                        ) { Text(if (checkingPin) "Checking…" else "Continue") }
+                        OutlinedButton(
+                            enabled = !checkingPin,
+                            onClick = { lockedProfile = null },
+                        ) { Text("Back") }
+                    }
+                }
             }
         }
     }
@@ -1040,40 +1340,36 @@ private fun TvSideNav(
     currentRoute: String,
     contentRequesters: Map<String, FocusRequester>,
     transparent: Boolean,
+    /** Attached to the rail itself, so a screen can send focus here without naming a destination. */
+    railRequester: FocusRequester,
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
 ) {
     var highlightedRoute by remember { mutableStateOf(currentRoute) }
     var navHasFocus by remember { mutableStateOf(false) }
-    val navScope = rememberCoroutineScope()
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val itemRequesters = remember(destinations, profileFocusRequester) {
         destinations.associateWith { destination ->
             if (destination == TopLevelDestination.Profile) profileFocusRequester else FocusRequester()
         }
     }
-    // One curve for the whole rail. The width used a short linear-ish tween while the labels
-    // popped in and out with no animation at all, so the panel and its contents moved on
-    // different clocks — which is what read as chop rather than as a slide.
-    val railWidth by animateDpAsState(
-        targetValue = if (navHasFocus) 196.dp else 64.dp,
-        animationSpec = TvScroll.spec(TvMotion.duration(260)),
-        label = "side-nav-width",
-    )
-    val labelAlpha by androidx.compose.animation.core.animateFloatAsState(
+    // One value for the whole rail, and the same one in both directions.
+    //
+    // The width, the labels and the surface each had their own animation before, on three
+    // durations, and the surface in particular arrived by fading up in place — a hard-edged panel
+    // materialising over the artwork rather than coming from anywhere. Driving everything from one
+    // 0-to-1 figure means opening and closing are the same movement played each way, and lets the
+    // surface be slid in from behind the icons instead of switched on.
+    val railOpen by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (navHasFocus) 1f else 0f,
-        animationSpec = TvScroll.spec(TvMotion.duration(220)),
-        label = "side-nav-label",
+        animationSpec = TvScroll.spec(TvMotion.duration(TvMotion.Expand)),
+        label = "side-nav-open",
     )
-    // On the same curve as the width, so the surface arrives with the panel rather than behind it.
-    val railSurfaceAlpha by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = when {
-            !navHasFocus -> 0f
-            transparent -> NavRailTransparentAlpha
-            else -> 1f
-        },
-        animationSpec = TvScroll.spec(TvMotion.duration(260)),
-        label = "side-nav-surface",
-    )
+    val railWidth = TvNavRailWidth + (196.dp - TvNavRailWidth) * railOpen
+    // Trails the panel slightly: the words arrive once there is room for them, not while the space
+    // is still opening up.
+    val labelAlpha = ((railOpen - 0.35f) / 0.65f).coerceIn(0f, 1f)
+    val railSurfaceAlpha = railOpen * if (transparent) NavRailTransparentAlpha else 1f
 
     LaunchedEffect(currentRoute) {
         highlightedRoute = currentRoute
@@ -1090,10 +1386,50 @@ private fun TvSideNav(
         MaterialTheme.colorScheme.primary,
         0.22f,
     )
-    Column(
+    // Back out of the rail goes back to the page, not off it.
+    //
+    // The rail is opened by pressing left out of whatever you were doing, so Back is the obvious
+    // way to undo that — and it used to fall through to the app's own handler, which read it as
+    // "leave this screen" and dropped a viewer who had merely glanced at the menu onto Home.
+    BackHandler(enabled = navHasFocus) {
+        val returned = contentRequesters[currentRoute]?.let { requester ->
+            runCatching { requester.requestFocus() }.getOrDefault(false)
+        } == true
+        // Nothing to hand focus back to on this screen: at least let the rail collapse rather than
+        // swallowing the press entirely.
+        if (!returned) focusManager.clearFocus()
+    }
+
+    Box(
         modifier = modifier
             .width(railWidth)
             .fillMaxHeight()
+            .clipToBounds(),
+    ) {
+        // The surface slides out from under the icons rather than fading up in place.
+        //
+        // Collapsed, the rail has no surface at all: it is five icons over the artwork, and a strip
+        // behind them only cut a band out of the backdrop to hold markers that read fine on their
+        // own. It comes back as the rail opens, because at that width it is a menu being read and
+        // the labels need something behind them — but it used to arrive by turning on, which put a
+        // hard-edged rectangle over the artwork out of nowhere. Translated in from the left and
+        // clipped, the same panel appears to come from behind the icons, and closing is the identical
+        // movement run backwards.
+        //
+        // The colour is applied here rather than to TvChromeSurface itself — the settings sidebar
+        // and the live filter column use that same value and want to stay opaque, since they sit
+        // over content rather than over artwork.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationX = -size.width * (1f - railOpen) }
+                .background(TvChromeSurface.copy(alpha = railSurfaceAlpha)),
+        )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .focusRequester(railRequester)
             .focusProperties {
                 enter = {
                     itemRequesters[destinations.firstOrNull { it.route == currentRoute }]
@@ -1105,16 +1441,6 @@ private fun TvSideNav(
             // item was nearest — in practice always Home — instead of the page you are on.
             .focusGroup()
             .onFocusChanged { navHasFocus = it.hasFocus }
-            // Collapsed, the rail has no surface at all: it is five icons over the artwork, and a
-            // strip behind them only cut a band out of the backdrop to hold markers that read fine
-            // on their own. The surface comes back as the rail expands, because at that width it is
-            // a menu being read and the labels need something behind them.
-            //
-            // Applied here rather than to TvChromeSurface itself — the settings sidebar and the
-            // live filter column use that same colour and want to stay opaque, since they sit over
-            // content rather than over artwork.
-            .background(TvChromeSurface.copy(alpha = railSurfaceAlpha))
-            .clipToBounds()
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,
     ) {
@@ -1138,7 +1464,13 @@ private fun TvSideNav(
                     .focusRequester(itemRequesters.getValue(destination))
                     .onPreviewKeyEvent { event ->
                         if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
-                            contentRequesters[destination.route]
+                            // Back to the page the viewer is actually on, not the one the
+                            // highlighted item would open. On a top-level screen those are usually
+                            // the same and the difference never showed; on a title page every item
+                            // names somewhere else, so this looked up a requester belonging to a
+                            // screen that was not composed, failed, and left the viewer in the menu
+                            // with no way out.
+                            (contentRequesters[currentRoute] ?: contentRequesters[destination.route])
                                 ?.let { requester -> runCatching { requester.requestFocus() }.isSuccess }
                                 ?: false
                         } else {
@@ -1150,13 +1482,6 @@ private fun TvSideNav(
                     }
                     .clickable {
                         onNavigate(destination.route)
-                        // Hand focus to the page that was just opened. The rail collapses as a
-                        // consequence of losing focus, which is what makes selecting a destination
-                        // feel like arriving somewhere rather than leaving the menu open behind you.
-                        navScope.launch {
-                            delay(120)
-                            runCatching { contentRequesters[destination.route]?.requestFocus() }
-                        }
                     }
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1195,6 +1520,7 @@ private fun TvSideNav(
                 }
             }
         }
+    }
     }
 }
 

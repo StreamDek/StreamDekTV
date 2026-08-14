@@ -1,5 +1,10 @@
 package com.streamdek.tv.nativeapp.ui.search
 
+import android.app.Activity
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -147,11 +152,34 @@ fun SearchScreen(
     val localQueryRequester = remember { FocusRequester() }
     val queryRequester = entryFocusRequester ?: localQueryRequester
     val firstChipRequester = remember { FocusRequester() }
+    val voiceRequester = remember { FocusRequester() }
     val firstCardRequester = remember { FocusRequester() }
     val trayRequester = remember { FocusRequester() }
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
     val gridState = rememberLazyGridState()
     val yearOptions = remember { buildYearOptions() }
+    val voiceSearchLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { spoken ->
+                    query = spoken
+                    editing = false
+                }
+        }
+    }
+    val voiceSearchIntent = remember {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Search StreamDek")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        }
+    }
 
     val searchHistory = remember {
         context.getSharedPreferences("streamdek_tv_search", android.content.Context.MODE_PRIVATE)
@@ -306,48 +334,78 @@ fun SearchScreen(
 
             // The real input sits under the display, one line tall, carrying the IME. Keeping it
             // separate lets the display above stay large and legible from the sofa.
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                singleLine = true,
-                readOnly = !editing,
-                shape = AppPillShape,
-                keyboardActions = KeyboardActions(
-                    onDone = {
-                        editing = false
-                        runCatching { queryRequester.requestFocus() }
-                    },
-                ),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.White.copy(alpha = 0.10f),
-                    unfocusedContainerColor = Color.White.copy(alpha = 0.05f),
-                    focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    cursorColor = MaterialTheme.colorScheme.primary,
-                ),
+            Row(
                 modifier = Modifier
                     .padding(horizontal = SearchInset)
-                    .fillMaxWidth(0.46f)
-                    .height(52.dp)
-                    .focusRequester(queryRequester)
-                    .focusProperties { down = firstChipRequester }
-                    .onFocusChanged {
-                        queryFocused = it.isFocused
-                        if (!it.isFocused) editing = false
-                    }
-                    .onPreviewKeyEvent { event ->
-                        val select = event.key == Key.DirectionCenter || event.key == Key.Enter ||
-                            event.key == Key.NumPadEnter
-                        if (!editing && event.type == KeyEventType.KeyUp && select) {
-                            editing = true
-                            true
-                        } else {
-                            false
+                    .fillMaxWidth(0.62f),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    readOnly = !editing,
+                    shape = AppPillShape,
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            editing = false
+                            runCatching { queryRequester.requestFocus() }
+                        },
+                    ),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.White.copy(alpha = 0.10f),
+                        unfocusedContainerColor = Color.White.copy(alpha = 0.05f),
+                        focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = MaterialTheme.colorScheme.primary,
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp)
+                        .focusRequester(queryRequester)
+                        .focusProperties {
+                            right = voiceRequester
+                            down = firstChipRequester
                         }
+                        .onFocusChanged {
+                            queryFocused = it.isFocused
+                            if (!it.isFocused) editing = false
+                        }
+                        .onPreviewKeyEvent { event ->
+                            val select = event.key == Key.DirectionCenter || event.key == Key.Enter ||
+                                event.key == Key.NumPadEnter
+                            if (!editing && event.type == KeyEventType.KeyUp && select) {
+                                editing = true
+                                true
+                            } else {
+                                false
+                            }
+                        },
+                )
+                SearchChip(
+                    label = "Voice search",
+                    leading = "MIC",
+                    selected = false,
+                    modifier = Modifier
+                        .width(180.dp)
+                        .height(52.dp)
+                        .focusRequester(voiceRequester)
+                        .focusProperties {
+                            left = queryRequester
+                            down = firstChipRequester
+                        },
+                    onClick = {
+                        runCatching { voiceSearchLauncher.launch(voiceSearchIntent) }
+                            .onFailure {
+                                editing = true
+                                runCatching { queryRequester.requestFocus() }
+                            }
                     },
-            )
+                )
+            }
 
             // ── Controls ─────────────────────────────────────────────────────────────────────
             //

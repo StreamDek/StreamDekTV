@@ -214,6 +214,15 @@ fun PlayerScreen(
     var autoEngineFallbackUsed by remember(currentSourceUrl, playbackPreferences.playerEngine) { mutableStateOf(false) }
     var failedStreamKeys by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(emptySet<String>()) }
     var sourceFallbackInProgress by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
+    /**
+     * What the loading screen says while the player works down the list.
+     *
+     * Kept apart from [error], which is only drawn once loading has stopped — so the "trying
+     * another stream" line that used to be written there was never on screen at the one moment it
+     * had something to say. Walking three dead sources can take the better part of a minute, and
+     * without this the viewer is looking at a still logo wondering whether anything is happening.
+     */
+    var sourceFallbackNotice by remember(request.mediaId, request.mediaType) { mutableStateOf<String?>(null) }
     var pendingEngineResumePositionSec by remember(currentSourceUrl) { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
@@ -904,8 +913,44 @@ fun PlayerScreen(
             forceRefresh = true,
         )
         streamLabelOverride = null
-        if (resolved.source == null) {
-            error = "No playable stream could be resolved"
+        // Nothing opened on the first try. The list is already ranked, so work down it rather than
+        // sending the viewer back to the picker to guess which of the same entries is alive — this
+        // is where a usenet post packed into archives lands, and it fails before a frame is drawn.
+        if (resolved.source == null && !isLive) {
+            // The one that just failed goes on the list before the walk starts, or it would be
+            // tried again as the first alternative to itself.
+            var failureText: String? = (selectedStream ?: resolved.stream)?.let { failed ->
+                failedStreamKeys = failedStreamKeys + repository.streamSelectionKey(failed)
+                "${repository.streamDeliveryLabel(failed)} resolver failure"
+            }
+            val recovered = repository.resolveFirstPlayableSource(
+                request = activeRequest.copy(episode = currentEpisode),
+                streams = resolved.streams,
+                skipKeys = failedStreamKeys,
+                // What failed and what is being tried instead, on one line and held for the whole
+                // attempt. Announcing them separately would flash the reason for a frame and then
+                // replace it, which is the half a viewer actually wants to read.
+                onAttempt = { next ->
+                    val target = next.addonName.ifBlank { "the next source" }
+                    sourceFallbackNotice = listOfNotNull(failureText, "Trying $target…").joinToString(". ")
+                },
+                onAttemptFailed = { failed, key ->
+                    failedStreamKeys = failedStreamKeys + key
+                    failureText = "${repository.streamDeliveryLabel(failed)} resolver failure"
+                },
+            )
+            if (recovered?.source != null) {
+                candidate = recovered
+                currentRequestHeaders = defaultPlaybackHeaders + recovered.source.requestHeaders
+                currentSourceUrl = recovered.source.url
+                currentLabel = recovered.source.label
+            }
+        }
+        sourceFallbackNotice = null
+        val playable = candidate?.source
+        if (playable == null) {
+            error = repository.lastUsenetFailureMessage
+                ?: "No playable stream could be resolved"
             loading = false
             controlsVisible = true
         } else {
@@ -1532,7 +1577,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         if (sourceFallbackInProgress || isLive) return
                         sourceFallbackInProgress = true
                         scope.launch {
-                            candidate?.stream?.let { failedStreamKeys = failedStreamKeys + repository.streamSelectionKey(it) }
+                            candidate?.stream?.let { failed ->
+                                failedStreamKeys = failedStreamKeys + repository.streamSelectionKey(failed)
+                                sourceFallbackNotice =
+                                    "${repository.streamDeliveryLabel(failed)} playback failed. Trying the next source…"
+                            }
                             var streams = candidate?.streams.orEmpty()
                             if (streams.none { repository.streamSelectionKey(it) !in failedStreamKeys }) {
                                 streams = runCatching {
@@ -1547,24 +1596,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     ).streams
                                 }.getOrDefault(streams)
                             }
-                            var selected: ResolvedPlaybackCandidate? = null
-                            for (stream in streams) {
-                                val key = repository.streamSelectionKey(stream)
-                                if (key in failedStreamKeys) continue
-                                val resolved = runCatching {
-                                    repository.resolveSelectedPlayback(
-                                        request = playbackRequest.copy(episode = currentEpisode),
-                                        stream = stream,
-                                        streams = streams,
-                                        forceRefresh = true,
-                                    )
-                                }.getOrNull()
-                                if (resolved?.source != null) {
-                                    selected = resolved
-                                    break
-                                }
-                                failedStreamKeys = failedStreamKeys + key
-                            }
+                            val selected = repository.resolveFirstPlayableSource(
+                                request = playbackRequest.copy(episode = currentEpisode),
+                                streams = streams,
+                                skipKeys = failedStreamKeys,
+                                forceRefresh = true,
+                                onAttempt = { next ->
+                                    sourceFallbackNotice = "Trying ${next.addonName.ifBlank { "the next source" }}…"
+                                },
+                                onAttemptFailed = { failed, key ->
+                                    failedStreamKeys = failedStreamKeys + key
+                                    sourceFallbackNotice =
+                                        "${repository.streamDeliveryLabel(failed)} source failed. Trying the next source…"
+                                },
+                            )
                             if (selected?.source != null) {
                                 val resumeAt = positionSec.coerceAtLeast(0.0)
                                 candidate = selected
@@ -1584,6 +1629,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 loading = false
                                 showControls(focusPlay = true)
                             }
+                            sourceFallbackNotice = null
                             sourceFallbackInProgress = false
                         }
                     }
@@ -1731,16 +1777,34 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Text(
-                text = currentLabel,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f),
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 36.dp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+                    .padding(bottom = 36.dp, start = 48.dp, end = 48.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // Above the source label rather than replacing it: which source is being tried and
+                // which one just failed are both worth reading, and one without the other leaves
+                // the viewer guessing at what the wait is for.
+                sourceFallbackNotice?.let { notice ->
+                    Text(
+                        text = notice,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    text = currentLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
         // Error overlay — shown when playback fails so user always has a clear exit path
@@ -2224,7 +2288,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 }
                                 if (selected.source == null) {
                                     error = if (repository.isUsenetStream(stream)) {
-                                        "This usenet source could not be opened. The news server may be unreachable, or the post may be incomplete."
+                                        // The assembler's own words when it has any: a packed post
+                                        // and an unreachable server are different problems, and
+                                        // only one of them is worth trying again.
+                                        repository.lastUsenetFailureMessage
+                                            ?: "This usenet source could not be opened. The news server may be unreachable, or the post may be incomplete."
                                     } else {
                                         "This source could not be resolved. Please try another."
                                     }

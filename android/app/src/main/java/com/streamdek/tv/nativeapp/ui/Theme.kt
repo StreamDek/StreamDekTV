@@ -23,6 +23,16 @@ data class TvExperienceSettings(
 
 val LocalTvExperienceSettings = staticCompositionLocalOf { TvExperienceSettings() }
 
+/**
+ * Told when a screen has taken the whole display for something.
+ *
+ * The app shell draws the navigation rail and the clock over whatever screen is up, which is right
+ * for every browsing surface and wrong the moment one of them plays video edge to edge. A screen
+ * reports its own state through this rather than the shell trying to infer it from the route,
+ * because the same route is full-screen only some of the time.
+ */
+val LocalImmersiveContent = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
+
 /** Accent shown in the theme picker; kept beside the actual schemes so the swatch cannot drift. */
 internal fun streamDekThemeAccent(themeKey: String?): Color = when (themeKey) {
     "streamdek" -> Color(0xFFF0BA66)
