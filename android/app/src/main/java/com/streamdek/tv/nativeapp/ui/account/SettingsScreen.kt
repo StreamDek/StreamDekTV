@@ -76,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.streamdek.tv.BuildConfig
@@ -157,6 +158,9 @@ fun SettingsScreen(
     var selected by remember { mutableStateOf(SettingsDestination.Account) }
     var query by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
+    // Held rather than folded into `status`: the code has to stay on screen while the viewer walks
+    // to their phone and types it, and a status line is written over by the next thing that happens.
+    var signInPrompt by remember { mutableStateOf<DeviceSignIn?>(null) }
     var expandedPluginParents by remember { mutableStateOf<Set<String>>(emptySet()) }
     /** Plugin source whose settings cog is open, if any. */
     var editingPluginProvider by remember { mutableStateOf<ProfilePluginProvider?>(null) }
@@ -632,6 +636,15 @@ fun SettingsScreen(
                             InfoLine("Adding and removing", "Use StreamDek Mobile or the web portal")
                         }
                     }
+                    signInPrompt?.let { prompt ->
+                        DeviceSignInPanel(
+                            providerLabel = prompt.providerLabel,
+                            verificationUrl = prompt.verificationUrl,
+                            userCode = prompt.userCode,
+                            waiting = prompt.waiting,
+                            outcome = prompt.outcome,
+                        )
+                    }
                     SettingsPanel("Debrid accounts") {
                         val accounts = bootstrap?.integrations?.debrid?.accounts.orEmpty()
                         if (accounts.isEmpty()) InfoLine("Accounts", "Sign in to Premiumize below, or link an account from StreamDek Mobile")
@@ -666,17 +679,18 @@ fun SettingsScreen(
                                     status = "Real-Debrid could not be reached. Try again in a moment."
                                     return@launch
                                 }
-                                val instruction = "Go to ${started.verificationUrl} and enter ${started.userCode}"
-                                status = instruction
-                                val username = repository.completeRealDebridSignIn(started) { secondsLeft ->
-                                    status = "$instruction — waiting (${secondsLeft}s)"
-                                }
-                                status = if (username != null) {
-                                    bootstrap = repository.bootstrap.value
-                                    "Real-Debrid connected as $username."
-                                } else {
-                                    "That code was not approved in time. Try again to get a new one."
-                                }
+                                status = null
+                                signInPrompt = DeviceSignIn("Real-Debrid", started.verificationUrl, started.userCode)
+                                val username = repository.completeRealDebridSignIn(started)
+                                signInPrompt = signInPrompt?.copy(
+                                    waiting = false,
+                                    outcome = if (username != null) {
+                                        bootstrap = repository.bootstrap.value
+                                        "Connected as $username."
+                                    } else {
+                                        "That code expired before it was approved. Start again for a new one."
+                                    },
+                                )
                             }
                         }
                         if (repository.premiumizeSignInAvailable()) {
@@ -696,17 +710,18 @@ fun SettingsScreen(
                                     // The code and where to enter it stay on screen for the whole
                                     // wait: a viewer who looks away should not have to start over
                                     // to read it again.
-                                    val instruction = "Go to ${started.verificationUri} and enter ${started.userCode}"
-                                    status = instruction
-                                    val username = repository.completePremiumizeSignIn(started) { secondsLeft ->
-                                        status = "$instruction — waiting (${secondsLeft}s)"
-                                    }
-                                    status = if (username != null) {
-                                        bootstrap = repository.bootstrap.value
-                                        "Premiumize connected as $username."
-                                    } else {
-                                        "That code was not approved in time. Try again to get a new one."
-                                    }
+                                    status = null
+                                    signInPrompt = DeviceSignIn("Premiumize", started.verificationUri, started.userCode)
+                                    val username = repository.completePremiumizeSignIn(started)
+                                    signInPrompt = signInPrompt?.copy(
+                                        waiting = false,
+                                        outcome = if (username != null) {
+                                            bootstrap = repository.bootstrap.value
+                                            "Connected as $username."
+                                        } else {
+                                            "That code expired before it was approved. Start again for a new one."
+                                        },
+                                    )
                                 }
                             }
                         }
@@ -905,6 +920,81 @@ private fun SettingsStatusRow(message: String) {
             color = MaterialTheme.colorScheme.primary,
             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
         )
+    }
+}
+
+/** A device sign-in the viewer is part-way through, as this screen shows it. */
+private data class DeviceSignIn(
+    val providerLabel: String,
+    val verificationUrl: String,
+    val userCode: String,
+    val waiting: Boolean = true,
+    val outcome: String? = null,
+)
+
+/**
+ * A device sign-in in progress, sized for the far side of a room.
+ *
+ * The code is read off this screen and typed on a phone, so it is the largest thing on it — no
+ * copy button, because there is nothing on a television to paste into. Nothing here takes focus:
+ * the viewer's hands are on another device, and a card that stole focus from the row they were on
+ * would leave the remote pointing at something they cannot use.
+ */
+@Composable
+private fun DeviceSignInPanel(
+    providerLabel: String,
+    verificationUrl: String,
+    userCode: String,
+    waiting: Boolean,
+    outcome: String?,
+) {
+    SettingsPanel("Finish signing in to $providerLabel") {
+        if (waiting) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        "1. On your phone, open",
+                        color = Color.White.copy(alpha = 0.62f),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        verificationUrl.removePrefix("https://").removePrefix("http://"),
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        "2. Enter this code",
+                        color = Color.White.copy(alpha = 0.62f),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        userCode,
+                        color = MaterialTheme.colorScheme.primary,
+                        // Spaced and oversized on purpose: this is read across a room and typed by
+                        // hand somewhere else, where one mistaken character costs the whole attempt.
+                        letterSpacing = 6.sp,
+                        style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
+                    )
+                }
+                Text(
+                    "Waiting for you to approve it…",
+                    color = Color.White.copy(alpha = 0.55f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        } else {
+            Text(
+                outcome.orEmpty(),
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 10.dp),
+            )
+        }
     }
 }
 
