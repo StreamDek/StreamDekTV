@@ -19,6 +19,18 @@ def otaManifestPath = (
 ).trim()
 // Local builds default ahead of anything the release manifest will advertise, so the update
 // prompt stays out of the way during development. CI still passes the real values in.
+// Premiumize's OAuth client id, for signing in on a remote without typing an API key.
+//
+// Not a secret: a television is a public OAuth client, so anything compiled in can be read back
+// out of the package. Premiumize's device flow asks only for this id, and the client secret issued
+// alongside it is deliberately not built in — there is nowhere in a shipped binary to keep it.
+// Blank simply hides the option.
+def premiumizeClientId = (
+    envProperties.getProperty("STREAMDEK_PREMIUMIZE_CLIENT_ID")
+        ?: System.getenv("STREAMDEK_PREMIUMIZE_CLIENT_ID")
+        ?: ""
+).toString().trim()
+
 def ciVersionName = (findProperty("STREAMDEK_VERSION_NAME") ?: System.getenv("STREAMDEK_VERSION_NAME") ?: "99.0.0-dev").toString()
 def ciVersionCode = (findProperty("STREAMDEK_VERSION_CODE") ?: System.getenv("STREAMDEK_VERSION_CODE") ?: "999999").toString().toInteger()
 def ciStoreFile = System.getenv("ANDROID_KEYSTORE_PATH")
@@ -40,6 +52,7 @@ android {
         versionName ciVersionName
         buildConfigField "String", "STREAMDEK_API_URL", "\"${streamDekApiUrl}\""
         buildConfigField "String", "STREAMDEK_OTA_MANIFEST_PATH", "\"${otaManifestPath}\""
+        buildConfigField "String", "PREMIUMIZE_CLIENT_ID", "\"${premiumizeClientId}\""
         ndk {
             abiFilters "arm64-v8a", "armeabi-v7a"
         }

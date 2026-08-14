@@ -634,7 +634,82 @@ fun SettingsScreen(
                     }
                     SettingsPanel("Debrid accounts") {
                         val accounts = bootstrap?.integrations?.debrid?.accounts.orEmpty()
-                        if (accounts.isEmpty()) InfoLine("Accounts", "Link an account from StreamDek Mobile")
+                        if (accounts.isEmpty()) InfoLine("Accounts", "Sign in to Premiumize below, or link an account from StreamDek Mobile")
+                        SettingsToggleRow(
+                            "Save keys to your StreamDek account",
+                            "Keys are stored encrypted on your account so every device shares them. Turn this off to keep them on this television only.",
+                            repository.debridCloudSyncEnabled(),
+                            selectedRequester,
+                        ) { next, complete ->
+                            scope.launch {
+                                status = if (next) "Saving keys to your account..." else "Moving keys to this television..."
+                                val applied = repository.setDebridCloudSync(next)
+                                bootstrap = repository.bootstrap.value
+                                status = when {
+                                    applied && next -> "Keys are saved to your account."
+                                    applied -> "Keys are kept on this television only."
+                                    else -> "Your keys could not be copied here, so they were left on your account."
+                                }
+                                complete(applied)
+                            }
+                        }
+                        SettingsActionRow(
+                            "Sign in to Real-Debrid",
+                            "Approve a short code on your phone — no access key to type on the remote",
+                            "Sign in",
+                            selectedRequester,
+                        ) {
+                            scope.launch {
+                                status = "Asking Real-Debrid for a code..."
+                                val started = repository.startRealDebridSignIn()
+                                if (started == null) {
+                                    status = "Real-Debrid could not be reached. Try again in a moment."
+                                    return@launch
+                                }
+                                val instruction = "Go to ${started.verificationUrl} and enter ${started.userCode}"
+                                status = instruction
+                                val username = repository.completeRealDebridSignIn(started) { secondsLeft ->
+                                    status = "$instruction — waiting (${secondsLeft}s)"
+                                }
+                                status = if (username != null) {
+                                    bootstrap = repository.bootstrap.value
+                                    "Real-Debrid connected as $username."
+                                } else {
+                                    "That code was not approved in time. Try again to get a new one."
+                                }
+                            }
+                        }
+                        if (repository.premiumizeSignInAvailable()) {
+                            SettingsActionRow(
+                                "Sign in to Premiumize",
+                                "Approve a short code on your phone — no API key to type on the remote",
+                                "Sign in",
+                                selectedRequester,
+                            ) {
+                                scope.launch {
+                                    status = "Asking Premiumize for a code..."
+                                    val started = repository.startPremiumizeSignIn()
+                                    if (started == null) {
+                                        status = "Premiumize could not be reached. Try again in a moment."
+                                        return@launch
+                                    }
+                                    // The code and where to enter it stay on screen for the whole
+                                    // wait: a viewer who looks away should not have to start over
+                                    // to read it again.
+                                    val instruction = "Go to ${started.verificationUri} and enter ${started.userCode}"
+                                    status = instruction
+                                    val username = repository.completePremiumizeSignIn(started) { secondsLeft ->
+                                        status = "$instruction — waiting (${secondsLeft}s)"
+                                    }
+                                    status = if (username != null) {
+                                        bootstrap = repository.bootstrap.value
+                                        "Premiumize connected as $username."
+                                    } else {
+                                        "That code was not approved in time. Try again to get a new one."
+                                    }
+                                }
+                            }
+                        }
                         accounts.forEach { account ->
                             SettingsToggleRow(
                                 account.provider,

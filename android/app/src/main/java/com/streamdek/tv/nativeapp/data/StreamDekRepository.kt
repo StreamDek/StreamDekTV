@@ -2,12 +2,19 @@ package com.streamdek.tv.nativeapp.data
 
 import com.google.gson.JsonObject
 import com.streamdek.tv.BuildConfig
+import com.streamdek.tv.nativeapp.debrid.DebridKeyStore
+import com.streamdek.tv.nativeapp.debrid.DebridManager
+import com.streamdek.tv.nativeapp.debrid.PremiumizeClient
+import com.streamdek.tv.nativeapp.debrid.PremiumizeDeviceAuth
+import com.streamdek.tv.nativeapp.debrid.RealDebridClient
+import com.streamdek.tv.nativeapp.debrid.RealDebridDeviceAuth
 import com.streamdek.tv.nativeapp.usenet.UsenetPlayback
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -447,6 +454,7 @@ class StreamDekRepository(
 
     fun signOut() {
         sessionStore.clearSession()
+        clearDebridKeys()
         bootstrapState.value = null
         fusionBadgeSourcesState.value = emptyMap()
         reloadFavouriteChannels()
@@ -503,6 +511,10 @@ class StreamDekRepository(
         pluginEngine?.warmUp(bootstrap?.profilePlugins)
         reloadFavouriteChannels()
         refreshFavouriteChannelsFromCloud()
+        // In the background rather than on the first playback: a television that has just signed
+        // in should already hold its keys by the time someone presses play, and nothing on screen
+        // is waiting on the answer.
+        if (bootstrap != null) repositoryScope.launch { syncDebridKeys() }
         return@withLock bootstrap
     }
 
@@ -2080,11 +2092,15 @@ class StreamDekRepository(
         // Plugin sources join the pool the same way they do on mobile — except when a specific
         // add-on already answered, which only happens for a live channel or a remembered source
         // the viewer explicitly picked, and where waiting on scrapers would just delay playback.
-        val streams = if (targetedStreams != null) {
-            addonStreams
-        } else {
-            dedupeStreams(addonStreams + pluginStreams(mediaType, mediaId, imdbId, episode))
-        }
+        val streams = markCachedStreams(
+            if (targetedStreams != null) {
+                addonStreams
+            } else {
+                dedupeStreams(addonStreams + pluginStreams(mediaType, mediaId, imdbId, episode))
+            },
+        )
+        // Decorated before ranking rather than after: a source the service already holds starts
+        // instantly, and that is worth more than anything else the ranking weighs.
         for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {
             val resolvedUrl = resolveStreamToUrl(stream, streamLookupType, videoId)
             if (!resolvedUrl.isNullOrBlank()) {
@@ -2832,6 +2848,18 @@ class StreamDekRepository(
             maxFileSizeBytes()?.let { put("maxSize", it) }
         }
         return runCatching {
+            // Resolved on this device with its own keys wherever they are held here, so the
+            // provider sees this household rather than one StreamDek server address standing in
+            // for every account on the platform. The backend route remains the fallback for a
+            // device that has not been given keys — a fresh sign-in, or an account that keeps
+            // them in the cloud and streams through the servers.
+            deviceDebrid()?.let { manager ->
+                val resolution = manager.resolve(infoHash, magnetLink, filename)
+                resolution.stream?.link?.url?.takeIf { it.isNotBlank() }?.let { return@runCatching it }
+                resolution.failures.firstOrNull()?.let {
+                    TvDebugLogger.w("Playback", "device debrid could not resolve $infoHash: ${it.message}")
+                }
+            }
             val debrid = api.post<DebridResolveResponse>("/debrid/resolve", payload)
             if (!debrid?.url.isNullOrBlank()) return@runCatching debrid.url
             val torrent = api.post<TorrentResolveResponse>("/stream/torrent/add", payload)
@@ -2839,6 +2867,265 @@ class StreamDekRepository(
         }.onFailure {
             TvDebugLogger.e("Playback", "resolveStreamToUrl failed infoHash=$infoHash", it)
         }.getOrNull()
+    }
+
+    /**
+     * This device's own premium services, or null when it holds no keys.
+     *
+     * Held rather than rebuilt per call: each provider memoises what its account already contains —
+     * Real-Debrid pages through its whole library to answer one cache check — and a manager built
+     * fresh for every playback would discard that and pay for it again. Dropped whenever the keys
+     * change so a disconnected service stops being asked straight away.
+     */
+    @Volatile private var deviceDebridManager: DebridManager? = null
+
+    private fun deviceDebrid(): DebridManager? {
+        val context = appContext ?: return null
+        val existing = deviceDebridManager ?: DebridManager.fromStoredKeys(context).also { deviceDebridManager = it }
+        return existing.takeIf { it.hasProviders }
+    }
+
+    /**
+     * Brings this device's copy of the premium-service keys up to date.
+     *
+     * Quiet on failure by design: the keys are how playback avoids the round trip through
+     * StreamDek's servers, not a prerequisite for it, and [resolveStreamToUrl] still has the
+     * backend route to fall back on. An account that keeps its keys on a phone rather than in the
+     * cloud simply returns nothing here, and this device goes on using the server path.
+     */
+    suspend fun syncDebridKeys() {
+        val context = appContext ?: return
+        // Nothing to pull when the keys are not in the cloud — and nothing to clear either. This
+        // device holds the only copy, so writing an empty server list over the store would destroy
+        // the credentials outright.
+        if (!debridCloudSyncEnabled()) return
+        val keys = runCatching { api.get<DebridKeysResponse>("/debrid/accounts/keys")?.accounts }
+            .onFailure { TvDebugLogger.w("Debrid", "could not sync premium service keys", it) }
+            .getOrNull()
+            ?: return
+        // A credential this television signed in for itself outranks the account's copy of it.
+        // Real-Debrid's device sign-in stores a token plus the material that renews it, and only
+        // the token is ever posted to the account — so taking the server's version wholesale would
+        // drop the renewal material and leave a credential dead within the hour.
+        val selfRenewing = DebridKeyStore.load(context).filter { it.refreshToken != null }
+        val fromAccount = keys.mapNotNull { key ->
+            val provider = key.provider?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            if (selfRenewing.any { it.provider == provider }) return@mapNotNull null
+            val apiKey = key.apiKey?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            DebridKeyStore.StoredKey(provider, apiKey, key.priority ?: 0, key.enabled ?: true, key.username)
+        }
+        DebridKeyStore.save(context, selfRenewing + fromAccount)
+        deviceDebridManager = null
+    }
+
+    /** Whether this build can offer Premiumize sign-in at all; blank id hides the option. */
+    fun premiumizeSignInAvailable(): Boolean =
+        PremiumizeDeviceAuth.isConfigured(BuildConfig.PREMIUMIZE_CLIENT_ID)
+
+    /**
+     * Begins Premiumize's device sign-in and returns the code to put on screen.
+     *
+     * The flow Premiumize recommends for televisions: nobody types a forty-character API key on a
+     * remote control one letter at a time. The viewer reads a short code here and enters it on a
+     * phone, and this device is handed a token.
+     */
+    suspend fun startPremiumizeSignIn(): PremiumizeDeviceAuth.Started? = runCatching {
+        PremiumizeDeviceAuth.start(BuildConfig.PREMIUMIZE_CLIENT_ID)
+    }.onFailure { TvDebugLogger.w("Debrid", "premiumize sign-in could not start", it) }.getOrNull()
+
+    /**
+     * Waits for the viewer to approve the code, then connects the account.
+     *
+     * The token is stored on this device so playback can use it straight away, and posted to the
+     * account so the same service appears on a phone without being connected twice. An account
+     * that keeps its keys off the cloud has that server copy removed again from the mobile app,
+     * which is where that choice is made — the device copy here is unaffected either way.
+     *
+     * Returns the display name of the connected account, or null if the viewer never approved it.
+     */
+    suspend fun completePremiumizeSignIn(
+        started: PremiumizeDeviceAuth.Started,
+        onWaiting: suspend (secondsLeft: Int) -> Unit = {},
+    ): String? {
+        val context = appContext ?: return null
+        val clientId = BuildConfig.PREMIUMIZE_CLIENT_ID
+        val deadline = System.currentTimeMillis() + started.expiresInSeconds * 1000L
+        var intervalMs = started.intervalSeconds * 1000L
+
+        while (System.currentTimeMillis() < deadline) {
+            delay(intervalMs)
+            when (val poll = PremiumizeDeviceAuth.poll(clientId, started.deviceCode)) {
+                is PremiumizeDeviceAuth.Poll.Authorized -> {
+                    val token = poll.accessToken
+                    val validation = runCatching { PremiumizeClient(token).validate() }.getOrNull()
+                    val stored = DebridKeyStore.load(context).filterNot { it.provider == "premiumize" }
+                    DebridKeyStore.save(
+                        context,
+                        stored + DebridKeyStore.StoredKey(
+                            provider = "premiumize",
+                            apiKey = token,
+                            priority = stored.size,
+                            enabled = true,
+                            username = validation?.username,
+                        ),
+                    )
+                    deviceDebridManager = null
+                    runCatching {
+                        api.post<JsonObject>("/debrid/accounts", mapOf("provider" to "premiumize", "apiKey" to token))
+                    }.onFailure { TvDebugLogger.w("Debrid", "premiumize token not synced to the account", it) }
+                    refreshBootstrap()
+                    return validation?.username ?: "Premiumize"
+                }
+                // Asked to back off: honour it, or the next answer is another slow_down.
+                PremiumizeDeviceAuth.Poll.SlowDown -> intervalMs += 2_000L
+                PremiumizeDeviceAuth.Poll.Pending -> onWaiting(((deadline - System.currentTimeMillis()) / 1000L).toInt())
+                is PremiumizeDeviceAuth.Poll.Failed -> {
+                    TvDebugLogger.w("Debrid", "premiumize sign-in failed: ${poll.message}")
+                    return null
+                }
+            }
+        }
+        return null
+    }
+
+    private fun debridPreferences() =
+        appContext?.getSharedPreferences("streamdek_tv_debrid", android.content.Context.MODE_PRIVATE)
+
+    /**
+     * Whether this account's premium keys are kept in StreamDek's database as well as on this
+     * television. On by default, because that is where an existing account's keys already are.
+     */
+    fun debridCloudSyncEnabled(): Boolean = debridPreferences()?.getBoolean("cloud_sync", true) ?: true
+
+    /**
+     * Moves the keys between the account and this television alone.
+     *
+     * Turning it off never deletes the stored copy before this device has one of its own: until
+     * then the account holds the only copy, and removing it first would lose the credential with
+     * nothing to restore it from. Returns false when that check fails, so the caller can leave the
+     * switch where it was and say so.
+     */
+    suspend fun setDebridCloudSync(enabled: Boolean): Boolean {
+        val context = appContext ?: return false
+        if (enabled) {
+            DebridKeyStore.load(context).forEach { key ->
+                runCatching {
+                    api.post<JsonObject>(
+                        "/debrid/accounts",
+                        mapOf("provider" to key.provider, "apiKey" to key.apiKey),
+                    )
+                }
+            }
+            debridPreferences()?.edit()?.putBoolean("cloud_sync", true)?.apply()
+            refreshBootstrap()
+            return true
+        }
+
+        if (DebridKeyStore.load(context).isEmpty()) syncDebridKeys()
+        val local = DebridKeyStore.load(context)
+        val onAccount = bootstrapState.value?.integrations?.debrid?.accounts.orEmpty()
+        if (local.isEmpty() && onAccount.isNotEmpty()) return false
+
+        local.forEach { key ->
+            runCatching { api.delete<JsonObject>("/debrid/accounts/${URLEncoder.encode(key.provider, "UTF-8")}") }
+                .onFailure { TvDebugLogger.w("Debrid", "could not remove ${key.provider} from the account", it) }
+        }
+        debridPreferences()?.edit()?.putBoolean("cloud_sync", false)?.apply()
+        refreshBootstrap()
+        return true
+    }
+
+    /** Begins Real-Debrid's device sign-in and returns the code to put on screen. */
+    suspend fun startRealDebridSignIn(): RealDebridDeviceAuth.Started? = runCatching {
+        RealDebridDeviceAuth.start()
+    }.onFailure { TvDebugLogger.w("Debrid", "real-debrid sign-in could not start", it) }.getOrNull()
+
+    /**
+     * Waits for the code to be approved, then connects the account.
+     *
+     * The renewal material is kept on the device alongside the token and never sent anywhere: the
+     * account record holds one key, and a Real-Debrid token without the credentials that renew it
+     * stops working inside the hour.
+     */
+    suspend fun completeRealDebridSignIn(
+        started: RealDebridDeviceAuth.Started,
+        onWaiting: suspend (secondsLeft: Int) -> Unit = {},
+    ): String? {
+        val context = appContext ?: return null
+        val deadline = System.currentTimeMillis() + started.expiresInSeconds * 1000L
+        while (System.currentTimeMillis() < deadline) {
+            delay(started.intervalSeconds * 1000L)
+            when (val poll = RealDebridDeviceAuth.poll(started.deviceCode)) {
+                is RealDebridDeviceAuth.Poll.Authorized -> {
+                    val credentials = poll.credentials
+                    val username = runCatching { RealDebridClient(credentials.accessToken).validate() }
+                        .getOrNull()?.username
+                    val stored = DebridKeyStore.load(context).filterNot { it.provider == "real-debrid" }
+                    DebridKeyStore.save(
+                        context,
+                        stored + DebridKeyStore.StoredKey(
+                            provider = "real-debrid",
+                            apiKey = credentials.accessToken,
+                            priority = stored.size,
+                            enabled = true,
+                            username = username,
+                            refreshToken = credentials.refreshToken,
+                            oauthClientId = credentials.clientId,
+                            oauthClientSecret = credentials.clientSecret,
+                        ),
+                    )
+                    deviceDebridManager = null
+                    runCatching {
+                        api.post<JsonObject>("/debrid/accounts", mapOf("provider" to "real-debrid", "apiKey" to credentials.accessToken))
+                    }.onFailure { TvDebugLogger.w("Debrid", "real-debrid token not synced to the account", it) }
+                    refreshBootstrap()
+                    return username ?: "Real-Debrid"
+                }
+                RealDebridDeviceAuth.Poll.Pending -> onWaiting(((deadline - System.currentTimeMillis()) / 1000L).toInt())
+                is RealDebridDeviceAuth.Poll.Failed -> {
+                    TvDebugLogger.w("Debrid", "real-debrid sign-in failed: ${poll.message}")
+                    return null
+                }
+            }
+        }
+        return null
+    }
+
+    /** Drops the stored keys — they belong to the account that signed out, not to the television. */
+    fun clearDebridKeys() {
+        appContext?.let(DebridKeyStore::clear)
+        deviceDebridManager = null
+    }
+
+    /**
+     * Marks which sources a premium service already holds, so the list can say so.
+     *
+     * Previously this decoration only ever arrived pre-applied on streams the backend had fetched.
+     * An account that queries add-ons from the device — now the default — got streams with nothing
+     * on them, so nothing was ever marked as instantly playable. Asked from here, the answer is
+     * the same one playback will act on.
+     */
+    suspend fun markCachedStreams(streams: List<AddonStream>): List<AddonStream> {
+        val manager = deviceDebrid() ?: return streams
+        val undecorated = streams.filter { it.cachedBy.isEmpty() }
+        val hashes = undecorated.mapNotNull { effectiveInfoHash(it)?.lowercase(Locale.US) }.distinct()
+        if (hashes.isEmpty()) return streams
+        // Sent for Deepbrid's benefit: it publishes no info-hash anywhere in its API, so a hash on
+        // its own is a question it cannot answer and it has to report everything as uncached.
+        val names = undecorated.mapNotNull { stream ->
+            val hash = effectiveInfoHash(stream)?.lowercase(Locale.US) ?: return@mapNotNull null
+            val name = effectiveFilename(stream) ?: stream.title ?: return@mapNotNull null
+            hash to name
+        }.toMap()
+        val cached = runCatching { manager.checkCacheAll(hashes, names) }
+            .onFailure { TvDebugLogger.w("Debrid", "cache check failed", it) }
+            .getOrDefault(emptyMap())
+        if (cached.isEmpty()) return streams
+        return streams.map { stream ->
+            if (stream.cachedBy.isNotEmpty()) return@map stream
+            val providers = effectiveInfoHash(stream)?.lowercase(Locale.US)?.let(cached::get).orEmpty()
+            if (providers.isEmpty()) stream else stream.copy(cachedBy = providers)
+        }
     }
 
     /**

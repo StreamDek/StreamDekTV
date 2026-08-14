@@ -835,6 +835,24 @@ data class DebridResolveResponse(
     val filename: String? = null,
 )
 
+/**
+ * This account's premium-service keys, so the television can reach those services itself.
+ *
+ * Only ever travels between StreamDek and the signed-in device that owns it, and is never held in
+ * app state — it goes straight into the device's encrypted key store.
+ */
+data class DebridKeysResponse(
+    val accounts: List<DebridKeyEntry> = emptyList(),
+)
+
+data class DebridKeyEntry(
+    val provider: String? = null,
+    val apiKey: String? = null,
+    val priority: Int? = null,
+    val enabled: Boolean? = null,
+    val username: String? = null,
+)
+
 data class TorrentResolveResponse(
     val streamUrl: String? = null,
     val filename: String? = null,
