@@ -61,12 +61,107 @@ object TvSpacing {
     val Compact = 8.dp
 }
 
+/**
+ * The app's motion vocabulary.
+ *
+ * Every animation in the app used to name its own duration inline — 110, 140, 150, 170, 200, 220,
+ * all on Compose's default easing — so the same gesture was timed differently depending on which
+ * screen it happened on, and most of them bypassed the viewer's reduced-motion and speed settings
+ * entirely because those only applied where someone remembered to call [duration].
+ *
+ * There are four jobs here and each gets one answer:
+ *
+ * - **Focus response** ([Instant]) is not decoration. It is the acknowledgement of a button press,
+ *   and anything slow enough to notice reads as the remote having missed it.
+ * - **Arriving** ([Standard], [EnterEasing]) decelerates: fast at the start so the thing is legible
+ *   immediately, settling at the end so it does not stop dead.
+ * - **Leaving** ([Quick], [ExitEasing]) accelerates and is shorter than arriving. A viewer who
+ *   dismissed something has already moved on; matching the enter duration makes it linger.
+ * - **Confirming** ([emphasisSpec]) is the one place overshoot belongs — a toggle that flipped,
+ *   where a slight rebound reads as "that registered". Never on focus, where it makes the ring feel
+ *   loose.
+ *
+ * All of them collapse to zero under reduced motion and stretch or compress with the animation
+ * speed setting, because they route through [duration].
+ */
 object TvMotion {
+    /** Focus rings, pill tints — the direct acknowledgement of a press. */
+    const val Instant = 90
+
+    /** Small fades and swaps: a badge changing, a label crossfading. */
+    const val Quick = 150
+
+    /** The default for something arriving: a panel, a row of content, an overlay. */
+    const val Standard = 240
+
+    /** A layout changing size — a hero collapsing, a section expanding. */
+    const val Expand = 280
+
+    /** Deceleration. Arrives quickly and settles rather than stopping dead. */
+    val EnterEasing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+
+    /** Acceleration. Leaves without lingering. */
+    val ExitEasing = androidx.compose.animation.core.CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
+
+    /** In-and-out, for something that moves from one resting place to another and stays. */
+    val StandardEasing = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
     @Composable
     fun duration(baseMillis: Int): Int {
         val settings = LocalTvExperienceSettings.current
         return if (settings.reducedMotion) 0 else (baseMillis * settings.animationScale).toInt()
     }
+
+    /** A decelerating tween for something arriving or settling into a new value. */
+    @Composable
+    fun <T> enterSpec(baseMillis: Int = Standard): androidx.compose.animation.core.TweenSpec<T> =
+        androidx.compose.animation.core.tween(duration(baseMillis), easing = EnterEasing)
+
+    /** An accelerating tween, shorter by default, for something being dismissed. */
+    @Composable
+    fun <T> exitSpec(baseMillis: Int = Quick): androidx.compose.animation.core.TweenSpec<T> =
+        androidx.compose.animation.core.tween(duration(baseMillis), easing = ExitEasing)
+
+    /** In-out, for a value moving between two resting states. */
+    @Composable
+    fun <T> standardSpec(baseMillis: Int = Standard): androidx.compose.animation.core.TweenSpec<T> =
+        androidx.compose.animation.core.tween(duration(baseMillis), easing = StandardEasing)
+
+    /** The immediate-feedback tween. Linear would do at this length; the curve is for consistency. */
+    @Composable
+    fun <T> instantSpec(): androidx.compose.animation.core.TweenSpec<T> =
+        androidx.compose.animation.core.tween(duration(Instant), easing = StandardEasing)
+
+    /**
+     * A spring with a small overshoot, for a discrete change the viewer just caused.
+     *
+     * Reduced motion drops it to a critically damped spring rather than to nothing: the value still
+     * has to travel, and snapping a scale to its target is more jarring than easing to it. What is
+     * removed is the rebound, which is the part that reads as motion for its own sake.
+     */
+    @Composable
+    fun <T> emphasisSpec(): androidx.compose.animation.core.SpringSpec<T> =
+        if (LocalTvExperienceSettings.current.reducedMotion) {
+            androidx.compose.animation.core.spring(
+                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
+                stiffness = androidx.compose.animation.core.Spring.StiffnessHigh,
+            )
+        } else {
+            androidx.compose.animation.core.spring(
+                dampingRatio = 0.58f,
+                stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
+            )
+        }
+
+    /** Fade in, decelerating — the app's default way for anything to appear. */
+    @Composable
+    fun fadeInSpec(baseMillis: Int = Standard) =
+        androidx.compose.animation.fadeIn(enterSpec(baseMillis))
+
+    /** Fade out, accelerating and shorter than the matching fade in. */
+    @Composable
+    fun fadeOutSpec(baseMillis: Int = Quick) =
+        androidx.compose.animation.fadeOut(exitSpec(baseMillis))
 
     /**
      * Cards keep their size when focused.
@@ -96,7 +191,14 @@ val AppPillShape = RoundedCornerShape(999.dp)
 object TvScroll {
     const val DurationMs = 340
 
-    val Easing = androidx.compose.animation.core.CubicBezierEasing(0.22f, 0.9f, 0.24f, 1f)
+    /**
+     * The same deceleration every other arrival uses.
+     *
+     * This used to be its own curve, close to but not the same as the one panels and overlays ran
+     * on, so a row gliding into place and the content fading in over it settled at visibly
+     * different rates.
+     */
+    val Easing = TvMotion.EnterEasing
 
     fun <T> spec(durationMs: Int = DurationMs): androidx.compose.animation.core.TweenSpec<T> =
         androidx.compose.animation.core.tween(durationMs, easing = Easing)

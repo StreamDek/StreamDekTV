@@ -89,6 +89,7 @@ import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
+import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
@@ -96,6 +97,7 @@ import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
+import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -274,6 +276,16 @@ fun PlayerScreen(
     var streamKeyOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamKey) }
     var streamLabelOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamLabel) }
     var brightnessPercent by remember { mutableIntStateOf(repository.playerBrightnessPercent()) }
+    // Subtitle appearance, seeded from what this device last settled on and applied to whichever
+    // engine is playing. Kept per-device for the same reason brightness is: it is a property of the
+    // panel and the seat in front of it.
+    var subtitleFontSize by remember { mutableIntStateOf(repository.subtitleFontSize()) }
+    var subtitlePosition by remember { mutableIntStateOf(repository.subtitlePosition()) }
+    // Not persisted: a delay corrects one badly-timed subtitle file, and carrying it into the next
+    // episode would silently desynchronise a file that was fine.
+    var subtitleDelay by remember(currentSourceUrl) { mutableDoubleStateOf(0.0) }
+    var playbackStats by remember { mutableStateOf<PlaybackStats?>(null) }
+    var streamsReloading by remember { mutableStateOf(false) }
     /**
      * A skip prompt owns the remote while it is up.
      *
@@ -299,6 +311,7 @@ fun PlayerScreen(
     val watchedRequester = remember { FocusRequester() }
     val speedRequester = remember { FocusRequester() }
     val brightnessRequester = remember { FocusRequester() }
+    val infoRequester = remember { FocusRequester() }
     val segmentChipRequester = remember { FocusRequester() }
     val nextEpisodePlayRequester = remember { FocusRequester() }
     val nextEpisodeCancelRequester = remember { FocusRequester() }
@@ -957,10 +970,28 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         seekTargetSec = null
         playerView?.setHeaders(currentRequestHeaders)
         if (!currentSourceUrl.isNullOrBlank()) playerView?.setSource(currentSourceUrl)
+        // Re-asserted per source: both engines reset caption styling when they reconfigure their
+        // subtitle chain, so a size chosen on the last episode would otherwise be lost on this one.
+        playerView?.setSubtitleFontSize(subtitleFontSize)
+        playerView?.setSubtitlePosition(subtitlePosition)
         val resumeAt = pendingResumePositionSec
         if (resumeAt != null && resumeAt > 0.0) {
             delay(1200)
             playerView?.seekTo(resumeAt)
+        }
+    }
+
+    // The engines are polled rather than made to push, and only while the panel that reads them is
+    // open — a transfer rate is a moving number nothing else on screen depends on, so sampling it
+    // for the whole of a two-hour film to answer a question nobody asked is waste.
+    LaunchedEffect(panel, playerView) {
+        if (panel != OverlayPanel.Info) {
+            playbackStats = null
+            return@LaunchedEffect
+        }
+        while (true) {
+            playbackStats = playerView?.playbackStats()
+            delay(1_000)
         }
     }
 
@@ -1122,11 +1153,19 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     }
 
     LaunchedEffect(panel) {
-        if (panel != null) {
-            delay(80)
-            runCatching { panelFirstItemRequester.requestFocus() }
-                .onFailure { TvDebugLogger.w("Player", "panel focus request skipped: ${it.message}") }
+        if (panel == null) return@LaunchedEffect
+        delay(80)
+        // Info is read, not chosen from, so it has no first row to land on — and an empty source
+        // list has no row either. Both focus Close, which is the only thing the remote can do there
+        // and the way back out.
+        val hasFirstRow = when (panel) {
+            OverlayPanel.Info -> false
+            OverlayPanel.Streams -> candidate?.streams?.isNotEmpty() == true
+            else -> true
         }
+        val target = if (hasFirstRow) panelFirstItemRequester else panelCloseRequester
+        runCatching { target.requestFocus() }
+            .onFailure { TvDebugLogger.w("Player", "panel focus request skipped: ${it.message}") }
     }
 
     LaunchedEffect(error) {
@@ -1958,6 +1997,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     watchedRequester = watchedRequester,
                     speedRequester = speedRequester,
                     brightnessRequester = brightnessRequester,
+                    infoRequester = infoRequester,
                     progressRequester = progressRequester,
                     liveProgressRequester = liveProgressRequester,
                     favouriteRequester = favouriteRequester,
@@ -2125,13 +2165,25 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             }
         }
 
-        // Option panel (sources / audio / subtitles)
-        panel?.let { activePanel ->
+        // The scrim used to snap to full strength the instant a panel was asked for, and vanish the
+        // instant it closed, while the panel itself slid. Driving it from `panel != null` outside
+        // the panel's own composition means it fades both ways on the same curve the panel moves
+        // on, so the two read as one movement rather than a flash and a slide.
+        val scrimAlpha by androidx.compose.animation.core.animateFloatAsState(
+            targetValue = if (panel != null) 0.33f else 0f,
+            animationSpec = if (panel != null) TvMotion.enterSpec() else TvMotion.exitSpec(),
+            label = "panel-scrim",
+        )
+        if (scrimAlpha > 0.001f) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0x54000000)),
+                    .background(Color.Black.copy(alpha = scrimAlpha)),
             )
+        }
+
+        // Option panel (sources / audio / subtitles)
+        panel?.let { activePanel ->
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.CenterEnd,
@@ -2264,6 +2316,64 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             panelClosedAtMs = System.currentTimeMillis()
                             showControls(focusPlay = !isLive)
                         },
+                        // Appearance changes stay in the panel rather than closing it: these are
+                        // adjusted by eye against the subtitle currently on screen, which takes
+                        // several presses, and dismissing after each one would make that unusable.
+                        subtitleFontSize = subtitleFontSize,
+                        subtitlePosition = subtitlePosition,
+                        subtitleDelay = subtitleDelay,
+                        subtitleDelaySupported = activePlaybackEngine == ActivePlaybackEngine.MPV,
+                        onSubtitleFontSize = {
+                            subtitleFontSize = it
+                            playerView?.setSubtitleFontSize(it)
+                            repository.saveSubtitleFontSize(it)
+                        },
+                        onSubtitlePosition = {
+                            subtitlePosition = it
+                            playerView?.setSubtitlePosition(it)
+                            repository.saveSubtitlePosition(it)
+                        },
+                        onSubtitleDelay = {
+                            subtitleDelay = it
+                            playerView?.setSubtitleDelay(it)
+                        },
+                        // Refreshes the list in place. Leaving for the picker would tear down
+                        // playback to answer a question about what else is available, which is the
+                        // opposite of what an in-player source list is for.
+                        onReloadStreams = {
+                            if (!streamsReloading) {
+                                streamsReloading = true
+                                scope.launch {
+                                    runCatching {
+                                        repository.streamCandidates(
+                                            mediaType = playbackRequest.mediaType,
+                                            mediaId = playbackRequest.mediaId,
+                                            imdbId = playbackRequest.imdbId,
+                                            episode = currentEpisode,
+                                            streamType = playbackRequest.streamType,
+                                            directStreamUrl = playbackRequest.directStreamUrl,
+                                            requestHeaders = playbackRequest.requestHeaders,
+                                            sourceAddonId = playbackRequest.sourceAddonId,
+                                            sourceAddonName = playbackRequest.sourceAddonName,
+                                            forceRefresh = true,
+                                        ).collect { progress ->
+                                            // Published per batch, so the panel fills as the
+                                            // scrapers answer rather than at the end.
+                                            candidate = candidate?.copy(streams = progress.streams)
+                                                ?: ResolvedPlaybackCandidate(null, null, progress.streams)
+                                        }
+                                    }
+                                    streamsReloading = false
+                                }
+                            }
+                        },
+                        streamsReloading = streamsReloading,
+                        playbackStats = playbackStats,
+                        currentStreamUrl = currentSourceUrl,
+                        currentLabel = currentLabel,
+                        engineLabel = if (activePlaybackEngine == ActivePlaybackEngine.MPV) "mpv" else "ExoPlayer",
+                        durationSec = durationSec,
+                        isLive = isLive,
                     )
                 }
             }

@@ -29,12 +29,6 @@ internal data class AmbientBackdropPalette(
     val accentGlow: Color,
 )
 
-internal data class ShareSheetState(
-    val title: String,
-    val shareUrl: String,
-    val shareText: String,
-)
-
 internal fun SeasonEpisode.toEpisodeContext(seasonNumber: Int): EpisodeContext =
     EpisodeContext(seasonNumber, episodeNumber, name, overview, still, runtime, airDate, id)
 
@@ -98,24 +92,6 @@ internal fun playbackEpisodeContext(
     if (detail.type != "tv") return null
     val partWatched = (progressFraction ?: 0f) > 0f
     return if (partWatched && resumeEpisodeContext != null) resumeEpisodeContext else selectedEpisode
-}
-
-internal fun buildShareSheetState(detail: MediaDetail): ShareSheetState {
-    val slug = if (detail.type == "tv") "tv" else "movie"
-    val url = detail.imdbId?.takeIf { it.isNotBlank() }
-        ?.let { "https://www.imdb.com/title/$it/" }
-        ?: "https://www.themoviedb.org/$slug/${detail.tmdbId.takeIf { it > 0 } ?: detail.id}"
-    return ShareSheetState(
-        title = detail.title,
-        shareUrl = url,
-        shareText = listOfNotNull(detail.title, detail.year?.let { "($it)" }, url).joinToString(" "),
-    )
-}
-
-internal fun trailerUrlFor(detail: MediaDetail): String? = when {
-    detail.trailerKey.isNullOrBlank() -> null
-    detail.trailerSite.equals("Vimeo", ignoreCase = true) -> "https://player.vimeo.com/video/${detail.trailerKey}"
-    else -> "https://www.youtube.com/watch?v=${detail.trailerKey}"
 }
 
 /**

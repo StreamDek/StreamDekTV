@@ -373,6 +373,14 @@ class StreamDekRepository(
 
     fun savePlayerBrightnessPercent(percent: Int) = sessionStore.savePlayerBrightnessPercent(percent)
 
+    fun subtitleFontSize(): Int = sessionStore.subtitleFontSize()
+
+    fun saveSubtitleFontSize(size: Int) = sessionStore.saveSubtitleFontSize(size)
+
+    fun subtitlePosition(): Int = sessionStore.subtitlePosition()
+
+    fun saveSubtitlePosition(position: Int) = sessionStore.saveSubtitlePosition(position)
+
     fun consumePlaybackRequest(): PlaybackRequest? = lastPlaybackRequest
 
     fun peekCachedDetail(id: String, type: String): MediaDetail? {
@@ -2198,10 +2206,13 @@ class StreamDekRepository(
      * Plugin sources are movie/series scrapers, so live channels never consult them — the same
      * rule the mobile app applies.
      */
-    private fun hasPluginSourcesFor(mediaType: String): Boolean {
-        if (mediaType == "live") return false
-        val engine = pluginEngine ?: return false
-        return engine.eligibleProviders(bootstrapState.value?.profilePlugins, mediaType).isNotEmpty()
+    private fun hasPluginSourcesFor(mediaType: String): Boolean = pluginProviderCount(mediaType) > 0
+
+    /** How many plugin scrapers a lookup of [mediaType] would fan out to. */
+    private fun pluginProviderCount(mediaType: String): Int {
+        if (mediaType == "live") return 0
+        val engine = pluginEngine ?: return 0
+        return engine.eligibleProviderCount(bootstrapState.value?.profilePlugins, mediaType)
     }
 
     /**
@@ -2399,13 +2410,14 @@ class StreamDekRepository(
             }
         }.orEmpty()
 
-        // Every enabled plugin provider is counted as one source, the way mobile presents them:
-        // they publish together as the scrapers finish rather than one row per provider.
-        val pluginSourceCount = if (hasPluginSourcesFor(mediaType)) 1 else 0
+        // One pending source per provider, not one for the whole set. Counting them together made
+        // the picker claim a single outstanding source that only cleared when the slowest scraper
+        // did, so the ones that had already answered looked like they were still running.
+        val pluginProviderCount = pluginProviderCount(mediaType)
 
         val merged = java.util.concurrent.ConcurrentHashMap<String, AddonStream>()
         val order = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginSourceCount)
+        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginProviderCount)
         val mutex = kotlinx.coroutines.sync.Mutex()
         // Snapshot creation and channel publication must be one serialized operation. Otherwise
         // an earlier, smaller snapshot can suspend in send() and arrive after a later, larger one.
@@ -2439,14 +2451,20 @@ class StreamDekRepository(
         send(StreamCandidatesProgress(emptyList(), pendingSources = remaining.get(), done = false))
 
         supervisorScope {
-            if (pluginSourceCount > 0) {
+            if (pluginProviderCount > 0) {
                 launch {
+                    val reported = java.util.concurrent.atomic.AtomicInteger(0)
                     val streams = pluginStreams(mediaType, mediaId, imdbId, episode) { providerStreams ->
                         mergeStreams(providerStreams)
+                        reported.incrementAndGet()
+                        remaining.decrementAndGet()
                         publish(done = false)
                     }
                     mergeStreams(streams)
-                    remaining.decrementAndGet()
+                    // A lookup that never reached the fan-out — an id that would not resolve, or the
+                    // whole call throwing — reports nothing, so its providers are retired here
+                    // instead of sitting in the pending count until the flow completes.
+                    repeat((pluginProviderCount - reported.get()).coerceAtLeast(0)) { remaining.decrementAndGet() }
                     publish(done = false)
                 }
             }

@@ -206,6 +206,20 @@ class PluginSourceEngine(context: Context) {
         .build()
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * Where a provider's QuickJS context runs.
+     *
+     * Not [Dispatchers.Default], which is what this used to be. A scraper spends nearly all of its
+     * time inside `__sd_fetch`, which blocks its thread on the HTTP call — and Default is sized to
+     * the core count, so on a two-core TV box two parked scrapers were the whole pool. The third
+     * and fourth provider could not start until one of them came back, which is exactly the
+     * "everything appears at once, at the end" the fan-out is meant to avoid. Backing it with the
+     * IO pool means a provider waiting on the network is parked on a thread that exists to be
+     * parked, and the four that the semaphore admits genuinely run at the same time.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val pluginDispatcher = Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_PLUGIN_PROVIDERS)
+
     /** Scraper source per provider id, populated from the disk cache or the collection manifest. */
     private val codeCache = ConcurrentHashMap<String, String>()
 
@@ -329,8 +343,9 @@ class PluginSourceEngine(context: Context) {
     /**
      * Streams for one title from every eligible provider.
      *
-     * [onProviderResults] is invoked as each provider finishes so callers can render partial
-     * results, exactly like the add-on fan-out does.
+     * [onProviderResults] is invoked as each provider finishes — including with an empty list, so a
+     * caller counting outstanding sources can retire one that found nothing rather than leaving the
+     * list looking like it is still waiting on it.
      */
     suspend fun streams(
         state: ProfilePluginState?,
@@ -348,7 +363,7 @@ class PluginSourceEngine(context: Context) {
         return supervisorScope {
             val gate = Semaphore(MAX_CONCURRENT_PLUGIN_PROVIDERS)
             providers.map { provider ->
-                async(Dispatchers.Default) {
+                async(pluginDispatcher) {
                     gate.withPermit {
                         val streams = runCatching {
                             val code = providerCode(provider, repoVersions[provider.repoUrl].orEmpty())
@@ -359,16 +374,21 @@ class PluginSourceEngine(context: Context) {
                         }.onFailure {
                             TvDebugLogger.w("Plugins", "provider failed name=${provider.name}", it)
                         }.getOrDefault(emptyList())
-                        if (streams.isNotEmpty()) {
-                            TvDebugLogger.i("Plugins", "provider ${provider.name} returned ${streams.size} streams")
-                            onProviderResults(streams)
-                        }
+                        TvDebugLogger.i("Plugins", "provider ${provider.name} returned ${streams.size} streams")
+                        // Reported from inside the permit, so the result of a provider that has
+                        // finished reaches the screen before the next one is let through rather
+                        // than queueing behind the whole fan-out.
+                        onProviderResults(streams)
                         streams
                     }
                 }
             }.awaitAll().flatten()
         }
     }
+
+    /** How many providers a lookup of [type] would fan out to, for a caller counting sources. */
+    fun eligibleProviderCount(state: ProfilePluginState?, type: String): Int =
+        eligibleProviders(state, type).size
 
     // --- scraper source ---------------------------------------------------------------------
 
@@ -455,7 +475,7 @@ class PluginSourceEngine(context: Context) {
             domNodes[nodeId] = element
             return nodeId
         }
-        quickJs(Dispatchers.Default) {
+        quickJs(pluginDispatcher) {
             function("__sd_log") { args: Array<Any?> ->
                 TvDebugLogger.d("Plugins", "[${provider.name}] " + args.getOrNull(0)?.toString().orEmpty())
                 null

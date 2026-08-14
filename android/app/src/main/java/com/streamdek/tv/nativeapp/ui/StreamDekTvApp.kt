@@ -400,6 +400,21 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     }
 
     StreamDekTvTheme(appPreferences = appPrefs) {
+        // Screen transitions, stated once for the whole graph. Navigation's defaults slide a full
+        // screen of artwork sideways, which on a stick is a lot of pixels to push and reads as a
+        // lurch; and nothing here is laid out side by side, so sideways was never the right
+        // metaphor. Going deeper grows very slightly out of the screen and going back settles into
+        // it, which matches what actually happened. Reduced motion collapses these to nothing,
+        // since the durations come from TvMotion.
+        val forwardScaleIn = 0.97f
+        val backScaleOut = 0.98f
+        val screenEnter = androidx.compose.animation.fadeIn(TvMotion.enterSpec()) +
+            androidx.compose.animation.scaleIn(TvMotion.enterSpec(), initialScale = forwardScaleIn)
+        val screenExit = androidx.compose.animation.fadeOut(TvMotion.exitSpec())
+        val screenPopEnter = androidx.compose.animation.fadeIn(TvMotion.enterSpec()) +
+            androidx.compose.animation.scaleIn(TvMotion.enterSpec(), initialScale = 1.02f)
+        val screenPopExit = androidx.compose.animation.fadeOut(TvMotion.exitSpec()) +
+            androidx.compose.animation.scaleOut(TvMotion.exitSpec(), targetScale = backScaleOut)
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -411,6 +426,10 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 modifier = Modifier.padding(
                     start = if (currentRoute in topLevelDestinations.map { it.route }) 68.dp else 0.dp,
                 ),
+                enterTransition = { screenEnter },
+                exitTransition = { screenExit },
+                popEnterTransition = { screenPopEnter },
+                popExitTransition = { screenPopExit },
             ) {
                 composable(TopLevelDestination.Home.route) {
                     HomeScreen(

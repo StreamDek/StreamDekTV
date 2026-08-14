@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -58,6 +60,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -66,8 +69,10 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
@@ -80,11 +85,21 @@ import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.MediaDetail
+import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
+import com.streamdek.tv.nativeapp.data.formatBitrate
+import com.streamdek.tv.nativeapp.data.formatResolution
+import com.streamdek.tv.nativeapp.data.formatTransferRate
+import com.streamdek.tv.nativeapp.data.prettyCodecName
+import com.streamdek.tv.nativeapp.data.streamProviderLabel
+import com.streamdek.tv.nativeapp.data.streamTransport
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
+import com.streamdek.tv.nativeapp.ui.detail.streamQualityLabel
+import com.streamdek.tv.nativeapp.ui.detail.streamSizeLabel
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
+import java.util.Locale
 
 internal enum class OverlayPanel {
     Streams,
@@ -92,7 +107,17 @@ internal enum class OverlayPanel {
     Subtitles,
     Speed,
     Brightness,
+    Info,
 }
+
+/** Subtitle sizing offered in the player, around mpv's default of 55. */
+internal val SubtitleSizeRange = 28..84
+
+/** Subtitle vertical placement. Higher sits nearer the bottom of the picture. */
+internal val SubtitlePositionRange = 50..110
+
+/** Subtitle timing nudge, in seconds. mpv only — Media3 cannot shift a track's timestamps. */
+internal val SubtitleDelayRange = -5.0..5.0
 
 internal data class SpeedOption(
     val label: String,
@@ -124,12 +149,18 @@ internal fun PlayerOverlayVisibility(
     content: @Composable () -> Unit,
 ) {
     val reducedMotion = LocalTvExperienceSettings.current.reducedMotion
-    val duration = TvMotion.duration(180)
+    // Asymmetric on purpose. The controls arrive on a decelerating curve because the viewer has
+    // just asked for them and needs to read them; they leave faster, on an accelerating one,
+    // because by then the viewer is watching the picture behind them.
+    val enterSpec = TvMotion.enterSpec<Float>()
+    val enterOffset = TvMotion.enterSpec<androidx.compose.ui.unit.IntOffset>()
+    val exitSpec = TvMotion.exitSpec<Float>()
+    val exitOffset = TvMotion.exitSpec<androidx.compose.ui.unit.IntOffset>()
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
-        enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(duration)) + slideInVertically(tween(duration), initialOffsetY = { it / 6 }),
-        exit = if (reducedMotion) ExitTransition.None else fadeOut(tween(duration)) + slideOutVertically(tween(duration), targetOffsetY = { it / 8 }),
+        enter = if (reducedMotion) EnterTransition.None else fadeIn(enterSpec) + slideInVertically(enterOffset, initialOffsetY = { it / 6 }),
+        exit = if (reducedMotion) ExitTransition.None else fadeOut(exitSpec) + slideOutVertically(exitOffset, targetOffsetY = { it / 8 }),
     ) {
         content()
     }
@@ -176,6 +207,7 @@ internal fun PlayerBottomBar(
     watchedRequester: FocusRequester,
     speedRequester: FocusRequester,
     brightnessRequester: FocusRequester,
+    infoRequester: FocusRequester,
     progressRequester: FocusRequester,
     liveProgressRequester: FocusRequester,
     favouriteRequester: FocusRequester,
@@ -263,8 +295,8 @@ internal fun PlayerBottomBar(
                 )
                 AnimatedVisibility(
                     visible = timelineFocused.value,
-                    enter = fadeIn(animationSpec = tween(100)),
-                    exit = fadeOut(animationSpec = tween(80)),
+                    enter = TvMotion.fadeInSpec(TvMotion.Quick),
+                    exit = TvMotion.fadeOutSpec(TvMotion.Instant),
                 ) {
                     Text(
                         text = "Hold down Left/Right button to scrub",
@@ -457,8 +489,19 @@ internal fun PlayerBottomBar(
                     requester = brightnessRequester,
                     upRequester = timelineUpRequester,
                     leftRequester = if (isLive) favouriteRequester else speedRequester,
+                    rightRequester = infoRequester,
                     onFocused = onInteract,
                     onClick = { onOpenPanel(OverlayPanel.Brightness) },
+                )
+                PlayerControlIconButton(
+                    icon = Icons.Outlined.Info,
+                    label = "Stream info",
+                    active = selectedPanel == OverlayPanel.Info,
+                    requester = infoRequester,
+                    upRequester = timelineUpRequester,
+                    leftRequester = brightnessRequester,
+                    onFocused = onInteract,
+                    onClick = { onOpenPanel(OverlayPanel.Info) },
                 )
 
                 Spacer(Modifier.weight(1f))
@@ -664,6 +707,24 @@ internal fun PlayerOptionPanel(
     onSelectSpeed: (Double) -> Unit,
     onSelectBrightness: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    /** Subtitle appearance, adjusted in place from the Subtitles panel rather than in Settings. */
+    subtitleFontSize: Int = 55,
+    subtitlePosition: Int = 92,
+    subtitleDelay: Double = 0.0,
+    onSubtitleFontSize: (Int) -> Unit = {},
+    onSubtitlePosition: (Int) -> Unit = {},
+    onSubtitleDelay: (Double) -> Unit = {},
+    /** Subtitle delay is an mpv property; Media3 has nothing to shift. */
+    subtitleDelaySupported: Boolean = true,
+    onReloadStreams: () -> Unit = {},
+    streamsReloading: Boolean = false,
+    /** What the info panel reads. Null until the first sample comes back from the engine. */
+    playbackStats: PlaybackStats? = null,
+    currentStreamUrl: String? = null,
+    currentLabel: String? = null,
+    engineLabel: String = "",
+    durationSec: Double = 0.0,
+    isLive: Boolean = false,
 ) {
     PlayerGlassSurface(
         modifier = modifier
@@ -691,6 +752,7 @@ internal fun PlayerOptionPanel(
                                 OverlayPanel.Subtitles -> "Subtitles"
                                 OverlayPanel.Speed -> "Playback Speed"
                                 OverlayPanel.Brightness -> "Brightness"
+                                OverlayPanel.Info -> "Stream info"
                             },
                             style = androidx.tv.material3.MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
                             color = Color.White,
@@ -699,47 +761,60 @@ internal fun PlayerOptionPanel(
                             text = when (panel) {
                                 OverlayPanel.Streams -> "Switch streams without leaving playback."
                                 OverlayPanel.Audio -> "Pick a different audio track."
-                                OverlayPanel.Subtitles -> "Enable, disable, or change subtitle tracks."
+                                OverlayPanel.Subtitles -> "Change the track, then size and place it."
                                 OverlayPanel.Speed -> "Match playback speed to your preference."
                                 OverlayPanel.Brightness -> "Take the picture down for a dark room."
+                                OverlayPanel.Info -> "Where this stream comes from and how it is arriving."
                             },
                             style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.58f),
                         )
                     }
-                    OutlinedButton(
-                        onClick = onClose,
-                        shape = ButtonDefaults.shape(AppPillShape),
-                        modifier = Modifier.focusRequester(closeRequester),
-                        colors = ButtonDefaults.colors(
-                            containerColor = Color(0x10FFFFFF),
-                            focusedContainerColor = Color(0x22FFFFFF),
-                            contentColor = Color.White,
-                            focusedContentColor = Color.White,
-                        ),
-                    ) {
-                        Text("Close")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (panel == OverlayPanel.Streams) {
+                            OutlinedButton(
+                                onClick = onReloadStreams,
+                                shape = ButtonDefaults.shape(AppPillShape),
+                                colors = ButtonDefaults.colors(
+                                    containerColor = Color(0x10FFFFFF),
+                                    focusedContainerColor = Color(0x22FFFFFF),
+                                    contentColor = Color.White,
+                                    focusedContentColor = Color.White,
+                                ),
+                            ) {
+                                Text(if (streamsReloading) "Reloading…" else "Reload")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = onClose,
+                            shape = ButtonDefaults.shape(AppPillShape),
+                            modifier = Modifier.focusRequester(closeRequester),
+                            colors = ButtonDefaults.colors(
+                                containerColor = Color(0x10FFFFFF),
+                                focusedContainerColor = Color(0x22FFFFFF),
+                                contentColor = Color.White,
+                                focusedContentColor = Color.White,
+                            ),
+                        ) {
+                            Text("Close")
+                        }
                     }
                 }
             }
 
             when (panel) {
                 OverlayPanel.Streams -> {
-                    itemsIndexed(candidate?.streams.orEmpty()) { index, stream ->
-                        val meta = buildList {
-                            stream.quality?.takeIf { it.isNotBlank() }?.let { add(it) }
-                            stream.size?.takeIf { it.isNotBlank() }?.let { add(it) }
-                            stream.addonName.takeIf { it.isNotBlank() }?.let { add(it) }
-                        }.joinToString(" • ")
-                        OptionButton(
-                            label = stream.name?.takeIf { it.isNotBlank() }
-                                ?: stream.title?.takeIf { it.isNotBlank() }
-                                ?: stream.addonName.takeIf { it.isNotBlank() }
-                                ?: "Source ${index + 1}",
-                            subtitle = meta.ifBlank { null },
-                            active = candidate?.stream == stream,
-                            activeBadge = if (candidate?.stream == stream) "Playing" else null,
-                            trailingPill = stream.quality,
+                    val streams = candidate?.streams.orEmpty()
+                    if (streams.isEmpty()) {
+                        item {
+                            PanelNote(if (streamsReloading) "Searching for sources…" else "No sources loaded yet.")
+                        }
+                    }
+                    itemsIndexed(streams) { index, stream ->
+                        StreamOptionButton(
+                            stream = stream,
+                            fallbackLabel = "Source ${index + 1}",
+                            playing = candidate?.stream == stream,
                             requestFocus = if (index == 0) firstItemRequester else null,
                             onInteract = onInteract,
                             onClick = { onSelectStream(index) },
@@ -803,6 +878,48 @@ internal fun PlayerOptionPanel(
                             onClick = { onSelectExternalSubtitle(subtitle) },
                         )
                     }
+                    // Appearance sits under the tracks rather than behind a tab: on a remote a tab
+                    // strip is another axis of navigation to get wrong, and scrolling down to reach
+                    // it is the movement the viewer is already making.
+                    item { PanelSectionHeading("Appearance") }
+                    item {
+                        PlayerStepperRow(
+                            label = "Text size",
+                            value = subtitleFontSize.toString(),
+                            onInteract = onInteract,
+                            onDecrease = { onSubtitleFontSize((subtitleFontSize - 2).coerceIn(SubtitleSizeRange)) },
+                            onIncrease = { onSubtitleFontSize((subtitleFontSize + 2).coerceIn(SubtitleSizeRange)) },
+                        )
+                    }
+                    item {
+                        PlayerStepperRow(
+                            label = "Position",
+                            value = subtitlePosition.toString(),
+                            hint = "Higher sits nearer the bottom",
+                            onInteract = onInteract,
+                            onDecrease = { onSubtitlePosition((subtitlePosition - 2).coerceIn(SubtitlePositionRange)) },
+                            onIncrease = { onSubtitlePosition((subtitlePosition + 2).coerceIn(SubtitlePositionRange)) },
+                        )
+                    }
+                    if (subtitleDelaySupported) {
+                        item {
+                            PlayerStepperRow(
+                                label = "Delay",
+                                value = String.format(Locale.US, "%+.1f s", subtitleDelay),
+                                hint = "Nudge subtitles ahead of or behind the audio",
+                                onInteract = onInteract,
+                                onDecrease = {
+                                    onSubtitleDelay((subtitleDelay - 0.25).coerceIn(SubtitleDelayRange))
+                                },
+                                onIncrease = {
+                                    onSubtitleDelay((subtitleDelay + 0.25).coerceIn(SubtitleDelayRange))
+                                },
+                            )
+                        }
+                    }
+                    item {
+                        PanelNote("Colour, outline and background are in Settings › Subtitles.")
+                    }
                 }
                 OverlayPanel.Speed -> {
                     itemsIndexed(
@@ -838,6 +955,50 @@ internal fun PlayerOptionPanel(
                         )
                     }
                 }
+                OverlayPanel.Info -> {
+                    val stream = candidate?.stream
+                    val transport = streamTransport(stream, currentStreamUrl.orEmpty())
+                    val sourceRows = buildList {
+                        streamProviderLabel(stream, currentLabel)?.let { add("Provider" to it) }
+                        add("Delivery" to transport.label)
+                        stream?.size?.takeIf { it.isNotBlank() }?.let { add("Size" to it) }
+                        stream?.quality?.takeIf { it.isNotBlank() }?.let { add("Quality" to it) }
+                        (stream?.filename ?: stream?.behaviorHints?.filename)?.takeIf { it.isNotBlank() }
+                            ?.let { add("File" to it) }
+                    }
+                    val playbackRows = buildList {
+                        formatTransferRate(playbackStats?.bytesPerSecond)?.let { add("Speed" to it) }
+                        formatResolution(playbackStats?.width ?: 0, playbackStats?.height ?: 0)?.let { add("Resolution" to it) }
+                        val videoLine = listOfNotNull(
+                            prettyCodecName(playbackStats?.videoCodec),
+                            formatBitrate(playbackStats?.videoBitrateBps),
+                            playbackStats?.frameRate?.let { String.format(Locale.US, "%.0f fps", it) },
+                        ).joinToString(" · ")
+                        if (videoLine.isNotBlank()) add("Video" to videoLine)
+                        val audioLine = listOfNotNull(
+                            prettyCodecName(playbackStats?.audioCodec),
+                            playbackStats?.audioChannels?.let { channels ->
+                                when {
+                                    channels > 2 -> "${channels}ch"
+                                    channels == 2 -> "Stereo"
+                                    else -> "Mono"
+                                }
+                            },
+                        ).joinToString(" · ")
+                        if (audioLine.isNotBlank()) add("Audio" to audioLine)
+                        playbackStats?.bufferedSeconds?.let { add("Buffered" to String.format(Locale.US, "%.0f s ahead", it)) }
+                        playbackStats?.hardwareDecoder?.let { add("Decoder" to it) }
+                        if (engineLabel.isNotBlank()) add("Engine" to engineLabel)
+                        if (!isLive && durationSec > 0.0) add("Runtime" to formatPlaybackClock(durationSec))
+                    }
+                    item { PanelSectionHeading("Source") }
+                    item { PlayerInfoTable(sourceRows) }
+                    item { PanelSectionHeading("Playback") }
+                    item { PlayerInfoTable(playbackRows) }
+                    if (playbackStats == null) {
+                        item { PanelNote("Reading playback details from the engine…") }
+                    }
+                }
             }
 
             item { Spacer(modifier = Modifier.height(14.dp)) }
@@ -860,6 +1021,13 @@ internal fun PlayerSkipActionChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // The one thing in the player that should announce itself. It appears unbidden, over content
+    // the viewer is already watching, and it has a few seconds to be noticed before the moment it
+    // offers to skip has passed — so it springs in with a small overshoot rather than fading up,
+    // which at this size against moving video is easy to miss entirely.
+    val appeared = remember { androidx.compose.animation.core.Animatable(0.82f) }
+    val emphasis = TvMotion.emphasisSpec<Float>()
+    LaunchedEffect(label) { appeared.animateTo(1f, emphasis) }
     OutlinedButton(
         onClick = onClick,
         shape = ButtonDefaults.shape(AppPillShape),
@@ -881,6 +1049,11 @@ internal fun PlayerSkipActionChip(
         ),
         modifier = modifier
             .padding(end = 24.dp, bottom = bottomPadding)
+            .graphicsLayer {
+                scaleX = appeared.value
+                scaleY = appeared.value
+                alpha = appeared.value
+            }
             .focusRequester(focusRequester),
     ) {
         Icon(
@@ -1154,6 +1327,290 @@ private fun OptionButton(
             }
             trailingPill?.takeIf { it.isNotBlank() }?.let {
                 QualityPill(text = it, modifier = Modifier.padding(start = 12.dp))
+            }
+        }
+    }
+}
+
+/**
+ * One source in the player's list, carrying what the picker screen carries.
+ *
+ * The row used to be a bare release name over a "quality • size • add-on" string, so choosing a
+ * replacement mid-film meant guessing at exactly the facts — who is serving it, whether a debrid
+ * service already holds it — that the full picker shows plainly. These are the same three columns
+ * that screen uses, in the same order, so a viewer moves between them without relearning the row.
+ */
+@Composable
+private fun StreamOptionButton(
+    stream: AddonStream,
+    fallbackLabel: String,
+    playing: Boolean,
+    requestFocus: FocusRequester?,
+    onInteract: () -> Unit,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val releaseLabel = stream.name?.takeIf { it.isNotBlank() }
+        ?: stream.title?.takeIf { it.isNotBlank() }
+        ?: stream.addonName.takeIf { it.isNotBlank() }
+        ?: fallbackLabel
+    val quality = streamQualityLabel(stream, releaseLabel)
+    val size = streamSizeLabel(stream, releaseLabel)
+    val availability = when {
+        stream.cachedBy.isNotEmpty() -> stream.cachedBy.joinToString(", ") to true
+        !stream.url.isNullOrBlank() -> "Direct" to false
+        !stream.nzbUrl.isNullOrBlank() -> "Usenet" to false
+        else -> "Torrent" to false
+    }
+    OutlinedButton(
+        onClick = onClick,
+        scale = ButtonDefaults.scale(focusedScale = TvMotion.focusScale()),
+        shape = ButtonDefaults.shape(RoundedCornerShape(14.dp)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp)
+            .then(if (requestFocus != null) Modifier.focusRequester(requestFocus) else Modifier)
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onInteract()
+            },
+        colors = ButtonDefaults.colors(
+            containerColor = if (playing) Color(0x268B5CF6) else Color(0x10FFFFFF),
+            focusedContainerColor = if (playing) Color(0x338B5CF6) else Color(0x22FFFFFF),
+            contentColor = Color.White,
+            focusedContentColor = Color.White,
+        ),
+        border = ButtonDefaults.border(
+            border = Border(
+                border = BorderStroke(
+                    if (focused) 2.dp else 1.dp,
+                    when {
+                        focused -> Color(0xFFF0BA66)
+                        playing -> Color(0x668B5CF6)
+                        else -> Color(0x12FFFFFF)
+                    },
+                ),
+                shape = RoundedCornerShape(14.dp),
+            ),
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 11.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stream.addonName.ifBlank { "Stream source" },
+                    style = androidx.tv.material3.MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                    color = Color(0xFFD4B8FF),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (playing) ActiveBadge("Playing")
+            }
+            Text(
+                text = releaseLabel,
+                style = androidx.tv.material3.MaterialTheme.typography.titleSmall.copy(
+                    fontWeight = if (focused) FontWeight.Black else FontWeight.Bold,
+                ),
+                color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            stream.description?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.5f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                quality?.let { QualityPill(it) }
+                size?.let { QualityPill(it) }
+                StreamAvailabilityPill(availability.first, cached = availability.second)
+            }
+        }
+    }
+}
+
+/** "Cached by Real-Debrid" reads differently from "Torrent", so it is coloured differently too. */
+@Composable
+private fun StreamAvailabilityPill(text: String, cached: Boolean) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (cached) Color(0x3322C55E) else Color(0x14FFFFFF))
+            .border(1.dp, if (cached) Color(0x6622C55E) else Color(0x22FFFFFF), RoundedCornerShape(6.dp))
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = text,
+            style = androidx.tv.material3.MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+            color = if (cached) Color(0xFF9DE8B4) else Color.White.copy(alpha = 0.7f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * A value the remote's left and right keys move, rather than a list of every step.
+ *
+ * A slider needs a pointer and a list of sixty text sizes needs sixty presses; this is one focus
+ * stop that reports the value as it changes, which is how the rest of the TV's numeric settings
+ * behave. Explicit −/+ targets stay for a remote whose ring is unreliable.
+ */
+@Composable
+private fun PlayerStepperRow(
+    label: String,
+    value: String,
+    onInteract: () -> Unit,
+    onDecrease: () -> Unit,
+    onIncrease: () -> Unit,
+    hint: String? = null,
+) {
+    var focused by remember { mutableStateOf(false) }
+    OutlinedButton(
+        onClick = onIncrease,
+        scale = ButtonDefaults.scale(focusedScale = TvMotion.focusScale()),
+        shape = ButtonDefaults.shape(RoundedCornerShape(14.dp)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp)
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onInteract()
+            }
+            .onPreviewKeyEvent { event ->
+                if (!focused || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> { onDecrease(); true }
+                    Key.DirectionRight -> { onIncrease(); true }
+                    else -> false
+                }
+            },
+        colors = ButtonDefaults.colors(
+            containerColor = Color(0x10FFFFFF),
+            focusedContainerColor = Color(0x22FFFFFF),
+            contentColor = Color.White,
+            focusedContentColor = Color.White,
+        ),
+        border = ButtonDefaults.border(
+            border = Border(
+                border = BorderStroke(
+                    if (focused) 2.dp else 1.dp,
+                    if (focused) Color(0xFFF0BA66) else Color(0x12FFFFFF),
+                ),
+                shape = RoundedCornerShape(14.dp),
+            ),
+        ),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = label,
+                    style = androidx.tv.material3.MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = if (focused) FontWeight.Black else FontWeight.Bold,
+                    ),
+                    color = Color.White,
+                )
+                (hint ?: "Left and right to adjust").let {
+                    Text(
+                        text = it,
+                        style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.5f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "−",
+                    style = androidx.tv.material3.MaterialTheme.typography.titleMedium,
+                    color = Color.White.copy(alpha = if (focused) 0.9f else 0.4f),
+                )
+                Text(
+                    text = value,
+                    style = androidx.tv.material3.MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                    color = Color(0xFFF0BA66),
+                )
+                Text(
+                    text = "+",
+                    style = androidx.tv.material3.MaterialTheme.typography.titleMedium,
+                    color = Color.White.copy(alpha = if (focused) 0.9f else 0.4f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PanelSectionHeading(text: String) {
+    Text(
+        text = text.uppercase(Locale.US),
+        style = androidx.tv.material3.MaterialTheme.typography.labelSmall.copy(
+            fontWeight = FontWeight.Black,
+            letterSpacing = 1.2.sp,
+        ),
+        color = Color.White.copy(alpha = 0.44f),
+        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 6.dp),
+    )
+}
+
+@Composable
+private fun PanelNote(text: String) {
+    Text(
+        text = text,
+        style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
+        color = Color.White.copy(alpha = 0.5f),
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+    )
+}
+
+/** Label-and-value pairs. Rows with nothing to say are dropped rather than printed as a dash. */
+@Composable
+private fun PlayerInfoTable(rows: List<Pair<String, String>>) {
+    if (rows.isEmpty()) {
+        PanelNote("Nothing reported yet.")
+        return
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0x10FFFFFF))
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        rows.forEach { (label, value) ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Text(
+                    text = label,
+                    style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.56f),
+                )
+                Text(
+                    text = value,
+                    style = androidx.tv.material3.MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

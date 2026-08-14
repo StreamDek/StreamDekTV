@@ -55,6 +55,7 @@ import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
+import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.glideToItem
 import kotlinx.coroutines.delay
@@ -155,6 +156,11 @@ fun HomeScreen(
     }
 
     val backgroundColor = MaterialTheme.colorScheme.background
+    // Hoisted out of the transitionSpec lambdas, which are not composable and so cannot read the
+    // viewer's motion settings themselves. Both hero crossfades share these, so the artwork and the
+    // copy over it change on exactly the same curve rather than nearly the same one.
+    val heroFadeIn = TvMotion.fadeInSpec(TvMotion.Quick)
+    val heroFadeOut = TvMotion.fadeOutSpec(TvMotion.Instant)
 
     Box(Modifier.fillMaxSize().background(backgroundColor)) {
         val art = (spotlightItem?.backdrop ?: spotlightItem?.poster)
@@ -162,7 +168,7 @@ fun HomeScreen(
         AnimatedContent(
             targetState = art,
             modifier = Modifier.fillMaxSize(),
-            transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(110)) },
+            transitionSpec = { heroFadeIn togetherWith heroFadeOut },
             label = "home-hero-backdrop",
         ) { imageUrl ->
             if (!imageUrl.isNullOrBlank()) {
@@ -308,7 +314,7 @@ fun HomeScreen(
                         // afterwards and must update in place; treating it as a second target made
                         // the title/logo replay the whole hero crossfade and visibly flicker.
                         targetState = HomeHeroPresentation(spotlightItem),
-                        transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(110)) },
+                        transitionSpec = { heroFadeIn togetherWith heroFadeOut },
                         label = "home-hero-copy",
                     ) { hero ->
                         val heroItem = hero.item

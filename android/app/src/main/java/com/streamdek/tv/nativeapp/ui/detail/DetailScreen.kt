@@ -1,15 +1,11 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CheckCircleOutline
-import androidx.compose.material.icons.rounded.Movie
-import androidx.compose.material.icons.rounded.Share
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.tv.material3.Icon
@@ -50,6 +46,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -77,7 +74,7 @@ import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
 import com.streamdek.tv.nativeapp.ui.glideToItem
-import com.streamdek.tv.nativeapp.ui.launchExternalIntent
+import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -137,14 +134,11 @@ fun DetailScreen(
     var watchedEpisodeKeys by remember(mediaType, mediaId) { mutableStateOf<Set<String>>(emptySet()) }
     var markingSeasonWatched by remember(mediaType, mediaId, activeSeasonNumber) { mutableStateOf(false) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
-    var shareSheet by remember(mediaType, mediaId) { mutableStateOf<ShareSheetState?>(null) }
     var episodeAction by remember(mediaType, mediaId) { mutableStateOf<SeasonEpisodeEntry?>(null) }
     var episodeActionLoading by remember(mediaType, mediaId) { mutableStateOf(false) }
     var episodeActionError by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     /** Full synopsis the viewer asked to read, shown over the screen until they close it. */
     var expandedSynopsis by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
-    /** Set when no installed app could take an intent, so the press is not silently swallowed. */
-    var externalIntentNotice by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
 
     val playRequester = remember(mediaType, mediaId) { FocusRequester() }
     val synopsisMoreRequester = remember(mediaType, mediaId) { FocusRequester() }
@@ -173,7 +167,6 @@ fun DetailScreen(
         inWatchlist = false
         markedWatched = false
         watchedEpisodeKeys = emptySet()
-        shareSheet = null
         episodeAction = null
         episodeActionLoading = false
         episodeActionError = null
@@ -430,7 +423,8 @@ fun DetailScreen(
                 // sections below can move, and the title is always the first thing on screen.
                 val heroTop by androidx.compose.animation.core.animateDpAsState(
                     targetValue = if (heroFocused) 72.dp else 28.dp,
-                    animationSpec = androidx.compose.animation.core.tween(220),
+                    // The same spec the hero's own sizes use, so the whole block settles as one.
+                    animationSpec = TvMotion.standardSpec(TvMotion.Expand),
                     label = "hero-top",
                 )
                 Column(Modifier.fillMaxSize().padding(top = heroTop)) {
@@ -446,7 +440,6 @@ fun DetailScreen(
                             progressLabel = progressLabel,
                             inWatchlist = inWatchlist,
                             markedWatched = markedWatched,
-                            hasTrailer = trailerUrlFor(d) != null,
                             playRequester = playRequester,
                             onPlay = {
                                 if (repository.currentSession() == null) {
@@ -505,14 +498,6 @@ fun DetailScreen(
                                     }
                                 }
                             },
-                            onTrailer = {
-                                trailerUrlFor(d)?.let { url ->
-                                    externalIntentNotice = launchExternalIntent(
-                                        context, Intent(Intent.ACTION_VIEW, Uri.parse(url)), "trailers",
-                                    )
-                                }
-                            },
-                            onShare = { shareSheet = buildShareSheetState(d) },
                             synopsisMoreRequester = synopsisMoreRequester,
                             onExpandSynopsis = { expandedSynopsis = it },
                         )
@@ -645,31 +630,6 @@ fun DetailScreen(
         }
         }
 
-        shareSheet?.let { sheet ->
-            ShareDialog(
-                sheet = sheet,
-                onDismiss = { shareSheet = null },
-                onShareNow = {
-                    externalIntentNotice = launchExternalIntent(
-                        context,
-                        Intent.createChooser(
-                            Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, sheet.shareText)
-                            },
-                            "Share title",
-                        ),
-                        "sharing",
-                    )
-                },
-                onOpenLink = {
-                    externalIntentNotice = launchExternalIntent(
-                        context, Intent(Intent.ACTION_VIEW, Uri.parse(sheet.shareUrl)), "web links",
-                    )
-                },
-            )
-        }
-
         episodeAction?.let { entry ->
             val currentDetail = detail
             if (currentDetail != null) {
@@ -734,13 +694,6 @@ fun DetailScreen(
                 },
             )
         }
-        externalIntentNotice?.let { message ->
-            NoticeDialog(
-                title = "Nothing can open this",
-                message = message,
-                onDismiss = { externalIntentNotice = null },
-            )
-        }
     }
 }
 
@@ -756,13 +709,10 @@ private fun DetailHero(
     progressLabel: String?,
     inWatchlist: Boolean,
     markedWatched: Boolean,
-    hasTrailer: Boolean,
     playRequester: FocusRequester,
     onPlay: () -> Unit,
     onToggleWatchlist: () -> Unit,
     onMarkWatched: () -> Unit,
-    onTrailer: () -> Unit,
-    onShare: () -> Unit,
     synopsisMoreRequester: FocusRequester,
     onExpandSynopsis: (String) -> Unit,
 ) {
@@ -780,7 +730,9 @@ private fun DetailHero(
                 .build()
         }
     }
-    val heroTween = androidx.compose.animation.core.tween<Dp>(220)
+    // Poster, logo and spacing all collapse together as the hero compacts, so they share one spec —
+    // three sizes easing on different curves is what made the compaction read as a stutter.
+    val heroTween = TvMotion.standardSpec<Dp>(TvMotion.Expand)
     val posterWidth by androidx.compose.animation.core.animateDpAsState(
         targetValue = if (compact) 0.dp else 188.dp,
         animationSpec = heroTween,
@@ -932,11 +884,9 @@ private fun DetailHero(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp),
                     )
                 }
-                // Secondary actions are labelled but compact, so the whole row is reachable in a
-                // few presses instead of five full-width buttons strung across the screen.
-                if (hasTrailer) {
-                    HeroAction(Icons.Rounded.Movie, "Play trailer", false, onTrailer)
-                }
+                // Two secondary actions, both about this title's place in the viewer's own library.
+                // Trailer and share used to sit here too and were removed: a trailer opened an
+                // external app the TV may not have, and there is nothing on a TV to share to.
                 HeroAction(
                     icon = if (inWatchlist) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
                     label = if (inWatchlist) "Remove from watchlist" else "Add to watchlist",
@@ -949,7 +899,6 @@ private fun DetailHero(
                     active = markedWatched,
                     onClick = onMarkWatched,
                 )
-                HeroAction(Icons.Rounded.Share, "Share", false, onShare)
             }
         }
     }
@@ -964,12 +913,15 @@ private fun DetailHero(
  */
 @Composable
 private fun HeroDetailVisibility(visible: Boolean, content: @Composable () -> Unit) {
+    // The fade and the height change run the same length in each direction: a fade that finishes
+    // before the collapse leaves an empty gap shrinking on its own, which is the jump this
+    // composable exists to avoid.
     androidx.compose.animation.AnimatedVisibility(
         visible = visible,
-        enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)) +
-            androidx.compose.animation.expandVertically(androidx.compose.animation.core.tween(220)),
-        exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(140)) +
-            androidx.compose.animation.shrinkVertically(androidx.compose.animation.core.tween(220)),
+        enter = TvMotion.fadeInSpec(TvMotion.Expand) +
+            androidx.compose.animation.expandVertically(TvMotion.enterSpec(TvMotion.Expand)),
+        exit = TvMotion.fadeOutSpec(TvMotion.Quick) +
+            androidx.compose.animation.shrinkVertically(TvMotion.exitSpec(TvMotion.Quick)),
     ) {
         content()
     }
@@ -983,6 +935,23 @@ private fun HeroAction(
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    // Two separate motions, deliberately on different curves.
+    //
+    // Focus growth is a response to the remote and eases straight to its target — an overshoot
+    // there would have the icon wobbling every time focus passed over it, which reads as the row
+    // being unsteady rather than as anything having happened.
+    val focusSize by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (focused) 28.dp else 24.dp,
+        animationSpec = TvMotion.instantSpec(),
+        label = "hero-action-size",
+    )
+    // Toggling is a change the viewer just caused and wants confirmed, so this one rebounds. It is
+    // the only place in the row where the state, not the focus, moved.
+    val activeScale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (active) 1f else 0.86f,
+        animationSpec = TvMotion.emphasisSpec(),
+        label = "hero-action-active",
+    )
     // Colour alone carries focus here. Outlined circles next to the Play pill read as a row of
     // empty buttons and pull attention off the one action that matters, and a background plate is
     // the same problem in softer form. The accent tint is unmistakable from across a room.
@@ -997,7 +966,12 @@ private fun HeroAction(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            modifier = Modifier.size(if (focused) 28.dp else 24.dp),
+            modifier = Modifier
+                .size(focusSize)
+                .graphicsLayer {
+                    scaleX = activeScale
+                    scaleY = activeScale
+                },
             tint = when {
                 focused -> MaterialTheme.colorScheme.primary
                 active -> MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
@@ -1114,91 +1088,6 @@ private fun EpisodeActionDialog(
         }
     }
 }
-@Composable
-private fun ShareDialog(
-    sheet: ShareSheetState,
-    onDismiss: () -> Unit,
-    onShareNow: () -> Unit,
-    onOpenLink: () -> Unit,
-) {
-    val shareRequester = remember { FocusRequester() }
-
-    LaunchedEffect(sheet.shareUrl) {
-        delay(80)
-        runCatching { shareRequester.requestFocus() }
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .width(560.dp)
-                .background(MaterialTheme.colorScheme.surface, AppCardShape)
-                .padding(28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(
-                text = sheet.title,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = sheet.shareUrl,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = onShareNow,
-                    modifier = Modifier.focusRequester(shareRequester),
-                    shape = ButtonDefaults.shape(AppPillShape),
-                ) { Text("Share") }
-                OutlinedButton(onClick = onOpenLink, shape = ButtonDefaults.shape(AppPillShape)) { Text("Open Link") }
-                OutlinedButton(onClick = onDismiss, shape = ButtonDefaults.shape(AppPillShape)) { Text("Close") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun NoticeDialog(title: String, message: String, onDismiss: () -> Unit) {
-    val closeRequester = remember { FocusRequester() }
-
-    LaunchedEffect(message) {
-        delay(80)
-        runCatching { closeRequester.requestFocus() }
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .width(520.dp)
-                .background(MaterialTheme.colorScheme.surface, AppCardShape)
-                .padding(28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
-            )
-            Button(
-                onClick = onDismiss,
-                modifier = Modifier.focusRequester(closeRequester),
-                shape = ButtonDefaults.shape(AppPillShape),
-            ) { Text("Close") }
-        }
-    }
-}
-
 /** Kept for the streams screen, which shares this screen's loading language. */
 @Composable
 internal fun DetailLoading(label: String = "Loading") {

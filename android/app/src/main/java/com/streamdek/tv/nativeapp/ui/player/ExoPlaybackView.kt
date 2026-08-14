@@ -8,6 +8,7 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -23,11 +24,13 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
+import com.streamdek.tv.nativeapp.data.PlaybackStats
 
 /** Media3 playback path used for CNCVerse Bridge VODs, matching Nuvio's primary engine. */
 @OptIn(UnstableApi::class)
@@ -51,6 +54,10 @@ class ExoPlaybackView @JvmOverloads constructor(
   var onStallChangedCallback: ((Boolean) -> Unit)? = null
   override var onRemoteCenterCallback: (() -> Boolean)? = null
   override var onRemoteDownCallback: (() -> Boolean)? = null
+
+  // Shared by every player this view builds, so a source switch or an engine retry keeps the
+  // estimate it has already gathered instead of starting from the built-in default again.
+  private val bandwidthMeter = DefaultBandwidthMeter.Builder(context).build()
 
   private var exoPlayer: ExoPlayer? = null
   private var source: String? = null
@@ -186,9 +193,12 @@ class ExoPlaybackView @JvmOverloads constructor(
     prepareSource(current, exoPlayer?.currentPosition ?: 0L)
   }
 
-  fun setSubtitleDelay(seconds: Double) = Unit
+  // Media3 has no subtitle-delay control: the renderer honours the timestamps in the track and
+  // there is nowhere to shift them. Declared so the panel can offer the adjustment on mpv without
+  // having to ask which engine is playing; on this one it does nothing.
+  override fun setSubtitleDelay(seconds: Double) = Unit
 
-  fun setSubtitleFontSize(size: Int) {
+  override fun setSubtitleFontSize(size: Int) {
     subtitleView?.setApplyEmbeddedStyles(false)
     subtitleView?.setApplyEmbeddedFontSizes(false)
     subtitleView?.setFractionalTextSize((size.coerceIn(28, 84) / 55f) * 0.0533f)
@@ -199,9 +209,37 @@ class ExoPlaybackView @JvmOverloads constructor(
     subtitleView?.setStyle(CaptionStyleCompat(parsed, Color.TRANSPARENT, Color.TRANSPARENT, CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null))
   }
 
-  fun setSubtitlePosition(position: Int) {
+  override fun setSubtitlePosition(position: Int) {
     subtitlePositionPercent = position.coerceIn(0, 100)
     subtitleView?.setBottomPaddingFraction(((100 - subtitlePositionPercent) / 100f).coerceIn(0.02f, 0.50f))
+  }
+
+  /**
+   * A snapshot of what Media3 is pulling, for the player's info panel.
+   *
+   * The transfer rate is the shared bandwidth meter's estimate rather than a byte count of our own:
+   * it already smooths across the chunked requests an adaptive source makes, and a raw count would
+   * read as zero for the whole gap between one chunk and the next.
+   */
+  override fun playbackStats(): PlaybackStats {
+    val active = exoPlayer ?: return PlaybackStats()
+    val videoFormat = active.videoFormat
+    val audioFormat = active.audioFormat
+    val estimateBps = bandwidthMeter.bitrateEstimate.takeIf { it > 0L }?.toDouble()
+    val bufferedAhead = (active.bufferedPosition - active.currentPosition)
+      .takeIf { it > 0L && active.bufferedPosition != C.TIME_UNSET }
+      ?.div(1000.0)
+    return PlaybackStats(
+      bytesPerSecond = estimateBps?.div(8.0),
+      videoBitrateBps = videoFormat?.bitrate?.takeIf { it != Format.NO_VALUE }?.toDouble(),
+      width = active.videoSize.width,
+      height = active.videoSize.height,
+      videoCodec = videoFormat?.codecs ?: videoFormat?.sampleMimeType?.substringAfter('/'),
+      audioCodec = audioFormat?.codecs ?: audioFormat?.sampleMimeType?.substringAfter('/'),
+      audioChannels = audioFormat?.channelCount?.takeIf { it != Format.NO_VALUE },
+      frameRate = videoFormat?.frameRate?.takeIf { it > 0f && it != Format.NO_VALUE.toFloat() }?.toDouble(),
+      bufferedSeconds = bufferedAhead,
+    )
   }
 
   private fun prepareSource(url: String, startPositionMs: Long = 0L) {
@@ -225,6 +263,7 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setRenderersFactory(renderers)
       .setLoadControl(loadControl)
       .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+      .setBandwidthMeter(bandwidthMeter)
       .build()
     exoPlayer = active
     player = active

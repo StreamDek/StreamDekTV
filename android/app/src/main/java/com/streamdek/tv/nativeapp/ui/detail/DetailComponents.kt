@@ -97,7 +97,7 @@ internal const val DetailCompactScale = 0.4f
 internal fun detailBandScale(compact: Boolean): Float {
     val scale by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (compact) DetailCompactScale else 1f,
-        animationSpec = androidx.compose.animation.core.tween(TvMotion.duration(170)),
+        animationSpec = TvMotion.standardSpec(170),
         label = "detail-band-scale",
     )
     return scale
@@ -692,7 +692,7 @@ private fun CastPortrait(
     val highContrast = LocalTvExperienceSettings.current.highContrast
     val ring by androidx.compose.animation.core.animateDpAsState(
         targetValue = if (focused) (if (highContrast) 3.dp else 2.dp) else 0.dp,
-        animationSpec = androidx.compose.animation.core.tween(TvMotion.duration(140)),
+        animationSpec = TvMotion.instantSpec(),
         label = "cast-ring",
     )
 

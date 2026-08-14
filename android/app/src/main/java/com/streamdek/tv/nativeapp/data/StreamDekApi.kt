@@ -31,6 +31,8 @@ class AuthSessionStore(
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
     private val handoffPublicKeyKey = "streamdek_tv_handoff_public_key_v1"
     private val playerBrightnessKey = "streamdek_tv_player_brightness_v1"
+    private val subtitleFontSizeKey = "streamdek_tv_subtitle_font_size_v1"
+    private val subtitlePositionKey = "streamdek_tv_subtitle_position_v1"
 
     private val _session = MutableStateFlow(loadSession())
     val session: StateFlow<AuthSession?> = _session
@@ -58,6 +60,25 @@ class AuthSessionStore(
 
     fun savePlayerBrightnessPercent(percent: Int) {
         preferences.edit().putInt(playerBrightnessKey, percent.coerceIn(10, 100)).apply()
+    }
+
+    /**
+     * Subtitle size and placement, adjusted from the player and kept for the next video.
+     *
+     * Local for the same reason brightness is — how large captions need to be depends on the panel
+     * and how far away the sofa is, which no other device on the account shares. The defaults are
+     * mpv's own, so a viewer who never touches these sees exactly what they saw before.
+     */
+    fun subtitleFontSize(): Int = preferences.getInt(subtitleFontSizeKey, 55).coerceIn(28, 84)
+
+    fun saveSubtitleFontSize(size: Int) {
+        preferences.edit().putInt(subtitleFontSizeKey, size.coerceIn(28, 84)).apply()
+    }
+
+    fun subtitlePosition(): Int = preferences.getInt(subtitlePositionKey, 92).coerceIn(50, 110)
+
+    fun saveSubtitlePosition(position: Int) {
+        preferences.edit().putInt(subtitlePositionKey, position.coerceIn(50, 110)).apply()
     }
 
     fun activeProfileId(): String? = preferences.getString(activeProfileIdKey, null)
