@@ -58,19 +58,27 @@ jobs:
           STREAMDEK_API_URL_SECRET: ${{ secrets.STREAMDEK_API_URL }}
           EXPO_PUBLIC_API_BASE_URL_VAR: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
           EXPO_PUBLIC_API_BASE_URL_SECRET: ${{ secrets.EXPO_PUBLIC_API_BASE_URL }}
+          STREAMDEK_PREMIUMIZE_CLIENT_ID_VAR: ${{ vars.STREAMDEK_PREMIUMIZE_CLIENT_ID }}
+          STREAMDEK_PREMIUMIZE_CLIENT_ID_SECRET: ${{ secrets.STREAMDEK_PREMIUMIZE_CLIENT_ID }}
         run: |
           set -Eeuo pipefail
 
           api_url="${STREAMDEK_API_URL_VAR:-${STREAMDEK_API_URL_SECRET:-${EXPO_PUBLIC_API_BASE_URL_VAR:-${EXPO_PUBLIC_API_BASE_URL_SECRET:-}}}}"
+          premiumize_client_id="${STREAMDEK_PREMIUMIZE_CLIENT_ID_VAR:-${STREAMDEK_PREMIUMIZE_CLIENT_ID_SECRET:-}}"
 
           if [ -z "$api_url" ]; then
             echo "STREAMDEK_API_URL repository variable or secret is required."
+            exit 1
+          fi
+          if [ -z "$premiumize_client_id" ]; then
+            echo "STREAMDEK_PREMIUMIZE_CLIENT_ID repository variable or secret is required."
             exit 1
           fi
 
           {
             printf 'STREAMDEK_API_URL=%s\n' "$api_url"
             printf 'EXPO_PUBLIC_API_BASE_URL=%s\n' "$api_url"
+            printf 'STREAMDEK_PREMIUMIZE_CLIENT_ID=%s\n' "$premiumize_client_id"
           } > .env
 
       - name: Decode Android keystore

@@ -3008,10 +3008,9 @@ class StreamDekRepository(
     /**
      * Waits for the viewer to approve the code, then connects the account.
      *
-     * The token is stored on this device so playback can use it straight away, and posted to the
-     * account so the same service appears on a phone without being connected twice. An account
-     * that keeps its keys off the cloud has that server copy removed again from the mobile app,
-     * which is where that choice is made — the device copy here is unaffected either way.
+     * The token is stored on this device so playback can use it straight away. It is posted to the
+     * account only when this television is configured to sync premium-service keys; device-only
+     * mode must never upload a credential and rely on another device to remove it afterwards.
      *
      * Returns the display name of the connected account, or null if the viewer never approved it.
      */
@@ -3042,14 +3041,16 @@ class StreamDekRepository(
                         ),
                     )
                     deviceDebridManager = null
-                    runCatching {
-                        api.post<JsonObject>("/debrid/accounts", mapOf("provider" to "premiumize", "apiKey" to token))
-                    }.onFailure { TvDebugLogger.w("Debrid", "premiumize token not synced to the account", it) }
+                    if (debridCloudSyncEnabled()) {
+                        runCatching {
+                            api.post<JsonObject>("/debrid/accounts", mapOf("provider" to "premiumize", "apiKey" to token))
+                        }.onFailure { TvDebugLogger.w("Debrid", "premiumize token not synced to the account", it) }
+                    }
                     refreshBootstrap()
                     return validation?.username ?: "Premiumize"
                 }
                 // Asked to back off: honour it, or the next answer is another slow_down.
-                PremiumizeDeviceAuth.Poll.SlowDown -> intervalMs += 2_000L
+                PremiumizeDeviceAuth.Poll.SlowDown -> intervalMs = (intervalMs + 5_000L).coerceAtMost(60_000L)
                 PremiumizeDeviceAuth.Poll.Pending -> onWaiting(((deadline - System.currentTimeMillis()) / 1000L).toInt())
                 is PremiumizeDeviceAuth.Poll.Failed -> {
                     TvDebugLogger.w("Debrid", "premiumize sign-in failed: ${poll.message}")
