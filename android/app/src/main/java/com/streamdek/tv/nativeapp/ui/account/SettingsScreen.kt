@@ -164,6 +164,12 @@ fun SettingsScreen(
     var expandedPluginParents by remember { mutableStateOf<Set<String>>(emptySet()) }
     /** Plugin source whose settings cog is open, if any. */
     var editingPluginProvider by remember { mutableStateOf<ProfilePluginProvider?>(null) }
+    /** Which premium service the connect row acts on. */
+    var debridProviderChoice by remember { mutableStateOf(repository.supportedDebridProviders().first().first) }
+    /** Set while a service that wants a typed key is being connected. */
+    var debridKeyEntry by remember { mutableStateOf<Pair<String, String>?>(null) }
+    /** Add-on list opened by hand; a long synced list arrives collapsed. */
+    var addonsExpanded by remember { mutableStateOf(false) }
     val contentEntryRequester = remember { FocusRequester() }
     val destinationRequesters = remember(entryFocusRequester) {
         SettingsDestination.entries.associateWith { if (it == SettingsDestination.Account) entryFocusRequester else FocusRequester() }
@@ -267,7 +273,31 @@ fun SettingsScreen(
             Modifier.weight(1f).fillMaxHeight().verticalScroll(contentScroll),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            SettingsOverviewCard(selected, status, contentEntryRequester, selectedRequester)
+            SettingsOverviewCard(
+                destination = selected,
+                status = status,
+                requester = contentEntryRequester,
+                leftRequester = selectedRequester,
+                // Refreshing belongs beside the heading it refreshes. At the foot of the page it
+                // was behind every add-on, plugin collection and playlist on the account — the
+                // furthest thing from the top on the one page whose lists come from elsewhere and
+                // are the reason to reach for it.
+                action = if (selected == SettingsDestination.Sources) {
+                    { requester ->
+                        SettingsHeaderAction("Refresh sources", requester, selectedRequester) {
+                            scope.launch {
+                                status = "Refreshing sources..."
+                                bootstrap = repository.refreshBootstrap()
+                                addons = repository.fetchAddonManifests(forceRefresh = true)
+                                playlists = repository.fetchPlaylists(forceRefresh = true)
+                                status = "Sources refreshed."
+                            }
+                        }
+                    }
+                } else {
+                    null
+                },
+            )
             when (selected) {
                 SettingsDestination.Account -> {
                     SettingsPanel("Active profile") {
@@ -427,30 +457,181 @@ fun SettingsScreen(
                     }
                 }
                 SettingsDestination.Sources -> {
-                    SettingsPanel("Synced providers") {
-                        InfoLine("Enabled add-ons", "${addons.count { it.enabled }} of ${addons.size}")
-                        addons.forEach { addon ->
-                            key(addon.id) {
+                    // A sign-in in progress owns the top of the page: the code on it is being read
+                    // off the television and typed on a phone, and it must not be somewhere the
+                    // viewer has to scroll back to.
+                    signInPrompt?.let { prompt ->
+                        DeviceSignInPanel(
+                            providerLabel = prompt.providerLabel,
+                            verificationUrl = prompt.verificationUrl,
+                            userCode = prompt.userCode,
+                            waiting = prompt.waiting,
+                            outcome = prompt.outcome,
+                        )
+                    }
+                    // Premium services first. They are the thing on this page a viewer comes to set
+                    // up, and they used to sit under three panels of synced lists that nothing on
+                    // this television can change.
+                    SettingsPanel("Debrid accounts") {
+                        val accounts = bootstrap?.integrations?.debrid?.accounts.orEmpty()
+                        val debridProviders = repository.supportedDebridProviders()
+                        val chosenLabel = debridProviderLabel(debridProviders, debridProviderChoice)
+                        val usesSignIn = repository.debridProviderUsesDeviceSignIn(debridProviderChoice)
+                        val alreadyLinked = accounts.any { it.provider.equals(debridProviderChoice, true) }
+                        InfoLine(
+                            "Linked services",
+                            if (accounts.isEmpty()) {
+                                "None yet — pick one below"
+                            } else {
+                                accounts.joinToString(", ") { debridProviderLabel(debridProviders, it.provider) }
+                            },
+                        )
+                        // Every supported service, not just the one with a sign-in button. Only
+                        // Real-Debrid was ever offered here, so an account holder with TorBox or
+                        // AllDebrid had to link it on another device to use it on this one.
+                        SettingsDropdownRow(
+                            "Service",
+                            "Every premium service StreamDek can talk to. Choose one, then connect it below.",
+                            debridProviderChoice,
+                            debridProviders,
+                        ) { debridProviderChoice = it }
+                        SettingsActionRow(
+                            if (alreadyLinked) "Reconnect $chosenLabel" else "Connect $chosenLabel",
+                            if (usesSignIn) {
+                                "Approve a short code on your phone — nothing to type on the remote"
+                            } else {
+                                "Enter the API key from your $chosenLabel account"
+                            },
+                            if (usesSignIn) "Sign in" else "Enter key",
+                            selectedRequester,
+                        ) {
+                            when {
+                                debridProviderChoice == "real-debrid" -> scope.launch {
+                                    status = "Asking Real-Debrid for a code..."
+                                    val started = repository.startRealDebridSignIn()
+                                    if (started == null) {
+                                        status = "Real-Debrid could not be reached. Try again in a moment."
+                                        return@launch
+                                    }
+                                    status = null
+                                    signInPrompt = DeviceSignIn("Real-Debrid", started.verificationUrl, started.userCode)
+                                    val username = repository.completeRealDebridSignIn(started)
+                                    signInPrompt = signInPrompt?.copy(
+                                        waiting = false,
+                                        outcome = if (username != null) {
+                                            bootstrap = repository.bootstrap.value
+                                            "Connected as $username."
+                                        } else {
+                                            "That code expired before it was approved. Start again for a new one."
+                                        },
+                                    )
+                                }
+                                debridProviderChoice == "premiumize" && usesSignIn -> scope.launch {
+                                    status = "Asking Premiumize for a code..."
+                                    val started = repository.startPremiumizeSignIn()
+                                    if (started == null) {
+                                        status = "Premiumize could not be reached. Try again in a moment."
+                                        return@launch
+                                    }
+                                    // The code and where to enter it stay on screen for the whole
+                                    // wait: a viewer who looks away should not have to start over
+                                    // to read it again.
+                                    status = null
+                                    signInPrompt = DeviceSignIn("Premiumize", started.verificationUri, started.userCode)
+                                    val username = repository.completePremiumizeSignIn(started)
+                                    signInPrompt = signInPrompt?.copy(
+                                        waiting = false,
+                                        outcome = if (username != null) {
+                                            bootstrap = repository.bootstrap.value
+                                            "Connected as $username."
+                                        } else {
+                                            "That code expired before it was approved. Start again for a new one."
+                                        },
+                                    )
+                                }
+                                else -> debridKeyEntry = debridProviderChoice to chosenLabel
+                            }
+                        }
+                        SettingsToggleRow(
+                            "Save keys to your StreamDek account",
+                            "Keys are stored encrypted on your account so every device shares them. Turn this off to keep them on this television only.",
+                            repository.debridCloudSyncEnabled(),
+                            selectedRequester,
+                        ) { next, complete ->
+                            scope.launch {
+                                status = if (next) "Saving keys to your account..." else "Moving keys to this television..."
+                                val applied = repository.setDebridCloudSync(next)
+                                bootstrap = repository.bootstrap.value
+                                status = when {
+                                    applied && next -> "Keys are saved to your account."
+                                    applied -> "Keys are kept on this television only."
+                                    else -> "Your keys could not be copied here, so they were left on your account."
+                                }
+                                complete(applied)
+                            }
+                        }
+                        accounts.forEach { account ->
+                            key(account.provider) {
                                 SettingsToggleRow(
-                                    addon.manifest.name.ifBlank { addon.id },
-                                    "Enable or disable this installed add-on for the active profile",
-                                    addon.enabled,
+                                    debridProviderLabel(debridProviders, account.provider),
+                                    account.username ?: "Linked debrid account - priority ${account.priority + 1}",
+                                    account.enabled,
                                     selectedRequester,
                                 ) { next, complete ->
                                     scope.launch {
-                                        status = "Updating ${addon.manifest.name.ifBlank { addon.id }}..."
-                                        val saved = repository.toggleAddon(addon.id, next)
+                                        status = "Updating ${account.provider}..."
+                                        val saved = repository.setDebridAccountEnabled(account.provider, next)
                                         if (saved) {
-                                            addons = addons.map { current ->
-                                                if (current.id == addon.id) current.copy(enabled = next) else current
-                                            }
                                             bootstrap = repository.bootstrap.value
-                                            addons = repository.fetchAddonManifests(forceRefresh = true)
-                                            status = "${addon.manifest.name.ifBlank { addon.id }} updated."
+                                            status = "${account.provider} updated."
                                         } else {
-                                            status = "Add-on could not be updated."
+                                            status = "${account.provider} could not be updated."
                                         }
                                         complete(saved)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    SettingsPanel("Synced providers") {
+                        InfoLine("Enabled add-ons", "${addons.count { it.enabled }} of ${addons.size}")
+                        // Past three, this stops being a summary and becomes a list to scroll
+                        // through — and it pushes plugins, playlists and everything below it off
+                        // the screen for anyone who only came to check one of those. Long lists
+                        // arrive closed, the way the plugin collections under this one do.
+                        val collapsibleAddons = addons.size > 3
+                        if (collapsibleAddons) {
+                            SettingsActionRow(
+                                "Installed add-ons",
+                                "${addons.size} synced from your account",
+                                if (addonsExpanded) "Collapse" else "Expand",
+                                selectedRequester,
+                            ) { addonsExpanded = !addonsExpanded }
+                        }
+                        if (!collapsibleAddons || addonsExpanded) {
+                            addons.forEach { addon ->
+                                key(addon.id) {
+                                    SettingsToggleRow(
+                                        addon.manifest.name.ifBlank { addon.id },
+                                        "Enable or disable this installed add-on for the active profile",
+                                        addon.enabled,
+                                        selectedRequester,
+                                    ) { next, complete ->
+                                        scope.launch {
+                                            status = "Updating ${addon.manifest.name.ifBlank { addon.id }}..."
+                                            val saved = repository.toggleAddon(addon.id, next)
+                                            if (saved) {
+                                                addons = addons.map { current ->
+                                                    if (current.id == addon.id) current.copy(enabled = next) else current
+                                                }
+                                                bootstrap = repository.bootstrap.value
+                                                addons = repository.fetchAddonManifests(forceRefresh = true)
+                                                status = "${addon.manifest.name.ifBlank { addon.id }} updated."
+                                            } else {
+                                                status = "Add-on could not be updated."
+                                            }
+                                            complete(saved)
+                                        }
                                     }
                                 }
                             }
@@ -636,124 +817,6 @@ fun SettingsScreen(
                             InfoLine("Adding and removing", "Use StreamDek Mobile or the web portal")
                         }
                     }
-                    signInPrompt?.let { prompt ->
-                        DeviceSignInPanel(
-                            providerLabel = prompt.providerLabel,
-                            verificationUrl = prompt.verificationUrl,
-                            userCode = prompt.userCode,
-                            waiting = prompt.waiting,
-                            outcome = prompt.outcome,
-                        )
-                    }
-                    SettingsPanel("Debrid accounts") {
-                        val accounts = bootstrap?.integrations?.debrid?.accounts.orEmpty()
-                        if (accounts.isEmpty()) InfoLine("Accounts", "Sign in to Premiumize below, or link an account from StreamDek Mobile")
-                        SettingsToggleRow(
-                            "Save keys to your StreamDek account",
-                            "Keys are stored encrypted on your account so every device shares them. Turn this off to keep them on this television only.",
-                            repository.debridCloudSyncEnabled(),
-                            selectedRequester,
-                        ) { next, complete ->
-                            scope.launch {
-                                status = if (next) "Saving keys to your account..." else "Moving keys to this television..."
-                                val applied = repository.setDebridCloudSync(next)
-                                bootstrap = repository.bootstrap.value
-                                status = when {
-                                    applied && next -> "Keys are saved to your account."
-                                    applied -> "Keys are kept on this television only."
-                                    else -> "Your keys could not be copied here, so they were left on your account."
-                                }
-                                complete(applied)
-                            }
-                        }
-                        SettingsActionRow(
-                            "Sign in to Real-Debrid",
-                            "Approve a short code on your phone — no access key to type on the remote",
-                            "Sign in",
-                            selectedRequester,
-                        ) {
-                            scope.launch {
-                                status = "Asking Real-Debrid for a code..."
-                                val started = repository.startRealDebridSignIn()
-                                if (started == null) {
-                                    status = "Real-Debrid could not be reached. Try again in a moment."
-                                    return@launch
-                                }
-                                status = null
-                                signInPrompt = DeviceSignIn("Real-Debrid", started.verificationUrl, started.userCode)
-                                val username = repository.completeRealDebridSignIn(started)
-                                signInPrompt = signInPrompt?.copy(
-                                    waiting = false,
-                                    outcome = if (username != null) {
-                                        bootstrap = repository.bootstrap.value
-                                        "Connected as $username."
-                                    } else {
-                                        "That code expired before it was approved. Start again for a new one."
-                                    },
-                                )
-                            }
-                        }
-                        if (repository.premiumizeSignInAvailable()) {
-                            SettingsActionRow(
-                                "Sign in to Premiumize",
-                                "Approve a short code on your phone — no API key to type on the remote",
-                                "Sign in",
-                                selectedRequester,
-                            ) {
-                                scope.launch {
-                                    status = "Asking Premiumize for a code..."
-                                    val started = repository.startPremiumizeSignIn()
-                                    if (started == null) {
-                                        status = "Premiumize could not be reached. Try again in a moment."
-                                        return@launch
-                                    }
-                                    // The code and where to enter it stay on screen for the whole
-                                    // wait: a viewer who looks away should not have to start over
-                                    // to read it again.
-                                    status = null
-                                    signInPrompt = DeviceSignIn("Premiumize", started.verificationUri, started.userCode)
-                                    val username = repository.completePremiumizeSignIn(started)
-                                    signInPrompt = signInPrompt?.copy(
-                                        waiting = false,
-                                        outcome = if (username != null) {
-                                            bootstrap = repository.bootstrap.value
-                                            "Connected as $username."
-                                        } else {
-                                            "That code expired before it was approved. Start again for a new one."
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                        accounts.forEach { account ->
-                            SettingsToggleRow(
-                                account.provider,
-                                account.username ?: "Linked debrid account - priority ${account.priority + 1}",
-                                account.enabled,
-                                selectedRequester,
-                            ) { next, complete ->
-                                scope.launch {
-                                    status = "Updating ${account.provider}..."
-                                    val saved = repository.setDebridAccountEnabled(account.provider, next)
-                                    if (saved) {
-                                        bootstrap = repository.bootstrap.value
-                                        status = "${account.provider} updated."
-                                    } else {
-                                        status = "${account.provider} could not be updated."
-                                    }
-                                    complete(saved)
-                                }
-                            }
-                        }
-                    }
-                    SettingsActionRow("Refresh sources", "Pull add-ons, plugins, playlists and premium services from the cloud", "Refresh", selectedRequester) {
-                        scope.launch {
-                            bootstrap = repository.refreshBootstrap()
-                            addons = repository.fetchAddonManifests(forceRefresh = true)
-                            playlists = repository.fetchPlaylists(forceRefresh = true)
-                            status = "Sources refreshed."
-                        }
-                    }
                 }
                 SettingsDestination.Appearance -> {
                     SettingsDropdownRow("Theme", "Change the visual colour system", appPrefs?.theme ?: "cinema-blue", themeOptions, themeColors) { value ->
@@ -765,7 +828,7 @@ fun SettingsScreen(
                     SettingsToggleRow("Background depth", "Subtle cinematic depth behind content", appPrefs?.backgroundBlur != false, selectedRequester) { next, complete ->
                         savePreference("Background depth", complete) { repository.updateAppPreferences(mapOf("backgroundBlur" to next)) }
                     }
-                    SettingsToggleRow("Transparent navigation", "Let the backdrop show through the navigation rail, up to 15%", appPrefs?.transparentNavigation != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow("Transparent navigation", "Let the backdrop show through the expanded navigation rail, up to 15%. Collapsed it is always transparent.", appPrefs?.transparentNavigation != false, selectedRequester) { next, complete ->
                         savePreference("Transparent navigation", complete) { repository.updateAppPreferences(mapOf("transparentNavigation" to next)) }
                     }
                 }
@@ -840,6 +903,20 @@ fun SettingsScreen(
             onDismiss = { editingPluginProvider = null },
         )
     }
+
+    debridKeyEntry?.let { (providerId, providerLabel) ->
+        DebridApiKeyDialog(
+            providerId = providerId,
+            providerLabel = providerLabel,
+            repository = repository,
+            onConnected = { username ->
+                debridKeyEntry = null
+                bootstrap = repository.bootstrap.value
+                status = "$providerLabel connected as $username."
+            },
+            onDismiss = { debridKeyEntry = null },
+        )
+    }
 }
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -880,7 +957,21 @@ private fun SettingsDestinationRow(destination: SettingsDestination, selected: B
 }
 
 @Composable
-private fun SettingsOverviewCard(destination: SettingsDestination, status: String?, requester: FocusRequester, leftRequester: FocusRequester) {
+private fun SettingsOverviewCard(
+    destination: SettingsDestination,
+    status: String?,
+    requester: FocusRequester,
+    leftRequester: FocusRequester,
+    /**
+     * A page-level action sitting at the right of the title.
+     *
+     * When one is given it takes over as the page's entry point: it is the topmost focusable thing
+     * in the content column, so arriving from the destination list lands on it and one press down
+     * reaches the settings. Without that the heading itself would take focus and bounce straight
+     * past, leaving the action with nothing above it to be reached from.
+     */
+    action: (@Composable (FocusRequester) -> Unit)? = null,
+) {
     val focusManager = LocalFocusManager.current
     var redirectFocus by remember { mutableStateOf(false) }
     LaunchedEffect(redirectFocus) {
@@ -889,20 +980,68 @@ private fun SettingsOverviewCard(destination: SettingsDestination, status: Strin
             focusManager.moveFocus(FocusDirection.Down)
         }
     }
-    Column(
-        Modifier.fillMaxWidth()
-            .focusRequester(requester)
-            .onFocusChanged { redirectFocus = it.isFocused }
-            .onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess }
-            .focusable()
-            .padding(horizontal = 2.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        Text(destination.label, color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
-        Text(destination.description, color = Color.White.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium)
-        status?.let { SettingsStatusRow(it) }
+        Column(
+            Modifier.weight(1f)
+                .then(
+                    if (action == null) {
+                        Modifier.focusRequester(requester)
+                            .onFocusChanged { redirectFocus = it.isFocused }
+                            .onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess }
+                            .focusable()
+                    } else {
+                        Modifier
+                    },
+                ),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(destination.label, color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
+            Text(destination.description, color = Color.White.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium)
+            status?.let { SettingsStatusRow(it) }
+        }
+        action?.invoke(requester)
     }
 }
+
+/** The title-row form of an action: a pill, sized to itself rather than to the page. */
+@Composable
+private fun SettingsHeaderAction(
+    label: String,
+    requester: FocusRequester,
+    leftRequester: FocusRequester,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        Modifier
+            .background(if (focused) Color(0xFF172131) else Color(0xB20E141D), androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+            .border(
+                if (focused) 2.dp else 1.dp,
+                if (focused) MaterialTheme.colorScheme.primary else Color(0x18FFFFFF),
+                androidx.compose.foundation.shape.RoundedCornerShape(999.dp),
+            )
+            .focusRequester(requester)
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.86f),
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+        )
+    }
+}
+
+/** A provider id as viewers know it, falling back to the id when the build does not list it. */
+private fun debridProviderLabel(providers: List<Pair<String, String>>, provider: String): String =
+    providers.firstOrNull { it.first.equals(provider, true) }?.second ?: provider
 
 @Composable
 private fun SettingsStatusRow(message: String) {

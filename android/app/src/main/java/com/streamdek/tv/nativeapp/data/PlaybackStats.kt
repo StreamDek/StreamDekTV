@@ -77,6 +77,36 @@ fun streamProviderLabel(stream: AddonStream?, fallback: String?): String? {
     }
 }
 
+private const val PluginAddonIdPrefix = "plugin:"
+
+/**
+ * Where a source came from, named the way the viewer installed it.
+ *
+ * The row already says which add-on or scraper answered, but not what that thing *is* — and a
+ * plugin scraper and a Stremio add-on are configured in entirely different places. When a list
+ * mixes both, "Nuvio · Movies" next to "Torrentio" reads as two add-ons, so the viewer has no way
+ * to know which screen to go to when one of them stops answering. Plugin sources therefore name
+ * the collection they were installed from; add-ons simply say so.
+ */
+fun streamOriginLabel(stream: AddonStream?, plugins: ProfilePluginState): String? {
+    val addonId = stream?.addonId?.trim().orEmpty()
+    if (addonId.isEmpty()) return null
+    if (!addonId.startsWith(PluginAddonIdPrefix)) return "Add-on"
+    val providerId = addonId.removePrefix(PluginAddonIdPrefix)
+    val provider = plugins.providers.firstOrNull { it.id == providerId }
+    val repoUrl = provider?.repoUrl.orEmpty()
+    val collection = plugins.repos.firstOrNull { it.url == repoUrl }?.name?.takeIf { it.isNotBlank() }
+        ?: pluginRepoShortLabel(repoUrl)
+    return listOfNotNull("Plugin", collection).joinToString(" · ")
+}
+
+/** A repo with no name still has a URL; its host is enough to tell two collections apart. */
+private fun pluginRepoShortLabel(repoUrl: String): String? {
+    val trimmed = repoUrl.trim().takeIf { it.isNotEmpty() } ?: return null
+    return runCatching { java.net.URI(trimmed).host }.getOrNull()?.removePrefix("www.")
+        ?: trimmed.substringAfter("//").substringBefore('/').takeIf { it.isNotEmpty() }
+}
+
 /** "4.2 MB/s", or null when nothing has been measured yet. */
 fun formatTransferRate(bytesPerSecond: Double?): String? {
     val rate = bytesPerSecond ?: return null

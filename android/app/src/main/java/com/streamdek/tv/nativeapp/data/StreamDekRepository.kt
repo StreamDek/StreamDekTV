@@ -8,6 +8,7 @@ import com.streamdek.tv.nativeapp.debrid.PremiumizeClient
 import com.streamdek.tv.nativeapp.debrid.PremiumizeDeviceAuth
 import com.streamdek.tv.nativeapp.debrid.RealDebridClient
 import com.streamdek.tv.nativeapp.debrid.RealDebridDeviceAuth
+import com.streamdek.tv.nativeapp.debrid.SUPPORTED_DEBRID_PROVIDERS
 import com.streamdek.tv.nativeapp.usenet.UsenetPlayback
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -368,10 +369,6 @@ class StreamDekRepository(
     }
 
     fun currentPlaybackRequest(): PlaybackRequest? = lastPlaybackRequest
-
-    fun playerBrightnessPercent(): Int = sessionStore.playerBrightnessPercent()
-
-    fun savePlayerBrightnessPercent(percent: Int) = sessionStore.savePlayerBrightnessPercent(percent)
 
     fun subtitleFontSize(): Int = sessionStore.subtitleFontSize()
 
@@ -2939,6 +2936,63 @@ class StreamDekRepository(
     /** Whether this build can offer Premiumize sign-in at all; blank id hides the option. */
     fun premiumizeSignInAvailable(): Boolean =
         PremiumizeDeviceAuth.isConfigured(BuildConfig.PREMIUMIZE_CLIENT_ID)
+
+    /** Every premium service this build can talk to, as provider id to the name viewers know. */
+    fun supportedDebridProviders(): List<Pair<String, String>> = SUPPORTED_DEBRID_PROVIDERS
+
+    /**
+     * Whether a service can be connected by approving a code on a phone.
+     *
+     * The rest want an API key, which on a television means one typed on an on-screen keyboard —
+     * so the settings page has to offer a different action for each kind, and this is what tells
+     * them apart. Premiumize is only in this group when the build carries a client id.
+     */
+    fun debridProviderUsesDeviceSignIn(provider: String): Boolean = when (provider) {
+        "real-debrid" -> true
+        "premiumize" -> premiumizeSignInAvailable()
+        else -> false
+    }
+
+    /**
+     * Connects a service from a typed API key.
+     *
+     * The key is checked against the provider before anything is stored: a mistyped character on a
+     * remote is likely enough that saving it unverified would leave an account that looks connected
+     * and silently serves nothing. Returns the name the provider reports, or null if the key was
+     * refused.
+     */
+    suspend fun connectDebridApiKey(provider: String, apiKey: String): String? {
+        val context = appContext ?: return null
+        val key = apiKey.trim().takeIf { it.isNotEmpty() } ?: return null
+        val client = DebridManager.build(provider, key) ?: return null
+        val validation = runCatching { client.validate() }
+            .onFailure { TvDebugLogger.w("Debrid", "$provider key could not be checked", it) }
+            .getOrNull()
+        if (validation?.valid != true) return null
+        val stored = DebridKeyStore.load(context).filterNot { it.provider == provider }
+        DebridKeyStore.save(
+            context,
+            stored + DebridKeyStore.StoredKey(
+                provider = provider,
+                apiKey = key,
+                priority = stored.size,
+                enabled = true,
+                username = validation.username,
+            ),
+        )
+        deviceDebridManager = null
+        // Unlike the device sign-ins, a key typed here goes to the account only when the account is
+        // where this viewer said their keys should live.
+        if (debridCloudSyncEnabled()) {
+            runCatching {
+                api.post<JsonObject>("/debrid/accounts", mapOf("provider" to provider, "apiKey" to key))
+            }.onFailure { TvDebugLogger.w("Debrid", "$provider key not synced to the account", it) }
+        }
+        refreshBootstrap()
+        return validation.username?.takeIf { it.isNotBlank() }
+            ?: SUPPORTED_DEBRID_PROVIDERS.firstOrNull { it.first == provider }?.second
+            ?: provider
+    }
 
     /**
      * Begins Premiumize's device sign-in and returns the code to put on screen.

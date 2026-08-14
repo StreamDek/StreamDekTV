@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.focus.focusProperties
@@ -40,6 +41,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -411,9 +413,16 @@ fun DetailScreen(
                 // it, and everything earlier scrolls up under the pinned hero. That gives a sense
                 // of place — you can always see where you just came from — without letting three
                 // collapsed rows eat the space the focused one needs.
+                // Read here rather than inside the effect: the list has to travel over exactly the
+                // same span the hero and the bands do, or the row arrives after everything around
+                // it has already settled.
+                val bandGlideMs = TvMotion.duration(TvMotion.Expand)
                 LaunchedEffect(focusedRow, bandIds) {
                     val index = bandIds.indexOf(focusedRow)
-                    listState.glideToItem(if (index < 0) 0 else (index - 1).coerceAtLeast(0))
+                    listState.glideToItem(
+                        index = if (index < 0) 0 else (index - 1).coerceAtLeast(0),
+                        durationMs = bandGlideMs,
+                    )
                 }
                 // The hero sits outside the scrolling container.
                 //
@@ -733,10 +742,24 @@ private fun DetailHero(
     // Poster, logo and spacing all collapse together as the hero compacts, so they share one spec —
     // three sizes easing on different curves is what made the compaction read as a stutter.
     val heroTween = TvMotion.standardSpec<Dp>(TvMotion.Expand)
-    val posterWidth by androidx.compose.animation.core.animateDpAsState(
-        targetValue = if (compact) 0.dp else 188.dp,
-        animationSpec = heroTween,
+    /**
+     * The poster's collapse, as one GPU transform.
+     *
+     * It used to be dropped out of the layout on the frame focus left the hero: 188dp of the row
+     * gone at once while the logo, the spacing and the bands below were all still easing. That
+     * single snap in the middle of four eased values is what the whole movement read as. Scaling
+     * leaves the image measured at full size — nothing about it is re-laid-out or re-decoded on the
+     * way down — while the box holding it gives up its width and height on the shared curve.
+     */
+    val posterScale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (compact) 0f else 1f,
+        animationSpec = TvMotion.standardSpec(TvMotion.Expand),
         label = "hero-poster",
+    )
+    val heroGap by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (compact) 20.dp else 30.dp,
+        animationSpec = heroTween,
+        label = "hero-gap",
     )
     val logoHeight by androidx.compose.animation.core.animateDpAsState(
         targetValue = if (compact) 44.dp else 74.dp,
@@ -761,11 +784,29 @@ private fun DetailHero(
             .focusProperties { enter = { playRequester } }
             .onFocusChanged { onFocusChanged(it.hasFocus) }
             .padding(horizontal = DetailInset),
-        horizontalArrangement = Arrangement.spacedBy(if (compact) 20.dp else 30.dp),
+        horizontalArrangement = Arrangement.spacedBy(heroGap),
     ) {
         // The poster is the first thing to go when focus moves below: it is the largest element
         // and, once the viewer is browsing recommendations, the least useful.
-        if (!compact) HeroPoster(detail)
+        if (posterScale > 0.001f) {
+            Box(
+                Modifier
+                    .width(HeroPosterWidth * posterScale)
+                    .height(HeroPosterHeight * posterScale)
+                    .clipToBounds(),
+            ) {
+                HeroPoster(
+                    detail = detail,
+                    modifier = Modifier
+                        .requiredSize(HeroPosterWidth, HeroPosterHeight)
+                        .graphicsLayer {
+                            scaleX = posterScale
+                            scaleY = posterScale
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                        },
+                )
+            }
+        }
 
         Column(
             modifier = Modifier.weight(1f),
@@ -913,15 +954,16 @@ private fun DetailHero(
  */
 @Composable
 private fun HeroDetailVisibility(visible: Boolean, content: @Composable () -> Unit) {
-    // The fade and the height change run the same length in each direction: a fade that finishes
-    // before the collapse leaves an empty gap shrinking on its own, which is the jump this
-    // composable exists to avoid.
+    // Both directions run the length of the hero's own collapse, on the hero's own curve. Leaving
+    // the exit at the shorter dismissal timing meant the synopsis was gone while the poster beside
+    // it and the bands below were still a third of the way through moving — the fast half of a
+    // movement that is otherwise one piece.
     androidx.compose.animation.AnimatedVisibility(
         visible = visible,
         enter = TvMotion.fadeInSpec(TvMotion.Expand) +
-            androidx.compose.animation.expandVertically(TvMotion.enterSpec(TvMotion.Expand)),
-        exit = TvMotion.fadeOutSpec(TvMotion.Quick) +
-            androidx.compose.animation.shrinkVertically(TvMotion.exitSpec(TvMotion.Quick)),
+            androidx.compose.animation.expandVertically(TvMotion.standardSpec(TvMotion.Expand)),
+        exit = androidx.compose.animation.fadeOut(TvMotion.standardSpec(TvMotion.Expand)) +
+            androidx.compose.animation.shrinkVertically(TvMotion.standardSpec(TvMotion.Expand)),
     ) {
         content()
     }

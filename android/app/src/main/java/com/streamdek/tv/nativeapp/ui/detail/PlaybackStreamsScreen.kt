@@ -52,6 +52,7 @@ import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.FusionBadgeSource
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
+import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamsPreferences
@@ -59,6 +60,7 @@ import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.flattenFusionBadges
 import com.streamdek.tv.nativeapp.data.matchFusionBadges
 import com.streamdek.tv.nativeapp.data.mergeProgressiveStreamSnapshot
+import com.streamdek.tv.nativeapp.data.streamOriginLabel
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.FusionBadgeRow
@@ -136,6 +138,9 @@ fun PlaybackStreamsScreen(
     val bootstrap by repository.bootstrap.collectAsState()
     val fusionBadgeSourcesByUrl by repository.fusionBadgeSources.collectAsState()
     val streamsPrefs = bootstrap?.preferences?.streams ?: StreamsPreferences()
+    // Names the collection a plugin scraper came from, so a plugin row cannot be mistaken for an
+    // add-on row when the list mixes both.
+    val pluginState = bootstrap?.profilePlugins ?: ProfilePluginState()
     val activeFusionBadgeSources = remember(
         streamsPrefs.fusionBadgeUrls, streamsPrefs.activeFusionBadgeUrl, fusionBadgeSourcesByUrl,
     ) {
@@ -373,6 +378,7 @@ fun PlaybackStreamsScreen(
                             StreamRow(
                                 stream = stream,
                                 label = rowLabel,
+                                origin = streamOriginLabel(stream, pluginState),
                                 showQuality = anyQuality,
                                 showSize = anySize,
                                 requestFocus = if (index == 0) firstCardRequester else null,
@@ -493,6 +499,8 @@ private fun StreamsSearchStatus(modifier: Modifier = Modifier) {
 private fun StreamRow(
     stream: AddonStream,
     label: String,
+    /** "Add-on", or "Plugin · <collection>" — what kind of source this is, not just its name. */
+    origin: String?,
     showQuality: Boolean,
     showSize: Boolean,
     requestFocus: FocusRequester?,
@@ -546,13 +554,28 @@ private fun StreamRow(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(
-                        text = stream.addonName.ifBlank { "Stream source" },
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stream.addonName.ifBlank { "Stream source" },
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        origin?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                     Text(
                         text = label,
                         style = MaterialTheme.typography.bodyMedium,

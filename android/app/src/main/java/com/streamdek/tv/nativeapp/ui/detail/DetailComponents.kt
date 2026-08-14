@@ -97,10 +97,30 @@ internal const val DetailCompactScale = 0.4f
 internal fun detailBandScale(compact: Boolean): Float {
     val scale by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (compact) DetailCompactScale else 1f,
-        animationSpec = TvMotion.standardSpec(170),
+        // The same length the hero collapses over. These two are one movement — the hero giving up
+        // its height and the bands taking it — and running them at 170 and 280 made the second half
+        // of the travel happen with the first already finished, which is what read as a stutter.
+        animationSpec = TvMotion.standardSpec(TvMotion.Expand),
         label = "detail-band-scale",
     )
     return scale
+}
+
+/**
+ * The gap between a band's header and its row.
+ *
+ * Six device-independent pixels, but they used to jump in a single frame while the scale beside
+ * them eased, and the header visibly ticked as the row moved. Eased on the same curve it is part of
+ * the same movement instead.
+ */
+@Composable
+internal fun detailBandSpacing(compact: Boolean): Dp {
+    val spacing by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (compact) 8.dp else 14.dp,
+        animationSpec = TvMotion.standardSpec(TvMotion.Expand),
+        label = "detail-band-spacing",
+    )
+    return spacing
 }
 
 internal fun Modifier.detailBandScale(scale: Float, compact: Boolean): Modifier =
@@ -279,12 +299,15 @@ internal fun MetaChip(label: String, emphasised: Boolean = false) {
  * the eye to anchor on and made every title look alike; the poster is the artwork viewers actually
  * recognise. Purely decorative, so it is not focusable and never costs a D-pad press.
  */
+internal val HeroPosterWidth = 188.dp
+internal val HeroPosterHeight = 282.dp
+
 @Composable
 internal fun HeroPoster(detail: MediaDetail, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
-            .width(188.dp)
-            .height(282.dp)
+            .width(HeroPosterWidth)
+            .height(HeroPosterHeight)
             .clip(AppCardShape)
             .background(MaterialTheme.colorScheme.surface),
     ) {
@@ -396,14 +419,11 @@ internal fun SeasonChipRow(
     seasons: List<SeasonRef>,
     selected: Int,
     firstChipRequester: FocusRequester?,
-    seasonWatched: Boolean,
-    markingSeason: Boolean,
     /** Attached to the row itself, so the band above can send focus here without naming a chip. */
     rowRequester: FocusRequester? = null,
-    /** Where up out of the chips goes — the hero, so the whole page is reachable in two presses. */
+    /** Where up out of the chips goes, so the whole page is reachable in a few presses. */
     upRequester: FocusRequester? = null,
     onSelect: (Int) -> Unit,
-    onMarkSeasonWatched: () -> Unit,
 ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
@@ -412,10 +432,9 @@ internal fun SeasonChipRow(
     LaunchedEffect(selected, seasons.size) {
         val index = seasons.indexOfFirst { it.seasonNumber == selected }
         if (index >= 0) {
-            // +1 for the leading "mark season watched" chip.
             listState.animateToAnchoredItem(
-                focusedIndex = index + 1,
-                itemCount = seasons.size + 1,
+                focusedIndex = index,
+                itemCount = seasons.size,
                 leadingItems = 1,
             )
         }
@@ -426,32 +445,12 @@ internal fun SeasonChipRow(
         modifier = Modifier
             .then(rowRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
             .focusGroup()
-            // Named rather than left to spatial search: the hero is the one thing above this row,
-            // and a chip that happens to sit under the poster gutter otherwise finds nothing.
+            // Named rather than left to spatial search: a chip that happens to sit under a gutter
+            // in the row above otherwise finds nothing at all.
             .focusProperties { if (upRequester != null) up = upRequester },
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
     ) {
-        item("mark-season-watched") {
-            val label = when {
-                seasonWatched -> "Season watched"
-                markingSeason -> "Marking season..."
-                else -> "Mark season watched"
-            }
-            DetailFocusCard(
-                onClick = { if (!seasonWatched && !markingSeason) onMarkSeasonWatched() },
-                shape = AppPillShape,
-                description = label,
-            ) {
-                Text(
-                    text = label,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                    color = if (seasonWatched) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                )
-            }
-        }
         itemsIndexed(seasons, key = { _, season -> season.seasonNumber }) { index, season ->
             val active = season.seasonNumber == selected
             DetailFocusCard(
@@ -470,6 +469,48 @@ internal fun SeasonChipRow(
                     maxLines = 1,
                 )
             }
+        }
+    }
+}
+
+/**
+ * Marking the season off, on a row of its own above the season chips.
+ *
+ * It used to be the first chip in that row, which put it behind however many seasons the viewer
+ * had travelled past — on a long-running series that meant scrolling all the way back to the left
+ * to reach it, on the one screen where the whole point is not having to. Up out of the chips now
+ * lands here, so it is always one press away from wherever the season list has got to.
+ */
+@Composable
+private fun MarkSeasonWatchedRow(
+    seasonWatched: Boolean,
+    markingSeason: Boolean,
+    requester: FocusRequester,
+    /** The hero above — where up out of this row goes, as it used to from the chips. */
+    upRequester: FocusRequester?,
+    onMarkSeasonWatched: () -> Unit,
+) {
+    val label = when {
+        seasonWatched -> "Season watched"
+        markingSeason -> "Marking season..."
+        else -> "Mark season watched"
+    }
+    Row(modifier = Modifier.padding(horizontal = DetailInset)) {
+        DetailFocusCard(
+            onClick = { if (!seasonWatched && !markingSeason) onMarkSeasonWatched() },
+            shape = AppPillShape,
+            modifier = Modifier
+                .focusRequester(requester)
+                .focusProperties { if (upRequester != null) up = upRequester },
+            description = label,
+        ) {
+            Text(
+                text = label,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = if (seasonWatched) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
         }
     }
 }
@@ -511,11 +552,12 @@ internal fun EpisodesBand(
     val rowFocus = rememberRowFocus(rowFocusKey)
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     val chipRowRequester = remember { FocusRequester() }
+    val markSeasonRequester = remember { FocusRequester() }
     val spansSeasons = remember(entries) { entries.distinctBy { it.seasonNumber }.size > 1 }
     AnchorRowToFocus(rowState, rowFocus, entries.size)
     Column(
         modifier = Modifier.onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp),
+        verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
     ) {
         DetailSectionHeader(
             title = "Episodes",
@@ -524,16 +566,20 @@ internal fun EpisodesBand(
                 ?.let { "$it episodes" },
         )
         if (!compact) {
+            MarkSeasonWatchedRow(
+                seasonWatched = seasonWatched,
+                markingSeason = markingSeason,
+                requester = markSeasonRequester,
+                upRequester = upRequester,
+                onMarkSeasonWatched = onMarkSeasonWatched,
+            )
             SeasonChipRow(
                 seasons = seasons,
                 selected = activeSeasonNumber,
                 firstChipRequester = firstChipRequester,
-                seasonWatched = seasonWatched,
-                markingSeason = markingSeason,
                 rowRequester = chipRowRequester,
-                upRequester = upRequester,
+                upRequester = markSeasonRequester,
                 onSelect = onSelectSeason,
-                onMarkSeasonWatched = onMarkSeasonWatched,
             )
         }
         if (entries.isEmpty()) {
@@ -612,7 +658,7 @@ internal fun SimilarBand(
     AnchorRowToFocus(rowState, rowFocus, items.size)
     Column(
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp),
+        verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
     ) {
         DetailSectionHeader("More Like This")
         LazyRow(
@@ -651,7 +697,7 @@ internal fun CastBand(cast: List<CastMember>, compact: Boolean = false, onFocusC
     AnchorRowToFocus(rowState, rowFocus, cast.size)
     Column(
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp),
+        verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
     ) {
         DetailSectionHeader("Cast")
         LazyRow(
@@ -757,7 +803,7 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
     AnchorRowToFocus(rowState, rowFocus, comments.size)
     Column(
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 14.dp),
+        verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
     ) {
         DetailSectionHeader("Reviews", trailing = "${comments.size}")
         LazyRow(

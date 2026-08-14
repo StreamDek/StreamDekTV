@@ -30,7 +30,6 @@ class AuthSessionStore(
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
     private val handoffPublicKeyKey = "streamdek_tv_handoff_public_key_v1"
-    private val playerBrightnessKey = "streamdek_tv_player_brightness_v1"
     private val subtitleFontSizeKey = "streamdek_tv_subtitle_font_size_v1"
     private val subtitlePositionKey = "streamdek_tv_subtitle_position_v1"
 
@@ -50,23 +49,11 @@ class AuthSessionStore(
     }
 
     /**
-     * Player brightness, as a percentage of the untouched picture.
-     *
-     * Deliberately local to this device rather than part of the synced preferences: it is a
-     * property of the room and the panel in it, not of the account, and a phone has no use for the
-     * value a TV settled on.
-     */
-    fun playerBrightnessPercent(): Int = preferences.getInt(playerBrightnessKey, 100).coerceIn(10, 100)
-
-    fun savePlayerBrightnessPercent(percent: Int) {
-        preferences.edit().putInt(playerBrightnessKey, percent.coerceIn(10, 100)).apply()
-    }
-
-    /**
      * Subtitle size and placement, adjusted from the player and kept for the next video.
      *
-     * Local for the same reason brightness is — how large captions need to be depends on the panel
-     * and how far away the sofa is, which no other device on the account shares. The defaults are
+     * Deliberately local to this device rather than part of the synced preferences: how large
+     * captions need to be depends on the panel and how far away the sofa is, which no other device
+     * on the account shares. The defaults are
      * mpv's own, so a viewer who never touches these sees exactly what they saw before.
      */
     fun subtitleFontSize(): Int = preferences.getInt(subtitleFontSizeKey, 55).coerceIn(28, 84)

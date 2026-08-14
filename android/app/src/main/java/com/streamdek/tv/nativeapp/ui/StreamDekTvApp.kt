@@ -126,12 +126,16 @@ private data class LiveBrowseSelection(
 private const val ExitBackPressWindowMs = 2500L
 
 /**
- * How far the navigation rail is allowed to let the backdrop through.
+ * How far the expanded navigation rail is allowed to let the backdrop through.
  *
- * The ceiling is the point, not the value: the rail is the only persistent indication of where you
- * are, and any further and it stops reading as a surface at all against bright artwork.
+ * The ceiling is the point, not the value: expanded, the rail is a menu being read, and any further
+ * and it stops reading as a surface at all against bright artwork. Collapsed it has no surface at
+ * all — see [TvSideNav].
  */
 private const val NavRailTransparentAlpha = 0.85f
+
+/** The navigation route the title page is registered under, kept in one place. */
+private const val DetailRoutePattern = "detail/{type}/{id}"
 
 private fun detailRoute(mediaType: String, mediaId: String): String {
     val canonicalType = if (mediaType == "series") "tv" else mediaType
@@ -590,7 +594,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         )
                     }
                 }
-                composable("detail/{type}/{id}") { backStackEntryInner ->
+                composable(DetailRoutePattern) { backStackEntryInner ->
                     DetailScreen(
                         repository = repository,
                         mediaType = backStackEntryInner.arguments?.getString("type").orEmpty(),
@@ -629,7 +633,12 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     ),
             )
 
-            if (currentRoute in topLevelDestinations.map { it.route } && !showUpdatePrompt) {
+            // A title page is somewhere you browse, not somewhere you commit to: you arrive on it
+            // from a row, decide against it, and want to be somewhere else. Without the rail the
+            // only way out was Back, and only back the way you came. It still stays off the player
+            // and the stream picker, where it would sit over the picture or over a decision.
+            val railRoutes = remember { topLevelDestinations.map { it.route } + DetailRoutePattern }
+            if (currentRoute in railRoutes && !showUpdatePrompt) {
                 TvSideNav(
                     destinations = topLevelDestinations,
                     avatarIndex = activeProfile?.avatarIndex ?: 0,
@@ -1055,6 +1064,16 @@ private fun TvSideNav(
         animationSpec = TvScroll.spec(TvMotion.duration(220)),
         label = "side-nav-label",
     )
+    // On the same curve as the width, so the surface arrives with the panel rather than behind it.
+    val railSurfaceAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = when {
+            !navHasFocus -> 0f
+            transparent -> NavRailTransparentAlpha
+            else -> 1f
+        },
+        animationSpec = TvScroll.spec(TvMotion.duration(260)),
+        label = "side-nav-surface",
+    )
 
     LaunchedEffect(currentRoute) {
         highlightedRoute = currentRoute
@@ -1086,11 +1105,15 @@ private fun TvSideNav(
             // item was nearest — in practice always Home — instead of the page you are on.
             .focusGroup()
             .onFocusChanged { navHasFocus = it.hasFocus }
-            // The backdrop carries on behind the rail instead of being cut off by a solid strip down
-            // the edge. Applied here rather than to TvChromeSurface itself — the settings sidebar
-            // and the live filter column use that same colour and want to stay opaque, since they
-            // sit over content rather than over artwork.
-            .background(TvChromeSurface.copy(alpha = if (transparent) NavRailTransparentAlpha else 1f))
+            // Collapsed, the rail has no surface at all: it is five icons over the artwork, and a
+            // strip behind them only cut a band out of the backdrop to hold markers that read fine
+            // on their own. The surface comes back as the rail expands, because at that width it is
+            // a menu being read and the labels need something behind them.
+            //
+            // Applied here rather than to TvChromeSurface itself — the settings sidebar and the
+            // live filter column use that same colour and want to stay opaque, since they sit over
+            // content rather than over artwork.
+            .background(TvChromeSurface.copy(alpha = railSurfaceAlpha))
             .clipToBounds()
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,

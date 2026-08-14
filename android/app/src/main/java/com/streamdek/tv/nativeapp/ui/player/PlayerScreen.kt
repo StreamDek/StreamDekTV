@@ -92,6 +92,7 @@ import com.streamdek.tv.nativeapp.data.PlaybackPreferences
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
+import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
@@ -275,10 +276,9 @@ fun PlayerScreen(
     var nextEpisodeCountdown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<Int?>(null) }
     var streamKeyOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamKey) }
     var streamLabelOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamLabel) }
-    var brightnessPercent by remember { mutableIntStateOf(repository.playerBrightnessPercent()) }
     // Subtitle appearance, seeded from what this device last settled on and applied to whichever
-    // engine is playing. Kept per-device for the same reason brightness is: it is a property of the
-    // panel and the seat in front of it.
+    // engine is playing. Kept per-device rather than synced: it is a property of the panel and the
+    // seat in front of it.
     var subtitleFontSize by remember { mutableIntStateOf(repository.subtitleFontSize()) }
     var subtitlePosition by remember { mutableIntStateOf(repository.subtitlePosition()) }
     // Not persisted: a delay corrects one badly-timed subtitle file, and carrying it into the next
@@ -310,7 +310,6 @@ fun PlayerScreen(
     val nextRequester = remember { FocusRequester() }
     val watchedRequester = remember { FocusRequester() }
     val speedRequester = remember { FocusRequester() }
-    val brightnessRequester = remember { FocusRequester() }
     val infoRequester = remember { FocusRequester() }
     val segmentChipRequester = remember { FocusRequester() }
     val nextEpisodePlayRequester = remember { FocusRequester() }
@@ -1687,17 +1686,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         )
         }
 
-        // Brightness. Sits directly over the video and under everything else, so lowering it dims
-        // the picture without also dimming the controls drawn on top of it.
-        val brightnessScrim = brightnessScrimAlpha(brightnessPercent)
-        if (brightnessScrim > 0.001f) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = brightnessScrim)),
-            )
-        }
-
         // Loading screen — backdrop + breathing logo only, no controls
         if (loading) {
             val loadingBackdrop = detail?.backdrop ?: detail?.poster
@@ -1996,7 +1984,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     nextRequester = nextRequester,
                     watchedRequester = watchedRequester,
                     speedRequester = speedRequester,
-                    brightnessRequester = brightnessRequester,
                     infoRequester = infoRequester,
                     progressRequester = progressRequester,
                     liveProgressRequester = liveProgressRequester,
@@ -2203,7 +2190,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         selectedSubtitleId = selectedSubtitleId,
                         selectedExternalSubtitleId = selectedExternalSubtitleId,
                         currentSpeed = speed,
-                        currentBrightness = brightnessPercent,
                         closeRequester = panelCloseRequester,
                         firstItemRequester = panelFirstItemRequester,
                         onClose = {
@@ -2309,13 +2295,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             panelClosedAtMs = System.currentTimeMillis()
                             showControls(focusPlay = !isLive)
                         },
-                        onSelectBrightness = {
-                            brightnessPercent = it
-                            repository.savePlayerBrightnessPercent(it)
-                            panel = null
-                            panelClosedAtMs = System.currentTimeMillis()
-                            showControls(focusPlay = !isLive)
-                        },
                         // Appearance changes stay in the panel rather than closing it: these are
                         // adjusted by eye against the subtitle currently on screen, which takes
                         // several presses, and dismissing after each one would make that unusable.
@@ -2374,6 +2353,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         engineLabel = if (activePlaybackEngine == ActivePlaybackEngine.MPV) "mpv" else "ExoPlayer",
                         durationSec = durationSec,
                         isLive = isLive,
+                        pluginState = bootstrap?.profilePlugins ?: ProfilePluginState(),
                     )
                 }
             }
