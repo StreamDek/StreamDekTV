@@ -85,6 +85,7 @@ import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.resolveTrailerPlaybackSource
 import com.streamdek.tv.nativeapp.data.youtubeTrailerKey
+import com.streamdek.tv.nativeapp.data.kinocheckTrailerKey
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.LocalImmersiveContent
 import com.streamdek.tv.nativeapp.ui.LocalNavRailFocus
@@ -141,6 +142,20 @@ private fun Modifier.bandRestorePoint(active: Boolean, requester: FocusRequester
  *    (two of them large radial shaders) that was redrawn every frame over a full-bleed image.
  *    That stack was the main reason this screen felt heavier than the rest of the app on a stick.
  */
+/** How long the title's own card holds the screen before the trailer starts. */
+private const val TrailerIntroMs = 1_000L
+
+/**
+ * How long the card stays up once the trailer is behind it.
+ *
+ * The stage has to attach a surface, buffer and decode before there is a frame to show. Clearing
+ * the card on the same tick showed black through the gap, which is the thing the card exists to
+ * prevent — and at 300ms it was still doing it on a cold start. Six hundred covers it, and costs
+ * nothing visible: the trailer's audio has already started, so the picture arriving under a
+ * dissolving card reads as the card getting out of the way rather than as waiting.
+ */
+private const val TrailerIntroHandoverMs = 600L
+
 @OptIn(
     androidx.compose.foundation.ExperimentalFoundationApi::class,
     androidx.compose.ui.ExperimentalComposeUiApi::class,
@@ -215,6 +230,10 @@ fun DetailScreen(
      * minute it may well serve the next.
      */
     var trailerUnavailable by remember(mediaType, mediaId) { mutableStateOf(false) }
+    /** Seconds left of the wait, or null when nothing is being waited for. Drives the action's label. */
+    var trailerCountdown by remember(mediaType, mediaId) { mutableStateOf<Int?>(null) }
+    /** The title's own card, held between the page leaving and the trailer starting. */
+    var trailerIntroVisible by remember(mediaType, mediaId) { mutableStateOf(false) }
     /** Whether the trailer should be on screen. Cleared by Back; the source outlives it by one fade. */
     var trailerRunning by remember(mediaType, mediaId) { mutableStateOf(false) }
     var trailerResolving by remember(mediaType, mediaId) { mutableStateOf(false) }
@@ -340,7 +359,9 @@ fun DetailScreen(
             .map { key -> "https://www.youtube.com/watch?v=$key" }
     }
     val hasTrailer = trailerCandidateUrls.isNotEmpty()
-    val trailerVisible = trailerPlayback != null && trailerRunning
+    // The card counts as the trailer having arrived, so the page runs its existing leaving movement
+    // underneath it rather than being cut away by an opaque slab dropped on top.
+    val trailerVisible = (trailerPlayback != null && trailerRunning) || trailerIntroVisible
 
     // One value drives the whole handover, and the two halves of it do not overlap: the page leaves
     // over the first half and the trailer arrives over the second. A straight crossfade had both
@@ -357,12 +378,31 @@ fun DetailScreen(
     )
     val pageAlpha = (1f - trailerTransition * 2f).coerceIn(0f, 1f)
     val trailerStageAlpha = ((trailerTransition - 0.5f) * 2f).coerceIn(0f, 1f)
+    /**
+     * The card's own fade, on its own curve in each direction.
+     *
+     * Arriving, it decelerates into place as the page recedes — the two halves of one movement. It
+     * leaves more slowly than it came, and over a trailer that is already playing at full opacity
+     * behind it, so the reveal is a dissolve into moving picture rather than a cut to it.
+     */
+    val trailerIntroAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (trailerIntroVisible) 1f else 0f,
+        animationSpec = if (trailerIntroVisible) {
+            TvMotion.enterSpec(TvMotion.Expand)
+        } else {
+            TvMotion.standardSpec(TvMotion.Expand + 160)
+        },
+        label = "trailer-intro",
+    )
     // A little way back into the screen as it goes, so the page reads as making room rather than
     // simply dimming.
     val pageScale = 1f - 0.04f * (1f - pageAlpha)
 
     fun dismissTrailer() {
-        if (!trailerRunning) return
+        if (!trailerRunning && !trailerIntroVisible) return
+        // Cleared first: it is also how the raising sequence learns it has been called off, so a
+        // Back pressed during the card does not have the trailer arrive a second later anyway.
+        trailerIntroVisible = false
         trailerRunning = false
         scope.launch {
             // Focus goes back once the page is on its way in. Any earlier and the request lands on
@@ -379,6 +419,27 @@ fun DetailScreen(
         trailerRequest += 1
     }
 
+    // The wait, counted down on the action rather than spent in silence.
+    //
+    // A page that is about to take itself away should say so: without this the trailer arrives out
+    // of a page the viewer is still reading, and the only warning was that it had happened before.
+    // It runs off the same clock the wait itself uses, so the number on the button is the truth
+    // rather than a second timer that can drift away from it.
+    LaunchedEffect(hasTrailer, detailPrefs.heroTrailerAutoplay, autoTrailerDelayMs, trailerPlayed) {
+        if (!hasTrailer || !detailPrefs.heroTrailerAutoplay || trailerPlayed || autoTrailerDelayMs <= 0L) {
+            trailerCountdown = null
+            return@LaunchedEffect
+        }
+        while (true) {
+            val remaining = autoTrailerDelayMs - (System.currentTimeMillis() - pageOpenedAtMs)
+            if (remaining <= 0L) break
+            // Rounded up, so a wait of three seconds opens on "3" rather than flicking past it.
+            trailerCountdown = ((remaining + 999L) / 1000L).toInt()
+            delay(200)
+        }
+        trailerCountdown = null
+    }
+
     LaunchedEffect(trailerRequest) {
         if (trailerRequest == 0 || trailerCandidateUrls.isEmpty()) return@LaunchedEffect
         trailerUnavailable = false
@@ -388,6 +449,15 @@ fun DetailScreen(
                 url = trailerCandidateUrls.first(),
                 maxHeight = trailerMaxHeight,
                 alternates = trailerCandidateUrls.drop(1),
+                // KinoCheck's curated pick, tried on its own before the metadata service's list.
+                // Their list is every video a studio published, which around a release is a wall of
+                // ticket adverts; this is one video, marked as the trailer.
+                // Keyed on tmdbId rather than id: this screen's `id` is the catalogue's own
+                // identifier, which for an add-on item is not a TMDB number at all.
+                preferredUrl = detail?.let { current ->
+                    val tmdbId = current.tmdbId.takeIf { it > 0 }?.toString() ?: current.id
+                    kinocheckTrailerKey(tmdbId, current.type)?.let { "https://www.youtube.com/watch?v=$it" }
+                },
             )
         }.onFailure { TvDebugLogger.w("Trailer", "could not resolve a trailer", it) }.getOrNull()
         trailerResolving = false
@@ -421,16 +491,32 @@ fun DetailScreen(
             val elapsed = System.currentTimeMillis() - pageOpenedAtMs
             if (elapsed < autoTrailerDelayMs) delay(autoTrailerDelayMs - elapsed)
         }
+        trailerCountdown = null
+        // Three overlapping stages rather than three steps.
+        //
+        // The card is raised first, and the page runs its own leaving movement underneath it — the
+        // card fades up as the page recedes, so what the viewer sees is one handover. The trailer
+        // is then started *behind* the still-opaque card, given a moment to produce its first
+        // frame, and only then is the card dissolved off it. Nothing here cuts: at no point does
+        // something opaque appear or disappear on a single frame.
+        trailerIntroVisible = true
+        delay(TrailerIntroMs)
+        // Back during the card cancels the whole thing, and the flag is how that arrives here.
+        if (!trailerIntroVisible) return@LaunchedEffect
         trailerPlayback = playback
         trailerRunning = true
         trailerPlayed = true
+        delay(TrailerIntroHandoverMs)
+        trailerIntroVisible = false
     }
 
     // Flipped on the same two edges the page's own fade turns on, so the shell can run the rail and
     // the clock out and back on the same curve rather than blinking them off over a page that is
     // still there.
-    DisposableEffect(trailerVisible) {
-        setImmersiveContent(trailerVisible)
+    // The card counts as the trailer having started, as far as the shell is concerned: the rail and
+    // the clock should already be leaving while it is up, not arrive with the film.
+    DisposableEffect(trailerVisible || trailerIntroVisible) {
+        setImmersiveContent(trailerVisible || trailerIntroVisible)
         onDispose { setImmersiveContent(false) }
     }
 
@@ -795,6 +881,7 @@ fun DetailScreen(
                             trailerPlayed = trailerPlayed,
                             trailerLoading = trailerResolving,
                             trailerUnavailable = trailerUnavailable,
+                            trailerCountdown = trailerCountdown,
                             onPlayTrailer = {
                                 if (!trailerResolving) {
                                     trailerRequestIsAuto = false
@@ -955,6 +1042,20 @@ fun DetailScreen(
         }
         }
 
+        // Above the stage, so the trailer mounts behind it rather than beside it. Kept in
+        // composition until it has finished leaving — removing it on the flag would put the cut
+        // back in, at the other end.
+        if (trailerIntroAlpha > 0.001f) {
+            detail?.let { current ->
+                TrailerIntroCard(
+                    backdropUrl = current.backdrop ?: current.poster,
+                    titleLogoUrl = current.titleLogo,
+                    title = current.title,
+                    progress = trailerIntroAlpha,
+                )
+            }
+        }
+
         trailerPlayback?.let { playback ->
             TrailerStage(
                 playback = playback,
@@ -1074,6 +1175,8 @@ private fun DetailHero(
     trailerPlayed: Boolean,
     trailerLoading: Boolean,
     trailerUnavailable: Boolean,
+    /** Seconds until the trailer takes the screen, or null when nothing is counting down. */
+    trailerCountdown: Int?,
     onPlayTrailer: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -1311,6 +1414,11 @@ private fun DetailHero(
                 if (hasTrailer) {
                     HeroTrailerAction(
                         label = when {
+                            // First, because it is the only one of these that is about to change
+                            // what is on screen. "Loading" is true at the same time and is the less
+                            // useful half of it: the viewer wants to know when, not that work is
+                            // happening.
+                            trailerCountdown != null -> "Trailer in ${trailerCountdown}s"
                             trailerLoading -> "Loading trailer…"
                             // Ahead of "replay": if the last attempt came to nothing, that is the
                             // news, even on a title whose trailer has played before.

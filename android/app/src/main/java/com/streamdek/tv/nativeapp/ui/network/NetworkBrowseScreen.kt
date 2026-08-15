@@ -86,6 +86,14 @@ fun NetworkBrowseScreen(
     repository: StreamDekRepository,
     networkId: String,
     networkName: String,
+    /**
+     * Where the shell sends focus when this screen is the one on display.
+     *
+     * The navigation rail is on this page now, and the rail hands focus back by name. Without a
+     * target of its own the page could be entered but not returned to, so pressing right out of the
+     * menu fell through to whatever spatial search happened to find.
+     */
+    entryFocusRequester: FocusRequester? = null,
     onBack: () -> Unit,
     onOpenDetail: (String, String) -> Unit,
 ) {
@@ -108,7 +116,9 @@ fun NetworkBrowseScreen(
     var openTray by remember { mutableStateOf(OpenTray.None) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
 
-    val firstChipRequester = remember { FocusRequester() }
+    val localChipRequester = remember { FocusRequester() }
+    // The filter chips are the top of this page, so they are what "back to the page" means here.
+    val firstChipRequester = entryFocusRequester ?: localChipRequester
     val firstCardRequester = remember { FocusRequester() }
     val trayRequester = remember { FocusRequester() }
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }

@@ -80,6 +80,14 @@ fun LiveBrowseScreen(
     initialAddonId: String? = null,
     initialCatalogId: String? = null,
     favouriteKeys: Set<String>,
+    /**
+     * Where the shell sends focus when this screen is the one on display.
+     *
+     * The navigation rail is on this page now, and the rail hands focus back by name. Without a
+     * target of its own the page could be entered but not returned to, so pressing right out of the
+     * menu fell through to whatever spatial search happened to find.
+     */
+    entryFocusRequester: FocusRequester? = null,
     onToggleFavourite: (MediaItem) -> Unit,
     onPlayLive: (MediaItem) -> Unit,
     onBack: () -> Unit,
@@ -114,7 +122,9 @@ fun LiveBrowseScreen(
     var favouritesOnly by remember { mutableStateOf(false) }
     var openTray by remember { mutableStateOf(OpenTray.None) }
 
-    val queryRequester = remember { FocusRequester() }
+    val localQueryRequester = remember { FocusRequester() }
+    // The search field is what this page focuses itself, so it is also where the rail returns to.
+    val queryRequester = entryFocusRequester ?: localQueryRequester
     val firstChipRequester = remember { FocusRequester() }
     val firstCardRequester = remember { FocusRequester() }
     val trayRequester = remember { FocusRequester() }

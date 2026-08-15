@@ -151,6 +151,7 @@ internal fun TrailerStage(
                 requestHeaders = playback.source.requestHeaders,
                 maxHeight = playback.source.height ?: maxHeight,
                 playing = active && !paused,
+                startPositionMs = playback.source.startPositionMs,
                 onEnded = onEnded,
                 onFailed = onFailed,
             )
@@ -212,6 +213,8 @@ private fun TrailerSurface(
     requestHeaders: Map<String, String>,
     maxHeight: Int,
     playing: Boolean,
+    /** Where to begin, for sources that carry a lead-in worth skipping. */
+    startPositionMs: Long = 0L,
     onEnded: () -> Unit,
     onFailed: () -> Unit,
 ) {
@@ -257,14 +260,29 @@ private fun TrailerSurface(
             // Sound on, unlike the phone's muted hero loop. This has the screen; a silent trailer
             // across a room is a video with something wrong with it.
             volume = 1f
+            // Deliberately *not* seeking before prepare.
+            //
+            // These URLs are not read with HTTP Range headers: ChunkedGoogleVideoDataSource asks
+            // googlevideo for a span through its own `&range=` query parameter, and a first request
+            // that does not start at byte zero is answered 403. Seeking here therefore did not skip
+            // the opening — it broke playback outright, on every trailer. The seek is applied once
+            // the source is prepared instead; see the listener below.
             prepare()
         }
     }
 
     DisposableEffect(player, lifecycleOwner) {
         var playbackEnded = false
+        // Applied once, after the source is prepared, because a seek before that makes the first
+        // chunk request start mid-file and googlevideo answers it 403. By this point the opening
+        // bytes have been read, so the seek is an ordinary one and its span is accepted.
+        var startApplied = startPositionMs <= 0L
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY && !startApplied) {
+                    startApplied = true
+                    player.seekTo(startPositionMs)
+                }
                 if (playbackState == Player.STATE_ENDED && !playbackEnded) {
                     playbackEnded = true
                     latestOnEnded.value()

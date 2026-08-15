@@ -192,6 +192,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val searchContentRequester = remember { FocusRequester() }
     val liveContentRequester = remember { FocusRequester() }
     val libraryContentRequester = remember { FocusRequester() }
+    // The two screens that gained the rail: they need somewhere for it to hand focus back to.
+    val liveBrowseContentRequester = remember { FocusRequester() }
+    val networkContentRequester = remember { FocusRequester() }
     val profileNavRequester = remember { FocusRequester() }
     val settingsContentRequester = remember { FocusRequester() }
     /** The title page's own way back in from the rail, and the rail's way of being reached. */
@@ -425,6 +428,8 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             TopLevelDestination.Profile.route to settingsContentRequester,
             DetailRoutePattern to detailContentRequester,
             PersonRoutePattern to personContentRequester,
+            "live-view-all" to liveBrowseContentRequester,
+            "network/{id}/{name}" to networkContentRequester,
         )
     }
     LaunchedEffect(currentRoute, pendingDestinationFocus, showStartupProfilePicker) {
@@ -602,7 +607,21 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             // from a row, decide against it, and want to be somewhere else. Without the rail the
             // only way out was Back, and only back the way you came. It still stays off the player
             // and the stream picker, where it would sit over the picture or over a decision.
-            val railRoutes = remember { topLevelDestinations.map { it.route } + listOf(DetailRoutePattern, PersonRoutePattern) }
+            // The rail is furniture, not a feature of certain screens.
+            //
+            // It used to be listed on per route, which meant a viewer three screens deep — a
+            // network's catalogue, all of Live — had no way to anywhere except back the way they
+            // came. Every browsing screen now carries it, and the exclusions below are the screens
+            // where it would be in the way rather than the ones nobody thought to add.
+            //
+            // Off the player, where it would sit over the picture. Off the stream picker, which is
+            // a decision to make rather than a place to browse from. Off a cast page, whose whole
+            // width is one person's work and which is reached from a title rather than from the
+            // menu. Off the sign-in screen, which is not somewhere to navigate away from.
+            val railRoutes = remember {
+                topLevelDestinations.map { it.route } +
+                    listOf(DetailRoutePattern, "live-view-all", "network/{id}/{name}")
+            }
             val railOnScreen = currentRoute in railRoutes && !detailNavigationInProgress &&
                 !showUpdatePrompt && chromeAlpha > 0.001f
             CompositionLocalProvider(
@@ -700,15 +719,18 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     }
                 }
                 composable("live-view-all") {
+                    RailInsetDestination {
                     LiveBrowseScreen(
                         sections = liveNavigationState.sections,
                         initialAddonId = liveBrowseSelection.addonId,
                         initialCatalogId = liveBrowseSelection.catalogId,
                         favouriteKeys = favouriteChannelKeys,
+                        entryFocusRequester = liveBrowseContentRequester,
                         onToggleFavourite = repository::toggleFavouriteChannel,
                         onPlayLive = playLiveItem,
                         onBack = { navController.popBackStack() },
                     )
+                    }
                 }
                 composable(TopLevelDestination.Library.route) {
                     RailInsetDestination {
@@ -731,13 +753,16 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     }
                 }
                 composable("network/{id}/{name}") { backStackEntryInner ->
+                    RailInsetDestination {
                     NetworkBrowseScreen(
                         repository = repository,
                         networkId = backStackEntryInner.arguments?.getString("id").orEmpty(),
                         networkName = Uri.decode(backStackEntryInner.arguments?.getString("name").orEmpty()),
+                        entryFocusRequester = networkContentRequester,
                         onBack = { navController.popBackStack() },
                         onOpenDetail = openDetail,
                     )
+                    }
                 }
                 composable("auth") {
                     AuthScreen(
@@ -1665,9 +1690,19 @@ private fun TvSideNav(
             .focusGroup()
             .onFocusChanged {
                 navHasFocus = it.hasFocus
-                // Each visit to the rail earns its own release. Leaving it puts the suppression
-                // back, so the next arrival is judged on where the focus came from again.
-                if (!it.hasFocus) railInteracted = false
+                if (!it.hasFocus) {
+                    // Each visit to the rail earns its own release. Leaving it puts the suppression
+                    // back, so the next arrival is judged on where the focus came from again.
+                    railInteracted = false
+                    // And every visit starts from where the viewer actually is.
+                    //
+                    // The highlight is where the last visit left off, which is right while the rail
+                    // is open and wrong the moment it is re-entered: if something took focus away
+                    // mid-press, the rail would re-open showing an item the viewer never chose, one
+                    // step down from the one before. Reset on the way out, so opening the menu
+                    // always points at the page behind it.
+                    highlightedRoute = currentRoute
+                }
             }
             // Never consumes: this only notes that the press happened, and the item handlers and
             // the focus system below still see it. Back is deliberately not on the list — through

@@ -55,7 +55,22 @@ private val trailerHttpClient = OkHttpClient.Builder()
 private val trailerJsonMediaType = "application/json; charset=utf-8".toMediaType()
 private const val trailerResolverTag = "TrailerResolver"
 
-data class TrailerPlaybackSource(val url: String, val audioUrl: String? = null, val height: Int? = null, val requestHeaders: Map<String, String> = emptyMap())
+data class TrailerPlaybackSource(
+  val url: String,
+  val audioUrl: String? = null,
+  val height: Int? = null,
+  val requestHeaders: Map<String, String> = emptyMap(),
+  /** Where playback should begin. Only ever non-zero when [seekable]. */
+  val startPositionMs: Long = 0L,
+  /**
+   * Whether this URL will serve a span that does not start at byte zero.
+   *
+   * The player reads these files through googlevideo's own `&range=` query parameter, and the
+   * gated client's URLs answer 403 to any range that starts mid-file — so for those, playback can
+   * only ever run from the beginning. The headset client's URLs have no such limit.
+   */
+  val seekable: Boolean = true,
+)
 data class TrailerPlaybackResolution(val source: TrailerPlaybackSource? = null, val youtubeLoginRequired: Boolean = false)
 
 /** How many of a title's videos are worth looking at. Beyond this the list is archive material. */
@@ -77,8 +92,37 @@ suspend fun resolveTrailerPlaybackSource(
   url: String,
   maxHeight: Int = 720,
   alternates: List<String> = emptyList(),
+  /**
+   * A trailer somebody has already identified as the right one — today, KinoCheck's pick.
+   *
+   * Tried on its own before anything else, and only if it produces nothing does the ranked search
+   * over [url] and [alternates] run. It is deliberately not thrown in with the others: the ranking
+   * exists to find a trailer among adverts by running time, and a curated answer should not have to
+   * win that competition to be used.
+   */
+  preferredUrl: String? = null,
 ): TrailerPlaybackResolution = withContext(Dispatchers.IO) {
   withTimeoutOrNull(20_000) {
+    preferredUrl?.trim()?.takeIf { it.isNotBlank() }?.let { preferred ->
+      extractYoutubeTrailerKey(preferred)?.let { key ->
+        val resolved = resolveTrailerCandidates(listOf(key), normalizeTrailerMaxHeight(maxHeight))
+        // Past KinoCheck's own five-second sting, where the URL allows it.
+        //
+        // The player reads these files through googlevideo's `&range=` query parameter, and the
+        // gated client refuses any span that does not start at byte zero — asking it to start five
+        // seconds in does not skip the sting, it kills the trailer outright. The headset client's
+        // URLs have no such limit, so the skip applies there and is simply not attempted on the
+        // other. (An earlier measurement suggested deep offsets were fine everywhere; it used HTTP
+        // Range headers, which is not the mechanism the player uses.)
+        resolved.source?.let { source ->
+          return@withTimeoutOrNull if (source.seekable) {
+            resolved.copy(source = source.copy(startPositionMs = KINOCHECK_START_MS))
+          } else {
+            resolved
+          }
+        }
+      }
+    }
     val trimmed = url.trim()
     if (trimmed.isBlank()) return@withTimeoutOrNull TrailerPlaybackResolution()
     if (isNativePlayableTrailerUrl(trimmed)) return@withTimeoutOrNull TrailerPlaybackResolution(source = TrailerPlaybackSource(trimmed))
@@ -437,7 +481,11 @@ private fun requestYoutubePlayer(videoId: String, session: YoutubeSession, clien
           "bestAdaptive=${adaptiveVideo?.second ?: -1} separateAudio=${source?.audioUrl != null}",
       )
       YoutubePlayerProbe(
-        TrailerPlaybackResolution(source = source?.copy(requestHeaders = playbackHeaders)),
+        TrailerPlaybackResolution(
+          // Only the capped client's URLs refuse a mid-file span, and `servableBytes` is exactly
+          // the flag for "this client's URLs are gated" — so it answers both questions.
+          source = source?.copy(requestHeaders = playbackHeaders, seekable = client.servableBytes == null),
+        ),
         title,
         durationSeconds,
       )
@@ -480,13 +528,19 @@ internal fun trailerCodecRank(mime: String): Int = when {
 /**
  * How much of one of these URLs googlevideo will actually serve.
  *
- * Measured against a live stream, and the shape of it is unambiguous: bounded requests inside the
- * first few megabytes are answered, and every request starting past roughly 8 MiB is refused, no
- * matter how it is framed. YouTube gates the remainder behind a proof-of-origin token that the
- * clients reachable from here cannot mint.
+ * Applies to the IOS client alone, and it is still 7 MiB. Bounded requests inside the first few
+ * megabytes are answered and everything past roughly 8 MiB is refused, which is why trailers taken
+ * from that client used to play for half a minute and stop mid-scene.
  *
- * This is why trailers used to play for half a minute and stop: the picture was fine until the
- * obtainable bytes ran out mid-scene. Seven is used rather than eight because the exact ceiling
+ * Raised to 64 MiB on 15 Aug 2026 on the strength of a measurement showing deep offsets being
+ * served, and put back the same evening: that measurement used HTTP `Range` headers, and the player
+ * does not read these URLs that way. ChunkedGoogleVideoDataSource asks through googlevideo's own
+ * `&range=` query parameter, and through *that* the old ceiling is very much still there. The
+ * larger budget let the selector choose a 1440p rendition, whose second chunk was refused, so every
+ * trailer resolved through IOS died a few seconds in.
+ *
+ * It costs nothing when the headset client answers, since that one is uncapped — the budget is only
+ * consulted for the client whose URLs are gated. Seven rather than eight because the exact ceiling
  * drifts between requests, and a trailer that stops early is worse than one that starts smaller.
  */
 private const val SERVABLE_TRAILER_BYTES = 7L * 1024 * 1024

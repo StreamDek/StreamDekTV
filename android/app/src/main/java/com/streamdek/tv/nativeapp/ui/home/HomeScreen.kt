@@ -375,11 +375,25 @@ fun HomeScreen(
                     pendingRestoreKey = "${row.id}:${homeItemKey(row.items[itemIndex])}"
                 }
 
+                // Home places focus on its first card when it opens, and only then.
+                //
+                // This used to re-run every time `canRestore` flipped, and it flips whenever the
+                // rows reload and the saved row is briefly absent from them — which happens on any
+                // refresh, long after the page opened. A viewer who was in the navigation rail at
+                // that moment had focus taken off them 150ms later: the rail collapsed mid-press,
+                // and because re-entering restores the last focused item, the highlight sat one
+                // step further down each time. Down, collapse, re-open one lower, over and over.
+                var openingFocusApplied by remember { mutableStateOf(false) }
                 LaunchedEffect(rows.isNotEmpty(), canRestore) {
+                    if (openingFocusApplied) return@LaunchedEffect
                     if (canRestore || restoreApplied || pendingRestoreKey != null) return@LaunchedEffect
                     if (rows.isEmpty()) return@LaunchedEffect
                     delay(150)
-                    runCatching { firstCardRequester.requestFocus() }
+                    // Marked only once the request was actually made, so a first attempt against a
+                    // requester that is not attached yet does not spend the single shot.
+                    if (runCatching { firstCardRequester.requestFocus(); true }.getOrDefault(false)) {
+                        openingFocusApplied = true
+                    }
                 }
 
                 Column(Modifier.fillMaxSize().graphicsLayer { alpha = contentRevealAlpha }) {
