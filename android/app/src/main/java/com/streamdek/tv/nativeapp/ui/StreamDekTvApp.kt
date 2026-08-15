@@ -153,6 +153,16 @@ private const val ExitBackPressWindowMs = 2500L
  */
 private const val NavRailTransparentAlpha = 0.85f
 
+/** Presses that mean a viewer is using the menu rather than passing through it. */
+private val RailInteractionKeys = setOf(
+    Key.DirectionUp,
+    Key.DirectionDown,
+    Key.DirectionLeft,
+    Key.DirectionCenter,
+    Key.Enter,
+    Key.NumPadEnter,
+)
+
 /** The navigation route the title page is registered under, kept in one place. */
 private const val DetailRoutePattern = "detail/{type}/{id}"
 private const val PersonRoutePattern = "person/{id}"
@@ -315,6 +325,16 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     // focuses (and opens) the persistent rail. Suppress only that transition-time expansion;
     // never remove the rail as a valid focus target for normal remote navigation.
     var railFocusHandoffPending by remember { mutableStateOf(false) }
+    // The route whose own content last held focus.
+    //
+    // The window above is bounded, and it has to be — but a screen that takes longer than it to
+    // produce something focusable left the rail holding focus, and holding focus is what opens the
+    // rail. So every Back press onto a slow screen played the whole expansion and then closed it
+    // again the moment the content arrived. Expansion now waits on the arriving screen having had
+    // focus rather than on a timer: pressing left out of a page into the rail is deliberate, being
+    // handed focus because there was nowhere else to put it is not, and the two are only
+    // distinguishable by whether the page ever had it.
+    var contentFocusedRoute by remember { mutableStateOf<String?>(null) }
     var detailNavigationInProgress by remember { mutableStateOf(false) }
     val openDetail: (String, String) -> Unit = { mediaType, mediaId ->
         detailNavigationInProgress = true
@@ -594,7 +614,13 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 startDestination = TopLevelDestination.Home.route,
                 // Insets belong to individual destinations below. If this shared NavHost changes
                 // padding when the route changes, the outgoing page moves before its exit fade.
-                modifier = Modifier.fillMaxSize(),
+                //
+                // One observer for every destination there will ever be: whatever a screen does to
+                // place its own first focus, the shell only needs to know that the focus landed
+                // inside the page rather than on the furniture around it.
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onFocusChanged { if (it.hasFocus) contentFocusedRoute = currentRoute },
                 enterTransition = { screenEnter },
                 exitTransition = { screenExit },
                 popEnterTransition = { screenPopEnter },
@@ -822,7 +848,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     contentRequesters = destinationContentRequesters,
                     transparent = appPrefs?.transparentNavigation != false,
                     railRequester = navRailRequester,
-                    suppressExpansion = railFocusHandoffPending,
+                    suppressExpansion = railFocusHandoffPending || contentFocusedRoute != currentRoute,
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .graphicsLayer { alpha = chromeAlpha },
@@ -1514,13 +1540,20 @@ private fun TvSideNav(
     transparent: Boolean,
     /** Attached to the rail itself, so a screen can send focus here without naming a destination. */
     railRequester: FocusRequester,
-    /** True while a newly entered route has not yet accepted focus on its own content. */
+    /** True until the route on screen has held focus on its own content at least once. */
     suppressExpansion: Boolean,
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
 ) {
     var highlightedRoute by remember { mutableStateOf(currentRoute) }
     var navHasFocus by remember { mutableStateOf(false) }
+    // The viewer pressed something while the rail had focus, which no transition does.
+    //
+    // A screen with nothing focusable on it — an empty library, a search with no results yet, a
+    // page that failed to load — would otherwise leave the rail suppressed for as long as the
+    // viewer stayed there, which is exactly when the menu is the thing they want. A key arriving
+    // here is the viewer, so it releases the suppression for this visit.
+    var railInteracted by remember { mutableStateOf(false) }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val itemRequesters = remember(destinations, profileFocusRequester) {
         destinations.associateWith { destination ->
@@ -1534,8 +1567,9 @@ private fun TvSideNav(
     // materialising over the artwork rather than coming from anywhere. Driving everything from one
     // 0-to-1 figure means opening and closing are the same movement played each way, and lets the
     // surface be slid in from behind the icons instead of switched on.
+    val railExpanded = navHasFocus && (!suppressExpansion || railInteracted)
     val railOpen by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (navHasFocus && !suppressExpansion) 1f else 0f,
+        targetValue = if (railExpanded) 1f else 0f,
         animationSpec = TvScroll.spec(TvMotion.duration(TvMotion.Expand)),
         label = "side-nav-open",
     )
@@ -1560,7 +1594,7 @@ private fun TvSideNav(
         }
     }
 
-    val displayedRoute = if (navHasFocus && !suppressExpansion) highlightedRoute else currentRoute
+    val displayedRoute = if (railExpanded) highlightedRoute else currentRoute
     // The highlight stays solid while the rail around it does not. It used to be a 22% primary tint
     // relying on opaque black underneath it; with the rail translucent that tint would sit on
     // artwork and the marker for where you are would change colour with whatever is behind it.
@@ -1576,7 +1610,11 @@ private fun TvSideNav(
     // The rail is opened by pressing left out of whatever you were doing, so Back is the obvious
     // way to undo that — and it used to fall through to the app's own handler, which read it as
     // "leave this screen" and dropped a viewer who had merely glanced at the menu onto Home.
-    BackHandler(enabled = navHasFocus) {
+    //
+    // Only while the menu is actually open, though. Focus can be parked here by a transition with
+    // the rail still shut, and a viewer pressing Back through that means to leave the screen; the
+    // press was being eaten to close a menu that was never on screen.
+    BackHandler(enabled = railExpanded) {
         val returned = contentRequesters[currentRoute]?.let { requester ->
             runCatching { requester.requestFocus() }.getOrDefault(false)
         } == true
@@ -1625,7 +1663,21 @@ private fun TvSideNav(
             // container, so returning to it used plain spatial navigation and landed on whichever
             // item was nearest — in practice always Home — instead of the page you are on.
             .focusGroup()
-            .onFocusChanged { navHasFocus = it.hasFocus }
+            .onFocusChanged {
+                navHasFocus = it.hasFocus
+                // Each visit to the rail earns its own release. Leaving it puts the suppression
+                // back, so the next arrival is judged on where the focus came from again.
+                if (!it.hasFocus) railInteracted = false
+            }
+            // Never consumes: this only notes that the press happened, and the item handlers and
+            // the focus system below still see it. Back is deliberately not on the list — through
+            // a transition that is a viewer leaving the screen, not opening the menu.
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key in RailInteractionKeys) {
+                    railInteracted = true
+                }
+                false
+            }
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,
     ) {
