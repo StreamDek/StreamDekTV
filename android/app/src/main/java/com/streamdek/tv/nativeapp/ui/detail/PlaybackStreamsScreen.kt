@@ -136,7 +136,15 @@ fun PlaybackStreamsScreen(
     onPlayRequest: (PlaybackRequest) -> Unit,
 ) {
     val cachedDetail = remember(request) { repository.peekCachedDetail(request.mediaId, request.mediaType) }
-    val cachedCandidate = remember(request) { repository.peekCachedResolvedPlayback(request) }
+    // The request used to enter the player carries the complete picker snapshot. Navigation may
+    // dispose this destination while video is playing, and when it is composed again the selected
+    // stream changes the repository cache key. Prefer the snapshot so Back restores the exact list
+    // immediately instead of starting a second lookup that can briefly (or permanently) be empty.
+    val cachedCandidate = remember(request) {
+        request.availableStreams.takeIf { it.isNotEmpty() }
+            ?.let { ResolvedPlaybackCandidate(null, null, it) }
+            ?: repository.peekCachedResolvedPlayback(request)
+    }
     var uiState by remember(request) {
         mutableStateOf<PlaybackStreamsUiState>(
             cachedCandidate?.let { PlaybackStreamsUiState.Ready(cachedDetail, it) } ?: PlaybackStreamsUiState.Loading(),

@@ -16,7 +16,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
-import java.security.MessageDigest
 
 /**
  * YouTube trailer resolution, carried over from StreamDek Mobile.
@@ -28,9 +27,8 @@ import java.security.MessageDigest
  * the next fix on either platform portable to the other; restructuring it for the television would
  * buy nothing and lose that.
  *
- * Two things are left out because the television has no use for them: the Vimeo path and the iframe
- * fallback, both of which need a WebView, and the signed-in cookie jar that fallback filled. The
- * [youtubeCookies] parameter is kept so the shapes still line up, and the TV always passes null.
+ * The television never reads or sends a YouTube cookie. It uses anonymous native extraction only;
+ * if YouTube refuses the ranked selection, the detail page remains in place.
  */
 
 /**
@@ -78,7 +76,6 @@ private val trailerProbeGate = Semaphore(6)
 suspend fun resolveTrailerPlaybackSource(
   url: String,
   maxHeight: Int = 720,
-  youtubeCookies: String? = null,
   alternates: List<String> = emptyList(),
 ): TrailerPlaybackResolution = withContext(Dispatchers.IO) {
   withTimeoutOrNull(20_000) {
@@ -90,16 +87,16 @@ suspend fun resolveTrailerPlaybackSource(
       .distinct()
       .take(TRAILER_CANDIDATE_LIMIT)
     val cap = normalizeTrailerMaxHeight(maxHeight)
-    resolveTrailerCandidates(candidateKeys, cap, youtubeCookies)
+    resolveTrailerCandidates(candidateKeys, cap)
   } ?: TrailerPlaybackResolution()
 }
 
-private suspend fun resolveTrailerCandidates(keys: List<String>, maxHeight: Int, cookies: String?): TrailerPlaybackResolution {
+private suspend fun resolveTrailerCandidates(keys: List<String>, maxHeight: Int): TrailerPlaybackResolution {
   val session = youtubeSession(keys.first())
-  if (keys.size == 1) return resolveYoutubePlaybackSource(keys.first(), maxHeight, cookies, session)
+  if (keys.size == 1) return resolveYoutubePlaybackSource(keys.first(), maxHeight, session)
   // Which of the candidates is the trailer only has to be worked out once per title; after that it
   // is a single request for a fresh playback URL rather than a fan-out across all of them.
-  cachedTrailerChoice(keys)?.let { return resolveYoutubePlaybackSource(it, maxHeight, cookies, session) }
+  cachedTrailerChoice(keys)?.let { return resolveYoutubePlaybackSource(it, maxHeight, session) }
 
   // One fan-out serves both jobs. The player response carries the title and running time the pick
   // is made on *and* the streaming data for playback, so identifying the right trailer costs
@@ -110,7 +107,7 @@ private suspend fun resolveTrailerCandidates(keys: List<String>, maxHeight: Int,
         // Probed with the same client that will serve the playback, so the response that decides
         // the pick is also the one played. Probing with a different client meant the winner arrived
         // with a URL from the gated one, which is how the client ordering below was bypassed.
-        val probe = trailerProbeGate.withPermit { requestYoutubePlayer(key, session, androidVrClient, maxHeight, cookies) }
+        val probe = trailerProbeGate.withPermit { requestYoutubePlayer(key, session, androidVrClient, maxHeight) }
         key to probe
       }
     }.awaitAll()
@@ -123,7 +120,7 @@ private suspend fun resolveTrailerCandidates(keys: List<String>, maxHeight: Int,
   val chosen = probes.firstOrNull { (key, _) -> key == best }?.second
   chosen?.resolution?.source?.let { return TrailerPlaybackResolution(source = it) }
   // The chosen video needs the rest of the client ladder — age-restricted trailers land here.
-  return resolveYoutubePlaybackSource(best, maxHeight, cookies, session)
+  return resolveYoutubePlaybackSource(best, maxHeight, session)
 }
 
 internal data class TrailerCandidate(val key: String, val title: String?, val durationSeconds: Int?)
@@ -256,21 +253,12 @@ private val androidVrClient = YoutubeClient(
  * cannot finish. [SERVABLE_TRAILER_BYTES] is what keeps that survivable when it is all there is.
  */
 private val iosClient = YoutubeClient("IOS", "20.10.4", osName = "iOS", osVersion = "18.3.2.22D82", deviceMake = "Apple", deviceModel = "iPhone16,2", userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)", clientId = "5", servableBytes = SERVABLE_TRAILER_BYTES)
-private val tvClient = YoutubeClient("TVHTML5", "7.20250312.16.00", osName = "Tizen", osVersion = "5.0", deviceMake = "Samsung", deviceModel = "SmartTV", userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version", clientId = "7")
-
-private fun resolveYoutubePlaybackSource(videoId: String, maxHeight: Int, cookies: String?, session: YoutubeSession): TrailerPlaybackResolution {
-  val clients = buildList {
-    // The headset client goes first because it is the only one that serves a whole file. No sign-in
-    // is involved or needed — it answers anonymously.
-    add(androidVrClient)
-    // Signed in, the authenticated TV client is the one that can reach age-restricted trailers.
-    if (!cookies.isNullOrBlank()) add(tvClient)
-    add(iosClient)
-    add(tvClient)
-  }
+private fun resolveYoutubePlaybackSource(videoId: String, maxHeight: Int, session: YoutubeSession): TrailerPlaybackResolution {
+  // Both clients are anonymous. TV deliberately has no cookie-authenticated or embedded fallback.
+  val clients = listOf(androidVrClient, iosClient)
   var loginRequired = false
   for (client in clients) {
-    val probe = requestYoutubePlayer(videoId, session, client, maxHeight, cookies)
+    val probe = requestYoutubePlayer(videoId, session, client, maxHeight)
     probe.resolution.source?.let { return probe.resolution }
     loginRequired = loginRequired || probe.resolution.youtubeLoginRequired
   }
@@ -295,12 +283,9 @@ private const val youtubeFallbackApiKey = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qc
 @Synchronized
 private fun youtubeSession(videoId: String): YoutubeSession {
   cachedYoutubeSession?.let { return it }
-  // Fetched without the viewer's cookies on purpose. The visitor id scraped from a signed-in watch
-  // page belongs to that account, and presenting it on an otherwise anonymous client request is a
-  // mismatch YouTube reads as a bot — which is exactly what happened: the headset client answered
-  // "Sign in to confirm you're not a bot" on a signed-in device while the identical request
-  // succeeded from one that had never logged in. Trailers need no account at all.
-  val watchHtml = fetchYoutubeWatchHtml(videoId, cookies = null)
+  // Fetched anonymously on purpose. The visitor id belongs to the same unsigned session as the
+  // player requests below; no account or WebView cookie state participates in resolution.
+  val watchHtml = fetchYoutubeWatchHtml(videoId)
   val session = YoutubeSession(
     apiKey = Regex(""""INNERTUBE_API_KEY"\s*:\s*"([^"]+)"""").find(watchHtml)?.groupValues?.getOrNull(1) ?: youtubeFallbackApiKey,
     visitorData = Regex(""""VISITOR_DATA"\s*:\s*"([^"]+)"""").find(watchHtml)?.groupValues?.getOrNull(1),
@@ -311,11 +296,10 @@ private fun youtubeSession(videoId: String): YoutubeSession {
   return session
 }
 
-private fun fetchYoutubeWatchHtml(videoId: String, cookies: String?): String = runCatching {
+private fun fetchYoutubeWatchHtml(videoId: String): String = runCatching {
   val builder = Request.Builder()
     .url("https://www.youtube.com/watch?v=$videoId&hl=en")
     .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
-  if (!cookies.isNullOrBlank()) builder.header("Cookie", cookies)
   val request = builder.build()
   trailerHttpClient.newCall(request).execute().use { response -> if (response.isSuccessful) response.body?.string().orEmpty() else "" }
 }.getOrDefault("")
@@ -342,21 +326,6 @@ private data class YoutubeClient(
 
 private const val youtubeOrigin = "https://www.youtube.com"
 
-private fun youtubeAuthorizationHeader(cookies: String): String? {
-  val cookieValues = cookies.split(';').mapNotNull { entry ->
-    val separator = entry.indexOf('=')
-    if (separator <= 0) null else entry.substring(0, separator).trim() to entry.substring(separator + 1).trim()
-  }.toMap()
-  val sapisid = cookieValues["SAPISID"]
-    ?: cookieValues["__Secure-3PAPISID"]
-    ?: cookieValues["__Secure-1PAPISID"]
-    ?: return null
-  val timestamp = System.currentTimeMillis() / 1000L
-  val input = "$timestamp $sapisid $youtubeOrigin"
-  val digest = MessageDigest.getInstance("SHA-1").digest(input.toByteArray(Charsets.UTF_8))
-    .joinToString("") { byte -> "%02x".format(byte) }
-  return "SAPISIDHASH ${timestamp}_$digest"
-}
 /** A player response, read both for playback and for deciding whether this video is the trailer. */
 internal data class YoutubePlayerProbe(
   val resolution: TrailerPlaybackResolution = TrailerPlaybackResolution(),
@@ -364,7 +333,7 @@ internal data class YoutubePlayerProbe(
   val durationSeconds: Int? = null,
 )
 
-private fun requestYoutubePlayer(videoId: String, session: YoutubeSession, client: YoutubeClient, maxHeight: Int, cookies: String?): YoutubePlayerProbe {
+private fun requestYoutubePlayer(videoId: String, session: YoutubeSession, client: YoutubeClient, maxHeight: Int): YoutubePlayerProbe {
   val apiKey = session.apiKey
   val visitorData = session.visitorData
   val clientJson = JSONObject()
@@ -399,15 +368,6 @@ private fun requestYoutubePlayer(videoId: String, session: YoutubeSession, clien
   requestBuilder.header("X-YouTube-Client-Version", client.version)
   requestBuilder.header("Origin", youtubeOrigin)
   if (!visitorData.isNullOrBlank()) requestBuilder.header("X-Goog-Visitor-Id", visitorData)
-  if (!cookies.isNullOrBlank() && (client.name == "WEB" || client.name == "TVHTML5")) {
-    requestBuilder.header("Origin", youtubeOrigin)
-    requestBuilder.header("X-Origin", youtubeOrigin)
-    requestBuilder.header("Cookie", cookies)
-    youtubeAuthorizationHeader(cookies)?.let { requestBuilder.header("Authorization", it) }
-    requestBuilder.header("X-Goog-AuthUser", "0")
-    requestBuilder.header("X-YouTube-Client-Name", if (client.name == "TVHTML5") "7" else "1")
-    requestBuilder.header("X-YouTube-Client-Version", client.version)
-  }
   val request = requestBuilder.build()
 
   return runCatching {

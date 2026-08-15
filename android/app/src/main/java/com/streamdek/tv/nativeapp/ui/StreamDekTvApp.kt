@@ -1681,7 +1681,7 @@ private fun TvSideNav(
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,
     ) {
-        destinations.forEach { destination ->
+        destinations.forEachIndexed { index, destination ->
             val highlighted = destination.route == displayedRoute
             Row(
                 modifier = Modifier
@@ -1700,18 +1700,36 @@ private fun TvSideNav(
                     )
                     .focusRequester(itemRequesters.getValue(destination))
                     .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
-                            // Back to the page the viewer is actually on, not the one the
-                            // highlighted item would open. On a top-level screen those are usually
-                            // the same and the difference never showed; on a title page every item
-                            // names somewhere else, so this looked up a requester belonging to a
-                            // screen that was not composed, failed, and left the viewer in the menu
-                            // with no way out.
-                            (contentRequesters[currentRoute] ?: contentRequesters[destination.route])
-                                ?.let { requester -> runCatching { requester.requestFocus() }.isSuccess }
-                                ?: false
-                        } else {
-                            false
+                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                        when (event.key) {
+                            // Do not leave vertical movement to spatial focus search while the rail
+                            // is changing width. On Fire TV that search can choose page content for
+                            // a frame, collapsing the rail; the same Down press then appears to do
+                            // nothing. An explicit neighbour makes every press move exactly once.
+                            Key.DirectionUp -> {
+                                val target = destinations.getOrNull(index - 1)
+                                target?.let { itemRequesters[it] }
+                                    ?.let { requester -> runCatching { requester.requestFocus(); true }.getOrDefault(false) }
+                                    ?: true
+                            }
+                            Key.DirectionDown -> {
+                                val target = destinations.getOrNull(index + 1)
+                                target?.let { itemRequesters[it] }
+                                    ?.let { requester -> runCatching { requester.requestFocus(); true }.getOrDefault(false) }
+                                    ?: true
+                            }
+                            Key.DirectionRight -> {
+                                // Back to the page the viewer is actually on, not the one the
+                                // highlighted item would open. On a top-level screen those are usually
+                                // the same and the difference never showed; on a title page every item
+                                // names somewhere else, so this looked up a requester belonging to a
+                                // screen that was not composed, failed, and left the viewer in the menu
+                                // with no way out.
+                                (contentRequesters[currentRoute] ?: contentRequesters[destination.route])
+                                    ?.let { requester -> runCatching { requester.requestFocus(); true }.getOrDefault(false) }
+                                    ?: false
+                            }
+                            else -> false
                         }
                     }
                     .onFocusChanged {
