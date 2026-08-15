@@ -196,6 +196,14 @@ private fun isNativePlayableTrailerUrl(url: String): Boolean {
   return lower.endsWith(".mp4") || lower.endsWith(".m4v") || lower.endsWith(".webm") || lower.contains(".m3u8") || lower.contains(".mpd")
 }
 
+/**
+ * The video id in a trailer URL, for callers outside resolution.
+ *
+ * The embed fallback needs the same id this file works in, and reading it a second time somewhere
+ * else is how the two would drift apart.
+ */
+fun youtubeTrailerKey(url: String): String? = extractYoutubeTrailerKey(url)
+
 private fun extractYoutubeTrailerKey(url: String): String? {
   val raw = url.trim()
   if (raw.matches(Regex("^[A-Za-z0-9_-]{11}$"))) return raw

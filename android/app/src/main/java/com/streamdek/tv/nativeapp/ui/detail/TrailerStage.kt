@@ -59,6 +59,20 @@ import kotlinx.coroutines.delay
 import androidx.media3.common.MediaItem as ExoMediaItem
 
 /**
+ * Where the picture is coming from.
+ *
+ * Two routes to the same trailer, and the stage treats them as one: it owns the remote, the pause
+ * and the exit whichever is underneath, so the difference between them stops at the surface.
+ */
+internal sealed interface TrailerPlayback {
+    /** A file the resolver got hold of. The good case: a real video surface, no chrome. */
+    data class Native(val source: TrailerPlaybackSource) : TrailerPlayback
+
+    /** YouTube's own embed, for when the player API refused the file. */
+    data class Embed(val youtubeKey: String) : TrailerPlayback
+}
+
+/**
  * A trailer playing over the whole title page.
  *
  * This is not the phone's treatment. There the trailer runs muted behind the hero while the page
@@ -72,7 +86,7 @@ import androidx.media3.common.MediaItem as ExoMediaItem
  */
 @Composable
 internal fun TrailerStage(
-    source: TrailerPlaybackSource,
+    playback: TrailerPlayback,
     maxHeight: Int,
     /** False while the trailer is leaving, which stops the sound before the picture has gone. */
     active: Boolean,
@@ -82,7 +96,7 @@ internal fun TrailerStage(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var paused by remember(source.url) { mutableStateOf(false) }
+    var paused by remember(playback) { mutableStateOf(false) }
     // Tried at once and then retried, rather than waiting out a fixed delay. A requester whose node
     // has not been placed yet throws, and the window where that is true is the same window in which
     // the page underneath still answers the remote — so the first attempt goes in immediately and
@@ -130,15 +144,24 @@ internal fun TrailerStage(
             }
             .focusable(),
     ) {
-        TrailerSurface(
-            url = source.url,
-            audioUrl = source.audioUrl,
-            requestHeaders = source.requestHeaders,
-            maxHeight = source.height ?: maxHeight,
-            playing = active && !paused,
-            onEnded = onEnded,
-            onFailed = onFailed,
-        )
+        when (playback) {
+            is TrailerPlayback.Native -> TrailerSurface(
+                url = playback.source.url,
+                audioUrl = playback.source.audioUrl,
+                requestHeaders = playback.source.requestHeaders,
+                maxHeight = playback.source.height ?: maxHeight,
+                playing = active && !paused,
+                onEnded = onEnded,
+                onFailed = onFailed,
+            )
+            is TrailerPlayback.Embed -> TrailerEmbedSurface(
+                youtubeKey = playback.youtubeKey,
+                playing = active && !paused,
+                onEnded = onEnded,
+                onFailed = onFailed,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
 
         // Only while paused. A permanent "press back to exit" caption over a trailer is the kind
         // of thing that stops being read by the second title and never stops being on screen; the

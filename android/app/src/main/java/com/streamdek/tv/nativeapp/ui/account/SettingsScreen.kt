@@ -82,6 +82,8 @@ import androidx.tv.material3.Text
 import com.streamdek.tv.BuildConfig
 import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
+import com.streamdek.tv.nativeapp.data.DefaultTrailerDelaySeconds
+import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
 import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
 import com.streamdek.tv.nativeapp.data.RemotePlaylist
@@ -462,6 +464,27 @@ fun SettingsScreen(
                         ) { next, complete ->
                             savePreference("Play trailers automatically", complete) {
                                 repository.updateDetailPreferences(mapOf("heroTrailerAutoplay" to next))
+                            }
+                        }
+                        // How long the page has to itself before the trailer takes the screen.
+                        // Nothing here affects the trailer button, which always plays at once:
+                        // somebody who pressed it has already decided.
+                        SettingsDropdownRow(
+                            "Trailer start delay",
+                            "How long a title page stays put before its trailer begins. The trailer button ignores this and plays straight away.",
+                            (detailPrefs?.heroTrailerDelaySeconds ?: DefaultTrailerDelaySeconds)
+                                .coerceIn(0, MaxTrailerDelaySeconds).toString(),
+                            (0..MaxTrailerDelaySeconds).map { seconds ->
+                                seconds.toString() to if (seconds == 0) "Immediately" else "$seconds second${if (seconds == 1) "" else "s"}"
+                            },
+                        ) { value ->
+                            savePreference("Trailer start delay") {
+                                repository.updateDetailPreferences(
+                                    mapOf(
+                                        "heroTrailerDelaySeconds" to
+                                            (value.toIntOrNull() ?: DefaultTrailerDelaySeconds).coerceIn(0, MaxTrailerDelaySeconds),
+                                    ),
+                                )
                             }
                         }
                         // The same four steps the phone offers, against the same synced value, so a

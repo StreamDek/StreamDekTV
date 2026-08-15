@@ -926,6 +926,7 @@ class StreamDekRepository(
                 "detail" to mapOf(
                     "seasonTabStyle" to (partial["seasonTabStyle"] ?: existing.seasonTabStyle),
                     "heroTrailerAutoplay" to (partial["heroTrailerAutoplay"] ?: existing.heroTrailerAutoplay),
+                    "heroTrailerDelaySeconds" to (partial["heroTrailerDelaySeconds"] ?: existing.heroTrailerDelaySeconds),
                     "heroTrailerResolution" to (partial["heroTrailerResolution"] ?: existing.heroTrailerResolution),
                     "ratingsEnabled" to (partial["ratingsEnabled"] ?: existing.ratingsEnabled),
                     "externalRatingsEnabled" to (partial["externalRatingsEnabled"] ?: existing.externalRatingsEnabled),

@@ -436,10 +436,23 @@ data class HomeCatalogRowPreference(
     val title: String? = null,
 )
 
+/**
+ * How long a title page is left alone before its trailer starts, and the range it is held to.
+ *
+ * Kept here rather than beside either screen because two of them need it: the page that waits and
+ * the setting that changes it. The ceiling is a product decision — past about five seconds a viewer
+ * has finished with the page and the trailer arrives as an interruption rather than as the next
+ * thing — and it is enforced on read as well as on write, since the value also arrives from the
+ * phone and the web portal.
+ */
+const val DefaultTrailerDelaySeconds = 3
+const val MaxTrailerDelaySeconds = 5
+
 /** Detail-screen choices, profile-scoped apart from the account-wide MDBList key. */
 data class DetailPreferences(
     val seasonTabStyle: String? = null,
     val heroTrailerAutoplay: Boolean = true,
+    val heroTrailerDelaySeconds: Int = DefaultTrailerDelaySeconds,
     val heroTrailerResolution: Int = 2160,
     val ratingsEnabled: Boolean = true,
     val externalRatingsEnabled: Boolean = true,

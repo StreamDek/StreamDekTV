@@ -72,6 +72,7 @@ import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.DetailPreferences
+import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
@@ -83,6 +84,7 @@ import com.streamdek.tv.nativeapp.data.TraktCommentItem
 import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.resolveTrailerPlaybackSource
+import com.streamdek.tv.nativeapp.data.youtubeTrailerKey
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.LocalImmersiveContent
 import com.streamdek.tv.nativeapp.ui.LocalNavRailFocus
@@ -94,6 +96,7 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 
@@ -108,8 +111,6 @@ import kotlinx.coroutines.supervisorScope
  */
 private val DetailNavRailClearance = (TvNavRailInset - DetailInset).coerceAtLeast(0.dp)
 
-/** How long a title page is left alone before its trailer is asked for. */
-private const val AutoTrailerDelayMs = 4_000L
 
 /**
  * Marks a band as the place focus comes back to.
@@ -204,7 +205,16 @@ fun DetailScreen(
      * answer, would read as the app having crashed. Nothing moves until there is something to show.
      */
     var trailerRequest by remember(mediaType, mediaId) { mutableIntStateOf(0) }
-    var trailerSource by remember(mediaType, mediaId) { mutableStateOf<TrailerPlaybackSource?>(null) }
+    var trailerPlayback by remember(mediaType, mediaId) { mutableStateOf<TrailerPlayback?>(null) }
+    /**
+     * Set when neither route to the trailer worked, and said on the button.
+     *
+     * This used to be a log line and nothing else: the press did nothing, no reason was given, and
+     * the only reading available to the viewer was that the app was broken. It is cleared by the
+     * next request, so the action is still worth pressing again — whatever YouTube refused this
+     * minute it may well serve the next.
+     */
+    var trailerUnavailable by remember(mediaType, mediaId) { mutableStateOf(false) }
     /** Whether the trailer should be on screen. Cleared by Back; the source outlives it by one fade. */
     var trailerRunning by remember(mediaType, mediaId) { mutableStateOf(false) }
     var trailerResolving by remember(mediaType, mediaId) { mutableStateOf(false) }
@@ -309,6 +319,11 @@ fun DetailScreen(
     // but the player's track selector is handed the same figure and a synced value from a client
     // that allowed something odd should not reach it unchecked.
     val trailerMaxHeight = detailPrefs.heroTrailerResolution.coerceIn(360, 2160)
+    // Clamped on the way in as well as on the way out: this value also arrives from the phone and
+    // the web portal, and a page that sat still for a stored minute would read as a page that had
+    // simply stopped working.
+    val autoTrailerDelayMs = detailPrefs.heroTrailerDelaySeconds
+        .coerceIn(0, MaxTrailerDelaySeconds) * 1_000L
 
     /**
      * Every video this title has, with the metadata service's first pick at the front.
@@ -325,7 +340,7 @@ fun DetailScreen(
             .map { key -> "https://www.youtube.com/watch?v=$key" }
     }
     val hasTrailer = trailerCandidateUrls.isNotEmpty()
-    val trailerVisible = trailerSource != null && trailerRunning
+    val trailerVisible = trailerPlayback != null && trailerRunning
 
     // One value drives the whole handover, and the two halves of it do not overlap: the page leaves
     // over the first half and the trailer arrives over the second. A straight crossfade had both
@@ -337,7 +352,7 @@ fun DetailScreen(
         animationSpec = TvMotion.standardSpec(TvMotion.Expand * 2),
         // Held in composition until it has finished leaving, or the picture would cut out on the
         // frame Back was pressed and only the page would animate.
-        finishedListener = { progress -> if (progress <= 0.001f) trailerSource = null },
+        finishedListener = { progress -> if (progress <= 0.001f) trailerPlayback = null },
         label = "trailer-transition",
     )
     val pageAlpha = (1f - trailerTransition * 2f).coerceIn(0f, 1f)
@@ -366,6 +381,7 @@ fun DetailScreen(
 
     LaunchedEffect(trailerRequest) {
         if (trailerRequest == 0 || trailerCandidateUrls.isEmpty()) return@LaunchedEffect
+        trailerUnavailable = false
         trailerResolving = true
         val resolved = runCatching {
             resolveTrailerPlaybackSource(
@@ -375,12 +391,25 @@ fun DetailScreen(
             )
         }.onFailure { TvDebugLogger.w("Trailer", "could not resolve a trailer", it) }.getOrNull()
         trailerResolving = false
-        val source = resolved?.source
-        if (source == null) {
+        // Leaving the page cancels the resolve, and runCatching treats that cancellation as an
+        // ordinary failure — so without this the embed is raised for a screen the viewer has
+        // already walked away from, and the log claims YouTube refused something it never answered.
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        // A file if the resolver got one, and YouTube's own embed for the same video if it did not.
+        //
+        // The refusal being fallen back from is usually not about this title at all: the player API
+        // answers "sign in to confirm you're not a bot" to whole networks at a time, and the embed
+        // is unaffected by it because it is the published interface rather than an internal one. It
+        // also carries the age-gated trailers extraction has never been able to reach.
+        val playback = resolved?.source?.let(TrailerPlayback::Native)
+            ?: trailerCandidateUrls.firstNotNullOfOrNull { youtubeTrailerKey(it) }?.let(TrailerPlayback::Embed)
+        if (playback == null) {
             TvDebugLogger.i("Trailer", "no playable trailer for ${detail?.title.orEmpty()}")
-            // Nothing to raise, and nothing said about it: the page is what the viewer came for and
-            // it is already in front of them. The action stays, so a second press can try again.
+            trailerUnavailable = true
             return@LaunchedEffect
+        }
+        if (playback is TrailerPlayback.Embed) {
+            TvDebugLogger.i("Trailer", "player API gave nothing for ${detail?.title.orEmpty()}; using the embed")
         }
         // A moment with the page to itself before it is taken away.
         //
@@ -390,9 +419,9 @@ fun DetailScreen(
         // somebody who just asked for the trailer is not waiting four seconds to be shown it.
         if (trailerRequestIsAuto) {
             val elapsed = System.currentTimeMillis() - pageOpenedAtMs
-            if (elapsed < AutoTrailerDelayMs) delay(AutoTrailerDelayMs - elapsed)
+            if (elapsed < autoTrailerDelayMs) delay(autoTrailerDelayMs - elapsed)
         }
-        trailerSource = source
+        trailerPlayback = playback
         trailerRunning = true
         trailerPlayed = true
     }
@@ -765,6 +794,7 @@ fun DetailScreen(
                             hasTrailer = hasTrailer,
                             trailerPlayed = trailerPlayed,
                             trailerLoading = trailerResolving,
+                            trailerUnavailable = trailerUnavailable,
                             onPlayTrailer = {
                                 if (!trailerResolving) {
                                     trailerRequestIsAuto = false
@@ -925,14 +955,27 @@ fun DetailScreen(
         }
         }
 
-        trailerSource?.let { source ->
+        trailerPlayback?.let { playback ->
             TrailerStage(
-                source = source,
+                playback = playback,
                 maxHeight = trailerMaxHeight,
                 active = trailerRunning,
                 focusRequester = trailerRequester,
                 onEnded = { dismissTrailer() },
-                onFailed = { dismissTrailer() },
+                onFailed = {
+                    // A resolved file that then fails is worth one more try by the other route
+                    // before the viewer is put back on the page. These links are short-lived and
+                    // single-use, so one that was good when it was resolved can be refused a moment
+                    // later — and the embed does not depend on them at all.
+                    val embedKey = trailerCandidateUrls.firstNotNullOfOrNull { youtubeTrailerKey(it) }
+                    if (playback is TrailerPlayback.Native && embedKey != null) {
+                        TvDebugLogger.w("Trailer", "native playback failed; falling back to the embed")
+                        trailerPlayback = TrailerPlayback.Embed(embedKey)
+                    } else {
+                        trailerUnavailable = true
+                        dismissTrailer()
+                    }
+                },
                 onBack = { dismissTrailer() },
                 modifier = Modifier.graphicsLayer { alpha = trailerStageAlpha },
             )
@@ -1030,6 +1073,7 @@ private fun DetailHero(
     hasTrailer: Boolean,
     trailerPlayed: Boolean,
     trailerLoading: Boolean,
+    trailerUnavailable: Boolean,
     onPlayTrailer: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -1268,6 +1312,9 @@ private fun DetailHero(
                     HeroTrailerAction(
                         label = when {
                             trailerLoading -> "Loading trailer…"
+                            // Ahead of "replay": if the last attempt came to nothing, that is the
+                            // news, even on a title whose trailer has played before.
+                            trailerUnavailable -> "Trailer unavailable"
                             trailerPlayed -> "Replay trailer"
                             else -> "Watch trailer"
                         },
