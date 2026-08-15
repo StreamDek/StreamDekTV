@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -98,6 +99,7 @@ import com.streamdek.tv.nativeapp.data.prettyCodecName
 import com.streamdek.tv.nativeapp.data.streamOriginLabel
 import com.streamdek.tv.nativeapp.data.streamProviderLabel
 import com.streamdek.tv.nativeapp.data.streamTransport
+import com.streamdek.tv.nativeapp.debrid.cachedAvailabilityLabel
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
@@ -109,6 +111,7 @@ import java.util.Locale
 
 internal enum class OverlayPanel {
     Streams,
+    Engine,
     Audio,
     Subtitles,
     Speed,
@@ -198,6 +201,7 @@ internal fun PlayerBottomBar(
     subtitlesRequester: FocusRequester,
     audioRequester: FocusRequester,
     sourcesRequester: FocusRequester,
+    engineRequester: FocusRequester,
     nextRequester: FocusRequester,
     watchedRequester: FocusRequester,
     speedRequester: FocusRequester,
@@ -421,9 +425,20 @@ internal fun PlayerBottomBar(
                     requester = sourcesRequester,
                     upRequester = timelineUpRequester,
                     leftRequester = if (isLive) liveProgressRequester else audioRequester,
-                    rightRequester = if (isLive) favouriteRequester else if (hasNext) nextRequester else watchedRequester,
+                    rightRequester = engineRequester,
                     onFocused = onInteract,
                     onClick = { onOpenPanel(OverlayPanel.Streams) },
+                )
+                PlayerControlIconButton(
+                    icon = Icons.Filled.Tune,
+                    label = "Engine",
+                    active = selectedPanel == OverlayPanel.Engine,
+                    requester = engineRequester,
+                    upRequester = timelineUpRequester,
+                    leftRequester = sourcesRequester,
+                    rightRequester = if (isLive) favouriteRequester else if (hasNext) nextRequester else watchedRequester,
+                    onFocused = onInteract,
+                    onClick = { onOpenPanel(OverlayPanel.Engine) },
                 )
                 if (isLive) {
                     // Favouriting was only possible by holding OK on a channel in the grid, which
@@ -434,7 +449,7 @@ internal fun PlayerBottomBar(
                         active = isFavourite,
                         requester = favouriteRequester,
                         upRequester = timelineUpRequester,
-                        leftRequester = sourcesRequester,
+                        leftRequester = engineRequester,
                         rightRequester = infoRequester,
                         onFocused = onInteract,
                         onClick = onToggleFavourite,
@@ -447,7 +462,7 @@ internal fun PlayerBottomBar(
                             label = "Next",
                             requester = nextRequester,
                             upRequester = timelineUpRequester,
-                            leftRequester = sourcesRequester,
+                            leftRequester = engineRequester,
                             rightRequester = watchedRequester,
                             onFocused = onInteract,
                             onClick = onNext,
@@ -458,7 +473,7 @@ internal fun PlayerBottomBar(
                         label = "Watched",
                         requester = watchedRequester,
                         upRequester = timelineUpRequester,
-                        leftRequester = if (hasNext) nextRequester else sourcesRequester,
+                        leftRequester = if (hasNext) nextRequester else engineRequester,
                         rightRequester = speedRequester,
                         onFocused = onInteract,
                         onClick = onMarkWatched,
@@ -677,6 +692,7 @@ internal fun PlayerOptionPanel(
     selectedSubtitleId: Int,
     selectedExternalSubtitleId: String?,
     currentSpeed: Double,
+    activeEngine: ActivePlaybackEngine,
     closeRequester: FocusRequester,
     firstItemRequester: FocusRequester,
     onClose: () -> Unit,
@@ -687,6 +703,7 @@ internal fun PlayerOptionPanel(
     onSelectSubtitle: (Int) -> Unit,
     onSelectExternalSubtitle: (ExternalSubtitleTrack) -> Unit,
     onSelectSpeed: (Double) -> Unit,
+    onSelectEngine: (ActivePlaybackEngine) -> Unit,
     modifier: Modifier = Modifier,
     /** Subtitle appearance, adjusted in place from the Subtitles panel rather than in Settings. */
     subtitleFontSize: Int = 55,
@@ -759,6 +776,7 @@ internal fun PlayerOptionPanel(
                         Text(
                             text = when (panel) {
                                 OverlayPanel.Streams -> "Sources"
+                                OverlayPanel.Engine -> "Player Engine"
                                 OverlayPanel.Audio -> "Audio"
                                 OverlayPanel.Subtitles -> "Subtitles"
                                 OverlayPanel.Speed -> "Playback Speed"
@@ -770,6 +788,7 @@ internal fun PlayerOptionPanel(
                         Text(
                             text = when (panel) {
                                 OverlayPanel.Streams -> "Switch streams without leaving playback."
+                                OverlayPanel.Engine -> "Switch engines without losing your place."
                                 OverlayPanel.Audio -> "Pick a different audio track."
                                 OverlayPanel.Subtitles -> "Change the track, then size and place it."
                                 OverlayPanel.Speed -> "Match playback speed to your preference."
@@ -841,6 +860,32 @@ internal fun PlayerOptionPanel(
                             onInteract = onInteract,
                             onClick = { onSelectStream(index) },
                         )
+                    }
+                }
+                OverlayPanel.Engine -> {
+                    item {
+                        OptionButton(
+                            label = "ExoPlayer",
+                            subtitle = "Media3 playback engine",
+                            active = activeEngine == ActivePlaybackEngine.Media3,
+                            activeBadge = if (activeEngine == ActivePlaybackEngine.Media3) "Selected" else null,
+                            requestFocus = firstItemRequester,
+                            onInteract = onInteract,
+                            onClick = { onSelectEngine(ActivePlaybackEngine.Media3) },
+                        )
+                    }
+                    item {
+                        OptionButton(
+                            label = "mpv",
+                            subtitle = "libMPV playback engine",
+                            active = activeEngine == ActivePlaybackEngine.MPV,
+                            activeBadge = if (activeEngine == ActivePlaybackEngine.MPV) "Selected" else null,
+                            onInteract = onInteract,
+                            onClick = { onSelectEngine(ActivePlaybackEngine.MPV) },
+                        )
+                    }
+                    item {
+                        PanelNote("Switching keeps your playback position. If a stream has no sound or a black screen, try the other engine.")
                     }
                 }
                 OverlayPanel.Audio -> {
@@ -1370,7 +1415,7 @@ private fun StreamOptionButton(
     val quality = streamQualityLabel(stream, releaseLabel)
     val size = streamSizeLabel(stream, releaseLabel)
     val availability = when {
-        stream.cachedBy.isNotEmpty() -> stream.cachedBy.joinToString(", ") to true
+        stream.cachedBy.isNotEmpty() -> cachedAvailabilityLabel(stream.cachedBy).orEmpty() to true
         !stream.url.isNullOrBlank() -> "Direct" to false
         !stream.nzbUrl.isNullOrBlank() -> "Usenet" to false
         else -> "Torrent" to false

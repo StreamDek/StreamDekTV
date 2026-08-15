@@ -65,6 +65,14 @@ class HomeViewModel(
             runCatching {
                 repository.homeContentStream(forceRefresh = forceRefresh).collect { content ->
                     if (!progressive && !content.isComplete) return@collect
+                    // A cold screen used to publish the first single rail, then the second and
+                    // third a few milliseconds later. That made the initial frame look assembled
+                    // piece by piece even though the core TMDB requests already run together.
+                    // Hold the skeleton until a useful first batch exists; slower rows below the
+                    // fold can still arrive progressively without delaying Home indefinitely.
+                    if (progressive && _uiState.value.content == null && !content.isComplete && content.rails.size < 3) {
+                        return@collect
+                    }
                     _uiState.value = _uiState.value.copy(
                         isLoading = !content.isComplete,
                         content = content,

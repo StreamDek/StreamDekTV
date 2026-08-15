@@ -422,6 +422,16 @@ fun SettingsScreen(
                     SettingsToggleRow("Size badges", "Show file sizes on stream choices", streamsPrefs?.showSizeBadges != false, selectedRequester) { next, complete ->
                         savePreference("Size badges", complete) { repository.updateStreamsPreferences(mapOf("showSizeBadges" to next)) }
                     }
+                    SettingsToggleRow(
+                        "StreamDek formatting",
+                        "Rebuild add-on results into StreamDek's comparison layout. Off shows the add-on's original text and line breaks.",
+                        streamsPrefs?.streamDekFormattingEnabled == true,
+                        selectedRequester,
+                    ) { next, complete ->
+                        savePreference("StreamDek formatting", complete) {
+                            repository.updateStreamsPreferences(mapOf("streamDekFormattingEnabled" to next))
+                        }
+                    }
                 }
                 SettingsDestination.Library -> {
                     SettingsToggleRow("Built-in catalogs", "Show StreamDek's default movie and series rows alongside add-ons", homePrefs?.defaultAppCatalogsEnabled != false, selectedRequester) { next, complete ->

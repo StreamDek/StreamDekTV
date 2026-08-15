@@ -31,6 +31,7 @@ import androidx.media3.ui.PlayerView
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.PlaybackStats
+import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 
 /** Media3 playback path used for CNCVerse Bridge VODs, matching Nuvio's primary engine. */
 @OptIn(UnstableApi::class)
@@ -66,9 +67,10 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var pendingSpeed = 1.0
   private var preferredAudioLanguage = "en"
   private var subtitlePositionPercent = 92
-  private var pendingSubtitle: MediaItem.SubtitleConfiguration? = null
+  private var pendingSubtitles: List<MediaItem.SubtitleConfiguration> = emptyList()
   private val audioSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
   private val subtitleSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
+  private val externalSubtitleSelections = mutableMapOf<String, Pair<Tracks.Group, Int>>()
   private val progressTicker = object : Runnable {
     override fun run() {
       exoPlayer?.let { active ->
@@ -185,12 +187,37 @@ class ExoPlaybackView @JvmOverloads constructor(
 
   override fun addSubtitleFile(path: String) {
     val current = source ?: return
-    pendingSubtitle = MediaItem.SubtitleConfiguration.Builder(Uri.parse(path))
+    pendingSubtitles = listOf(MediaItem.SubtitleConfiguration.Builder(Uri.parse(path))
+      .setId("streamdek-external:file")
       .setMimeType(subtitleMimeType(path))
       .setLanguage("en")
       .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-      .build()
+      .build())
     prepareSource(current, exoPlayer?.currentPosition ?: 0L)
+  }
+
+  override fun setExternalSubtitleTracks(tracks: List<ExternalSubtitleTrack>) {
+    // Called before setSource. Merely replacing these configurations never touches the active
+    // player, which is what makes every subsequent selection a track override rather than a media
+    // reload.
+    pendingSubtitles = tracks.distinctBy { it.id to it.url }.map { track ->
+      MediaItem.SubtitleConfiguration.Builder(Uri.parse(track.url))
+        .setId("streamdek-external:${track.id}")
+        .setMimeType(subtitleMimeType(track.url))
+        .setLanguage(track.language)
+        .setLabel(track.label)
+        .build()
+    }
+  }
+
+  override fun selectExternalSubtitleTrack(trackId: String): Boolean {
+    val selection = externalSubtitleSelections[trackId] ?: return false
+    val active = exoPlayer ?: return false
+    active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+      .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+      .setOverrideForType(TrackSelectionOverride(selection.first.mediaTrackGroup, selection.second))
+      .build()
+    return true
   }
 
   // Media3 has no subtitle-delay control: the renderer honours the timestamps in the track and
@@ -276,7 +303,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     val item = MediaItem.Builder()
       .setUri(url)
       .apply { inferMimeType(url)?.let(::setMimeType) }
-      .apply { pendingSubtitle?.let { setSubtitleConfigurations(listOf(it)) } }
+      .apply { if (pendingSubtitles.isNotEmpty()) setSubtitleConfigurations(pendingSubtitles) }
       .build()
     runCatching {
       active.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
@@ -328,6 +355,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   private fun dispatchTracks(tracks: Tracks) {
     audioSelections.clear()
     subtitleSelections.clear()
+    externalSubtitleSelections.clear()
     val audio = mutableListOf<MpvTrackInfo>()
     val subtitles = mutableListOf<MpvTrackInfo>()
     var nextId = 1
@@ -339,7 +367,14 @@ class ExoPlaybackView @JvmOverloads constructor(
         val info = MpvTrackInfo(id, if (group.type == C.TRACK_TYPE_AUDIO) "audio" else "sub", format.label, format.language, format.codecs, group.isTrackSelected(index))
         when (group.type) {
           C.TRACK_TYPE_AUDIO -> { audio += info; audioSelections[id] = group to index }
-          C.TRACK_TYPE_TEXT -> { subtitles += info; subtitleSelections[id] = group to index }
+          C.TRACK_TYPE_TEXT -> {
+            subtitles += info
+            subtitleSelections[id] = group to index
+            val formatId = format.id.orEmpty()
+            if (formatId.contains("streamdek-external:")) {
+              externalSubtitleSelections[formatId.substringAfter("streamdek-external:")] = group to index
+            }
+          }
         }
       }
     }

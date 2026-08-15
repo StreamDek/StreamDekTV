@@ -335,6 +335,10 @@ class StreamDekApi(
             response.use {
                 if (it.isSuccessful) {
                     val raw = it.body?.string()?.takeIf { payload -> payload.isNotBlank() }
+                        // A successful mutation is allowed to return 204/empty. Give typed write
+                        // callers an empty JSON object so they can distinguish success from a
+                        // failed request instead of reporting that Remove did nothing.
+                        ?: if (!idempotent) "{}" else null
                     if (raw == null) {
                         failureEpoch++
                     } else {

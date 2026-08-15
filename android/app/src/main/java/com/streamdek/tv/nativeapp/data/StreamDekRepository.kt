@@ -40,6 +40,230 @@ private val LIVE_ADDON_CATALOG_TYPES = setOf(
 )
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
+private const val ADDON_CACHE_SECONDS = 90
+private const val ADDON_CACHE_BYTES = 12L * 1024L * 1024L
+private const val WATCHLIST_MUTATION_GRACE_MS = 60_000L
+
+internal fun sameWatchlistTitle(left: MediaItem, right: MediaItem): Boolean {
+    fun normalizedType(item: MediaItem): String = when (item.type.trim().lowercase(Locale.US)) {
+        "series", "show" -> "tv"
+        else -> item.type.trim().lowercase(Locale.US)
+    }
+    fun canonicalId(item: MediaItem): String {
+        if (item.tmdbId > 0) return "tmdb:${item.tmdbId}"
+        val raw = item.id.trim().lowercase(Locale.US)
+        val tmdb = Regex("^(?:tmdb:)?(\\d+)$").matchEntire(raw)?.groupValues?.getOrNull(1)
+        return tmdb?.let { "tmdb:$it" } ?: raw
+    }
+    return normalizedType(left) == normalizedType(right) && canonicalId(left) == canonicalId(right)
+}
+
+internal fun mutateWatchlistSnapshot(
+    current: List<MediaItem>,
+    item: MediaItem,
+    remove: Boolean,
+): List<MediaItem> = if (remove) {
+    current.filterNot { sameWatchlistTitle(it, item) }
+} else if (current.any { sameWatchlistTitle(it, item) }) {
+    current
+} else {
+    listOf(item) + current
+}
+
+internal fun orderedConnectedSyncServices(primary: String, connected: Set<String>): List<String> =
+    (listOf(SyncServiceId.normalize(primary)) + SyncServiceId.all)
+        .distinct()
+        .filter(connected::contains)
+
+/** Give add-on answers the same short cache lifetime used by mobile unless the add-on sets one. */
+private object AddonResponseCacheInterceptor : okhttp3.Interceptor {
+    override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+        val response = chain.proceed(chain.request())
+        if (!response.isSuccessful) return response
+        val declared = response.header("Cache-Control").orEmpty()
+        val declaredPolicy = listOf("no-store", "max-age", "s-maxage").any { declared.contains(it, ignoreCase = true) }
+        if (declaredPolicy) return response
+        return response.newBuilder()
+            .header("Cache-Control", "private, max-age=$ADDON_CACHE_SECONDS")
+            .removeHeader("Pragma")
+            .build()
+    }
+}
+
+private fun JsonObject.streamString(vararg names: String): String? = names.firstNotNullOfOrNull { name ->
+    get(name)?.takeUnless { it.isJsonNull }?.let { element ->
+        runCatching { element.asString.trim().takeIf { it.isNotBlank() && it != "null" } }.getOrNull()
+    }
+}
+
+private fun JsonObject.streamStringMap(): Map<String, String> = entrySet().mapNotNull { (key, value) ->
+    runCatching { value.asString.trim().takeIf(String::isNotBlank)?.let { key to it } }.getOrNull()
+}.toMap()
+
+/** Parses loose Stremio stream JSON without dropping nested direct URLs or proxy headers. */
+internal fun parseAddonStreamsPayload(raw: String): List<AddonStream> {
+    val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return emptyList()
+    val streams = root.getAsJsonArray("streams") ?: return emptyList()
+    return streams.mapNotNull { element ->
+        val item = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+        // One malformed provider row must not discard every other result in a large AIO response.
+        runCatching {
+            val behavior = item.get("behaviorHints")?.takeIf { it.isJsonObject }?.asJsonObject
+            fun objectValue(parent: JsonObject?, name: String): JsonObject? =
+                parent?.get(name)?.takeIf { it.isJsonObject }?.asJsonObject
+            fun urlValue(value: com.google.gson.JsonElement?): String? = when {
+                value == null || value.isJsonNull -> null
+                value.isJsonPrimitive -> runCatching { value.asString.trim().takeIf(String::isNotBlank) }.getOrNull()
+                value.isJsonObject -> value.asJsonObject.streamString("url", "href")
+                else -> null
+            }
+            val url = urlValue(item.get("url"))
+                ?: urlValue(item.get("externalUrl"))
+                ?: urlValue(behavior?.get("url"))
+            val infoHash = item.streamString("infoHash") ?: url?.takeIf { it.startsWith("magnet:?", true) }
+                ?.let { Regex("btih:([A-Fa-f0-9]{32,40})").find(it)?.groupValues?.getOrNull(1) }
+            val requestHeaders = buildMap {
+                objectValue(objectValue(behavior, "proxyHeaders"), "request")?.streamStringMap()?.let(::putAll)
+                objectValue(behavior, "requestHeaders")?.streamStringMap()?.let(::putAll)
+                objectValue(item, "headers")?.streamStringMap()?.let(::putAll)
+                objectValue(item, "requestHeaders")?.streamStringMap()?.let(::putAll)
+            }
+            fun stringList(vararg names: String): List<String> {
+                val array = names.firstNotNullOfOrNull { name ->
+                    item.get(name)?.takeIf { it.isJsonArray }?.asJsonArray
+                } ?: return emptyList()
+                return array.mapNotNull { runCatching { it.asString.trim().takeIf(String::isNotBlank) }.getOrNull() }
+            }
+            val declaredCachedBy = stringList("cachedBy")
+            val providerText = listOf(
+                item.streamString("name"),
+                item.streamString("title"),
+                item.streamString("description"),
+                item.streamString("source", "provider"),
+            ).filterNotNull().joinToString(" ").lowercase(Locale.US)
+            // AIOStreams and similar aggregators frequently turn a debrid hit into a direct URL
+            // and name the service in the row, but omit Stremio's non-standard `cachedBy` field.
+            // A provider-labelled direct link is already available from that service, so retain
+            // that fact for cached-first ranking and for the picker attribution.
+            val inferredCachedBy = if (declaredCachedBy.isEmpty() &&
+                url?.let { it.startsWith("http://", true) || it.startsWith("https://", true) } == true
+            ) {
+                buildList {
+                    if (Regex("\\bdeep[ -]?brid\\b").containsMatchIn(providerText)) add("deepbrid")
+                    if (Regex("\\breal[ -]?debrid\\b|\\[rd\\+?]", RegexOption.IGNORE_CASE).containsMatchIn(providerText)) add("real-debrid")
+                    if (Regex("\\ball[ -]?debrid\\b").containsMatchIn(providerText)) add("alldebrid")
+                    if (Regex("\\bpremiumize(?:\\.me)?\\b").containsMatchIn(providerText)) add("premiumize")
+                    if (Regex("\\btorbox\\b").containsMatchIn(providerText)) add("torbox")
+                    if (Regex("\\bdebrid[ -]?link\\b").containsMatchIn(providerText)) add("debrid-link")
+                    if (Regex("\\boffcloud\\b").containsMatchIn(providerText)) add("offcloud")
+                }
+            } else {
+                emptyList()
+            }
+            AddonStream(
+                addonId = item.streamString("addonId").orEmpty(),
+                addonName = item.streamString("addonName").orEmpty(),
+                name = item.streamString("name"),
+                title = item.streamString("title"),
+                description = item.streamString("description"),
+                url = url,
+                infoHash = infoHash,
+                nzbUrl = item.streamString("nzbUrl", "nzb_url", "nzb"),
+                servers = stringList("servers", "nntpServers", "nntp_servers"),
+                fileIdx = item.get("fileIdx")?.let { runCatching { it.asInt }.getOrNull() },
+                filename = behavior?.streamString("filename") ?: item.streamString("filename"),
+                behaviorHints = behavior?.let {
+                    BehaviorHints(filename = it.streamString("filename"), bingeGroup = it.streamString("bingeGroup"))
+                },
+                quality = item.streamString("quality"),
+                size = item.streamString("size"),
+                cachedBy = declaredCachedBy.ifEmpty { inferredCachedBy },
+                bingeGroup = behavior?.streamString("bingeGroup") ?: item.streamString("bingeGroup"),
+                source = item.streamString("source", "provider"),
+                requestHeaders = requestHeaders,
+            )
+        }.getOrNull()
+    }
+}
+
+private fun streamSingleLine(value: String?): String? = value?.trim()
+    ?.replace(Regex("\\s+"), " ")
+    ?.takeIf(String::isNotBlank)
+
+/** Preserve the provider/debrid wording supplied by the add-on instead of hiding it. */
+internal fun addonStreamDisplayLabel(stream: AddonStream): String = listOfNotNull(
+    streamSingleLine(stream.name),
+    streamSingleLine(stream.source)?.takeUnless { it.equals(stream.addonName, ignoreCase = true) },
+    streamSingleLine(stream.title),
+    streamSingleLine(stream.description),
+    streamSingleLine(stream.behaviorHints?.filename ?: stream.filename),
+    streamSingleLine(stream.quality),
+    streamSingleLine(stream.size),
+).distinct().take(3).joinToString(" | ").ifBlank {
+    stream.addonName.takeIf(String::isNotBlank) ?: "Selected stream"
+}
+
+private val StreamQualityPattern = Regex("""(2160p|4k|uhd|1080p|720p|480p)""", RegexOption.IGNORE_CASE)
+
+/** Most add-ons embed quality in display text instead of the optional Stremio quality field. */
+internal fun inferredStreamQuality(stream: AddonStream): String? {
+    stream.quality?.trim()?.takeIf(String::isNotBlank)?.let { return it }
+    val evidence = listOfNotNull(
+        stream.name,
+        stream.title,
+        stream.description,
+        stream.behaviorHints?.filename,
+        stream.filename,
+    ).joinToString(" ")
+    return StreamQualityPattern.find(evidence)?.value
+}
+
+internal fun preferredQualityScore(quality: String?, preferredQuality: String): Int {
+    val preference = preferredQuality.trim().lowercase(Locale.US)
+    if (preference == "best" || preference == "auto") return 0
+    val normalized = quality.orEmpty().lowercase(Locale.US)
+    val is4k = "2160" in normalized || "4k" in normalized || "uhd" in normalized
+    val is1080 = "1080" in normalized
+    val is720 = "720" in normalized
+    return when (preference) {
+        "4k", "2160p" -> when {
+            is4k -> 4
+            is1080 -> 3
+            is720 -> 2
+            else -> 1
+        }
+        "1080p" -> when {
+            is1080 -> 4
+            is720 -> 3
+            is4k -> 2
+            else -> 1
+        }
+        "720p" -> when {
+            is720 -> 4
+            is1080 -> 3
+            is4k -> 2
+            else -> 1
+        }
+        else -> 0
+    }
+}
+
+internal fun parseQualityScore(quality: String?): Int {
+    val normalized = quality.orEmpty().lowercase(Locale.US)
+    return when {
+        "2160" in normalized || "4k" in normalized || "uhd" in normalized -> 4
+        "1080" in normalized -> 3
+        "720" in normalized -> 2
+        normalized.isNotBlank() -> 1
+        else -> 0
+    }
+}
+
+/** The picker contract: cached first, then the user's preferred quality. */
+internal fun cacheThenQualityComparator(preferredQuality: String): Comparator<AddonStream> =
+    compareByDescending<AddonStream> { it.cachedBy.isNotEmpty() }
+        .thenByDescending { preferredQualityScore(inferredStreamQuality(it), preferredQuality) }
+        .thenByDescending { parseQualityScore(inferredStreamQuality(it)) }
 
 /**
  * A usenet result: an NZB pointer plus the news servers to fetch it from, with no direct url and
@@ -109,11 +333,20 @@ internal fun streamAggregationKey(stream: AddonStream): String = listOf(
     stream.addonName,
     stream.name,
     stream.title,
+    stream.description,
     stream.infoHash?.lowercase(Locale.US),
     stream.url?.trim(),
+    stream.nzbUrl?.trim(),
+    stream.servers.joinToString("\u001e"),
+    stream.fileIdx,
+    stream.filename?.trim(),
     stream.behaviorHints?.filename?.trim(),
+    stream.behaviorHints?.bingeGroup?.trim(),
     stream.quality,
     stream.size,
+    stream.bingeGroup,
+    stream.source,
+    stream.requestHeaders.toSortedMap().entries.joinToString("\u001e") { "${it.key}=${it.value}" },
 ).joinToString("|")
 
 /**
@@ -127,6 +360,19 @@ internal fun mergeProgressiveStreamSnapshot(
 ): List<AddonStream> {
     val incomingKeys = incoming.mapTo(linkedSetOf(), ::streamAggregationKey)
     return incoming + previous.filter { streamAggregationKey(it) !in incomingKeys }
+}
+
+/** Applies a cache-check answer without changing stream identity or dropping provider results. */
+internal fun applyCachedProviders(
+    streams: List<AddonStream>,
+    cachedByHash: Map<String, List<String>>,
+): List<AddonStream> = streams.map { stream ->
+    if (stream.cachedBy.isNotEmpty()) return@map stream
+    val hash = stream.infoHash?.trim()?.lowercase(Locale.US)
+        ?: stream.url?.takeIf { it.startsWith("magnet:?", ignoreCase = true) }
+            ?.let { Regex("btih:([A-Fa-f0-9]{32,40})").find(it)?.groupValues?.getOrNull(1)?.lowercase(Locale.US) }
+    val providers = hash?.let(cachedByHash::get).orEmpty()
+    if (providers.isEmpty()) stream else stream.copy(cachedBy = providers)
 }
 
 
@@ -262,6 +508,9 @@ class StreamDekRepository(
     private val seasonCache = lruCache<String, SeasonDetail>(32)
     private val homeCache = lruCache<String, HomeContent>(4)
     private val libraryCache = lruCache<String, LibraryResponse>(4)
+    private data class PendingWatchlistMutation(val item: MediaItem, val remove: Boolean, val recordedAt: Long)
+    private val pendingWatchlistMutations = mutableMapOf<String, MutableList<PendingWatchlistMutation>>()
+    private val pendingWatchlistLock = Any()
     private val searchCache = lruCache<String, List<MediaItem>>(16)
     private val addonSearchCache = lruCache<String, List<MediaItem>>(16)
     private val playlistCache = lruCache<String, List<RemotePlaylist>>(4)
@@ -275,14 +524,24 @@ class StreamDekRepository(
      * mobile app's fresh-stream fetch used when a cached addon link has expired.
      */
     private val directStreamClient = okhttp3.OkHttpClient.Builder()
-        .connectTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(150, java.util.concurrent.TimeUnit.SECONDS)
+        .apply {
+            appContext?.let { context ->
+                runCatching { cache(okhttp3.Cache(File(context.cacheDir, "addon-http"), ADDON_CACHE_BYTES)) }
+            }
+        }
+        .addNetworkInterceptor(AddonResponseCacheInterceptor)
         .build()
     private val episodeSegmentCache = lruCache<String, List<PlaybackSegment>>(32)
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
     /** Prevent an older bootstrap response from publishing after a newer settings mutation. */
     private val bootstrapRefreshMutex = kotlinx.coroutines.sync.Mutex()
+    private val addonEntitlementsMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var addonEntitlementsUserId: String? = null
+    @Volatile private var serverSideStreamsEnabled: Boolean = false
 
     /**
      * The active profile's stored blob exactly as the backend holds it. Kept raw because it also
@@ -485,6 +744,8 @@ class StreamDekRepository(
         sessionStore.clearSession()
         clearDebridKeys()
         bootstrapState.value = null
+        addonEntitlementsUserId = null
+        serverSideStreamsEnabled = false
         fusionBadgeSourcesState.value = emptyMap()
         reloadFavouriteChannels()
         detailsCache.clear()
@@ -538,6 +799,9 @@ class StreamDekRepository(
         // fetch those in the background rather than on the first stream lookup.
         pluginEngine?.selectProfile(sessionStore.activeProfileId())
         pluginEngine?.warmUp(bootstrap?.profilePlugins)
+        // Resolve direct/server mode while the profile picker or Home is being shown. Stream
+        // selection can then fan out immediately instead of waiting on this account check first.
+        repositoryScope.launch { runCatching { usesServerSideStreams() } }
         reloadFavouriteChannels()
         refreshFavouriteChannelsFromCloud()
         // In the background rather than on the first playback: a television that has just signed
@@ -786,6 +1050,18 @@ class StreamDekRepository(
             "/debrid/accounts/$encoded",
             mapOf("enabled" to enabled),
         ) ?: return false
+        // Apply the account switch immediately to this device too. Waiting for the asynchronous
+        // cloud-key refresh leaves a disabled provider available for one more picker/playback.
+        appContext?.let { context ->
+            val stored = DebridKeyStore.load(context)
+            if (stored.any { it.provider == provider }) {
+                DebridKeyStore.save(
+                    context,
+                    stored.map { key -> if (key.provider == provider) key.copy(enabled = enabled) else key },
+                )
+                deviceDebridManager = null
+            }
+        }
         refreshBootstrap()
         return response.get("success")?.asBoolean == true
     }
@@ -1428,6 +1704,21 @@ class StreamDekRepository(
         return api.get<TraktCommentsResponse>("/trakt/comments/$type/$id")?.results.orEmpty()
     }
 
+    suspend fun fetchPerson(id: String): PersonDetail? {
+        val raw = api.get<com.google.gson.JsonObject>("/tmdb/person/${encodePathSegment(id)}") ?: return null
+        val personJson = raw.getAsJsonObject("person") ?: raw
+        val person = runCatching { api.gson.fromJson(personJson, PersonDetail::class.java) }.getOrNull() ?: return null
+        val worksJson = sequenceOf("popularWorks", "knownFor", "credits")
+            .mapNotNull { key -> raw.getAsJsonArray(key) }
+            .firstOrNull()
+        val works = worksJson?.let { array ->
+            val type = object : com.google.gson.reflect.TypeToken<List<MediaItem>>() {}.type
+            runCatching { api.gson.fromJson<List<MediaItem>>(array, type) }.getOrDefault(emptyList())
+        }.orEmpty()
+        return person.copy(popularWorks = person.popularWorks.ifEmpty { works })
+            .takeIf { it.name.isNotBlank() }
+    }
+
     suspend fun fetchSeason(id: String, seasonNumber: Int, forceRefresh: Boolean = false): SeasonDetail? {
         val cacheKey = "$id:$seasonNumber"
         if (!forceRefresh) {
@@ -1470,7 +1761,10 @@ class StreamDekRepository(
         }
         val merged = library.copy(
             continueWatching = mergedContinueWatching,
-            watchlist = watchlist,
+            // A provider can briefly return its pre-write snapshot. Keep confirmed edits over
+            // that answer long enough for Trakt/SIMKL/MDBList to converge, including when the
+            // viewer leaves Library and comes straight back.
+            watchlist = applyPendingWatchlistMutations(cacheKey, watchlist),
         )
         // An empty library is perfectly normal for a new account, so only an empty result that
         // also had failed requests behind it is reported as a problem worth showing.
@@ -1714,10 +2008,14 @@ class StreamDekRepository(
      */
     private fun syncServiceChain(requires: (SyncServiceCapabilities) -> Boolean): List<String> {
         val primary = primarySyncService()
-        return listOf(primary, SyncServiceId.TRAKT)
-            .distinct()
-            .filter { requires(SyncServiceCapabilities.of(it)) && isSyncServiceConnected(it) }
+        val connected = SyncServiceId.all
+            .filterTo(linkedSetOf(), ::isSyncServiceConnected)
+        return orderedConnectedSyncServices(primary, connected)
+            .filter { requires(SyncServiceCapabilities.of(it)) }
     }
+
+    suspend fun isInWatchlist(item: MediaItem, forceRefresh: Boolean = false): Boolean =
+        fetchLibrary(forceRefresh).watchlist.any { sameWatchlistTitle(it, item) }
 
     suspend fun addToWatchlist(item: MediaItem) {
         updateWatchlist(item, remove = false)
@@ -1728,29 +2026,46 @@ class StreamDekRepository(
     }
 
     private suspend fun updateWatchlist(item: MediaItem, remove: Boolean) {
-        val tmdbId = item.tmdbId.takeIf { it > 0 } ?: item.id.toIntOrNull()
+        val tmdbId = item.tmdbId.takeIf { it > 0 }
+            ?: Regex("(?:tmdb:)?(\\d+)$", RegexOption.IGNORE_CASE).find(item.id)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val entry: Map<String, Any?> = mapOf(
             "title" to item.title,
             "year" to item.year?.toIntOrNull(),
             "ids" to mapOf<String, Any?>("tmdb" to tmdbId),
         )
-        val payload = if (item.type == "tv") {
+        val isSeries = item.type.trim().lowercase(Locale.US) in setOf("tv", "series", "show")
+        val payload = if (isSeries) {
             mapOf("movies" to emptyList<Any>(), "shows" to listOf(entry))
         } else {
             mapOf("movies" to listOf(entry), "shows" to emptyList<Any>())
         }
         val action = if (remove) "remove" else "add"
-        // Only the profile's own service is written to. Mirroring the change into Trakt as well
-        // would quietly edit a list the viewer did not ask to touch.
-        val services = syncServiceChain { it.watchlistWrite }.take(1)
+        // Match mobile: a watchlist edit fans out to every connected tracking provider. The
+        // selected primary service still owns what Library reads; fan-out keeps Trakt, SIMKL and
+        // MDBList in agreement when the viewer changes that selection on another device.
+        val services = syncServiceChain { it.watchlistWrite }
             .ifEmpty { listOf(primarySyncService()) }
+        val sourceService = services.first()
+        var sourceUpdated = false
         for (service in services) {
             val response = api.post<Map<String, Any>>("/$service/sync/watchlist/$action", payload)
-            if (response != null) break
-            TvDebugLogger.w("Watchlist", "$action failed on $service for ${item.type}:${item.id}")
+            if (response != null) {
+                if (service == sourceService) sourceUpdated = true
+            } else {
+                TvDebugLogger.w("Watchlist", "$action failed on $service for ${item.type}:${item.id}")
+            }
         }
-        // Refreshing is a courtesy; a failure here must not surface as a failed watchlist edit.
-        runCatching { fetchLibrary(forceRefresh = true) }
+        if (!sourceUpdated) throw ContentUnavailableException("Could not ${if (remove) "remove this title from" else "add this title to"} your watchlist.")
+        // Publish the successful mutation immediately. Tracking providers can be eventually
+        // consistent; force-reading in the same frame used to replace the whole grid with a
+        // transient empty response and later resurrect the item that had just been removed.
+        val cacheKey = buildSessionProfileCacheKey()
+        rememberPendingWatchlistMutation(cacheKey, item, remove)
+        libraryCache[cacheKey]?.let { current ->
+            libraryCache[cacheKey] = current.copy(
+                watchlist = mutateWatchlistSnapshot(current.watchlist, item, remove),
+            )
+        }
     }
 
     /**
@@ -2272,7 +2587,9 @@ class StreamDekRepository(
                 return lookupType to dedupeStreams(merged)
             }
         }
-        // Aggregated backend route as the final fallback, matching mobile behavior.
+        // The aggregate route belongs exclusively to server-side mode. A direct account must
+        // never leak an otherwise-empty lookup across the mode boundary as a fallback.
+        if (!usesServerSideStreams()) return lookupTypes.firstOrNull() to emptyList()
         for (lookupType in lookupTypes) {
             val aggregated = runCatching {
                 api.get<AddonStreamsResponse>("/addons/streams/$lookupType/${encodePathSegment(videoId)}")?.streams
@@ -2353,22 +2670,57 @@ class StreamDekRepository(
         isLive: Boolean,
         forceRefresh: Boolean = false,
     ): List<AddonStream> {
-        if (forceRefresh) {
-            val direct = fetchFreshStreamsFromAddon(addon, lookupType, videoId)
-            if (direct.isNotEmpty()) return direct
+        // Keep the two modes isolated. In direct mode every response is fetched and parsed on this
+        // device; in server-side mode this client never contacts the add-on itself.
+        if (usesServerSideStreams()) {
+            return runCatching {
+                api.get<AddonStreamsResponse>(
+                    "/addons/streams/single/${encodePathSegment(addon.id)}/$lookupType/${encodePathSegment(videoId)}",
+                )?.streams.orEmpty().map { it.withAddonIdentity(addon) }
+            }.getOrDefault(emptyList())
         }
-        val viaBackend = runCatching {
-            api.get<AddonStreamsResponse>(
-                "/addons/streams/single/${encodePathSegment(addon.id)}/$lookupType/${encodePathSegment(videoId)}",
-            )?.streams
-        }.getOrNull().orEmpty()
-        if (viaBackend.isNotEmpty()) {
-            return viaBackend.map { it.withAddonIdentity(addon) }
-        }
-        // Direct addon fallback mirrors mobile: only for ids the addon can actually serve.
+
+        // Direct add-on calls require the identifier shape the add-on understands.
         val requiresImdbId = !isLive && (lookupType == "movie" || lookupType == "series" || lookupType == "tv")
         if (requiresImdbId && !baseId.matches(Regex("^tt\\d+$", RegexOption.IGNORE_CASE))) return emptyList()
-        return fetchFreshStreamsFromAddon(addon, lookupType, videoId)
+        return fetchFreshStreamsFromAddon(addon, lookupType, videoId, forceNetwork = forceRefresh)
+    }
+
+    /** Fail closed to direct mode, matching mobile, and cache the entitlement once per account. */
+    private suspend fun usesServerSideStreams(): Boolean {
+        val userId = currentSession()?.user?.uid ?: return false
+        if (addonEntitlementsUserId == userId) return serverSideStreamsEnabled
+        return addonEntitlementsMutex.withLock {
+            if (addonEntitlementsUserId != userId) {
+                serverSideStreamsEnabled = runCatching {
+                    api.get<AddonEntitlements>("/addons/entitlements")?.serverSideStreams == true
+                }.getOrDefault(false)
+                addonEntitlementsUserId = userId
+            }
+            serverSideStreamsEnabled
+        }
+    }
+
+    private fun rememberPendingWatchlistMutation(cacheKey: String, item: MediaItem, remove: Boolean) {
+        synchronized(pendingWatchlistLock) {
+            val mutations = pendingWatchlistMutations.getOrPut(cacheKey) { mutableListOf() }
+            mutations.removeAll { sameWatchlistTitle(it.item, item) }
+            mutations += PendingWatchlistMutation(item, remove, System.currentTimeMillis())
+        }
+    }
+
+    private fun applyPendingWatchlistMutations(cacheKey: String, remote: List<MediaItem>): List<MediaItem> {
+        val active = synchronized(pendingWatchlistLock) {
+            val now = System.currentTimeMillis()
+            val mutations = pendingWatchlistMutations[cacheKey].orEmpty()
+                .filter { now - it.recordedAt < WATCHLIST_MUTATION_GRACE_MS }
+            if (mutations.isEmpty()) pendingWatchlistMutations.remove(cacheKey)
+            else pendingWatchlistMutations[cacheKey] = mutations.toMutableList()
+            mutations
+        }
+        return active.fold(remote) { current, mutation ->
+            mutateWatchlistSnapshot(current, mutation.item, mutation.remove)
+        }
     }
 
     private fun AddonStream.withAddonIdentity(addon: AddonManifest): AddonStream = copy(
@@ -2376,9 +2728,10 @@ class StreamDekRepository(
         addonName = addonName.ifBlank { addon.manifest.name },
     )
 
-    private fun dedupeStreams(streams: List<AddonStream>): List<AddonStream> = streams.distinctBy {
-        listOf(it.addonId, it.name, it.title, effectiveInfoHash(it), it.url, effectiveFilename(it)).joinToString("|")
-    }
+    // Only remove byte-for-byte-equivalent provider rows. File index, NZB server, quality, size,
+    // headers and every other playback-relevant field participate in the identity so distinct
+    // results from one provider are never collapsed merely because their labels or hash match.
+    private fun dedupeStreams(streams: List<AddonStream>): List<AddonStream> = streams.distinctBy(::streamAggregationKey)
 
     private fun addonSupportsStreamType(addon: AddonManifest, type: String): Boolean {
         val resources = addon.manifest.resources.mapNotNull { resource ->
@@ -2405,21 +2758,21 @@ class StreamDekRepository(
         addon: AddonManifest,
         type: String,
         videoId: String,
+        forceNetwork: Boolean = false,
     ): List<AddonStream> = withContext(Dispatchers.IO) {
         val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: return@withContext emptyList()
         val addonBaseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl.trimEnd('/'))
         val streamType = type.trim().lowercase(Locale.US)
         val request = okhttp3.Request.Builder()
-            .url("$addonBaseUrl/stream/${encodePathSegment(streamType)}/${encodePathSegment(videoId)}.json?_sd=${System.currentTimeMillis()}")
+            .url("$addonBaseUrl/stream/${addonPathSegment(streamType)}/${addonPathSegment(videoId)}.json")
             .header("User-Agent", "Stremio/4.4.168")
-            .header("Cache-Control", "no-cache")
+            .apply { if (forceNetwork) cacheControl(okhttp3.CacheControl.FORCE_NETWORK) }
             .build()
         runCatching {
             directStreamClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@use emptyList()
                 val raw = response.body?.string()?.takeIf { it.isNotBlank() } ?: return@use emptyList()
-                val parsed = com.google.gson.Gson().fromJson(raw, AddonStreamsResponse::class.java)
-                parsed?.streams.orEmpty().map { it.withAddonIdentity(addon) }
+                parseAddonStreamsPayload(raw).map { it.withAddonIdentity(addon) }
             }
         }.onFailure {
             TvDebugLogger.w("Playback", "fetchFreshStreamsFromAddon failed addon=${addon.id} type=$streamType id=$videoId")
@@ -2480,7 +2833,11 @@ class StreamDekRepository(
         val videoId = buildStreamVideoId(imdbId ?: mediaId, episode)
         val baseId = videoId.substringBefore(":")
 
-        val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
+        // Bootstrap already carries the same enabled add-on snapshot mobile starts from. A fresh
+        // manifest request here serialised every provider behind one avoidable backend round trip.
+        val addons = (bootstrapState.value?.integrations?.addons?.items.orEmpty()
+            .takeIf { it.isNotEmpty() }
+            ?: runCatching { fetchAddonManifests() }.getOrDefault(emptyList()))
             .filter { it.enabled }
             .sortedBy { it.position }
 
@@ -2512,6 +2869,17 @@ class StreamDekRepository(
 
         suspend fun mergeStreams(streams: List<AddonStream>) {
             mutex.withLock {
+                streams.forEach { stream ->
+                    val key = streamMergeKey(stream)
+                    if (merged.putIfAbsent(key, stream) == null) order.add(key)
+                }
+            }
+        }
+
+        suspend fun replaceStreams(streams: List<AddonStream>) {
+            mutex.withLock {
+                merged.clear()
+                order.clear()
                 streams.forEach { stream ->
                     val key = streamMergeKey(stream)
                     if (merged.putIfAbsent(key, stream) == null) order.add(key)
@@ -2573,6 +2941,12 @@ class StreamDekRepository(
             val (_, fallback) = fetchStreamsForPlayback(lookupTypes, videoId, isLive)
             mergeStreams(fallback)
         }
+        // Mobile asks the user's enabled premium services once, after every add-on/plugin has
+        // answered. Doing the same here avoids hammering providers after each progressive batch
+        // and ensures the final picker order and Cached column reflect this account, not merely
+        // whatever cache marker an add-on happened to include.
+        val completeSnapshot = mutex.withLock { order.mapNotNull { merged[it] } }
+        if (completeSnapshot.isNotEmpty()) replaceStreams(markCachedStreams(completeSnapshot))
         publish(done = true)
     }
 
@@ -3069,7 +3443,15 @@ class StreamDekRepository(
         // Real-Debrid's device sign-in stores a token plus the material that renews it, and only
         // the token is ever posted to the account — so taking the server's version wholesale would
         // drop the renewal material and leave a credential dead within the hour.
-        val selfRenewing = DebridKeyStore.load(context).filter { it.refreshToken != null }
+        val locallyRenewing = DebridKeyStore.load(context).filter { it.refreshToken != null }
+        val selfRenewing = locallyRenewing.map { local ->
+            val account = keys.firstOrNull { it.provider == local.provider }
+            if (account == null) local else local.copy(
+                priority = account.priority ?: local.priority,
+                enabled = account.enabled ?: local.enabled,
+                username = account.username ?: local.username,
+            )
+        }
         val fromAccount = keys.mapNotNull { key ->
             val provider = key.provider?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             if (selfRenewing.any { it.provider == provider }) return@mapNotNull null
@@ -3326,7 +3708,11 @@ class StreamDekRepository(
      * the same one playback will act on.
      */
     suspend fun markCachedStreams(streams: List<AddonStream>): List<AddonStream> {
-        val manager = deviceDebrid() ?: return streams
+        // The bootstrap is the authoritative enabled-state list. Device keys can briefly outlive
+        // a settings change, so never query one when the account says every service is disabled.
+        bootstrapState.value?.integrations?.debrid?.accounts?.let { accounts ->
+            if (accounts.none { it.enabled }) return streams
+        }
         val undecorated = streams.filter { it.cachedBy.isEmpty() }
         val hashes = undecorated.mapNotNull { effectiveInfoHash(it)?.lowercase(Locale.US) }.distinct()
         if (hashes.isEmpty()) return streams
@@ -3337,15 +3723,22 @@ class StreamDekRepository(
             val name = effectiveFilename(stream) ?: stream.title ?: return@mapNotNull null
             hash to name
         }.toMap()
-        val cached = runCatching { manager.checkCacheAll(hashes, names) }
+        val cached = runCatching {
+            deviceDebrid()?.checkCacheAll(hashes, names)
+                ?: currentSession()?.let {
+                    api.post<DebridCacheCheckResponse>(
+                        "/debrid/cache-check",
+                        buildMap<String, Any> {
+                            put("infoHashes", hashes)
+                            if (names.isNotEmpty()) put("names", names)
+                        },
+                    )?.cachedBy
+                }.orEmpty()
+        }
             .onFailure { TvDebugLogger.w("Debrid", "cache check failed", it) }
             .getOrDefault(emptyMap())
         if (cached.isEmpty()) return streams
-        return streams.map { stream ->
-            if (stream.cachedBy.isNotEmpty()) return@map stream
-            val providers = effectiveInfoHash(stream)?.lowercase(Locale.US)?.let(cached::get).orEmpty()
-            if (providers.isEmpty()) stream else stream.copy(cachedBy = providers)
-        }
+        return applyCachedProviders(streams, cached.mapKeys { it.key.lowercase(Locale.US) })
     }
 
     /**
@@ -3429,7 +3822,14 @@ class StreamDekRepository(
         val addon = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
             .firstOrNull { it.id == stream.addonId && it.enabled }
             ?: return stream
-        val fresh = fetchFreshStreamsFromAddon(addon, lookupType, videoId)
+        val fresh = fetchStreamsFromSingleAddon(
+            addon = addon,
+            lookupType = lookupType,
+            videoId = videoId,
+            baseId = videoId.substringBefore(":"),
+            isLive = lookupType in LIVE_ADDON_CATALOG_TYPES,
+            forceRefresh = true,
+        )
         if (fresh.isEmpty()) return stream
         val bingeGroup = effectiveBingeGroup(stream)
         val filename = effectiveFilename(stream)
@@ -3455,25 +3855,25 @@ class StreamDekRepository(
         val preferredQuality = bootstrapState.value?.preferences?.playback?.preferredQuality ?: "best"
         val normalizedPreferredAddon = preferredAddonName?.trim()?.lowercase(Locale.US)
         val normalizedPreferredQuality = preferredQualityGroup?.trim()?.lowercase(Locale.US)
-        val autoSelectionLanguage = preferredAudioLanguageForAutoSelection()
-        val candidateStreams = if (preferredStreamKey.isNullOrBlank()) {
-            filterStreamsByPreferredAudioLanguage(streams, autoSelectionLanguage)
-        } else {
-            streams
-        }
-        return candidateStreams.sortedWith(
-            compareByDescending<AddonStream> { if (preferredStreamKey != null && streamSelectionKey(it) == preferredStreamKey) 10 else 0 }
+        val preferredAudioLanguage = preferredAudioLanguageForAutoSelection()
+        return streams.sortedWith(
+            compareByDescending<AddonStream> { it.cachedBy.isNotEmpty() }
+                .thenByDescending { preferredQualityScore(inferredStreamQuality(it), preferredQuality) }
+                .thenByDescending { if (preferredStreamKey != null && streamSelectionKey(it) == preferredStreamKey) 10 else 0 }
                 .thenByDescending {
                     if (!normalizedPreferredAddon.isNullOrBlank() && it.addonName.trim().lowercase(Locale.US) == normalizedPreferredAddon) 6 else 0
                 }
                 .thenByDescending {
-                    if (!normalizedPreferredQuality.isNullOrBlank() && it.quality?.trim()?.lowercase(Locale.US) == normalizedPreferredQuality) 4 else 0
+                    if (!normalizedPreferredQuality.isNullOrBlank() && inferredStreamQuality(it)?.trim()?.lowercase(Locale.US) == normalizedPreferredQuality) 4 else 0
                 }
                 .thenByDescending { if (!normalizedDirectUrl(it).isNullOrBlank()) 3 else 0 }
-                .thenByDescending { if (it.cachedBy.isNotEmpty()) 2 else 0 }
                 .thenByDescending { if (!effectiveInfoHash(it).isNullOrBlank()) 1 else 0 }
-                .thenByDescending { preferredQualityScore(it.quality, preferredQuality) }
-                .thenByDescending { parseQualityScore(it.quality) }
+                // Language is a preference, never a visibility filter. A provider's full response
+                // remains in the picker while matching rows sort nearer the top.
+                .thenByDescending {
+                    if (preferredAudioLanguage != null && streamMatchesPreferredAudioLanguage(it, preferredAudioLanguage)) 1 else 0
+                }
+                .thenByDescending { parseQualityScore(inferredStreamQuality(it)) }
         )
     }
 
@@ -3483,12 +3883,6 @@ class StreamDekRepository(
         val playbackLanguage = bootstrapState.value?.preferences?.playback?.defaultAudioLanguage?.trim()?.takeIf { it.isNotBlank() }
         val preferredLanguage = profileLanguage ?: playbackLanguage
         return preferredLanguage?.takeUnless { it.equals("auto", ignoreCase = true) }
-    }
-
-    private fun filterStreamsByPreferredAudioLanguage(streams: List<AddonStream>, preferredLanguage: String?): List<AddonStream> {
-        val normalizedPreference = preferredLanguage?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() } ?: return streams
-        val filtered = streams.filter { streamMatchesPreferredAudioLanguage(it, normalizedPreference) }
-        return if (filtered.isNotEmpty()) filtered else streams
     }
 
     private fun streamMatchesPreferredAudioLanguage(stream: AddonStream, preferredLanguage: String): Boolean {
@@ -3528,41 +3922,6 @@ class StreamDekRepository(
         }
     }
 
-    private fun preferredQualityScore(quality: String?, preferredQuality: String): Int {
-        val preference = preferredQuality.trim().lowercase(Locale.US)
-        if (preference == "best" || preference == "auto") return 0
-        val normalized = quality.orEmpty().lowercase()
-        val is4k = "2160" in normalized || "4k" in normalized || "uhd" in normalized
-        val is1080 = "1080" in normalized
-        val is720 = "720" in normalized
-        return when (preference) {
-            "4k", "2160p" -> if (is4k) 4 else -1
-            "1080p" -> when {
-                is1080 -> 4
-                is4k -> -3
-                else -> -1
-            }
-            "720p" -> when {
-                is720 -> 4
-                is4k -> -4
-                is1080 -> -2
-                else -> -1
-            }
-            else -> 0
-        }
-    }
-
-    private fun parseQualityScore(quality: String?): Int {
-        val normalized = quality.orEmpty().lowercase()
-        return when {
-            "2160" in normalized || "4k" in normalized -> 4
-            "1080" in normalized -> 3
-            "720" in normalized -> 2
-            normalized.isNotBlank() -> 1
-            else -> 0
-        }
-    }
-
     private fun guessContentType(url: String): String {
         val clean = url.substringBefore('?').lowercase()
         return when {
@@ -3573,12 +3932,7 @@ class StreamDekRepository(
     }
 
     private fun describeStream(stream: AddonStream): String {
-        return listOfNotNull(
-            stream.addonName.takeIf { it.isNotBlank() },
-            stream.quality,
-            stream.size,
-            stream.behaviorHints?.filename,
-        ).joinToString(" | ").ifBlank { "Selected stream" }
+        return addonStreamDisplayLabel(stream)
     }
 
     private fun buildMagnetLink(infoHash: String, filename: String?): String {

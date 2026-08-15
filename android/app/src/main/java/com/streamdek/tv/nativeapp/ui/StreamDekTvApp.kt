@@ -3,6 +3,9 @@ package com.streamdek.tv.nativeapp.ui
 import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.clipToBounds
@@ -17,6 +20,7 @@ import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Icon
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +48,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -55,6 +60,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
@@ -63,11 +69,16 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.compose.NavHost
@@ -144,16 +155,7 @@ private const val NavRailTransparentAlpha = 0.85f
 
 /** The navigation route the title page is registered under, kept in one place. */
 private const val DetailRoutePattern = "detail/{type}/{id}"
-
-/**
- * Screens that hold their own content clear of the navigation rail.
- *
- * Every other route is inset by the shell, which is simpler and right for a screen laid out on a
- * flat background. These two are full-bleed artwork, and an inset there paints a strip of
- * background down the left for the rail to sit on — which is what made a transparent rail look
- * solid on Home.
- */
-private val SelfInsetRoutes = setOf(DetailRoutePattern, "home")
+private const val PersonRoutePattern = "person/{id}"
 
 private fun detailRoute(mediaType: String, mediaId: String): String {
     val canonicalType = if (mediaType == "series") "tv" else mediaType
@@ -184,6 +186,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val settingsContentRequester = remember { FocusRequester() }
     /** The title page's own way back in from the rail, and the rail's way of being reached. */
     val detailContentRequester = remember { FocusRequester() }
+    val personContentRequester = remember { FocusRequester() }
     val navRailRequester = remember { FocusRequester() }
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
@@ -196,6 +199,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val startupProfileScope = rememberCoroutineScope()
     var startupProfileHandled by remember(session?.user?.uid) { mutableStateOf(false) }
     var startupProfileSwitching by remember(session?.user?.uid) { mutableStateOf(false) }
+    var startupBootstrapResolved by remember(session?.user?.uid) {
+        mutableStateOf(session == null || bootstrap != null)
+    }
     val startupProfiles = bootstrap?.streamProfiles.orEmpty()
     val showStartupProfilePicker = session != null &&
         bootstrap != null &&
@@ -220,10 +226,6 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     }
 
     LaunchedEffect(session?.user?.uid) {
-        if (session != null) {
-            runCatching { repository.refreshBootstrap() }
-                .onFailure { TvDebugLogger.e("Handoff", "Could not refresh the TV handoff key registration", it) }
-        }
         while (session != null) {
             if (pendingHandoff == null) {
                 runCatching { repository.fetchPendingHandoff() }
@@ -308,11 +310,34 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     var lastHomeItemKey by remember { mutableStateOf<String?>(null) }
     var homeFocusRestoreToken by remember { mutableStateOf(0) }
     var pendingDestinationFocus by remember { mutableStateOf<String?>(null) }
+    // The rail is always composed on browse routes. During a pop the returning screen may not
+    // have a focus target until its content is ready, so Android's spatial fallback briefly
+    // focuses (and opens) the persistent rail. Suppress only that transition-time expansion;
+    // never remove the rail as a valid focus target for normal remote navigation.
+    var railFocusHandoffPending by remember { mutableStateOf(false) }
+    var detailNavigationInProgress by remember { mutableStateOf(false) }
+    val openDetail: (String, String) -> Unit = { mediaType, mediaId ->
+        detailNavigationInProgress = true
+        navController.navigate(detailRoute(mediaType, mediaId))
+    }
+
+    LaunchedEffect(currentRoute) {
+        if (currentRoute != DetailRoutePattern && detailNavigationInProgress) {
+            detailNavigationInProgress = false
+        }
+    }
 
     LaunchedEffect(session?.user?.uid) {
+        startupBootstrapResolved = session == null || bootstrap != null
         if (session != null) {
-            runCatching { repository.refreshBootstrap() }
-                .onFailure { TvDebugLogger.e("Bootstrap", "Could not refresh account bootstrap", it) }
+            try {
+                runCatching { repository.refreshBootstrap() }
+                    .onFailure { TvDebugLogger.e("Bootstrap", "Could not refresh account bootstrap", it) }
+            } finally {
+                // A failed bootstrap must not trap the viewer on this gate forever. It only owns
+                // the interval in which the profile-picker decision is genuinely unresolved.
+                startupBootstrapResolved = true
+            }
         }
     }
 
@@ -379,26 +404,45 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             TopLevelDestination.Library.route to libraryContentRequester,
             TopLevelDestination.Profile.route to settingsContentRequester,
             DetailRoutePattern to detailContentRequester,
+            PersonRoutePattern to personContentRequester,
         )
     }
     LaunchedEffect(currentRoute, pendingDestinationFocus, showStartupProfilePicker) {
-        val route = pendingDestinationFocus ?: return@LaunchedEffect
-        if (showStartupProfilePicker || currentRoute != route) return@LaunchedEffect
-
-        // Navigation and the select-key release can both outlive the rail click. Wait until the
-        // destination is composed, then retry the hand-off instead of leaving focus on the rail
-        // when a single fixed delay happens to be too early on a slower TV.
-        repeat(6) { attempt ->
-            delay(if (attempt == 0) 180L else 80L)
-            val accepted = destinationContentRequesters[route]?.let { requester ->
-                runCatching { requester.requestFocus() }.getOrDefault(false)
-            } == true
-            if (accepted) {
-                pendingDestinationFocus = null
-                return@LaunchedEffect
-            }
+        val route = currentRoute
+        if (route == null || showStartupProfilePicker) {
+            railFocusHandoffPending = false
+            return@LaunchedEffect
         }
-        pendingDestinationFocus = null
+        if (pendingDestinationFocus != null && pendingDestinationFocus != route) {
+            railFocusHandoffPending = true
+            return@LaunchedEffect
+        }
+        val requester = destinationContentRequesters[route]
+        if (requester == null) {
+            railFocusHandoffPending = false
+            return@LaunchedEffect
+        }
+
+        // This runs for every route change, including plain popBackStack calls from nested
+        // screens. The short bounded retry window covers the spatial-focus fallback that occurs
+        // while the returning destination is being attached. It must remain bounded: some entry
+        // requesters legitimately reject programmatic focus (or the content is already focused),
+        // and that must never leave the navigation rail permanently disabled.
+        railFocusHandoffPending = true
+        try {
+            repeat(7) { attempt ->
+                delay(if (attempt == 0) 32L else 80L)
+                val accepted = runCatching { requester.requestFocus() }.getOrDefault(false) == true
+                if (accepted) {
+                    pendingDestinationFocus = null
+                    return@LaunchedEffect
+                }
+            }
+            pendingDestinationFocus = null
+        } finally {
+            // Focusability is never gated, and expansion suppression always has a bounded exit.
+            railFocusHandoffPending = false
+        }
     }
 
     LaunchedEffect(exitHintVisible) {
@@ -406,6 +450,13 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         delay(ExitBackPressWindowMs)
         exitHintVisible = false
         lastExitBackPressAt = 0L
+    }
+
+    // Do not compose Home while account bootstrap is still deciding whether a profile picker is
+    // required. Its first-load skeleton was otherwise visible for a frame before the picker.
+    if (!startupBootstrapResolved) {
+        StartupBootstrapGate()
+        return
     }
 
     // This is a startup destination, not a dialog over Home. Keeping the NavHost composed behind
@@ -422,8 +473,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 if (!startupProfileSwitching) {
                     startupProfileSwitching = true
                     startupProfileScope.launch {
+                        val transitionStartedAt = System.currentTimeMillis()
                         repository.setActiveStreamProfile(profile.id)
                         repository.refreshBootstrap()
+                        val remainingTransitionMs = 520L - (System.currentTimeMillis() - transitionStartedAt)
+                        if (remainingTransitionMs > 0L) delay(remainingTransitionMs)
                         startupProfileHandled = true
                         startupProfileSwitching = false
                     }
@@ -528,8 +582,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             // from a row, decide against it, and want to be somewhere else. Without the rail the
             // only way out was Back, and only back the way you came. It still stays off the player
             // and the stream picker, where it would sit over the picture or over a decision.
-            val railRoutes = remember { topLevelDestinations.map { it.route } + DetailRoutePattern }
-            val railOnScreen = currentRoute in railRoutes && !showUpdatePrompt && chromeAlpha > 0.001f
+            val railRoutes = remember { topLevelDestinations.map { it.route } + listOf(DetailRoutePattern, PersonRoutePattern) }
+            val railOnScreen = currentRoute in railRoutes && !detailNavigationInProgress &&
+                !showUpdatePrompt && chromeAlpha > 0.001f
             CompositionLocalProvider(
                 LocalImmersiveContent provides { active -> immersiveContent = active },
                 LocalNavRailFocus provides navRailRequester.takeIf { railOnScreen },
@@ -537,17 +592,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             NavHost(
                 navController = navController,
                 startDestination = TopLevelDestination.Home.route,
-                // Screens whose artwork fills the frame are not inset here: a band of flat
-                // background down the left is exactly what a transparent rail has nothing to be
-                // transparent against. Those clear the rail from the inside, around their own
-                // content, so the picture still runs to the edge behind it.
-                modifier = Modifier.padding(
-                    start = if (currentRoute in topLevelDestinations.map { it.route } && currentRoute !in SelfInsetRoutes) {
-                        TvNavRailInset
-                    } else {
-                        0.dp
-                    },
-                ),
+                // Insets belong to individual destinations below. If this shared NavHost changes
+                // padding when the route changes, the outgoing page moves before its exit fade.
+                modifier = Modifier.fillMaxSize(),
                 enterTransition = { screenEnter },
                 exitTransition = { screenExit },
                 popEnterTransition = { screenPopEnter },
@@ -557,9 +604,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     HomeScreen(
                         repository = repository,
                         entryFocusRequester = homeContentRequester,
-                        onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate(detailRoute(mediaType, mediaId))
-                        },
+                        onOpenDetail = openDetail,
                         onOpenNetwork = { networkId, networkName ->
                             navController.navigate("network/$networkId/${Uri.encode(networkName)}")
                         },
@@ -579,17 +624,27 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         },
                     )
                 }
+                composable(PersonRoutePattern) { backStackEntryInner ->
+                    com.streamdek.tv.nativeapp.ui.detail.CastDetailScreen(
+                        repository = repository,
+                        personId = backStackEntryInner.arguments?.getString("id").orEmpty(),
+                        entryFocusRequester = personContentRequester,
+                        onBack = { navController.popBackStack() },
+                        onOpenDetail = openDetail,
+                    )
+                }
                 composable(TopLevelDestination.Search.route) {
+                    RailInsetDestination {
                     SearchScreen(
                         repository = repository,
                         entryFocusRequester = searchContentRequester,
-                        onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate(detailRoute(mediaType, mediaId))
-                        },
+                        onOpenDetail = openDetail,
                         onPlayLive = playLiveItem,
                     )
+                    }
                 }
                 composable(TopLevelDestination.Live.route) {
+                    RailInsetDestination {
                     LiveScreen(
                         sections = liveNavigationState.sections,
                         isLoading = liveNavigationState.loading,
@@ -616,6 +671,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         },
                         onPlayLive = playLiveItem,
                     )
+                    }
                 }
                 composable("live-view-all") {
                     LiveBrowseScreen(
@@ -629,15 +685,16 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     )
                 }
                 composable(TopLevelDestination.Library.route) {
+                    RailInsetDestination {
                     LibraryScreen(
                         repository = repository,
                         entryFocusRequester = libraryContentRequester,
-                        onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate(detailRoute(mediaType, mediaId))
-                        },
+                        onOpenDetail = openDetail,
                     )
+                    }
                 }
                 composable(TopLevelDestination.Profile.route) {
+                    RailInsetDestination {
                     SettingsScreen(
                         repository = repository,
                         appUpdateManager = appUpdateManager,
@@ -645,6 +702,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         entryFocusRequester = settingsContentRequester,
                         onSignIn = { navController.navigate("auth") },
                     )
+                    }
                 }
                 composable("network/{id}/{name}") { backStackEntryInner ->
                     NetworkBrowseScreen(
@@ -652,9 +710,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         networkId = backStackEntryInner.arguments?.getString("id").orEmpty(),
                         networkName = Uri.decode(backStackEntryInner.arguments?.getString("name").orEmpty()),
                         onBack = { navController.popBackStack() },
-                        onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate(detailRoute(mediaType, mediaId))
-                        },
+                        onOpenDetail = openDetail,
                     )
                 }
                 composable("auth") {
@@ -719,9 +775,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         mediaId = backStackEntryInner.arguments?.getString("id").orEmpty(),
                         entryFocusRequester = detailContentRequester,
                         onBack = { navController.popBackStack() },
-                        onOpenDetail = { mediaType, mediaId ->
-                            navController.navigate(detailRoute(mediaType, mediaId))
-                        },
+                        onOpenDetail = openDetail,
+                        onContentReady = { detailNavigationInProgress = false },
+                        onOpenPerson = { personId -> navController.navigate("person/${Uri.encode(personId)}") },
                         onPlay = { request: PlaybackRequest ->
                             val preferences = bootstrap?.preferences
                             val useAutoSelection = preferences?.streams?.showStreamsList == false ||
@@ -766,6 +822,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     contentRequesters = destinationContentRequesters,
                     transparent = appPrefs?.transparentNavigation != false,
                     railRequester = navRailRequester,
+                    suppressExpansion = railFocusHandoffPending,
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .graphicsLayer { alpha = chromeAlpha },
@@ -846,6 +903,20 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
 }
 
 @Composable
+private fun StartupBootstrapGate() {
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "StreamDek",
+            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
+            color = Color.White,
+        )
+    }
+}
+
+@Composable
 private fun StartupProfilePicker(
     profiles: List<StreamProfile>,
     activeProfileId: String?,
@@ -860,9 +931,20 @@ private fun StartupProfilePicker(
     var pin by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf<String?>(null) }
     var checkingPin by remember { mutableStateOf(false) }
+    var selectedProfileId by remember { mutableStateOf<String?>(null) }
+    val avatarBounds = remember { mutableStateMapOf<String, Rect>() }
+    val selectedProfile = profiles.firstOrNull { it.id == selectedProfileId }
+        ?: profiles.firstOrNull { it.id == activeProfileId }
+        ?: profiles.firstOrNull()
+
+    fun choose(profile: StreamProfile) {
+        selectedProfileId = profile.id
+        onChoose(profile)
+    }
 
     BackHandler(enabled = true) { /* A profile is required before entering the app. */ }
-    LaunchedEffect(profiles) {
+    LaunchedEffect(profiles, switching) {
+        if (switching) return@LaunchedEffect
         delay(100)
         runCatching { firstRequester.requestFocus() }
     }
@@ -871,89 +953,106 @@ private fun StartupProfilePicker(
         modifier = Modifier.fillMaxSize().background(Color.Black),
         contentAlignment = Alignment.Center,
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 96.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(30.dp),
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    "Who's watching?",
-                    style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
-                    color = Color.White,
-                )
-                Text(
-                    "Choose a profile for this TV",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.64f),
-                )
-            }
-            Row(
-                modifier = Modifier.focusGroup(),
-                horizontalArrangement = Arrangement.spacedBy(22.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                profiles.forEachIndexed { index, profile ->
-                    Card(
-                        onClick = {
-                            if (!switching) {
-                                if (profile.hasPinSet) {
-                                    lockedProfile = profile
-                                    pin = ""
-                                    pinError = null
-                                } else {
-                                    onChoose(profile)
+        Crossfade(
+            targetState = switching,
+            modifier = Modifier.fillMaxSize(),
+            animationSpec = tween(durationMillis = 280),
+            label = "profile-entry-transition",
+        ) { enteringProfile ->
+            if (enteringProfile && selectedProfile != null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    ProfileEntryTransition(
+                        profile = selectedProfile,
+                        startBounds = avatarBounds[selectedProfile.id],
+                    )
+                }
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 96.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(30.dp),
+                    ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "Who's watching?",
+                            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
+                            color = Color.White,
+                        )
+                        Text(
+                            "Choose a profile for this TV",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White.copy(alpha = 0.64f),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.focusGroup(),
+                        horizontalArrangement = Arrangement.spacedBy(22.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        profiles.forEachIndexed { index, profile ->
+                            Card(
+                                onClick = {
+                                    if (!switching) {
+                                        if (profile.hasPinSet) {
+                                            lockedProfile = profile
+                                            pin = ""
+                                            pinError = null
+                                        } else {
+                                            choose(profile)
+                                        }
+                                    }
+                                },
+                                modifier = Modifier
+                                    .width(210.dp)
+                                    .height(220.dp)
+                                    .then(if (index == 0) Modifier.focusRequester(firstRequester) else Modifier),
+                                colors = CardDefaults.colors(
+                                    containerColor = Color.White.copy(alpha = 0.07f),
+                                    focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
+                                ),
+                                border = CardDefaults.border(
+                                    focusedBorder = Border(
+                                        androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.primary),
+                                        shape = RoundedCornerShape(18.dp),
+                                    ),
+                                ),
+                                scale = CardDefaults.scale(focusedScale = 1.04f),
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize().padding(22.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Box(
+                                        modifier = Modifier.onGloballyPositioned { coordinates ->
+                                            avatarBounds[profile.id] = coordinates.boundsInRoot()
+                                        },
+                                    ) {
+                                        ProfileAvatarCircle(profile.avatarIndex, profile.name, 92.dp)
+                                    }
+                                    Spacer(Modifier.height(16.dp))
+                                    Text(
+                                        profile.name,
+                                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                        color = Color.White,
+                                    )
+                                    Text(
+                                        when {
+                                            profile.hasPinSet -> "PIN required"
+                                            profile.id == activeProfileId -> "Last used"
+                                            profile.isDefault -> "Default"
+                                            else -> "Ready to watch"
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Color.White.copy(alpha = 0.58f),
+                                    )
                                 }
                             }
-                        },
-                        modifier = Modifier
-                            .width(210.dp)
-                            .height(220.dp)
-                            .then(if (index == 0) Modifier.focusRequester(firstRequester) else Modifier),
-                        colors = CardDefaults.colors(
-                            containerColor = Color.White.copy(alpha = 0.07f),
-                            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
-                        ),
-                        border = CardDefaults.border(
-                            focusedBorder = Border(
-                                androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.primary),
-                                shape = RoundedCornerShape(18.dp),
-                            ),
-                        ),
-                        scale = CardDefaults.scale(focusedScale = 1.04f),
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxSize().padding(22.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            ProfileAvatarCircle(profile.avatarIndex, profile.name, 92.dp)
-                            Spacer(Modifier.height(16.dp))
-                            Text(
-                                profile.name,
-                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                                color = Color.White,
-                            )
-                            Text(
-                                when {
-                                    profile.hasPinSet -> "PIN required"
-                                    profile.id == activeProfileId -> "Last used"
-                                    profile.isDefault -> "Default"
-                                    else -> "Ready to watch"
-                                },
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White.copy(alpha = 0.58f),
-                            )
                         }
                     }
+                    }
                 }
-            }
-            if (switching) {
-                Text(
-                    "Loading profile…",
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.titleMedium,
-                )
             }
         }
     }
@@ -1008,7 +1107,7 @@ private fun StartupProfilePicker(
                                 scope.launch {
                                     if (onVerifyPin(profile, pin)) {
                                         lockedProfile = null
-                                        onChoose(profile)
+                                        choose(profile)
                                     } else {
                                         pinError = "That PIN is incorrect."
                                         pin = ""
@@ -1024,6 +1123,69 @@ private fun StartupProfilePicker(
                     }
                 }
             }
+        }
+    }
+}
+
+/** Moves the chosen portrait from its card into the centre while the profile bootstrap refreshes. */
+@Composable
+private fun ProfileEntryTransition(profile: StreamProfile, startBounds: Rect?) {
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val progress = remember(profile.id) { Animatable(0f) }
+    val screenCenterX = with(density) { configuration.screenWidthDp.dp.toPx() / 2f }
+    val screenCenterY = with(density) { configuration.screenHeightDp.dp.toPx() / 2f }
+    val startOffsetX = startBounds?.center?.x?.minus(screenCenterX) ?: 0f
+    val startOffsetY = startBounds?.center?.y?.minus(screenCenterY) ?: 0f
+
+    LaunchedEffect(profile.id, startBounds) {
+        progress.snapTo(0f)
+        progress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 460, easing = FastOutSlowInEasing),
+        )
+    }
+
+    val amount = progress.value
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        val ringSize = lerp(92.dp, 144.dp, amount)
+        val portraitSize = lerp(92.dp, 116.dp, amount)
+        Box(
+            modifier = Modifier
+                .size(ringSize)
+                .graphicsLayer {
+                    translationX = startOffsetX * (1f - amount)
+                    translationY = startOffsetY * (1f - amount)
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = amount },
+                color = MaterialTheme.colorScheme.primary,
+                strokeWidth = 3.dp,
+            )
+            ProfileAvatarCircle(profile.avatarIndex, profile.name, portraitSize)
+        }
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.graphicsLayer {
+                alpha = amount
+                translationY = 12.dp.toPx() * (1f - amount)
+            },
+        ) {
+            Text(
+                "Welcome back,",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White.copy(alpha = 0.62f),
+            )
+            Text(
+                profile.name,
+                style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
+                color = Color.White,
+            )
         }
     }
 }
@@ -1330,6 +1492,16 @@ private fun AppUpdatePrompt(
     }
 }
 
+/**
+ * Clears flat-background top-level screens past the collapsed rail without coupling their
+ * geometry to the currently selected navigation route. Each NavHost entry retains this wrapper
+ * for its entire enter/exit transition, so neither page can shift underneath the fade.
+ */
+@Composable
+private fun RailInsetDestination(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().padding(start = TvNavRailInset)) { content() }
+}
+
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun TvSideNav(
@@ -1342,6 +1514,8 @@ private fun TvSideNav(
     transparent: Boolean,
     /** Attached to the rail itself, so a screen can send focus here without naming a destination. */
     railRequester: FocusRequester,
+    /** True while a newly entered route has not yet accepted focus on its own content. */
+    suppressExpansion: Boolean,
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
 ) {
@@ -1361,7 +1535,7 @@ private fun TvSideNav(
     // 0-to-1 figure means opening and closing are the same movement played each way, and lets the
     // surface be slid in from behind the icons instead of switched on.
     val railOpen by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (navHasFocus) 1f else 0f,
+        targetValue = if (navHasFocus && !suppressExpansion) 1f else 0f,
         animationSpec = TvScroll.spec(TvMotion.duration(TvMotion.Expand)),
         label = "side-nav-open",
     )
@@ -1373,9 +1547,20 @@ private fun TvSideNav(
 
     LaunchedEffect(currentRoute) {
         highlightedRoute = currentRoute
+        // Navigation can complete while the select/back key release is still owned by the rail.
+        // Collapse immediately, then hand focus to the destination if it is already composed.
+        // Its own restore effect will take over when content finishes loading.
+        if (navHasFocus) {
+            navHasFocus = false
+            delay(32L)
+            val accepted = contentRequesters[currentRoute]?.let { requester ->
+                runCatching { requester.requestFocus() }.getOrDefault(false)
+            } == true
+            if (!accepted) focusManager.clearFocus(force = true)
+        }
     }
 
-    val displayedRoute = if (navHasFocus) highlightedRoute else currentRoute
+    val displayedRoute = if (navHasFocus && !suppressExpansion) highlightedRoute else currentRoute
     // The highlight stays solid while the rail around it does not. It used to be a 22% primary tint
     // relying on opaque black underneath it; with the rail translucent that tint would sit on
     // artwork and the marker for where you are would change colour with whatever is behind it.

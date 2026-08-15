@@ -98,3 +98,21 @@ internal val SUPPORTED_DEBRID_PROVIDERS = listOf(
   "debrid-link" to "Debrid-Link",
   "deepbrid" to "Deepbrid",
 )
+
+internal fun debridProviderDisplayName(raw: String): String {
+  val normalized = raw.trim().lowercase().replace('_', '-').replace(" ", "")
+  return when (normalized) {
+    "realdebrid", "real-debrid", "rd" -> "Real-Debrid"
+    "alldebrid", "all-debrid", "ad" -> "AllDebrid"
+    "premiumize", "premiumize.me", "pm" -> "Premiumize"
+    "torbox", "tor-box" -> "TorBox"
+    "debridlink", "debrid-link", "dl" -> "Debrid-Link"
+    "deepbrid", "deep-brid" -> "Deepbrid"
+    else -> raw.trim()
+  }
+}
+
+internal fun cachedAvailabilityLabel(cachedBy: List<String>): String? {
+  val providers = cachedBy.map(::debridProviderDisplayName).filter(String::isNotBlank).distinct()
+  return providers.takeIf { it.isNotEmpty() }?.joinToString(separator = " · ", prefix = "Cached · ")
+}

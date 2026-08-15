@@ -47,6 +47,7 @@ data class MediaItem(
     val id: String,
     val tmdbId: Int = 0,
     val title: String,
+    @SerializedName(value = "type", alternate = ["mediaType"])
     val type: String,
     val poster: String? = null,
     val backdrop: String? = null,
@@ -95,9 +96,21 @@ data class CastMember(
     val photo: String? = null,
 )
 
+data class PersonDetail(
+    val id: String = "",
+    val name: String = "",
+    val photo: String? = null,
+    val biography: String? = null,
+    val birthday: String? = null,
+    val placeOfBirth: String? = null,
+    val knownFor: String? = null,
+    val popularWorks: List<MediaItem> = emptyList(),
+)
+
 data class SeasonRef(
     @SerializedName("season_number") val seasonNumber: Int,
     val name: String,
+    @SerializedName("episode_count") val episodeCount: Int = 0,
 )
 
 data class MediaDetail(
@@ -716,6 +729,16 @@ data class AccountBootstrap(
     val syncStatus: SyncStatus? = null,
 )
 
+data class DebridCacheCheckResponse(
+    val cachedBy: Map<String, List<String>> = emptyMap(),
+)
+
+/** Account capability that decides where add-on stream parsing is allowed to run. */
+data class AddonEntitlements(
+    val ultra: Boolean = false,
+    val serverSideStreams: Boolean = false,
+)
+
 data class StreamProfile(
     val id: String,
     val userId: String,
@@ -833,7 +856,9 @@ data class AddonStream(
      * NZB pointer published by usenet sources (AIOStreams and friends). Such a stream has no
      * playable url and no info hash — it names an NZB plus the news [servers] to pull it from.
      */
+    @SerializedName(value = "nzbUrl", alternate = ["nzb_url", "nzb"])
     val nzbUrl: String? = null,
+    @SerializedName(value = "servers", alternate = ["nntpServers", "nntp_servers"])
     val servers: List<String> = emptyList(),
     val fileIdx: Int? = null,
     val filename: String? = null,

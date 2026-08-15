@@ -30,6 +30,48 @@ class ProgressiveStreamAggregationTest {
     }
 
     @Test
+    fun `same-labelled files from one provider are all retained`() {
+        val providerRows = (0 until 30).map { fileIndex ->
+            AddonStream(
+                addonId = "aio",
+                addonName = "AIOStreams",
+                name = "Cached 1080p",
+                title = "Release pack",
+                infoHash = "same-torrent-hash",
+                fileIdx = fileIndex,
+                filename = "episode-$fileIndex.mkv",
+            )
+        }
+
+        assertEquals(30, mergeProgressiveStreamSnapshot(emptyList(), providerRows).size)
+    }
+
+    @Test
+    fun `cache decoration replaces the progressive row instead of duplicating it`() {
+        val original = AddonStream(
+            addonId = "aio",
+            addonName = "AIOStreams",
+            title = "Release",
+            infoHash = "ABC123",
+        )
+        val decorated = applyCachedProviders(listOf(original), mapOf("abc123" to listOf("Deepbrid")))
+
+        val merged = mergeProgressiveStreamSnapshot(listOf(original), decorated)
+
+        assertEquals(1, merged.size)
+        assertEquals(listOf("Deepbrid"), merged.single().cachedBy)
+    }
+
+    @Test
+    fun `addon supplied cache provider is not overwritten by account check`() {
+        val supplied = AddonStream(infoHash = "abc123", cachedBy = listOf("AIOStreams cache"))
+
+        val decorated = applyCachedProviders(listOf(supplied), mapOf("abc123" to listOf("Deepbrid")))
+
+        assertEquals(listOf("AIOStreams cache"), decorated.single().cachedBy)
+    }
+
+    @Test
     fun `AIOStreams diagnostic metas are excluded from catalogs`() {
         assertTrue(
             isAddonCatalogDiagnosticMeta(

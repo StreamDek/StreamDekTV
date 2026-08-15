@@ -1,5 +1,7 @@
 package com.streamdek.tv.nativeapp.data
 
+import com.google.gson.Gson
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -9,6 +11,86 @@ import org.junit.Test
  * away: a usenet result with no playable url, and a `meta` answer that is really an error.
  */
 class AddonSourceCompatibilityTest {
+
+    @Test
+    fun `provider-labelled direct debrid result is treated as cached`() {
+        val streams = parseAddonStreamsPayload(
+            """{"streams":[{"name":"Deepbrid 2160p","url":"https://example.test/movie.mkv"}]}""",
+        )
+
+        assertEquals(listOf("deepbrid"), streams.single().cachedBy)
+    }
+
+    @Test
+    fun `provider wording does not mark a torrent-only result cached`() {
+        val streams = parseAddonStreamsPayload(
+            """{"streams":[{"name":"Deepbrid 2160p","infoHash":"0123456789012345678901234567890123456789"}]}""",
+        )
+
+        assertTrue(streams.single().cachedBy.isEmpty())
+    }
+    @Test
+    fun `direct addon parsing retains every stream returned by AIOStreams`() {
+        val streams = (1..56).joinToString(",") { index ->
+            """{"name":"AIOStreams","title":"Result $index","url":"https://example.test/$index.mkv"}"""
+        }
+
+        val parsed = parseAddonStreamsPayload("""{"streams":[$streams]}""")
+
+        assertEquals(56, parsed.size)
+        assertEquals("Result 56", parsed.last().title)
+    }
+
+    @Test
+    fun `one malformed AIOStreams row does not discard valid Deepbrid results`() {
+        val parsed = parseAddonStreamsPayload(
+            """{"streams":[{"behaviorHints":"invalid"},{"title":"Deepbrid","url":"https://example.test/deepbrid.mkv"}]}""",
+        )
+
+        assertEquals(2, parsed.size)
+        assertEquals("Deepbrid", parsed.last().title)
+    }
+
+    @Test
+    fun `Deepbrid AIOStreams result keeps provider label nested url and request headers`() {
+        val parsed = parseAddonStreamsPayload(
+            """
+            {
+              "streams": [{
+                "name": "AIOStreams",
+                "title": "Deepbrid cached 2160p",
+                "source": "Deepbrid",
+                "url": {"href": "https://deepbrid.example.test/play/123"},
+                "cachedBy": ["Deepbrid"],
+                "behaviorHints": {
+                  "filename": "Movie.2160p.mkv",
+                  "proxyHeaders": {"request": {"Referer": "https://deepbrid.example.test/"}}
+                }
+              }]
+            }
+            """.trimIndent(),
+        ).single()
+
+        assertEquals("https://deepbrid.example.test/play/123", parsed.url)
+        assertEquals("Deepbrid", parsed.source)
+        assertEquals(listOf("Deepbrid"), parsed.cachedBy)
+        assertEquals("https://deepbrid.example.test/", parsed.requestHeaders["Referer"])
+        assertTrue(addonStreamDisplayLabel(parsed).contains("Deepbrid", ignoreCase = true))
+    }
+
+    @Test
+    fun `AIOStreams usenet aliases survive direct addon parsing`() {
+        val response = Gson().fromJson(
+            """{"streams":[{"name":"Usenet","nzb_url":"https://example/nzb/1","nntp_servers":["nntps://reader@example:563"]}]}""",
+            AddonStreamsResponse::class.java,
+        )
+
+        val stream = response.streams.single()
+        assertEquals("https://example/nzb/1", stream.nzbUrl)
+        assertEquals(listOf("nntps://reader@example:563"), stream.servers)
+        assertTrue(isUsenetAddonStream(stream))
+    }
+
     @Test
     fun `a usenet result is recognised by its nzb pointer`() {
         val usenet = AddonStream(

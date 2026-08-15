@@ -58,7 +58,7 @@ fun BrowseItemActionMenu(
         loading = true
         actionError = null
         inWatchlist = runCatching {
-            repository.fetchLibrary().watchlist.any { it.type == item.type && it.id == item.id }
+            repository.isInWatchlist(item)
         }.getOrDefault(false)
         watched = runCatching {
             repository.isWatched(item.type, item.id, item.episode, forceRefresh = true)
@@ -138,11 +138,13 @@ fun BrowseItemActionMenu(
                                     } else {
                                         repository.addToWatchlist(item)
                                     }
+                                    // Release the dialog's focus trap before the backing grid is
+                                    // changed. A removed card cannot safely receive focus again.
+                                    onDismiss()
                                     onChanged()
                                 }
                                 result.onSuccess {
                                     inWatchlist = !inWatchlist
-                                    onDismiss()
                                 }.onFailure {
                                     actionError = it.message ?: "Watchlist update failed."
                                 }

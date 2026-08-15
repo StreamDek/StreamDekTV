@@ -350,8 +350,7 @@ internal fun EpisodeCard(
             if (!released) append(", not released yet")
         },
     ) {
-        Column {
-            Box(Modifier.fillMaxWidth().height(stillHeight).background(Color.Black.copy(alpha = 0.5f))) {
+        Box(Modifier.fillMaxWidth().height(stillHeight).background(Color.Black.copy(alpha = 0.5f))) {
                 if (!episode.still.isNullOrBlank()) {
                     AsyncImage(
                         model = episode.still,
@@ -360,13 +359,6 @@ internal fun EpisodeCard(
                         contentScale = ContentScale.Crop,
                     )
                 }
-                Box(
-                    Modifier.fillMaxSize().background(
-                        Brush.verticalGradient(
-                            colorStops = arrayOf(0f to Color.Transparent, 1f to Color(0xCC000000)),
-                        ),
-                    ),
-                )
                 Row(
                     modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -379,13 +371,23 @@ internal fun EpisodeCard(
                     if (!compact && !released) MetaChip("SOON")
                 }
                 if (!compact) episode.runtime?.takeIf { it > 0 }?.let {
-                    Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)) { MetaChip(formatRuntime(it)) }
+                    Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) { MetaChip(formatRuntime(it)) }
                 }
-            }
-            if (!compact) {
+                if (!compact) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        // Copy occupies only the lower part of the still. The upper artwork remains
+                        // unobscured, while removing the old synopsis block below shortens the row.
+                        .fillMaxWidth()
+                        .height(stillHeight * 0.48f)
+                        .background(
+                            Brush.verticalGradient(
+                                colorStops = arrayOf(0f to Color.Transparent, 0.32f to Color(0xB3000000), 1f to Color(0xF0000000)),
+                            ),
+                        )
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalArrangement = Arrangement.Bottom,
                 ) {
                     Text(
                         text = episode.name,
@@ -418,6 +420,7 @@ internal fun EpisodeCard(
 internal fun SeasonChipRow(
     seasons: List<SeasonRef>,
     selected: Int,
+    watchedSeasonNumbers: Set<Int> = emptySet(),
     firstChipRequester: FocusRequester?,
     /** Attached to the row itself, so the band above can send focus here without naming a chip. */
     rowRequester: FocusRequester? = null,
@@ -453,16 +456,17 @@ internal fun SeasonChipRow(
     ) {
         itemsIndexed(seasons, key = { _, season -> season.seasonNumber }) { index, season ->
             val active = season.seasonNumber == selected
+            val watched = season.seasonNumber in watchedSeasonNumbers
             DetailFocusCard(
                 onClick = { onSelect(season.seasonNumber) },
                 shape = AppPillShape,
                 modifier = Modifier.then(
                     if (index == 0 && firstChipRequester != null) Modifier.focusRequester(firstChipRequester) else Modifier,
                 ),
-                description = season.name,
+                description = if (watched) "${season.name}, watched" else season.name,
             ) {
                 Text(
-                    text = season.name,
+                    text = if (watched) "${season.name}  ✓" else season.name,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                     color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
@@ -536,6 +540,7 @@ internal fun EpisodesBand(
     loadingNextSeason: Boolean,
     isEpisodeWatched: (SeasonEpisodeEntry) -> Boolean,
     seasonWatched: Boolean,
+    watchedSeasonNumbers: Set<Int>,
     markingSeason: Boolean,
     firstChipRequester: FocusRequester?,
     /** The hero's play button — where up out of this band leads. */
@@ -576,6 +581,7 @@ internal fun EpisodesBand(
             SeasonChipRow(
                 seasons = seasons,
                 selected = activeSeasonNumber,
+                watchedSeasonNumbers = watchedSeasonNumbers,
                 firstChipRequester = firstChipRequester,
                 rowRequester = chipRowRequester,
                 upRequester = markSeasonRequester,
@@ -589,7 +595,7 @@ internal fun EpisodesBand(
                 horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
                 modifier = Modifier.padding(horizontal = DetailInset).detailBandScale(scale, compact),
             ) {
-                repeat(4) { TvSkeletonBox(Modifier.width(cardWidth).height(stillHeight + 82.dp)) }
+                repeat(4) { TvSkeletonBox(Modifier.width(cardWidth).height(stillHeight)) }
             }
         } else {
             LazyRow(
@@ -635,7 +641,7 @@ internal fun EpisodesBand(
                     // Deliberately not focusable: it holds the place of the season being fetched
                     // without ever becoming somewhere the D-pad can get stuck.
                     item("next-season") {
-                        TvSkeletonBox(Modifier.width(cardWidth).height(stillHeight + 82.dp))
+                        TvSkeletonBox(Modifier.width(cardWidth).height(stillHeight))
                     }
                 }
             }
@@ -684,7 +690,25 @@ internal fun SimilarBand(
 }
 
 @Composable
-internal fun CastBand(cast: List<CastMember>, compact: Boolean = false, onFocusChanged: (Boolean) -> Unit = {}) {
+internal fun SimilarBandSkeleton() {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        DetailSectionHeader("More Like This")
+        Row(
+            modifier = Modifier.padding(horizontal = DetailInset),
+            horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
+        ) {
+            repeat(7) { TvSkeletonBox(Modifier.width(106.dp).height(159.dp)) }
+        }
+    }
+}
+
+@Composable
+internal fun CastBand(
+    cast: List<CastMember>,
+    compact: Boolean = false,
+    onFocusChanged: (Boolean) -> Unit = {},
+    onOpen: (CastMember) -> Unit,
+) {
     // Cast shrinks once the viewer has moved past it. Nobody is reading character names at that
     // point, and the space buys the row below enough height to sit fully on screen.
     // 15% down on the full-size portrait: the row was heavier than the section warranted next to
@@ -713,6 +737,7 @@ internal fun CastBand(cast: List<CastMember>, compact: Boolean = false, onFocusC
                     photoSize = photoSize,
                     columnWidth = columnWidth,
                     compact = compact,
+                    onClick = { onOpen(member) },
                 )
             }
         }
@@ -733,6 +758,7 @@ private fun CastPortrait(
     photoSize: Dp,
     columnWidth: Dp,
     compact: Boolean,
+    onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val highContrast = LocalTvExperienceSettings.current.highContrast
@@ -760,7 +786,7 @@ private fun CastPortrait(
                 .then(modifier)
                 .onFocusChanged { focused = it.isFocused }
                 .focusable()
-                .clickable { },
+                .clickable(onClick = onClick),
         ) {
             if (!member.photo.isNullOrBlank()) {
                 AsyncImage(

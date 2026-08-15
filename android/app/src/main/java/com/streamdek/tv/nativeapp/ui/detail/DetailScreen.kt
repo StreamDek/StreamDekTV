@@ -1,6 +1,8 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
@@ -90,6 +92,7 @@ import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
 import com.streamdek.tv.nativeapp.ui.glideToItem
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
@@ -150,6 +153,8 @@ fun DetailScreen(
     entryFocusRequester: FocusRequester,
     onBack: () -> Unit,
     onOpenDetail: (String, String) -> Unit,
+    onContentReady: () -> Unit,
+    onOpenPerson: (String) -> Unit,
     onPlay: (PlaybackRequest) -> Unit,
     onRequireAuth: () -> Unit,
 ) {
@@ -186,6 +191,9 @@ fun DetailScreen(
     var episodeActionError by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     /** Full synopsis the viewer asked to read, shown over the screen until they close it. */
     var expandedSynopsis by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
+    var similarArtworkReady by remember(mediaType, mediaId) { mutableStateOf(false) }
+    val similarFadeInMillis = TvMotion.duration(TvMotion.Standard)
+    val similarFadeOutMillis = TvMotion.duration(TvMotion.Quick)
 
     /**
      * The trailer, from asking for one to it being on screen.
@@ -264,16 +272,20 @@ fun DetailScreen(
         val detail = repository.fetchDetail(mediaId, mediaType, forceRefresh = reloadToken > 0)
         if (detail == null) {
             if (existingDetail == null) uiState = DetailUiState.Error("Could not load title details")
+            onContentReady()
             return@LaunchedEffect
         }
         uiState = DetailUiState.Ready(detail)
+        onContentReady()
         if (detail.seasons.none { it.seasonNumber == anchorSeasonNumber }) {
             anchorSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
             activeSeasonNumber = anchorSeasonNumber
             selectedEpisodeIndex = 0
         }
         libraryDeferred.await()?.let { library ->
-            inWatchlist = library.watchlist.any { it.id == mediaId && it.type == mediaType }
+            inWatchlist = repository.isInWatchlist(
+                MediaItem(id = mediaId, tmdbId = detail.tmdbId, title = detail.title, type = mediaType),
+            )
             resumeEpisodeContext = library.continueWatching
                 .firstOrNull { it.id == mediaId && it.type == mediaType }?.episode
         }
@@ -404,9 +416,10 @@ fun DetailScreen(
     val selectedEntry = episodeEntries.getOrNull(selectedEpisodeIndex)
     val selectedEpisodeContext = selectedEntry?.episode?.toEpisodeContext(selectedEntry.seasonNumber)
     val activeSeasonDetail = loadedSeasons.firstOrNull { it.seasonNumber == activeSeasonNumber }
-    val selectedSeasonWatched = activeSeasonDetail?.episodes
-        ?.takeIf { it.isNotEmpty() }
-        ?.all { watchedEpisodeKeys.contains(watchedEpisodeKey(activeSeasonNumber, it.episodeNumber)) } == true
+    val watchedSeasons = remember(detail?.seasons, loadedSeasons, watchedEpisodeKeys) {
+        watchedSeasonNumbers(detail?.seasons.orEmpty(), loadedSeasons, watchedEpisodeKeys)
+    }
+    val selectedSeasonWatched = activeSeasonNumber in watchedSeasons
 
     // The run restarts whenever the viewer picks a season from the chips; everything after that
     // season is appended as they reach it.
@@ -463,26 +476,18 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId, loadedSeasons, detail?.id) {
+    LaunchedEffect(mediaType, mediaId, detail?.id) {
         val currentDetail = detail
         if (mediaType != "tv" || currentDetail == null) {
             watchedEpisodeKeys = emptySet()
             return@LaunchedEffect
         }
-        // Refreshed when a new run starts; appending a season only needs the set already in hand,
-        // and the row now appends often enough that asking Trakt each time would be a request per
-        // season boundary the viewer scrolls past.
-        val watchedKeys = repository.fetchWatchedKeys(forceRefresh = loadedSeasons.size <= 1)
-        watchedEpisodeKeys = loadedSeasons.flatMap { season ->
-            season.episodes.mapNotNull { episode ->
-                watchedEpisodeKey(season.seasonNumber, episode.episodeNumber)
-                    .takeIf {
-                        watchedKeys.contains(
-                            "tv:${currentDetail.id}:s${season.seasonNumber}:e${episode.episodeNumber}",
-                        )
-                    }
-            }
-        }.toSet()
+        // Keep the entire series history, not only episodes in seasons that happen to be loaded.
+        // Season chips exist before their episode rows are fetched and still need their ticks.
+        watchedEpisodeKeys = seriesWatchedEpisodeKeys(
+            repository.fetchWatchedKeys(forceRefresh = true),
+            currentDetail.id,
+        )
     }
 
     LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, progressFraction, detail?.id) {
@@ -524,7 +529,6 @@ fun DetailScreen(
         buildList {
             detail.poster?.let(::add)
             detail.cast.take(3).forEach { it.photo?.let(::add) }
-            detail.similarTitles.take(4).forEach { it.poster?.let(::add) }
         }.distinct().take(8).forEach { url ->
             context.imageLoader.enqueue(
                 ImageRequest.Builder(context)
@@ -532,6 +536,29 @@ fun DetailScreen(
                     .crossfade(false).allowHardware(true).build(),
             )
         }
+    }
+
+    // Recommendation metadata already arrives as one detail response. Hold the band behind one
+    // shimmering row while all of its visible posters warm the cache, then reveal the completed
+    // row in one fade instead of letting cards paint one-by-one on every visit.
+    LaunchedEffect(detail?.id, detail?.similarTitles) {
+        val current = detail ?: return@LaunchedEffect
+        similarArtworkReady = current.similarTitles.isEmpty()
+        val urls = current.similarTitles.mapNotNull { it.poster }.filter(String::isNotBlank).distinct()
+        if (urls.isNotEmpty()) {
+            supervisorScope {
+                urls.map { url ->
+                    async {
+                        context.imageLoader.execute(
+                            ImageRequest.Builder(context)
+                                .data(url).memoryCacheKey(url).diskCacheKey(url)
+                                .size(212, 318).crossfade(false).allowHardware(true).build(),
+                        )
+                    }
+                }.awaitAll()
+            }
+        }
+        similarArtworkReady = true
     }
 
     val backgroundColor = MaterialTheme.colorScheme.background
@@ -693,8 +720,15 @@ fun DetailScreen(
                                     )
                                     // Flipped first so the press registers immediately; a remote
                                     // press that appears to do nothing gets pressed again.
-                                    inWatchlist = !inWatchlist
-                                    if (inWatchlist) repository.addToWatchlist(item) else repository.removeFromWatchlist(item)
+                                    val target = !inWatchlist
+                                    inWatchlist = target
+                                    runCatching {
+                                        if (target) repository.addToWatchlist(item) else repository.removeFromWatchlist(item)
+                                    }.onFailure {
+                                        // The write is authoritative; do not leave an optimistic
+                                        // bookmark on screen when the service rejected it.
+                                        inWatchlist = !target
+                                    }
                                 }
                             },
                             onMarkWatched = {
@@ -774,6 +808,7 @@ fun DetailScreen(
                                     )
                                 },
                                 seasonWatched = selectedSeasonWatched,
+                                watchedSeasonNumbers = watchedSeasons,
                                 markingSeason = markingSeasonWatched,
                                 firstChipRequester = seasonChipRequester,
                                 upRequester = playRequester,
@@ -840,6 +875,7 @@ fun DetailScreen(
                                 cast = d.cast,
                                 compact = focusedRow != null && focusedRow != "cast",
                                 onFocusChanged = { if (it) focusedRow = "cast" },
+                                onOpen = { onOpenPerson(it.id.toString()) },
                             )
                             }
                         }
@@ -848,12 +884,25 @@ fun DetailScreen(
                     if (d.similarTitles.isNotEmpty()) {
                         item("similar") {
                             Box(Modifier.bandRestorePoint(focusedRow == "similar", entryFocusRequester)) {
-                            SimilarBand(
-                                items = d.similarTitles,
-                                compact = focusedRow != null && focusedRow != "similar",
-                                onFocusChanged = { if (it) focusedRow = "similar" },
-                                onOpen = { onOpenDetail(it.type, it.detailLookupId()) },
-                            )
+                            androidx.compose.animation.AnimatedContent(
+                                targetState = similarArtworkReady,
+                                transitionSpec = {
+                                    androidx.compose.animation.fadeIn(tween(similarFadeInMillis)) togetherWith
+                                        androidx.compose.animation.fadeOut(tween(similarFadeOutMillis))
+                                },
+                                label = "similar-ready",
+                            ) { ready ->
+                                if (ready) {
+                                    SimilarBand(
+                                        items = d.similarTitles,
+                                        compact = focusedRow != null && focusedRow != "similar",
+                                        onFocusChanged = { if (it) focusedRow = "similar" },
+                                        onOpen = { onOpenDetail(it.type, it.detailLookupId()) },
+                                    )
+                                } else {
+                                    SimilarBandSkeleton()
+                                }
+                            }
                             }
                         }
                     }

@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -59,8 +61,13 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvNavRailInset
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.glideToItem
+import com.streamdek.tv.nativeapp.ui.highResolutionCardArtwork
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private data class BrowseActionState(
     val item: MediaItem,
@@ -151,6 +158,62 @@ fun HomeScreen(
 
     val content = screenState.content
     val spotlightItem = focusedItem ?: content?.featured ?: content?.rails?.firstOrNull()?.items?.firstOrNull()
+    var initialArtworkReady by remember(loadKey) { mutableStateOf(false) }
+    val initialArtworkUrls = remember(content, portraitCards) {
+        buildList {
+            content?.featured?.let { featured ->
+                (featured.backdrop ?: featured.poster)?.let(::add)
+                featured.titleLogo?.let(::add)
+            }
+            // Two shelves cover the first TV viewport. Warming more here competes with the hero
+            // and first row for bandwidth without improving what is initially visible.
+            content?.rails.orEmpty().take(2).forEach { rail ->
+                rail.items.take(6).forEach { item ->
+                    highResolutionCardArtwork(
+                        if (portraitCards) item.poster ?: item.backdrop else item.backdrop ?: item.poster,
+                        portrait = portraitCards,
+                    )?.let(::add)
+                }
+            }
+        }.distinct()
+    }
+    val initialArtworkKey = initialArtworkUrls.joinToString("|")
+
+    LaunchedEffect(loadKey, initialArtworkKey) {
+        if (initialArtworkReady || content == null || initialArtworkUrls.isEmpty()) {
+            if (content != null && initialArtworkUrls.isEmpty()) initialArtworkReady = true
+            return@LaunchedEffect
+        }
+        // Warm the complete first viewport in parallel. A bounded wait keeps a slow or broken
+        // artwork host from delaying Home, while successful requests let the shelves fade in as
+        // one composed presentation instead of exposing individual Coil completions.
+        withTimeoutOrNull(2_200L) {
+            coroutineScope {
+                initialArtworkUrls.mapIndexed { index, url ->
+                    async {
+                        context.imageLoader.execute(
+                            ImageRequest.Builder(context)
+                                .data(url)
+                                .memoryCacheKey(url)
+                                .diskCacheKey(url)
+                                .size(if (index <= 1) 1280 else if (portraitCards) 360 else 480,
+                                    if (index <= 1) 720 else if (portraitCards) 540 else 270)
+                                .crossfade(false)
+                                .allowHardware(true)
+                                .allowRgb565(index > 1 && !portraitCards)
+                                .build(),
+                        )
+                    }
+                }.awaitAll()
+            }
+        }
+        initialArtworkReady = true
+    }
+    val contentRevealAlpha by animateFloatAsState(
+        targetValue = if (initialArtworkReady) 1f else 0f,
+        animationSpec = tween(durationMillis = 260),
+        label = "home-initial-reveal",
+    )
 
     LaunchedEffect(spotlightItem?.id, spotlightItem?.type) {
         homeViewModel.setHeroCandidate(spotlightItem)
@@ -165,6 +228,7 @@ fun HomeScreen(
 
     Box(Modifier.fillMaxSize().background(backgroundColor)) {
         val art = (spotlightItem?.backdrop ?: spotlightItem?.poster)
+            ?.takeIf { initialArtworkReady }
             ?.takeIf { spotlightItem?.type != "network" }
         AnimatedContent(
             targetState = art,
@@ -210,7 +274,7 @@ fun HomeScreen(
         }
 
         when {
-            screenState.isLoading && content == null -> HomeFirstLoad(portraitCards)
+            (screenState.isLoading && content == null) || (content != null && !initialArtworkReady) -> HomeFirstLoad(portraitCards)
 
             screenState.error != null && content == null -> HomeMessage(
                 title = "Home failed to load",
@@ -318,7 +382,7 @@ fun HomeScreen(
                     runCatching { firstCardRequester.requestFocus() }
                 }
 
-                Column(Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().graphicsLayer { alpha = contentRevealAlpha }) {
                     AnimatedContent(
                         // The focused item owns the transition. Detail metadata arrives shortly
                         // afterwards and must update in place; treating it as a second target made

@@ -85,6 +85,10 @@ fun PremiumMediaCard(
             .allowHardware(true)
             // Preserve fine poster detail; RGB_565 is reserved for landscape thumbnails.
             .allowRgb565(!portrait)
+            // Decode for the card, not at the source artwork's multi-megapixel size. Besides
+            // wasting memory, full-size decodes queued behind one another and made Home artwork
+            // appear card by card on lower-powered televisions.
+            .size(if (portrait) 360 else 480, if (portrait) 540 else 270)
             .crossfade(false)
             .build()
     }
@@ -185,7 +189,7 @@ fun PremiumMediaCard(
 }
 
 /** Upgrades legacy TMDB thumbnail URLs when a poster is rendered at TV-card size. */
-private fun highResolutionCardArtwork(url: String?, portrait: Boolean): String? {
+internal fun highResolutionCardArtwork(url: String?, portrait: Boolean): String? {
     if (!portrait || url.isNullOrBlank() || !url.contains("image.tmdb.org/t/p/")) return url
     return url.replace(Regex("/t/p/w(?:92|154|185|300|342|500)/"), "/t/p/w780/")
 }

@@ -37,7 +37,8 @@ import javax.crypto.spec.SecretKeySpec
  * Number of plugin providers allowed to run at once. TV boxes have far less headroom than a
  * phone, and each provider spins up its own QuickJS context plus network calls.
  */
-private const val MAX_CONCURRENT_PLUGIN_PROVIDERS = 4
+// Match mobile's fan-out. Five keeps first-result latency low without overwhelming TV hardware.
+private const val MAX_CONCURRENT_PLUGIN_PROVIDERS = 5
 
 /** Matches the mobile app's per-provider budget for a stream lookup. */
 private const val PLUGIN_PROVIDER_TIMEOUT_MS = 25_000L

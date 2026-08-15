@@ -10,6 +10,8 @@ import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.SeasonEpisode
+import com.streamdek.tv.nativeapp.data.SeasonDetail
+import com.streamdek.tv.nativeapp.data.SeasonRef
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -46,6 +48,34 @@ internal data class SeasonEpisodeEntry(
 
 /** Key used to test an episode against the watched set, which spans every loaded season. */
 internal fun watchedEpisodeKey(seasonNumber: Int, episodeNumber: Int): String = "s$seasonNumber:e$episodeNumber"
+
+/** Converts account-wide Trakt history keys into the compact keys used by one series page. */
+internal fun seriesWatchedEpisodeKeys(historyKeys: Set<String>, mediaId: String): Set<String> {
+    val prefix = "tv:$mediaId:"
+    return historyKeys.mapNotNull { key ->
+        key.takeIf { it.startsWith(prefix) }
+            ?.removePrefix(prefix)
+            ?.takeIf { it.matches(Regex("s\\d+:e\\d+")) }
+    }.toSet()
+}
+
+/** Seasons whose complete episode set is present in watched history. */
+internal fun watchedSeasonNumbers(
+    seasons: List<SeasonRef>,
+    loadedSeasons: List<SeasonDetail>,
+    watchedEpisodeKeys: Set<String>,
+): Set<Int> = seasons.mapNotNull { season ->
+    val loadedNumbers = loadedSeasons.firstOrNull { it.seasonNumber == season.seasonNumber }
+        ?.episodes.orEmpty().map { it.episodeNumber }
+    val episodeNumbers = loadedNumbers.ifEmpty {
+        if (season.episodeCount > 0) (1..season.episodeCount).toList() else emptyList()
+    }
+    season.seasonNumber.takeIf {
+        episodeNumbers.isNotEmpty() && episodeNumbers.all { episode ->
+            watchedEpisodeKey(season.seasonNumber, episode) in watchedEpisodeKeys
+        }
+    }
+}.toSet()
 
 internal fun isEpisodeReleased(airDate: String?): Boolean {
     val parsed = airDate?.takeIf { it.isNotBlank() }?.let { runCatching { LocalDate.parse(it) }.getOrNull() }

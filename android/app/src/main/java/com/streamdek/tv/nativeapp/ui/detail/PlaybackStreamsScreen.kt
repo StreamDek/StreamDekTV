@@ -55,6 +55,7 @@ import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.debrid.cachedAvailabilityLabel
 import com.streamdek.tv.nativeapp.data.StreamsPreferences
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.flattenFusionBadges
@@ -101,6 +102,18 @@ internal fun streamQualityLabel(stream: AddonStream, label: String): String? =
 internal fun streamSizeLabel(stream: AddonStream, label: String): String? =
     stream.size?.takeIf { it.isNotBlank() }
         ?: SizePattern.find(label)?.let { "${it.groupValues[1]} ${it.groupValues[2].uppercase()}" }
+
+/** Verbatim add-on fields used when StreamDek result formatting is disabled. */
+internal fun rawAddonStreamText(stream: AddonStream): Pair<String?, String?> {
+    val label = stream.name?.takeIf { it.isNotBlank() }
+    val detail = stream.title?.takeIf { it.isNotBlank() }
+        ?: stream.description?.takeIf { it.isNotBlank() }
+    return if (label == null && detail == null) {
+        (stream.filename?.takeIf { it.isNotBlank() } ?: "Stream source") to null
+    } else {
+        label to detail
+    }
+}
 
 /**
  * Stream picker.
@@ -267,19 +280,13 @@ fun PlaybackStreamsScreen(
     }
 
     // Decided across the whole list so the columns line up and empty ones disappear entirely.
-    val anyQuality = remember(filteredStreams) {
-        filteredStreams.any { streamQualityLabel(it, repository.describeStreamOption(it)) != null }
+    val anyQuality = remember(filteredStreams, streamsPrefs.streamDekFormattingEnabled) {
+        streamsPrefs.streamDekFormattingEnabled &&
+            filteredStreams.any { streamQualityLabel(it, repository.describeStreamOption(it)) != null }
     }
-    val anySize = remember(filteredStreams, streamsPrefs.showSizeBadges) {
-        streamsPrefs.showSizeBadges &&
+    val anySize = remember(filteredStreams, streamsPrefs.showSizeBadges, streamsPrefs.streamDekFormattingEnabled) {
+        streamsPrefs.streamDekFormattingEnabled && streamsPrefs.showSizeBadges &&
             filteredStreams.any { streamSizeLabel(it, repository.describeStreamOption(it)) != null }
-    }
-
-    LaunchedEffect(selectedTab) {
-        if (filteredStreams.isNotEmpty() && initialFocusApplied) {
-            kotlinx.coroutines.delay(80)
-            runCatching { firstCardRequester.requestFocus() }
-        }
     }
 
     val backgroundColor = MaterialTheme.colorScheme.background
@@ -334,6 +341,10 @@ fun PlaybackStreamsScreen(
                             label = tab,
                             selected = tab == selectedTab,
                             modifier = if (index == 0) Modifier.focusRequester(firstTabRequester) else Modifier,
+                            // Tabs are previews on TV: moving the highlight is the selection. Keep
+                            // focus in the strip so left/right can inspect every provider without
+                            // an OK press or being pulled down into the first result row.
+                            onFocused = { selectedTab = tab },
                             onClick = { selectedTab = tab },
                         )
                     }
@@ -518,7 +529,7 @@ private fun StreamRow(
         }
     }
     val availability = when {
-        stream.cachedBy.isNotEmpty() -> "Cached" to true
+        stream.cachedBy.isNotEmpty() -> cachedAvailabilityLabel(stream.cachedBy).orEmpty() to true
         !stream.url.isNullOrBlank() -> "Direct" to false
         // Assembled on this device from the NZB and the news servers the stream names, the same
         // way the phone does it — named in the column because how it arrives changes how long it
@@ -526,6 +537,8 @@ private fun StreamRow(
         !stream.nzbUrl.isNullOrBlank() -> "Usenet" to false
         else -> "Torrent" to false
     }
+    val formatted = streamsPrefs.streamDekFormattingEnabled
+    val (rawLabel, rawDetail) = remember(stream) { rawAddonStreamText(stream) }
 
     Card(
         onClick = onPressed,
@@ -555,41 +568,66 @@ private fun StreamRow(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = stream.addonName.ifBlank { "Stream source" },
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                        origin?.takeIf { it.isNotBlank() }?.let {
+                    if (formatted) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Text(
-                                text = it,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
+                                text = stream.addonName.ifBlank { "Stream source" },
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                                color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            origin?.takeIf { it.isNotBlank() }?.let {
+                                Text(
+                                    text = it,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                    if (formatted) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (focused) 0.95f else 0.78f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    } else {
+                        rawLabel?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (focused) 0.98f else 0.86f),
+                            )
+                        }
+                        rawDetail?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (focused) 0.90f else 0.74f),
                             )
                         }
                     }
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (focused) 0.95f else 0.78f),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
                 }
 
                 // Fixed-width columns so these line up down the list.
-                if (showQuality) StreamFact(streamQualityLabel(stream, label) ?: "—", 92.dp)
-                if (showSize) StreamFact(streamSizeLabel(stream, label) ?: "—", 92.dp)
-                StreamFact(availability.first, 88.dp, emphasised = availability.second)
+                if (formatted) {
+                    if (showQuality) StreamFact(streamQualityLabel(stream, label) ?: "—", 92.dp)
+                    if (showSize) StreamFact(streamSizeLabel(stream, label) ?: "—", 92.dp)
+                    StreamFact(availability.first, if (availability.second) 190.dp else 88.dp, emphasised = availability.second)
+                } else if (stream.cachedBy.isNotEmpty()) {
+                    // Mobile keeps the user's cache result visible in raw mode while leaving the
+                    // add-on's own text untouched.
+                    StreamFact(cachedAvailabilityLabel(stream.cachedBy).orEmpty(), 190.dp, emphasised = true)
+                }
             }
             if (fusionBadges.isNotEmpty()) {
                 FusionBadgeRow(badges = fusionBadges)

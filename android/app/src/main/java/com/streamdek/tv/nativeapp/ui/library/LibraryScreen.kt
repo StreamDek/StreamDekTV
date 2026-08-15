@@ -314,7 +314,27 @@ fun LibraryScreen(
                     }
                 },
                 onOpenDetail = { onOpenDetail(state.item.type, state.item.detailLookupId()) },
-                onChanged = { library = repository.fetchLibrary(forceRefresh = true) },
+                onChanged = {
+                    // The repository has already applied the confirmed mutation to its cache.
+                    // Do not immediately ask an eventually-consistent provider for the old list.
+                    val refreshed = repository.fetchLibrary()
+                    library = refreshed
+                    if (section == LibrarySection.Watchlist &&
+                        refreshed.watchlist.none { libraryItemKey(it) == libraryItemKey(state.item) }
+                    ) {
+                        // The old requester belongs to the card just removed. Land on a target that
+                        // survives the mutation so Down from the filters cannot enter a disposed
+                        // lazy-grid item and crash Compose's focus search.
+                        kotlinx.coroutines.delay(80)
+                        val remaining = refreshed.watchlist
+                            .filter { typeFilter == "all" || it.type == typeFilter }
+                            .distinctBy(::libraryItemKey)
+                        runCatching {
+                            if (remaining.isEmpty()) firstChipRequester.requestFocus()
+                            else firstCardRequester.requestFocus()
+                        }
+                    }
+                },
             )
         }
     }

@@ -40,4 +40,14 @@ class SyncServiceTest {
         assertEquals("Simkl", SyncServiceId.label(SyncServiceId.SIMKL))
         assertEquals("MDBList", SyncServiceId.label(SyncServiceId.MDBLIST))
     }
+
+    @Test
+    fun `watchlist fanout includes every connected provider with primary first`() {
+        val connected = setOf(SyncServiceId.TRAKT, SyncServiceId.SIMKL, SyncServiceId.MDBLIST)
+
+        assertEquals(
+            listOf(SyncServiceId.SIMKL, SyncServiceId.TRAKT, SyncServiceId.MDBLIST),
+            orderedConnectedSyncServices(SyncServiceId.SIMKL, connected),
+        )
+    }
 }

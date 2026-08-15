@@ -199,6 +199,7 @@ fun PlayerScreen(
     var audioTracks by remember { mutableStateOf<List<MpvTrackInfo>>(emptyList()) }
     var subtitleTracks by remember { mutableStateOf<List<MpvTrackInfo>>(emptyList()) }
     var externalSubtitles by remember { mutableStateOf<List<ExternalSubtitleTrack>>(emptyList()) }
+    var externalSubtitlesPreparedForSource by remember { mutableStateOf<String?>(null) }
     var subtitlesLoading by remember { mutableStateOf(false) }
     var selectedExternalSubtitleId by remember { mutableStateOf<String?>(null) }
     var externalSubtitleAppliedKey by remember { mutableStateOf<String?>(null) }
@@ -316,6 +317,7 @@ fun PlayerScreen(
     val subtitlesRequester = remember { FocusRequester() }
     val audioRequester = remember { FocusRequester() }
     val sourcesRequester = remember { FocusRequester() }
+    val engineRequester = remember { FocusRequester() }
     val nextRequester = remember { FocusRequester() }
     val watchedRequester = remember { FocusRequester() }
     val speedRequester = remember { FocusRequester() }
@@ -1008,12 +1010,24 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     }
     // Drive MPV state from LaunchedEffect so JNI calls only happen when values change,
     // not on every recomposition triggered by overlay animations.
-    LaunchedEffect(currentSourceUrl, currentRequestHeaders, activePlaybackEngine) {
+    LaunchedEffect(currentSourceUrl, currentRequestHeaders, activePlaybackEngine, externalSubtitlesPreparedForSource) {
         audioPreferenceAppliedForSource = null
         subtitlePreferenceAppliedForSource = null
         seekTargetSec = null
+        val source = currentSourceUrl
+        // Media3 must receive every sidecar before its first prepare. Selecting one later is then
+        // a track override and cannot interrupt the video. MPV already supports sub-add live.
+        if (
+            activePlaybackEngine == ActivePlaybackEngine.Media3 &&
+            !isLive &&
+            !source.isNullOrBlank() &&
+            externalSubtitlesPreparedForSource != source
+        ) return@LaunchedEffect
         playerView?.setHeaders(currentRequestHeaders)
-        if (!currentSourceUrl.isNullOrBlank()) playerView?.setSource(currentSourceUrl)
+        if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
+            playerView?.setExternalSubtitleTracks(externalSubtitles)
+        }
+        if (!source.isNullOrBlank()) playerView?.setSource(source)
         // Re-asserted per source: both engines reset caption styling when they reconfigure their
         // subtitle chain, so a size chosen on the last episode would otherwise be lost on this one.
         playerView?.setSubtitleFontSize(subtitleFontSize)
@@ -1042,20 +1056,27 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
 
     LaunchedEffect(currentSourceUrl, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, detail?.imdbId) {
         externalSubtitles = emptyList()
+        externalSubtitlesPreparedForSource = null
         selectedExternalSubtitleId = null
         externalSubtitleAppliedKey = null
         subtitlesLoading = false
         val source = currentSourceUrl
-        if (isLive || source.isNullOrBlank()) return@LaunchedEffect
+        if (isLive || source.isNullOrBlank()) {
+            externalSubtitlesPreparedForSource = source
+            return@LaunchedEffect
+        }
         subtitlesLoading = true
-        val results = repository.fetchExternalSubtitles(
-            request.copy(
-                imdbId = request.imdbId ?: detail?.imdbId,
-                episode = currentEpisode,
-            ),
-        )
+        val results = runCatching {
+            repository.fetchExternalSubtitles(
+                request.copy(
+                    imdbId = request.imdbId ?: detail?.imdbId,
+                    episode = currentEpisode,
+                ),
+            )
+        }.getOrDefault(emptyList())
         if (currentSourceUrl != source) return@LaunchedEffect
         externalSubtitles = results
+        externalSubtitlesPreparedForSource = source
         subtitlesLoading = false
         if (playbackPreferences.autoLoadSubtitles && selectedSubtitleId < 0 && selectedExternalSubtitleId == null) {
             val preferredLanguage = repository.activeStreamProfile(repository.bootstrap.value)?.subtitleLanguage
@@ -1064,24 +1085,45 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             val preferred = results.firstOrNull { it.language.equals(preferredLanguage, ignoreCase = true) }
                 ?: results.firstOrNull { it.language == "en" }
             if (preferred != null) {
-                while (loading && currentSourceUrl == source) delay(100)
-                val localPath = repository.downloadSubtitleToCache(preferred.url, context.cacheDir)
-                if (localPath != null && currentSourceUrl == source && selectedSubtitleId < 0) {
-                    selectedExternalSubtitleId = preferred.id
-                    playerView?.addSubtitleFile(localPath)
-                    externalSubtitleAppliedKey = "${activePlaybackEngine.name}:$source:${preferred.id}"
-                    TvDebugLogger.i("Subtitles", "auto-loaded ${preferred.label}")
-                }
+                selectedExternalSubtitleId = preferred.id
             }
         }
     }
 
-    LaunchedEffect(activePlaybackEngine, loading, selectedExternalSubtitleId, currentSourceUrl) {
+    fun switchPlaybackEngine(target: ActivePlaybackEngine) {
+        panel = null
+        panelClosedAtMs = System.currentTimeMillis()
+        if (target == activePlaybackEngine) {
+            showControls(focusPlay = !isLive)
+            return
+        }
+        pendingEngineResumePositionSec = positionSec.takeIf { it > 0.0 }
+        loading = true
+        error = null
+        controlsVisible = false
+        audioTracks = emptyList()
+        subtitleTracks = emptyList()
+        selectedAudioId = -1
+        selectedSubtitleId = -1
+        externalSubtitleAppliedKey = null
+        TvDebugLogger.i("Player", "Manual engine switch ${activePlaybackEngine.name} -> ${target.name} at ${positionSec}s")
+        activePlaybackEngine = target
+    }
+
+    LaunchedEffect(activePlaybackEngine, loading, selectedExternalSubtitleId, currentSourceUrl, subtitleTracks) {
         val selected = externalSubtitles.firstOrNull { it.id == selectedExternalSubtitleId } ?: return@LaunchedEffect
         val source = currentSourceUrl ?: return@LaunchedEffect
-        if (loading) return@LaunchedEffect
         val key = "${activePlaybackEngine.name}:$source:${selected.id}"
         if (externalSubtitleAppliedKey == key) return@LaunchedEffect
+        if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
+            if (playerView?.selectExternalSubtitleTrack(selected.id) == true) {
+                selectedSubtitleId = -1
+                externalSubtitleAppliedKey = key
+                TvDebugLogger.i("Subtitles", "selected pre-attached ${selected.label}")
+            }
+            return@LaunchedEffect
+        }
+        if (loading) return@LaunchedEffect
         val localPath = repository.downloadSubtitleToCache(selected.url, context.cacheDir) ?: return@LaunchedEffect
         if (currentSourceUrl == source && selectedExternalSubtitleId == selected.id) {
             playerView?.addSubtitleFile(localPath)
@@ -2045,6 +2087,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     subtitlesRequester = subtitlesRequester,
                     audioRequester = audioRequester,
                     sourcesRequester = sourcesRequester,
+                    engineRequester = engineRequester,
                     nextRequester = nextRequester,
                     watchedRequester = watchedRequester,
                     speedRequester = speedRequester,
@@ -2254,6 +2297,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         selectedSubtitleId = selectedSubtitleId,
                         selectedExternalSubtitleId = selectedExternalSubtitleId,
                         currentSpeed = speed,
+                        activeEngine = activePlaybackEngine,
                         closeRequester = panelCloseRequester,
                         firstItemRequester = panelFirstItemRequester,
                         onClose = {
@@ -2341,6 +2385,16 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 val source = currentSourceUrl ?: return@launch
                                 selectedExternalSubtitleId = subtitle.id
                                 subtitlePreferenceAppliedForSource = source
+                                if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
+                                    selectedSubtitleId = -1
+                                    if (playerView?.selectExternalSubtitleTrack(subtitle.id) == true) {
+                                        externalSubtitleAppliedKey = "${activePlaybackEngine.name}:$source:${subtitle.id}"
+                                    }
+                                    panel = null
+                                    panelClosedAtMs = System.currentTimeMillis()
+                                    showControls(focusPlay = !isLive)
+                                    return@launch
+                                }
                                 val localPath = repository.downloadSubtitleToCache(subtitle.url, context.cacheDir)
                                 if (localPath == null) {
                                     error = "Could not download this subtitle."
@@ -2363,6 +2417,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             panelClosedAtMs = System.currentTimeMillis()
                             showControls(focusPlay = !isLive)
                         },
+                        onSelectEngine = ::switchPlaybackEngine,
                         // Appearance changes stay in the panel rather than closing it: these are
                         // adjusted by eye against the subtitle currently on screen, which takes
                         // several presses, and dismissing after each one would make that unusable.

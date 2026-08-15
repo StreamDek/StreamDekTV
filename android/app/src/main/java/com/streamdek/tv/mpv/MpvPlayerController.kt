@@ -1,6 +1,7 @@
 package com.streamdek.tv.mpv
 
 import com.streamdek.tv.nativeapp.data.PlaybackStats
+import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 
 interface MpvPlayerController {
     var onLoadCallback: ((duration: Double, width: Int, height: Int) -> Unit)?
@@ -27,6 +28,10 @@ interface MpvPlayerController {
     fun setSubtitleTrack(trackId: Int)
     fun disableSubtitleTrack()
     fun addSubtitleFile(path: String)
+    /** Attach remote sidecar tracks before Media3 prepares so later selection does not reload video. */
+    fun setExternalSubtitleTracks(tracks: List<ExternalSubtitleTrack>) = Unit
+    /** Select a pre-attached sidecar. Returns false when this engine needs its normal file path. */
+    fun selectExternalSubtitleTrack(trackId: String): Boolean = false
     fun setDecoderMode(mode: String?)
 
     /**
