@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -97,6 +98,11 @@ internal fun TrailerStage(
     modifier: Modifier = Modifier,
 ) {
     var paused by remember(playback) { mutableStateOf(false) }
+    // Mobile gets another native attempt before abandoning a failed trailer. TV used to make the
+    // KinoCheck lead-in seek a single point of failure: a rendition that prepared from byte zero
+    // but rejected the seek-driven range request dismissed the whole trailer. Keep the preferred
+    // 3.5-second start, then retry this same source once from zero if it fails during startup.
+    var retryNativeFromStart by remember(playback) { mutableStateOf(false) }
     // Tried at once and then retried, rather than waiting out a fixed delay. A requester whose node
     // has not been placed yet throws, and the window where that is true is the same window in which
     // the page underneath still answers the remote — so the first attempt goes in immediately and
@@ -145,16 +151,28 @@ internal fun TrailerStage(
             .focusable(),
     ) {
         when (playback) {
-            is TrailerPlayback.Native -> TrailerSurface(
-                url = playback.source.url,
-                audioUrl = playback.source.audioUrl,
-                requestHeaders = playback.source.requestHeaders,
-                maxHeight = playback.source.height ?: maxHeight,
-                playing = active && !paused,
-                startPositionMs = playback.source.startPositionMs,
-                onEnded = onEnded,
-                onFailed = onFailed,
-            )
+            is TrailerPlayback.Native -> key(retryNativeFromStart) {
+                TrailerSurface(
+                    url = playback.source.url,
+                    audioUrl = playback.source.audioUrl,
+                    requestHeaders = playback.source.requestHeaders,
+                    maxHeight = playback.source.height ?: maxHeight,
+                    playing = active && !paused,
+                    startPositionMs = if (retryNativeFromStart) 0L else playback.source.startPositionMs,
+                    onEnded = onEnded,
+                    onFailed = { positionMs ->
+                        if (!retryNativeFromStart && playback.source.startPositionMs > 0L && positionMs < 10_000L) {
+                            retryNativeFromStart = true
+                            TvDebugLogger.w(
+                                "Trailer",
+                                "lead-in seek failed at ${positionMs}ms; retrying native source from start",
+                            )
+                        } else {
+                            onFailed()
+                        }
+                    },
+                )
+            }
             is TrailerPlayback.Embed -> TrailerEmbedSurface(
                 youtubeKey = playback.youtubeKey,
                 playing = active && !paused,
@@ -216,7 +234,7 @@ private fun TrailerSurface(
     /** Where to begin, for sources that carry a lead-in worth skipping. */
     startPositionMs: Long = 0L,
     onEnded: () -> Unit,
-    onFailed: () -> Unit,
+    onFailed: (positionMs: Long) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -224,7 +242,7 @@ private fun TrailerSurface(
     val latestOnFailed = rememberUpdatedState(onFailed)
     var attachedContainer by remember(url) { mutableStateOf<TrailerTextureContainer?>(null) }
 
-    val player = remember(url, audioUrl, requestHeaders, maxHeight) {
+    val player = remember(url, audioUrl, requestHeaders, maxHeight, startPositionMs) {
         val trackSelector = DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
                 .setMaxVideoSize(Int.MAX_VALUE, maxHeight.coerceAtLeast(360))
@@ -296,7 +314,7 @@ private fun TrailerSurface(
                 // it would put the page back up and then take it away again.
                 if (playbackEnded) return
                 TvDebugLogger.w("Trailer", "playback failed: ${error.errorCodeName}")
-                latestOnFailed.value()
+                latestOnFailed.value(player.currentPosition.coerceAtLeast(0L))
             }
         }
         val observer = LifecycleEventObserver { _, event ->
