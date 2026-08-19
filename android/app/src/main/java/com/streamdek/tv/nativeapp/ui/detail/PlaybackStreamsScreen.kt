@@ -29,6 +29,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -56,6 +63,7 @@ import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.debrid.cachedAvailabilityLabel
+import com.streamdek.tv.nativeapp.debrid.readyServiceLabel
 import com.streamdek.tv.nativeapp.data.StreamsPreferences
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.flattenFusionBadges
@@ -248,6 +256,8 @@ fun PlaybackStreamsScreen(
     // Focus the first row once, when results first appear. Later batches must not yank focus back
     // while the viewer is already reading the list.
     var initialFocusApplied by remember(request) { mutableStateOf(false) }
+    /** Bumped when the filter moved under the list, so the top row can take focus back. */
+    var refocusListAfterFilter by remember(request) { mutableIntStateOf(0) }
     val hasStreams = (uiState as? PlaybackStreamsUiState.Ready)?.candidate?.streams?.isNotEmpty() == true
     LaunchedEffect(hasStreams) {
         if (hasStreams && !initialFocusApplied) {
@@ -255,6 +265,13 @@ fun PlaybackStreamsScreen(
             runCatching { firstCardRequester.requestFocus() }
             initialFocusApplied = true
         }
+    }
+
+    LaunchedEffect(refocusListAfterFilter) {
+        if (refocusListAfterFilter == 0) return@LaunchedEffect
+        // After the recomposition the new first row is asking for, not before it.
+        kotlinx.coroutines.delay(60)
+        runCatching { firstCardRequester.requestFocus() }
     }
 
     val ready = uiState as? PlaybackStreamsUiState.Ready
@@ -373,7 +390,34 @@ fun PlaybackStreamsScreen(
                 )
 
                 is PlaybackStreamsUiState.Ready -> LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        // Left and right change the source filter without leaving the list.
+                        //
+                        // A vertical list has nothing either side of it, so both presses were dead
+                        // keys — while the thing a viewer wants while reading results is to see the
+                        // same position under another provider. Going back up to the strip to do it
+                        // loses the row they were on, so the filter moves under them instead.
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            val step = when (event.key) {
+                                Key.DirectionLeft -> -1
+                                Key.DirectionRight -> 1
+                                else -> return@onPreviewKeyEvent false
+                            }
+                            if (sourceTabs.isEmpty()) return@onPreviewKeyEvent false
+                            val next = sourceTabs.indexOf(selectedTab) + step
+                            // Clamped rather than wrapped: on a remote, running off the end and
+                            // reappearing at the other one reads as the list having jumped.
+                            if (next !in sourceTabs.indices) return@onPreviewKeyEvent true
+                            selectedTab = sourceTabs[next]
+                            // Every row's key carries the tab, so switching disposes the row the
+                            // viewer was on and focus would fall out of the list entirely.
+                            refocusListAfterFilter += 1
+                            true
+                        }
+                        .focusGroup(),
                     contentPadding = PaddingValues(
                         start = StreamsInset, end = StreamsInset, top = 6.dp, bottom = 64.dp,
                     ),
@@ -546,6 +590,7 @@ private fun StreamRow(
         else -> "Torrent" to false
     }
     val formatted = streamsPrefs.streamDekFormattingEnabled
+    val readyLabel = remember(stream.cachedBy) { readyServiceLabel(stream.cachedBy) }
     val (rawLabel, rawDetail) = remember(stream) { rawAddonStreamText(stream) }
 
     Card(
@@ -576,27 +621,42 @@ private fun StreamRow(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    if (formatted) {
+                    // Above the release rather than out in the columns, and in both modes.
+                    //
+                    // It is the thing a viewer scans by when the same release is offered by five
+                    // sources, so it sits where the eye already is — on the source's own name.
+                    // Verbatim mode keeps it too: that mode's promise is that the add-on's text is
+                    // never rewritten, and a line above it does not touch a word of what was sent.
+                    if (formatted || readyLabel != null) {
                         Row(
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(7.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = stream.addonName.ifBlank { "Stream source" },
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false),
-                            )
-                            origin?.takeIf { it.isNotBlank() }?.let {
+                            if (formatted) {
                                 Text(
-                                    text = it,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
+                                    text = stream.addonName.ifBlank { "Stream source" },
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                                    color = MaterialTheme.colorScheme.primary,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
                                 )
+                                origin?.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        text = it,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            readyLabel?.let { ready ->
+                                // Pinned right, so it lands in the same place down the whole list
+                                // and can be read without following the source names in and out.
+                                Spacer(Modifier.weight(1f))
+                                ReadyServiceTag(ready)
                             }
                         }
                     }
@@ -630,17 +690,33 @@ private fun StreamRow(
                 if (formatted) {
                     if (showQuality) StreamFact(streamQualityLabel(stream, label) ?: "—", 92.dp)
                     if (showSize) StreamFact(streamSizeLabel(stream, label) ?: "—", 92.dp)
-                    StreamFact(availability.first, if (availability.second) 190.dp else 88.dp, emphasised = availability.second)
-                } else if (stream.cachedBy.isNotEmpty()) {
-                    // Mobile keeps the user's cache result visible in raw mode while leaving the
-                    // add-on's own text untouched.
-                    StreamFact(cachedAvailabilityLabel(stream.cachedBy).orEmpty(), 190.dp, emphasised = true)
+                    // Cached rows say so in the tag above; the column keeps the cases the tag
+                    // has nothing to say about, so how a stream arrives is still one glance.
+                    if (readyLabel == null) StreamFact(availability.first, 88.dp)
                 }
             }
             if (fusionBadges.isNotEmpty()) {
                 FusionBadgeRow(badges = fusionBadges)
             }
         }
+    }
+}
+
+/** The premium service promising an instant start. See [readyServiceLabel]. */
+@Composable
+private fun ReadyServiceTag(text: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(MaterialTheme.colorScheme.primary)
+            .padding(horizontal = 9.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.surface,
+            maxLines = 1,
+        )
     }
 }
 

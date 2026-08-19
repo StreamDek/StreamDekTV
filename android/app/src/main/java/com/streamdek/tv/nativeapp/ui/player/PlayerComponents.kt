@@ -99,7 +99,7 @@ import com.streamdek.tv.nativeapp.data.prettyCodecName
 import com.streamdek.tv.nativeapp.data.streamOriginLabel
 import com.streamdek.tv.nativeapp.data.streamProviderLabel
 import com.streamdek.tv.nativeapp.data.streamTransport
-import com.streamdek.tv.nativeapp.debrid.cachedAvailabilityLabel
+import com.streamdek.tv.nativeapp.debrid.readyServiceLabel
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
@@ -1415,7 +1415,9 @@ private fun StreamOptionButton(
     val quality = streamQualityLabel(stream, releaseLabel)
     val size = streamSizeLabel(stream, releaseLabel)
     val availability = when {
-        stream.cachedBy.isNotEmpty() -> cachedAvailabilityLabel(stream.cachedBy).orEmpty() to true
+        // Same wording as the streams picker, so the row a viewer chose there is recognisable
+        // here — two names for the same promise reads as two different things.
+        stream.cachedBy.isNotEmpty() -> readyServiceLabel(stream.cachedBy).orEmpty() to true
         !stream.url.isNullOrBlank() -> "Direct" to false
         !stream.nzbUrl.isNullOrBlank() -> "Usenet" to false
         else -> "Torrent" to false

@@ -814,6 +814,18 @@ data class ProfilePluginProvider(
     val enabled: Boolean = true,
     val code: String? = null,
     val hasSettings: Boolean = false,
+    /**
+     * The values this source needs to work at all — a FebBox cookie, an Eclipsia or Pynvix API
+     * token — as the phone and the web portal wrote them into the profile.
+     *
+     * Held raw because a source decides its own field names and types: a token is a string, a
+     * region a code, a toggle a boolean, and the schema that describes them belongs to the
+     * scraper rather than to this client. Without it a token typed on the portal never reached
+     * the television, which then ran the source with no credential and reported no streams.
+     */
+    val settings: com.google.gson.JsonObject? = null,
+    /** The field list the scraper's own `onSettings` returned, as the writing client saw it. */
+    val settingsSchema: com.google.gson.JsonArray? = null,
 )
 
 data class ProfilePluginState(

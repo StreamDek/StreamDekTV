@@ -116,3 +116,16 @@ internal fun cachedAvailabilityLabel(cachedBy: List<String>): String? {
   val providers = cachedBy.map(::debridProviderDisplayName).filter(String::isNotBlank).distinct()
   return providers.takeIf { it.isNotEmpty() }?.joinToString(separator = " · ", prefix = "Cached · ")
 }
+
+/**
+ * The premium service promising an instant start, as the streams list labels it.
+ *
+ * "Ready" rather than "Cached", and named: it describes what happens when this row is pressed and
+ * who is promising it, which is the question being asked when the same release is offered by five
+ * sources. Its absence means nobody could be asked — Real-Debrid no longer answers that question —
+ * not that the row will fail.
+ */
+internal fun readyServiceLabel(cachedBy: List<String>): String? =
+  cachedBy.map(::debridProviderDisplayName).filter(String::isNotBlank).distinct()
+    .takeIf { it.isNotEmpty() }
+    ?.joinToString(separator = " · ", prefix = "Ready · ")

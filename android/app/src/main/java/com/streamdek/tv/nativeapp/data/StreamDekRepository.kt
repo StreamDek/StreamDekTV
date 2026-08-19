@@ -831,6 +831,9 @@ class StreamDekRepository(
         // The synced snapshot carries plugin configuration but not the scrapers themselves, so
         // fetch those in the background rather than on the first stream lookup.
         pluginEngine?.selectProfile(sessionStore.activeProfileId())
+        // Before the warm-up, so a scraper that reads its token at module scope has it on the
+        // very first lookup rather than on the one after the next bootstrap.
+        pluginEngine?.applySyncedSettings(bootstrap?.profilePlugins)
         pluginEngine?.warmUp(bootstrap?.profilePlugins)
         // Resolve direct/server mode while the profile picker or Home is being shown. Stream
         // selection can then fan out immediately instead of waiting on this account check first.
@@ -1063,8 +1066,31 @@ class StreamDekRepository(
     fun pluginProviderSettings(providerId: String): Map<String, String> =
         pluginEngine?.providerSettings(providerId).orEmpty()
 
-    fun savePluginProviderSettings(providerId: String, values: Map<String, String>) {
-        pluginEngine?.saveProviderSettings(providerId, values)
+    /**
+     * Stores settings for one plugin source and syncs them to the profile.
+     *
+     * Kept on the device *and* in the account. The device copy is what the sandbox reads; the
+     * account copy is what carries a token typed here to the phone, and what brings a token typed
+     * on the portal back — the same document the other clients write.
+     */
+    suspend fun savePluginProviderSettings(providerId: String, values: Map<String, String>): Boolean {
+        val engine = pluginEngine ?: return false
+        engine.saveProviderSettings(providerId, values)
+        val state = bootstrapState.value?.profilePlugins ?: return true
+        val provider = state.providers.firstOrNull { it.id == providerId } ?: return true
+        val payload = JsonObject().apply {
+            values.forEach { (key, value) -> if (key.isNotBlank()) addProperty(key, value) }
+        }
+        val next = state.copy(
+            providers = state.providers.map { if (it.id == providerId) it.copy(settings = payload) else it },
+        )
+        // A failed sync is not a failed save: the token is already on this device and working, so
+        // the source plays here either way. Only the reach to other devices is lost.
+        val updated = updateProfilePlugins(next)
+        if (updated == null) {
+            TvDebugLogger.w("Plugins", "settings for ${provider.name} saved on this TV but not synced")
+        }
+        return updated != null
     }
 
     suspend fun updateProfilePlugins(state: ProfilePluginState): AccountBootstrap? {

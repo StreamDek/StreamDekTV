@@ -32,6 +32,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
@@ -67,6 +72,23 @@ private enum class LibrarySection(val label: String) {
 private val LibraryInset = TvSpacing.ScreenHorizontal
 private val LibraryCardWidth = 132.dp
 private val LibraryCardHeight = 198.dp
+
+/**
+ * Down from the filter row into the grid, without betting that the grid is there to be entered.
+ *
+ * This was `focusProperties { down = ... }`, which resolves at focus-search time and throws when
+ * its target is not attached to anything. Two moments make that certain rather than unlikely: the
+ * window between switching section and the new grid placing its first item, which is exactly when
+ * a viewer who has just pressed a tab presses Down; and a section that is simply empty, where the
+ * empty state renders instead of the grid and the target never exists at all.
+ *
+ * Failing here falls through to Compose's ordinary focus search rather than crashing, so the worst
+ * case is a press that does nothing.
+ */
+private fun Modifier.dpadDownInto(requester: FocusRequester): Modifier = onPreviewKeyEvent { event ->
+    if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown) return@onPreviewKeyEvent false
+    runCatching { requester.requestFocus() }.isSuccess
+}
 
 private fun libraryItemKey(item: MediaItem): String {
     val episode = item.episode?.let { ":s${it.seasonNumber}:e${it.episodeNumber}" }.orEmpty()
@@ -162,6 +184,12 @@ fun LibraryScreen(
     }
     val items = if (section == LibrarySection.Continue) continueItems else watchlistItems
 
+    // A position held from a longer list has no meaning in a shorter one, and leaving the grid
+    // scrolled where the previous section was reads as the new section having lost its first rows.
+    LaunchedEffect(section, typeFilter) {
+        runCatching { gridState.scrollToItem(0) }
+    }
+
     LaunchedEffect(loading, error) {
         if (loading) return@LaunchedEffect
         delay(160)
@@ -217,7 +245,7 @@ fun LibraryScreen(
                         selected = section == option,
                         leading = count.toString(),
                         modifier = (if (index == 0) Modifier.focusRequester(firstChipRequester) else Modifier)
-                            .focusProperties { down = firstCardRequester },
+                            .dpadDownInto(firstCardRequester),
                         onClick = {
                             section = option
                             viewStore.edit().putString("section", option.name).apply()
@@ -229,7 +257,7 @@ fun LibraryScreen(
                     SearchChip(
                         label = label,
                         selected = typeFilter == value,
-                        modifier = Modifier.focusProperties { down = firstCardRequester },
+                        modifier = Modifier.dpadDownInto(firstCardRequester),
                         onClick = {
                             typeFilter = value
                             viewStore.edit().putString("type", value).apply()

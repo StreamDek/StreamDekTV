@@ -323,9 +323,48 @@ class PluginSourceEngine(context: Context) {
     }
 
     fun saveProviderSettings(providerId: String, values: Map<String, String>) {
-        val root = JSONObject()
-        values.forEach { (key, value) -> if (key.isNotBlank()) root.put(key, value) }
-        prefs.edit().putString(settingsKey(providerId), root.toString()).apply()
+        prefs.edit().putString(settingsKey(providerId), settingsJson(values).toString()).apply()
+    }
+
+    private fun settingsJson(values: Map<String, String>): JSONObject =
+        JSONObject().apply { values.forEach { (key, value) -> if (key.isNotBlank()) put(key, value) } }
+
+    /**
+     * Copies settings carried in the synced profile document into this device's storage.
+     *
+     * A token typed on the phone or the web portal arrives only this way — the television has no
+     * other route to it — and without this it was parsed and dropped, leaving the source running
+     * with no credential and reporting no streams, which is indistinguishable from a dead source.
+     *
+     * Blank and absent values are skipped rather than written. A writing client that has never
+     * seen a source sends it back with no settings at all, and taking that literally would wipe a
+     * working token off this device on the next bootstrap.
+     */
+    fun applySyncedSettings(state: ProfilePluginState?) {
+        val providers = state?.providers.orEmpty()
+        if (providers.isEmpty()) return
+        val editor = prefs.edit()
+        var changed = false
+        providers.forEach { provider ->
+            if (provider.id.isBlank()) return@forEach
+            val synced = provider.settings ?: return@forEach
+            val values = buildMap {
+                synced.entrySet().forEach { (key, value) ->
+                    if (key.isBlank() || value == null || value.isJsonNull) return@forEach
+                    val text = runCatching {
+                        if (value.isJsonPrimitive) value.asString else value.toString()
+                    }.getOrDefault(value.toString())
+                    if (text.isNotBlank()) put(key, text)
+                }
+            }
+            if (values.isEmpty()) return@forEach
+            val next = settingsJson(values).toString()
+            if (prefs.getString(settingsKey(provider.id), null) == next) return@forEach
+            editor.putString(settingsKey(provider.id), next)
+            changed = true
+            TvDebugLogger.i("Plugins", "applied ${values.size} synced setting(s) for ${provider.name}")
+        }
+        if (changed) editor.apply()
     }
 
     private fun settingsKey(providerId: String) = "settings:$profileKey:$providerId"
