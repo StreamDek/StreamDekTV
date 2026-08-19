@@ -87,10 +87,13 @@ import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.MediaDetail
+import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
+import com.streamdek.tv.nativeapp.data.Telemetry
+import com.streamdek.tv.nativeapp.data.classifyPlaybackFailure
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
@@ -226,6 +229,15 @@ fun PlayerScreen(
     var sourceFallbackNotice by remember(request.mediaId, request.mediaType) { mutableStateOf<String?>(null) }
     var pendingEngineResumePositionSec by remember(currentSourceUrl) { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
+
+    // Funnel state for the attempt currently on screen. Keyed on the title so opening something
+    // else starts a fresh attempt rather than inheriting the previous one's outcome.
+    val attemptCorrelationId = remember(request.mediaId, request.mediaType) { Telemetry.newCorrelationId() }
+    val attemptStartedAt = remember(request.mediaId, request.mediaType) { System.currentTimeMillis() }
+    var sourcesTried by remember(request.mediaId, request.mediaType) { mutableStateOf(1) }
+    /** One outcome per attempt: whichever of started/failed happens first wins. */
+    var playbackOutcomeReported by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
+
     var controlsVisible by remember { mutableStateOf(false) }
     var showLiveProgress by remember(playbackRequest.mediaId, playbackPreferences.liveProgressBarEnabled) {
         mutableStateOf(playbackPreferences.liveProgressBarEnabled)
@@ -466,6 +478,22 @@ fun PlayerScreen(
         val attempt = liveReconnectAttempt + 1
         val retryAction = liveRetryAction(attempt)
         if (retryAction == LiveRetryAction.GiveUp) {
+            if (!playbackOutcomeReported) {
+                playbackOutcomeReported = true
+                Telemetry.playbackFailed(
+                    correlationId = attemptCorrelationId,
+                    mediaId = request.mediaId,
+                    mediaType = request.mediaType,
+                    title = request.title,
+                    addonKey = candidate?.stream?.addonId?.takeIf { it.isNotBlank() }
+                        ?: candidate?.stream?.addonName,
+                    provider = candidate?.stream?.cachedBy?.firstOrNull(),
+                    errorCategory = classifyPlaybackFailure(message),
+                    errorCode = "live_reconnect_exhausted",
+                    durationMs = System.currentTimeMillis() - attemptStartedAt,
+                    sourcesTried = sourcesTried,
+                )
+            }
             error = "Live feed unavailable after $LiveReconnectMaxAttempts retries: $message"
             loading = false
             controlsVisible = true
@@ -1558,6 +1586,23 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             "Player",
                             "onLoad mediaType=${request.mediaType} mediaId=${request.mediaId} source=${currentSourceUrl ?: "none"} label=$currentLabel resume=${pendingResumePositionSec ?: 0.0}",
                         )
+                        // Only the first load of an attempt is the playback start. This callback
+                        // also fires for a source fallback and for an engine switch, and counting
+                        // those would report several starts for one thing the viewer watched once.
+                        if (!playbackOutcomeReported) {
+                            playbackOutcomeReported = true
+                            Telemetry.playbackStarted(
+                                correlationId = attemptCorrelationId,
+                                mediaId = request.mediaId,
+                                mediaType = request.mediaType,
+                                title = request.title,
+                                addonKey = candidate?.stream?.addonId?.takeIf { it.isNotBlank() }
+                                    ?: candidate?.stream?.addonName,
+                                provider = candidate?.stream?.cachedBy?.firstOrNull(),
+                                durationMs = System.currentTimeMillis() - attemptStartedAt,
+                                sourcesTried = sourcesTried,
+                            )
+                        }
                         loading = false
                         error = null
                         liveReconnectJob?.cancel()
@@ -1659,6 +1704,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 currentSourceUrl = selected.source.url
                                 currentLabel = selected.source.label
                                 pendingEngineResumePositionSec = resumeAt.takeIf { it > 0.0 }
+                                sourcesTried += 1
                                 activePlaybackEngine = initialPlaybackEngine(playbackPreferences.playerEngine)
                                 autoEngineFallbackUsed = false
                                 audioTracks = emptyList()
@@ -1667,6 +1713,25 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 error = null
                                 TvDebugLogger.w("Player", "Source failed; switching to ${selected.source.label} at ${resumeAt}s")
                             } else {
+                                // Every ranked source is gone, so this is a failure the viewer
+                                // actually saw. Reporting it at the first failed source instead
+                                // would count sources the app successfully replaced.
+                                if (!playbackOutcomeReported) {
+                                    playbackOutcomeReported = true
+                                    Telemetry.playbackFailed(
+                                        correlationId = attemptCorrelationId,
+                                        mediaId = request.mediaId,
+                                        mediaType = request.mediaType,
+                                        title = request.title,
+                                        addonKey = candidate?.stream?.addonId?.takeIf { it.isNotBlank() }
+                                            ?: candidate?.stream?.addonName,
+                                        provider = candidate?.stream?.cachedBy?.firstOrNull(),
+                                        errorCategory = classifyPlaybackFailure(message),
+                                        errorCode = null,
+                                        durationMs = System.currentTimeMillis() - attemptStartedAt,
+                                        sourcesTried = sourcesTried,
+                                    )
+                                }
                                 error = "All available sources failed. ${message.take(160)}"
                                 loading = false
                                 showControls(focusPlay = true)
@@ -2983,6 +3048,8 @@ private fun preferredAudioTrack(
 ): MpvTrackInfo? {
     val normalizedPreference = preferredLanguage.trim().lowercase()
     if (normalizedPreference.isBlank() || normalizedPreference == "off") return null
+    // "Original language" is a decision to leave the release's own track alone.
+    if (normalizedPreference == Languages.ORIGINAL) return null
     return audioTracks.firstOrNull { track ->
         trackMatchesLanguagePreference(track, normalizedPreference)
     }
@@ -2994,6 +3061,7 @@ private fun preferredSubtitleTrack(
 ): MpvTrackInfo? {
     val normalizedPreference = preferredLanguage.trim().lowercase()
     if (normalizedPreference.isBlank() || normalizedPreference == "off") return null
+    if (normalizedPreference == Languages.NONE || normalizedPreference == Languages.ORIGINAL) return null
     return subtitles.firstOrNull { track ->
         trackMatchesLanguagePreference(track, normalizedPreference)
     }
@@ -3010,11 +3078,19 @@ private fun trackMatchesLanguagePreference(track: MpvTrackInfo, preferredLanguag
     }
 }
 
+/**
+ * Every tag a container might use for [preferredLanguage], plus the written-out name.
+ *
+ * Only English used to be spelled out here; every other language matched the preference string
+ * exactly and nothing else. A profile set to French therefore matched a track tagged "fr" and
+ * missed the same track tagged "fra" or "fre" or titled "French" — which on most releases is all
+ * of them. [Languages] derives the tags from the JVM's ISO tables, both three-letter forms
+ * included, for every language rather than one.
+ */
 private fun languageAliases(preferredLanguage: String): Set<String> {
-    return when (preferredLanguage) {
-        "en", "eng", "english" -> setOf("en", "eng", "english")
-        else -> setOf(preferredLanguage)
-    }
+    val tags = Languages.tags(preferredLanguage)
+    if (tags.isEmpty()) return setOf(preferredLanguage)
+    return (tags + Languages.label(preferredLanguage).lowercase()).filter { it.isNotBlank() }.toSet()
 }
 
 private fun titleMatchesLanguageAlias(title: String, alias: String): Boolean {

@@ -40,11 +40,42 @@ const val KINOCHECK_START_MS = 3_500L
 
 
 
-private val kinocheckClient = OkHttpClient.Builder()
-    .connectTimeout(4, TimeUnit.SECONDS)
-    .readTimeout(5, TimeUnit.SECONDS)
-    .callTimeout(8, TimeUnit.SECONDS)
-    .build()
+/**
+ * Held lazily and rebuilt on demand, so a scheduled clear that deletes the cache directory from
+ * under it does not leave this client writing into a directory that no longer exists.
+ */
+private var kinocheckClientRef: OkHttpClient? = null
+
+@Synchronized
+private fun kinocheckHttpClient(context: android.content.Context?): OkHttpClient =
+    kinocheckClientRef ?: OkHttpClient.Builder()
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(8, TimeUnit.SECONDS)
+        // Trailer lookups cache into the trailer pipeline's own directory rather than a shared one,
+        // so clearing trailer state cannot take add-on responses or artwork with it.
+        .apply {
+            context?.let { ctx ->
+                runCatching { cache(okhttp3.Cache(TrailerCache.directory(ctx), TrailerCache.MAX_BYTES)) }
+            }
+        }
+        .build()
+        .also { kinocheckClientRef = it }
+
+/**
+ * Dropped after a clear so the next lookup opens a fresh cache in the recreated directory, and the
+ * in-memory answers go with it.
+ *
+ * The misses are the ones that matter: a title KinoCheck failed to answer for while the pipeline was
+ * broken stays remembered as "no trailer" for the rest of the session, which is one of the reasons
+ * clearing the cache used to need an app restart before trailers came back.
+ */
+@Synchronized
+internal fun resetKinocheckHttpClient() {
+    runCatching { kinocheckClientRef?.cache?.close() }
+    kinocheckClientRef = null
+    kinocheckCache.clear()
+}
 
 /**
  * Answers are a property of the title and do not go stale, so one lookup per title per run is
@@ -74,7 +105,11 @@ private fun cacheKinocheck(key: String, value: String?) {
  * requested explicitly because the API answers in German by default, and a German-language response
  * carries no trailer at all for most titles — it returns the KinoCheck Originals reel instead.
  */
-suspend fun kinocheckTrailerKey(tmdbId: String, type: String): String? = withContext(Dispatchers.IO) {
+suspend fun kinocheckTrailerKey(
+    tmdbId: String,
+    type: String,
+    context: android.content.Context? = null,
+): String? = withContext(Dispatchers.IO) {
     val numericId = Regex("\\d{2,}").find(tmdbId)?.value ?: return@withContext null
     val endpoint = if (type.equals("tv", ignoreCase = true) || type.equals("series", ignoreCase = true)) "shows" else "movies"
     val cacheKey = "$endpoint:$numericId"
@@ -87,7 +122,7 @@ suspend fun kinocheckTrailerKey(tmdbId: String, type: String): String? = withCon
                 .url("https://api.kinocheck.com/$endpoint?tmdb_id=$numericId&language=en")
                 .header("Accept", "application/json")
                 .build()
-            kinocheckClient.newCall(request).execute().use { response ->
+            kinocheckHttpClient(context).newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     TvDebugLogger.w(kinocheckTag, "$cacheKey: HTTP ${response.code}")
                     return@use null

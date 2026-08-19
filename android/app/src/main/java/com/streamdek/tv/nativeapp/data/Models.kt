@@ -187,6 +187,85 @@ data class PagedRailResponse(
     val page: Int = 1,
 )
 
+/**
+ * One default catalog, as declared by the backend catalog registry (`GET /tmdb/catalogs`).
+ *
+ * The registry — not the app — decides which rows exist, what they are called and in what order
+ * they appear, so a new default row is a backend deploy rather than a TV release. [id] is stable
+ * and independent of [title]: it is what the synced row layout persists, so the same row switched
+ * off on the phone is the row switched off here.
+ */
+data class CatalogDefinition(
+    val id: String,
+    val title: String,
+    /** "movie", "tv" or "network". */
+    val mediaType: String,
+    val group: String,
+    val previewLimit: Int,
+    val maxItems: Int?,
+    val paginated: Boolean,
+)
+
+/** Wire shape of `GET /tmdb/catalogs`. */
+data class CatalogManifestResponse(
+    val version: Int = 0,
+    val region: String? = null,
+    val catalogs: List<CatalogManifestEntry> = emptyList(),
+)
+
+data class CatalogManifestEntry(
+    val id: String? = null,
+    val title: String? = null,
+    val media_type: String? = null,
+    val group: String? = null,
+    val preview_limit: Int = 0,
+    val max_items: Int? = null,
+    val paginated: Boolean = true,
+)
+
+/** Wire shape of `GET /tmdb/home` — every enabled row's preview in one response. */
+data class CatalogHomeResponse(
+    val version: Int = 0,
+    val region: String? = null,
+    val sections: List<CatalogHomeSection> = emptyList(),
+)
+
+data class CatalogHomeSection(
+    val id: String? = null,
+    val title: String? = null,
+    val media_type: String? = null,
+    val results: List<CatalogSectionItem> = emptyList(),
+    /**
+     * Page this row carries on from. A preview is not always one clean page — a row short on
+     * titles the viewer has not already seen reads further into its catalog — so the server says
+     * where it stopped rather than the client inferring it from the item count.
+     */
+    val next_page: Int? = null,
+    val total_pages: Int = 0,
+)
+
+/**
+ * One item inside a catalog section.
+ *
+ * Content rows and the Streaming Networks row disagree on field names — a network tile carries
+ * `name`/`logo` where a title carries `title`/`poster` — so both are read here and reconciled
+ * when the row is turned into cards, rather than giving [MediaItem] alternates that would then
+ * apply to every other payload that happens to have a `name`.
+ */
+data class CatalogSectionItem(
+    val id: String? = null,
+    val tmdbId: Int = 0,
+    val type: String? = null,
+    val title: String? = null,
+    val name: String? = null,
+    val poster: String? = null,
+    val logo: String? = null,
+    val backdrop: String? = null,
+    val description: String? = null,
+    val rating: Double? = null,
+    val year: String? = null,
+)
+
 data class TraktCommentItem(
     val id: Long,
     val author: String,
@@ -448,12 +527,34 @@ data class HomeCatalogRowPreference(
 const val DefaultTrailerDelaySeconds = 3
 const val MaxTrailerDelaySeconds = 5
 
+/** Trailer cache housekeeping: daily, at nine in the morning. Matches the phone. */
+const val DefaultTrailerCacheClearHours = 24
+const val TrailerCacheClearHourOfDay = 9
+
+/** The intervals offered for automatic trailer-cache clearing, as hours to label. */
+val TrailerCacheClearChoices: List<Pair<Int, String>> = listOf(
+    12 to "Every 12 hours",
+    24 to "Every 24 hours",
+    48 to "Every 48 hours",
+)
+
+/**
+ * Label for an interval, including one this build does not offer.
+ *
+ * The value is synced, so the phone or the web portal can hold a choice the television's own list
+ * does not carry — which would otherwise leave the row showing a bare number.
+ */
+fun trailerCacheClearLabel(hours: Int): String =
+    TrailerCacheClearChoices.firstOrNull { it.first == hours }?.second ?: "Every $hours hours"
+
 /** Detail-screen choices, profile-scoped apart from the account-wide MDBList key. */
 data class DetailPreferences(
     val seasonTabStyle: String? = null,
     val heroTrailerAutoplay: Boolean = true,
     val heroTrailerDelaySeconds: Int = DefaultTrailerDelaySeconds,
     val heroTrailerResolution: Int = 2160,
+    /** How often trailer state is thrown away. Synced, so the household agrees on the schedule. */
+    val trailerCacheClearHours: Int = DefaultTrailerCacheClearHours,
     val ratingsEnabled: Boolean = true,
     val externalRatingsEnabled: Boolean = true,
     val enabledRatingProviders: List<String> = emptyList(),

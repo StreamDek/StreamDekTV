@@ -30,6 +30,7 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
+import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 
@@ -424,29 +425,27 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 }
 
-internal fun normalizePreferredAudioLanguage(value: String?): String = when (value?.trim()?.lowercase()) {
-  "original", "default", "auto" -> "original"
-  "es", "spa", "spanish" -> "es"
-  "fr", "fra", "fre", "french" -> "fr"
-  "de", "deu", "ger", "german" -> "de"
-  "it", "ita", "italian" -> "it"
-  "pt", "por", "portuguese", "pt-br", "pob" -> "pt"
-  "ja", "jpn", "japanese" -> "ja"
-  "ko", "kor", "korean" -> "ko"
-  "hi", "hin", "hindi" -> "hi"
-  else -> "en"
-}
+/**
+ * The stored form of an audio-language choice.
+ *
+ * Delegates to [Languages], which knows every ISO language rather than the nine that used to be
+ * listed here. That mattered beyond tidiness: anything outside the nine fell through to English, so
+ * a viewer who chose Vietnamese got English audio and no indication why.
+ */
+internal fun normalizePreferredAudioLanguage(value: String?): String =
+  when (
+    val normalized = Languages.normalize(
+      value?.trim()?.lowercase().let { if (it == "default" || it == "auto") Languages.ORIGINAL else it },
+    )
+  ) {
+    Languages.ORIGINAL -> Languages.ORIGINAL
+    Languages.NONE, "" -> "en"
+    else -> normalized
+  }
 
-internal fun preferredAudioLanguageTags(value: String?): List<String> = when (normalizePreferredAudioLanguage(value)) {
-  "original" -> emptyList()
-  "en" -> listOf("en", "eng")
-  "es" -> listOf("es", "spa")
-  "fr" -> listOf("fr", "fra", "fre")
-  "de" -> listOf("de", "deu", "ger")
-  "it" -> listOf("it", "ita")
-  "pt" -> listOf("pt", "por")
-  "ja" -> listOf("ja", "jpn")
-  "ko" -> listOf("ko", "kor")
-  "hi" -> listOf("hi", "hin")
-  else -> listOf("en", "eng")
-}
+/** Track tags for one audio-language choice; empty means "leave the release alone". */
+internal fun preferredAudioLanguageTags(value: String?): List<String> =
+  when (val normalized = normalizePreferredAudioLanguage(value)) {
+    Languages.ORIGINAL -> emptyList()
+    else -> Languages.tags(normalized)
+  }

@@ -225,6 +225,19 @@ private fun trailerCacheKey(keys: List<String>): String = keys.joinToString(",")
 @Synchronized
 private fun cachedTrailerChoice(keys: List<String>): String? = chosenTrailerCandidates[trailerCacheKey(keys)]
 
+/**
+ * Forgets which video was chosen for each title.
+ *
+ * Called when trailer state is cleared. The decision itself does not go stale, but a decision
+ * reached while the pipeline was failing can be a fallback rather than the real trailer — and a
+ * viewer who has just cleared the cache to fix trailers should not have to restart the app to get
+ * past a choice made during the broken period.
+ */
+@Synchronized
+internal fun resetTrailerResolverMemory() {
+    chosenTrailerCandidates.clear()
+}
+
 @Synchronized
 private fun cacheTrailerChoice(keys: List<String>, chosen: String) {
   if (chosenTrailerCandidates.size >= CHOSEN_TRAILER_CACHE_SIZE) {

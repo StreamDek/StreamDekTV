@@ -29,9 +29,6 @@ import java.net.URI
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * Number of plugin providers allowed to run at once. TV boxes have far less headroom than a
@@ -41,7 +38,7 @@ import javax.crypto.spec.SecretKeySpec
 private const val MAX_CONCURRENT_PLUGIN_PROVIDERS = 5
 
 /** Matches the mobile app's per-provider budget for a stream lookup. */
-private const val PLUGIN_PROVIDER_TIMEOUT_MS = 25_000L
+private const val PLUGIN_PROVIDER_TIMEOUT_MS = 60_000L
 
 /** Reading a settings schema runs no scraping, so it gets a much shorter budget. */
 private const val PLUGIN_SETTINGS_TIMEOUT_MS = 15_000L
@@ -105,6 +102,16 @@ internal fun resolvePluginProviderUrl(repositoryUrl: String, filename: String): 
     if (resolved.query != null || manifest.query == null) return resolved.toString()
     return URI(resolved.scheme, resolved.userInfo, resolved.host, resolved.port, resolved.path, manifest.query, resolved.fragment).toString()
 }
+
+/**
+ * Whether a source exports `onSettings`, whatever its manifest claims.
+ *
+ * `hasSettings` is advisory and collections forget it. A source that needs an API token or a
+ * cookie but is listed without the flag leaves nowhere to type one in, and the only symptom is a
+ * source that returns no streams -- so trust the code over the listing.
+ */
+internal fun pluginDeclaresSettings(code: String): Boolean =
+    Regex("""(?:\bfunction\s+onSettings\b)|(?:\bonSettings\s*[:=])""").containsMatchIn(code)
 
 /** `series`/`show` are the same thing as `tv` to a plugin source. */
 internal fun normalizePluginType(value: String): String =
@@ -171,21 +178,39 @@ private val CHEERIO_COMPAT_SHIM = """
   }
   function __sdBytesToWords(bytes){var words=[];for(var i=0;i<bytes.length;i++)words[i>>>2]=(words[i>>>2]||0)|(bytes[i]<<(24-(i%4)*8));return words}
   function __sdWordsToBytes(words,count){var out=[];for(var i=0;i<count;i++)out.push((words[i>>>2]>>>(24-(i%4)*8))&255);return out}
-  function __sdWordArray(words,sigBytes){
-    var value={words:(words||[]).slice(),sigBytes:sigBytes===undefined?(words||[]).length*4:Number(sigBytes)};
-    value.bytes=function(){return __sdWordsToBytes(value.words,value.sigBytes)};
-    value.concat=function(other){var joined=value.bytes().concat(other&&other.bytes?other.bytes():[]);value.words=__sdBytesToWords(joined);value.sigBytes=joined.length;return value};
-    value.toString=function(encoder){if(encoder===__sdCrypto.enc.Utf8)return __sd_utf8_decode(JSON.stringify(value.bytes()));return ''};
-    return value;
-  }
-  var __sdCrypto={
-    enc:{Utf8:{parse:function(v){var bytes=JSON.parse(__sd_utf8_encode(String(v)));return __sdWordArray(__sdBytesToWords(bytes),bytes.length)}},Base64:{parse:function(v){var bytes=__sdB64Bytes(v);return __sdWordArray(__sdBytesToWords(bytes),bytes.length)} }},
-    lib:{WordArray:{create:function(words,sigBytes){return __sdWordArray(words,sigBytes)}}},mode:{CBC:'CBC'},pad:{Pkcs7:'Pkcs7'}
-  };
-  function __sdDecrypt(kind,cipher,key,options){var data=typeof cipher==='string'?__sdB64Bytes(cipher):(cipher&&cipher.ciphertext&&cipher.ciphertext.bytes?cipher.ciphertext.bytes():[]);var keyBytes=key&&key.bytes?key.bytes():[];var iv=options&&options.iv&&options.iv.bytes?options.iv.bytes():[];var plain=__sd_crypto_decrypt(kind,JSON.stringify(data),JSON.stringify(keyBytes),JSON.stringify(iv));return {toString:function(){return plain||''}}}
-  __sdCrypto.AES={decrypt:function(cipher,key,options){return __sdDecrypt('AES',cipher,key,options)}};
-  __sdCrypto.TripleDES={decrypt:function(cipher,key,options){return __sdDecrypt('DESede',cipher,key,options)}};
 """.trimIndent()
+
+/**
+ * What FebBox and the other hosts these sources scrape expect to see. The old "StreamDek/1.0"
+ * was enough for a bot filter to answer with a challenge page instead of JSON, which reaches the
+ * provider as an unparseable body and leaves it reporting no streams rather than an error.
+ */
+private const val PLUGIN_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+/** The plugin sandbox: DOM and crypto shims, a browser-ish global scope, and the module loader. */
+private val PLUGIN_RUNTIME_SOURCE = CHEERIO_COMPAT_SHIM + "\n" + PLUGIN_POLYFILLS + "\n" + "globalThis.window=globalThis;globalThis.self=globalThis;globalThis.global=globalThis;globalThis.console={log:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},warn:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},info:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},debug:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},error:function(){__sd_log([].slice.call(arguments).map(String).join(' '))}};var __sd_timers={};var __sd_timer_seq=0;globalThis.setTimeout=function(fn){if(typeof fn!=='function')return 0;var id=++__sd_timer_seq;__sd_timers[id]=1;Promise.resolve().then(function(){if(__sd_timers[id]){delete __sd_timers[id];fn()}});return id};globalThis.clearTimeout=function(id){delete __sd_timers[id]};globalThis.setInterval=function(){return 0};globalThis.clearInterval=function(){};globalThis.Buffer={from:function(v,e){e=String(e||'utf8').toLowerCase();var b=e==='base64'?__sdB64Bytes(v):e==='binary'||e==='latin1'?String(v||'').split('').map(function(c){return c.charCodeAt(0)&255}):JSON.parse(__sd_utf8_encode(String(v||'')));return {__bytes:b,toString:function(enc){enc=String(enc||'utf8').toLowerCase();if(enc==='base64')return __sdB64Encode(b);if(enc==='hex')return b.map(function(n){return ('0'+n.toString(16)).slice(-2)}).join('');return __sd_utf8_decode(JSON.stringify(b))}}}};" +
+  "var __sd_types=new Proxy({isArrayBuffer:function(v){return v instanceof ArrayBuffer},isTypedArray:function(v){return ArrayBuffer.isView(v)}},{get:function(t,k){return t[k]||function(){return false}}});" +
+  "function __sd_emitter(){this._events={}};__sd_emitter.prototype.on=function(n,f){(this._events[n]||(this._events[n]=[])).push(f);return this};__sd_emitter.prototype.once=function(n,f){var s=this;function w(){s.removeListener(n,w);return f.apply(s,arguments)}return this.on(n,w)};__sd_emitter.prototype.emit=function(n){var a=[].slice.call(arguments,1);(this._events[n]||[]).slice().forEach(function(f){f.apply(null,a)});return true};__sd_emitter.prototype.removeListener=function(n,f){this._events[n]=(this._events[n]||[]).filter(function(x){return x!==f});return this};" +
+  "function require(n){if(n==='cheerio-without-node-native'||n==='cheerio')return __sd_cheerio;if(n==='crypto-js')return __sdCrypto;if(n==='axios')return __sdAxios;if(n==='util'||n==='util/types')return n==='util/types'?__sd_types:{types:__sd_types,inherits:function(c,p){c.prototype=Object.create(p.prototype);c.prototype.constructor=c},promisify:function(f){return function(){var a=[].slice.call(arguments);return new Promise(function(ok,no){a.push(function(e,v){e?no(e):ok(v)});f.apply(null,a)})}},inspect:function(v){try{return JSON.stringify(v)}catch(e){return String(v)}}};if(n==='events')return {EventEmitter:__sd_emitter};if(n==='querystring')return {escape:encodeURIComponent,unescape:decodeURIComponent,stringify:function(o){return Object.keys(o||{}).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k])}).join('&')}};if(n==='url')return {URL:globalThis.URL,URLSearchParams:globalThis.URLSearchParams};throw new Error('Module not available in sandbox: '+n)};" +
+  "globalThis.fetch=async function(u,o){o=o||{};var h=o.headers||{};if(h&&typeof h.forEach==='function'){var m={};h.forEach(function(v,k){m[k]=String(v)});h=m}var r=JSON.parse(__sd_fetch(String(u),String(o.method||\"GET\"),JSON.stringify(h),String(o.body||\"\"),o.redirect!=='manual'));return {ok:r.ok,status:r.status,statusText:r.statusText||'',url:r.url,headers:{get:function(n){return r.headers[String(n).toLowerCase()]||null}},text:function(){return Promise.resolve(r.body)},json:function(){try{return Promise.resolve(JSON.parse(r.body))}catch(e){return Promise.resolve(null)}}}};" +
+  "async function __sdAxios(o){if(typeof o==='string')o={url:o};o=o||{};var u=String(o.url||'');if(o.params){var q=Object.keys(o.params).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o.params[k])}).join('&');if(q)u+=(u.indexOf('?')>=0?'&':'?')+q}var body=o.data;if(body&&typeof body!=='string')body=JSON.stringify(body);var r=await fetch(u,{method:String(o.method||'GET').toUpperCase(),headers:o.headers||{},body:body});var t=await r.text();var data;try{data=JSON.parse(t)}catch(e){data=t}var response={data:data,status:r.status,statusText:'',headers:r.headers,config:o,request:null};if(!r.ok){var error=new Error('Request failed with status code '+r.status);error.response=response;throw error}return response};__sdAxios.get=function(u,o){return __sdAxios(Object.assign({},o||{},{url:u,method:'GET'}))};__sdAxios.post=function(u,d,o){return __sdAxios(Object.assign({},o||{},{url:u,data:d,method:'POST'}))};__sdAxios.request=__sdAxios;__sdAxios.create=function(defaults){var client=function(o){return __sdAxios(Object.assign({},defaults||{},o||{}))};client.get=__sdAxios.get;client.post=__sdAxios.post;client.request=client;return client};__sdAxios.default=__sdAxios;"
+
+/**
+ * Reads a DOM node handle out of a QuickJS argument.
+ *
+ * The same JS integer arrives boxed differently depending on how it got there: the handle
+ * returned straight out of `__sd_dom_load` came through as a Long, while handles that had been
+ * round-tripped through JSON and `Number()` came through as a Double. Parsing with
+ * `toString().toIntOrNull()` worked for the first and returned null for the second -- "2.0" is not
+ * an Int -- so a root selector matched but every nested `.find()` and `.attr()` off it silently
+ * resolved to nothing, and a source that leaned on cheerio just reported no streams.
+ */
+private fun domNodeHandle(raw: Any?): Int? = when (raw) {
+    null -> null
+    is Number -> raw.toInt()
+    else -> raw.toString().trim().toDoubleOrNull()?.toInt()
+}
 
 /**
  * Runs the profile's synced plugin sources on the TV.
@@ -234,6 +259,10 @@ class PluginSourceEngine(context: Context) {
      */
     private val providerBytecodeCache = ConcurrentHashMap<String, ByteArray>()
 
+    /** The shim is identical for every provider, so it compiles once for the whole app. */
+    @Volatile
+    private var runtimeBytecode: ByteArray? = null
+
     /** Signature of the state the scraper cache was last warmed for, so a refresh is a no-op. */
     @Volatile
     private var warmedSignature: String? = null
@@ -252,18 +281,35 @@ class PluginSourceEngine(context: Context) {
     /**
      * The settings a provider asks for, by running its `onSettings` export.
      *
-     * Only providers that advertise `hasSettings` export it; everything else has nothing to
-     * configure and this is never called for them.
+     * Gated on the scraper actually exporting `onSettings` rather than on the manifest's
+     * `hasSettings`, which is advisory and routinely missing — see [pluginDeclaresSettings].
      */
     suspend fun settingsSchema(
         state: ProfilePluginState?,
         provider: ProfilePluginProvider,
     ): Result<List<PluginSettingField>> = runCatching {
-        require(provider.hasSettings) { "This source does not advertise any settings." }
         val repoVersion = state?.repos.orEmpty().firstOrNull { it.url == provider.repoUrl }?.version.orEmpty()
         val code = providerCode(provider, repoVersion)
+        require(provider.hasSettings || pluginDeclaresSettings(code)) { "This source does not expose any settings." }
         parseSettingsSchema(executeProvider(provider, code, null, null, null, null, settingsOnly = true))
     }.onFailure { TvDebugLogger.w("Plugins", "settings schema failed name=${provider.name}", it) }
+
+    /**
+     * Whether the settings entry should be offered for [provider], without touching the network.
+     *
+     * The scraper is normally already cached by [warmUp] on bootstrap, so the code can be
+     * consulted directly. Before it is, the manifest flag is all there is to go on — and it only
+     * ever under-reports, so a source that turns out to have settings gains the row once its
+     * source has landed rather than being wrongly offered one it cannot fill.
+     */
+    fun declaresSettings(provider: ProfilePluginProvider): Boolean {
+        if (provider.hasSettings) return true
+        val code = provider.code?.takeIf { it.isNotBlank() }
+            ?: codeCache[provider.id]
+            ?: prefs.getString(codeKey(provider.id), null)?.takeIf { it.isNotBlank() }
+            ?: return false
+        return pluginDeclaresSettings(code)
+    }
 
     /** Values the viewer has entered for one provider on this device, for this profile. */
     fun providerSettings(providerId: String): Map<String, String> {
@@ -482,39 +528,43 @@ class PluginSourceEngine(context: Context) {
                 null
             }
             function("__sd_dom_load") { args: Array<Any?> ->
-                registerDomNode(Jsoup.parse(args.getOrNull(0)?.toString().orEmpty()))
+                val html = args.getOrNull(0)?.toString().orEmpty()
+                registerDomNode(Jsoup.parse(html)).also {
+                    TvDebugLogger.d("Plugins", "[${provider.name}] dom.load ${html.length} chars -> node $it")
+                }
             }
             function("__sd_dom_select") { args: Array<Any?> ->
-                val root = args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)
+                val root = domNodeHandle(args.getOrNull(0))?.let(domNodes::get)
                 val selector = args.getOrNull(1)?.toString().orEmpty()
                 val ids = if (root == null || selector.isBlank()) {
                     emptyList()
                 } else {
                     runCatching { root.select(selector).map(::registerDomNode) }.getOrDefault(emptyList())
                 }
+                TvDebugLogger.d("Plugins", "[${provider.name}] dom.select $selector -> ${ids.size}")
                 JSONArray(ids).toString()
             }
             function("__sd_dom_matches") { args: Array<Any?> ->
-                val node = args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)
+                val node = domNodeHandle(args.getOrNull(0))?.let(domNodes::get)
                 val selector = args.getOrNull(1)?.toString().orEmpty()
                 node != null && selector.isNotBlank() && runCatching { node.`is`(selector) }.getOrDefault(false)
             }
             function("__sd_dom_attr") { args: Array<Any?> ->
-                val node = args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)
+                val node = domNodeHandle(args.getOrNull(0))?.let(domNodes::get)
                 node?.attr(args.getOrNull(1)?.toString().orEmpty()).orEmpty()
             }
             function("__sd_dom_text") { args: Array<Any?> ->
-                args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)?.text().orEmpty()
+                domNodeHandle(args.getOrNull(0))?.let(domNodes::get)?.text().orEmpty()
             }
             function("__sd_dom_html") { args: Array<Any?> ->
-                args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)?.html().orEmpty()
+                domNodeHandle(args.getOrNull(0))?.let(domNodes::get)?.html().orEmpty()
             }
             function("__sd_dom_children") { args: Array<Any?> ->
-                val node = args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)
+                val node = domNodeHandle(args.getOrNull(0))?.let(domNodes::get)
                 JSONArray(node?.children()?.map(::registerDomNode).orEmpty()).toString()
             }
             function("__sd_dom_parent") { args: Array<Any?> ->
-                args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)?.parent()?.let(::registerDomNode) ?: 0
+                domNodeHandle(args.getOrNull(0))?.let(domNodes::get)?.parent()?.let(::registerDomNode) ?: 0
             }
             function("__sd_utf8_encode") { args: Array<Any?> ->
                 JSONArray(args.getOrNull(0)?.toString().orEmpty().toByteArray(Charsets.UTF_8).map { it.toInt() and 0xff }).toString()
@@ -523,22 +573,6 @@ class PluginSourceEngine(context: Context) {
                 runCatching {
                     val source = JSONArray(args.getOrNull(0)?.toString().orEmpty())
                     String(ByteArray(source.length()) { index -> source.optInt(index).toByte() }, Charsets.UTF_8)
-                }.getOrDefault("")
-            }
-            function("__sd_crypto_decrypt") { args: Array<Any?> ->
-                runCatching {
-                    fun bytes(raw: Any?): ByteArray {
-                        val source = JSONArray(raw?.toString().orEmpty())
-                        return ByteArray(source.length()) { index -> source.optInt(index).toByte() }
-                    }
-                    val algorithm = args.getOrNull(0)?.toString().orEmpty()
-                    val encrypted = bytes(args.getOrNull(1))
-                    val key = bytes(args.getOrNull(2))
-                    val iv = bytes(args.getOrNull(3))
-                    val transformation = if (algorithm == "DESede") "DESede/CBC/PKCS5Padding" else "AES/CBC/PKCS5Padding"
-                    val cipher = Cipher.getInstance(transformation)
-                    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, algorithm), IvParameterSpec(iv))
-                    String(cipher.doFinal(encrypted), Charsets.UTF_8)
                 }.getOrDefault("")
             }
             function("__capture_result") { args: Array<Any?> ->
@@ -554,18 +588,39 @@ class PluginSourceEngine(context: Context) {
                 val method = args.getOrNull(1)?.toString()?.uppercase(Locale.US) ?: "GET"
                 val headerJson = runCatching { JSONObject(args.getOrNull(2)?.toString() ?: "{}") }.getOrDefault(JSONObject())
                 val body = args.getOrNull(3)?.toString().orEmpty()
+                val followRedirects = args.getOrNull(4) as? Boolean ?: true
                 require(url.startsWith("http://") || url.startsWith("https://")) { "Only HTTP(S) is allowed." }
                 val request = Request.Builder().url(url)
-                headerJson.keys().forEach { key -> headerJson.optString(key).takeIf { it.isNotBlank() }?.let { request.header(key, it) } }
-                if (!headerJson.keys().asSequence().any { it.equals("User-Agent", true) }) request.header("User-Agent", "StreamDek/1.0")
+                // Scrapers copy browser header dumps wholesale, Accept-Encoding included. Setting it by
+                // hand switches OkHttp out of transparent gzip, so the body arrives still compressed and
+                // every JSON.parse in the provider fails on binary. Drop it and let OkHttp negotiate.
+                headerJson.keys().asSequence().filterNot { it.equals("Accept-Encoding", true) }.toList()
+                    .forEach { key -> headerJson.optString(key).takeIf { it.isNotBlank() }?.let { request.header(key, it) } }
+                if (!headerJson.keys().asSequence().any { it.equals("User-Agent", true) }) request.header("User-Agent", PLUGIN_USER_AGENT)
                 val requestBody = if (method == "GET" || method == "HEAD") null else body.toRequestBody(headerJson.optString("Content-Type").toMediaTypeOrNull())
+                // `redirect: "manual"` is how a source reads the Location of a 302 rather than following
+                // it, which is the usual way these hosts hand back a signed download URL.
+                val client = if (followRedirects) http else http.newBuilder().followRedirects(false).followSslRedirects(false).build()
                 runBlocking(Dispatchers.IO) {
-                    http.newCall(request.method(method, requestBody).build()).execute().use {
+                    client.newCall(request.method(method, requestBody).build()).execute().use {
+                        TvDebugLogger.d(
+                            "Plugins",
+                            "[${provider.name}] $method ${url.substringBefore("?").take(120)} -> ${it.code} " +
+                                "${it.body?.contentLength() ?: -1L}b" +
+                                if (headerJson.keys().asSequence().any { name -> name.equals("Cookie", true) }) " +cookie" else "",
+                        )
                         val responseHeaders = JSONObject()
-                        it.headers.names().forEach { name -> responseHeaders.put(name.lowercase(Locale.US), it.header(name).orEmpty()) }
+                        // names() is a unique set and header(name) answers with the last value only, so a
+                        // response carrying several Set-Cookie lines arrived as one. A provider that
+                        // collects a session across two cookies then sent back half of it.
+                        it.headers.names().forEach { name ->
+                            val values = it.headers.values(name)
+                            responseHeaders.put(name.lowercase(Locale.US), if (values.size > 1) values.joinToString(", ") else values.firstOrNull().orEmpty())
+                        }
                         JSONObject()
                             .put("ok", it.isSuccessful)
                             .put("status", it.code)
+                            .put("statusText", it.message)
                             .put("url", it.request.url.toString())
                             .put("headers", responseHeaders)
                             .put("body", it.body?.string().orEmpty())
@@ -573,16 +628,22 @@ class PluginSourceEngine(context: Context) {
                     }
                 }
             }
-            val providerSource = CHEERIO_COMPAT_SHIM + "\n" + SANDBOX_BOILERPLATE +
-                "var module={exports:{}};var exports=module.exports;(function(){" + normalizePluginJavaScript(code) + "})();"
-            val providerBytecode = providerBytecodeCache.getOrPut("${provider.id}:${code.hashCode()}") {
-                compile(providerSource, "provider.js", false)
-            }
-            evaluate<Any?>(providerBytecode)
+            installPluginCryptoBridge()
+            // Compiling the shim to bytecode is the expensive part of a lookup, and it is the same blob
+            // every time, so it is compiled once per process rather than once per provider.
+            evaluate<Any?>(runtimeBytecode ?: compile(PLUGIN_RUNTIME_SOURCE, "runtime.js", false).also { runtimeBytecode = it })
             // Whatever the viewer entered under the source's settings cog, in the same global the
             // mobile app exposes. Providers with no settings simply see an empty object.
+            //
+            // These go in before the provider body runs: a source that reads SCRAPER_SETTINGS at module
+            // scope rather than inside getStreams — a FebBox token, say — saw undefined and returned nothing.
             val settingsJson = JSONObject(providerSettings(provider.id) as Map<*, *>).toString()
             evaluate<Any?>("globalThis.SCRAPER_SETTINGS=$settingsJson;globalThis.global.SCRAPER_SETTINGS=globalThis.SCRAPER_SETTINGS;")
+            // Cached separately, keyed by content, so a refreshed provider recompiles and the shim does not.
+            val providerBytecode = providerBytecodeCache.getOrPut("${provider.id}:${code.hashCode()}") {
+                compile("var module={exports:{}};var exports=module.exports;(function(){" + normalizePluginJavaScript(code) + "})();", "provider.js", false)
+            }
+            evaluate<Any?>(providerBytecode)
             val invocation = if (settingsOnly) {
                 "var f=module.exports.onSettings||globalThis.onSettings;" +
                     "if(typeof f!=='function')throw new Error('Plugin does not export onSettings');var r=await f();"
@@ -636,15 +697,3 @@ class PluginSourceEngine(context: Context) {
         }
     }
 }
-
-/**
- * Browser-ish globals plugin scrapers are written against: `fetch`, an axios shim, a minimal
- * `require` over the handful of modules they use, and a `Buffer`. Kept in step with mobile.
- */
-private val SANDBOX_BOILERPLATE =
-    "globalThis.window=globalThis;globalThis.self=globalThis;globalThis.global=globalThis;globalThis.console={log:function(){},error:function(){__sd_log([].slice.call(arguments).map(String).join(' '))}};globalThis.setTimeout=function(fn){fn();return 0};globalThis.clearTimeout=function(){};globalThis.Buffer={from:function(v,e){e=String(e||'utf8').toLowerCase();var b=e==='base64'?__sdB64Bytes(v):e==='binary'||e==='latin1'?String(v||'').split('').map(function(c){return c.charCodeAt(0)&255}):JSON.parse(__sd_utf8_encode(String(v||'')));return {__bytes:b,toString:function(enc){enc=String(enc||'utf8').toLowerCase();if(enc==='base64')return __sdB64Encode(b);if(enc==='hex')return b.map(function(n){return ('0'+n.toString(16)).slice(-2)}).join('');return __sd_utf8_decode(JSON.stringify(b))}}}};" +
-        "var __sd_types=new Proxy({isArrayBuffer:function(v){return v instanceof ArrayBuffer},isTypedArray:function(v){return ArrayBuffer.isView(v)}},{get:function(t,k){return t[k]||function(){return false}}});" +
-        "function __sd_emitter(){this._events={}};__sd_emitter.prototype.on=function(n,f){(this._events[n]||(this._events[n]=[])).push(f);return this};__sd_emitter.prototype.once=function(n,f){var s=this;function w(){s.removeListener(n,w);return f.apply(s,arguments)}return this.on(n,w)};__sd_emitter.prototype.emit=function(n){var a=[].slice.call(arguments,1);(this._events[n]||[]).slice().forEach(function(f){f.apply(null,a)});return true};__sd_emitter.prototype.removeListener=function(n,f){this._events[n]=(this._events[n]||[]).filter(function(x){return x!==f});return this};" +
-        "function require(n){if(n==='cheerio-without-node-native'||n==='cheerio')return __sd_cheerio;if(n==='crypto-js')return __sdCrypto;if(n==='axios')return __sdAxios;if(n==='util'||n==='util/types')return n==='util/types'?__sd_types:{types:__sd_types,inherits:function(c,p){c.prototype=Object.create(p.prototype);c.prototype.constructor=c},promisify:function(f){return function(){var a=[].slice.call(arguments);return new Promise(function(ok,no){a.push(function(e,v){e?no(e):ok(v)});f.apply(null,a)})}},inspect:function(v){try{return JSON.stringify(v)}catch(e){return String(v)}}};if(n==='events')return {EventEmitter:__sd_emitter};if(n==='querystring')return {escape:encodeURIComponent,unescape:decodeURIComponent,stringify:function(o){return Object.keys(o||{}).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k])}).join('&')}};if(n==='url')return {URL:globalThis.URL,URLSearchParams:globalThis.URLSearchParams};throw new Error('Module not available in sandbox: '+n)};" +
-        "globalThis.fetch=async function(u,o){o=o||{};var r=JSON.parse(__sd_fetch(String(u),String(o.method||\"GET\"),JSON.stringify(o.headers||{}),String(o.body||\"\")));return {ok:r.ok,status:r.status,url:r.url,headers:{get:function(n){return r.headers[String(n).toLowerCase()]||null}},text:function(){return Promise.resolve(r.body)},json:function(){return Promise.resolve(JSON.parse(r.body))}}};" +
-        "async function __sdAxios(o){if(typeof o==='string')o={url:o};o=o||{};var u=String(o.url||'');if(o.params){var q=Object.keys(o.params).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o.params[k])}).join('&');if(q)u+=(u.indexOf('?')>=0?'&':'?')+q}var body=o.data;if(body&&typeof body!=='string')body=JSON.stringify(body);var r=await fetch(u,{method:String(o.method||'GET').toUpperCase(),headers:o.headers||{},body:body});var t=await r.text();var data;try{data=JSON.parse(t)}catch(e){data=t}var response={data:data,status:r.status,statusText:'',headers:r.headers,config:o,request:null};if(!r.ok){var error=new Error('Request failed with status code '+r.status);error.response=response;throw error}return response};__sdAxios.get=function(u,o){return __sdAxios(Object.assign({},o||{},{url:u,method:'GET'}))};__sdAxios.post=function(u,d,o){return __sdAxios(Object.assign({},o||{},{url:u,data:d,method:'POST'}))};__sdAxios.request=__sdAxios;__sdAxios.create=function(defaults){var client=function(o){return __sdAxios(Object.assign({},defaults||{},o||{}))};client.get=__sdAxios.get;client.post=__sdAxios.post;client.request=client;return client};__sdAxios.default=__sdAxios;"

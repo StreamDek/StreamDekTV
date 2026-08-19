@@ -304,9 +304,16 @@ internal fun isUsableAddonMeta(meta: AddonMetaItem, requestedId: String): Boolea
 /** Add-on rows are identified by prefix so they can be ordered as a group. */
 private const val ADDON_RAIL_PREFIX = "addon:"
 
-/** Display order of the Home slots, independent of the order they finish loading in. */
+/**
+ * Display order of the Home slots, independent of the order they finish loading in.
+ *
+ * "catalog-rows" is the backend catalog registry's whole set, which arrives in one response and so
+ * occupies one slot however many rows it turns out to hold. The named rows below it are the
+ * pre-registry defaults, reached only when a backend has no registry to offer.
+ */
 private val HOME_SLOT_ORDER = listOf(
     "continue-watching",
+    "catalog-rows",
     "popular-movies",
     "popular-series",
     "trending",
@@ -315,6 +322,12 @@ private val HOME_SLOT_ORDER = listOf(
     "recommended",
     "addon-catalogs",
 )
+
+/** How long the catalog registry is held for. It changes on backend deploys, not minute to minute. */
+private const val CATALOG_MANIFEST_TTL_MS = 6L * 60L * 60L * 1000L
+
+/** The registry's id for the service-tile row, which is laid out differently from a title row. */
+private const val NETWORKS_CATALOG_ID = "streaming_networks"
 
 /**
  * Resolved playback URLs (debrid links, addon direct links) expire quickly, so cached
@@ -519,6 +532,19 @@ class StreamDekRepository(
     private val resolvedPlaybackCache = lruCache<String, ResolvedPlaybackCandidate>(16)
     private val resolvedPlaybackCacheTimes = lruCache<String, Long>(32)
 
+    /** The catalog registry and when it was read. See [fetchCatalogManifest]. */
+    @Volatile
+    private var catalogManifest: Pair<List<CatalogDefinition>, Long>? = null
+
+    /**
+     * Region used for theatrical listings and watch-provider rows. Taken from the television,
+     * which is as close to "where the viewer is" as this app knows; the backend falls back to US
+     * for a service that does not operate here rather than handing back an empty row.
+     */
+    private val catalogRegion: String =
+        runCatching { Locale.getDefault().country.takeIf { it.length == 2 }?.uppercase(Locale.US) }
+            .getOrNull() ?: "US"
+
     /**
      * Client used to talk to Stremio addons directly (bypassing the backend), mirroring the
      * mobile app's fresh-stream fetch used when a cached addon link has expired.
@@ -542,6 +568,13 @@ class StreamDekRepository(
     private val addonEntitlementsMutex = kotlinx.coroutines.sync.Mutex()
     @Volatile private var addonEntitlementsUserId: String? = null
     @Volatile private var serverSideStreamsEnabled: Boolean = false
+
+    init {
+        // Client funnel capture. The backend can see which add-ons were queried and which debrid
+        // providers were tried, but only this device knows whether anything actually played.
+        Telemetry.configure(api)
+        Telemetry.sessionStarted()
+    }
 
     /**
      * The active profile's stored blob exactly as the backend holds it. Kept raw because it also
@@ -928,6 +961,7 @@ class StreamDekRepository(
                     "heroTrailerAutoplay" to (partial["heroTrailerAutoplay"] ?: existing.heroTrailerAutoplay),
                     "heroTrailerDelaySeconds" to (partial["heroTrailerDelaySeconds"] ?: existing.heroTrailerDelaySeconds),
                     "heroTrailerResolution" to (partial["heroTrailerResolution"] ?: existing.heroTrailerResolution),
+                    "trailerCacheClearHours" to (partial["trailerCacheClearHours"] ?: existing.trailerCacheClearHours),
                     "ratingsEnabled" to (partial["ratingsEnabled"] ?: existing.ratingsEnabled),
                     "externalRatingsEnabled" to (partial["externalRatingsEnabled"] ?: existing.externalRatingsEnabled),
                     "enabledRatingProviders" to (partial["enabledRatingProviders"] ?: existing.enabledRatingProviders),
@@ -1013,6 +1047,14 @@ class StreamDekRepository(
     suspend fun pluginSettingsSchema(provider: ProfilePluginProvider): Result<List<PluginSettingField>> =
         pluginEngine?.settingsSchema(bootstrapState.value?.profilePlugins, provider)
             ?: Result.failure(IllegalStateException("Plugin sources are unavailable on this device."))
+
+    /**
+     * Whether to offer the settings entry for a plugin source. Answers from the scraper itself
+     * where it has been cached, because a collection's `hasSettings` flag is advisory and often
+     * absent on sources that do need a key.
+     */
+    fun pluginProviderHasSettings(provider: ProfilePluginProvider): Boolean =
+        pluginEngine?.declaresSettings(provider) ?: provider.hasSettings
 
     /**
      * Values entered for one plugin source. Kept on this device rather than synced: they are API
@@ -1461,8 +1503,13 @@ class StreamDekRepository(
         val homePreferences = bootstrapState.value?.preferences?.home
         val addonConfiguration = bootstrapState.value?.integrations?.addons?.items.orEmpty()
             .joinToString("|") { "${it.id}:${it.enabled}:${it.position}" }
+        // The row layout is part of the key: switching a row off on the phone has to change what
+        // this screen shows the next time it is opened, not the next time the cache happens to miss.
+        val rowLayout = homePreferences?.homeCatalogRows.orEmpty()
+            .sortedBy { it.position }
+            .joinToString("|") { "${it.id}:${it.enabled}" }
         val cacheKey = buildSessionProfileCacheKey() +
-            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration"
+            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout"
         if (!forceRefresh) {
             homeCache[cacheKey]?.let {
                 send(it)
@@ -1474,6 +1521,11 @@ class StreamDekRepository(
         val builtInCatalogsEnabled = bootstrapState.value?.preferences?.home?.defaultAppCatalogsEnabled != false
         val failuresBefore = api.failureEpoch
 
+        // Which rows exist is the registry's decision, and the skeleton has to name them before
+        // anything is fetched, so the manifest is read first. It is held for hours after the first
+        // read, so this costs one small request per session rather than one per home load.
+        val catalogRows = if (builtInCatalogsEnabled) catalogRowOrder(fetchCatalogManifest()) else emptyList()
+
         // Slots are declared up front, in final display order, so a row that resolves late lands
         // where its skeleton already was.
         val pending = linkedMapOf<String, PendingRail>()
@@ -1481,7 +1533,9 @@ class StreamDekRepository(
             pending[id] = PendingRail(id, title, portrait)
         }
         reserve("continue-watching", "Continue Watching")
-        if (builtInCatalogsEnabled) {
+        if (catalogRows.isNotEmpty()) {
+            catalogRows.forEach { reserve(it.id, it.title, portrait = it.mediaType != "network") }
+        } else if (builtInCatalogsEnabled) {
             reserve("popular-movies", "Popular Movies")
             reserve("popular-series", "Popular Series")
             reserve("trending", "Trending")
@@ -1490,6 +1544,14 @@ class StreamDekRepository(
             reserve("recommended", "Recommended For You")
         }
         reserve("addon-catalogs", "Add-on Catalogues")
+
+        // Display order, which with the registry is only known at runtime. The pre-registry slots
+        // still come from [HOME_SLOT_ORDER], so the fallback path is unchanged.
+        val slotOrder = if (catalogRows.isEmpty()) HOME_SLOT_ORDER else buildList {
+            add("continue-watching")
+            catalogRows.forEach { add(it.id) }
+            add("addon-catalogs")
+        }
 
         val resolved = linkedMapOf<String, List<HomeRail>>()
         val mutex = kotlinx.coroutines.sync.Mutex()
@@ -1501,12 +1563,11 @@ class StreamDekRepository(
                 // Emit in declared order regardless of which slot finished first.
                 val ordered = pending.keys.toList()
                 val ready = resolved.keys
-                    .sortedBy { key -> HOME_SLOT_ORDER.indexOf(key) }
+                    .sortedBy { key -> slotOrder.indexOf(key) }
                     .flatMap { resolved.getValue(it) }
                     .filter { it.items.isNotEmpty() }
                 HomeContent(
-                    featured = ready.firstOrNull { it.id != "continue-watching" }?.items?.firstOrNull()
-                        ?: ready.firstOrNull()?.items?.firstOrNull(),
+                    featured = ready.heroCandidate(),
                     rails = orderHomeRails(ready),
                     pendingRails = ordered.mapNotNull { pending[it] },
                 )
@@ -1521,7 +1582,20 @@ class StreamDekRepository(
                 publish("continue-watching", listOf(HomeRail("continue-watching", "Continue Watching", items)))
             }
 
-            if (builtInCatalogsEnabled) {
+            if (catalogRows.isNotEmpty()) {
+                launch {
+                    val rails = runCatching { fetchCatalogHomeRails(catalogRows) }
+                        .onFailure { TvDebugLogger.w("Home", "catalog rows failed", it) }
+                        .getOrDefault(emptyList())
+                        .associateBy { it.id }
+                    // Published per row, including the ones that came back with nothing: a slot
+                    // left reserved is a skeleton that never resolves, and Home would sit
+                    // permanently incomplete waiting for a row the backend deliberately dropped.
+                    catalogRows.forEach { definition ->
+                        publish(definition.id, listOfNotNull(rails[definition.id]))
+                    }
+                }
+            } else if (builtInCatalogsEnabled) {
                 launch { publishTmdbRails(::publish, recommendationsAvailable) }
             }
 
@@ -1533,12 +1607,11 @@ class StreamDekRepository(
 
         val complete = mutex.withLock {
             val ready = resolved.keys
-                .sortedBy { key -> HOME_SLOT_ORDER.indexOf(key) }
+                .sortedBy { key -> slotOrder.indexOf(key) }
                 .flatMap { resolved.getValue(it) }
                 .filter { it.items.isNotEmpty() }
             HomeContent(
-                featured = ready.firstOrNull { it.id != "continue-watching" }?.items?.firstOrNull()
-                    ?: ready.firstOrNull()?.items?.firstOrNull(),
+                featured = ready.heroCandidate(),
                 rails = orderHomeRails(ready),
             )
         }
@@ -1573,9 +1646,55 @@ class StreamDekRepository(
     )
 
     /**
+     * The default catalogs the backend offers, in the order it wants them shown.
+     *
+     * Held for [CATALOG_MANIFEST_TTL_MS]: the registry changes on backend deploys, and every home
+     * load would otherwise re-ask for it. An empty list means this backend predates the registry,
+     * which is what sends Home down the pre-registry path rather than leaving it blank.
+     */
+    private suspend fun fetchCatalogManifest(): List<CatalogDefinition> {
+        catalogManifest?.takeIf { System.currentTimeMillis() - it.second < CATALOG_MANIFEST_TTL_MS }
+            ?.let { return it.first }
+        val response = runCatching { api.get<CatalogManifestResponse>("/tmdb/catalogs?region=$catalogRegion") }.getOrNull()
+        val definitions = parseCatalogDefinitions(response)
+        if (definitions.isNotEmpty()) catalogManifest = definitions to System.currentTimeMillis()
+        return definitions
+    }
+
+    /** Which registry rows this profile wants, in the order it wants them. */
+    private fun catalogRowOrder(definitions: List<CatalogDefinition>): List<CatalogDefinition> =
+        orderCatalogRows(definitions, bootstrapState.value?.preferences?.home?.homeCatalogRows.orEmpty())
+
+    /** Home previews for [definitions], as rails, in one request. */
+    private suspend fun fetchCatalogHomeRails(definitions: List<CatalogDefinition>): List<HomeRail> {
+        if (definitions.isEmpty()) return emptyList()
+        val ids = URLEncoder.encode(definitions.joinToString(",") { it.id }, "UTF-8")
+        val response = runCatching {
+            api.get<CatalogHomeResponse>("/tmdb/home?region=$catalogRegion&ids=$ids")
+        }.getOrNull() ?: return emptyList()
+        val titles = definitions.associate { it.id to it.title }
+        val order = definitions.withIndex().associate { (index, definition) -> definition.id to index }
+        return response.sections
+            .mapNotNull { section ->
+                val id = section.id?.trim().orEmpty().ifEmpty { return@mapNotNull null }
+                val items = section.results.map { it.toMediaItem(section.media_type) }.filter { it.title.isNotBlank() }
+                // An empty carousel reads as a broken row, so it is dropped rather than shown.
+                if (items.isEmpty()) return@mapNotNull null
+                HomeRail(
+                    id = id,
+                    title = titles[id] ?: section.title?.takeIf { it.isNotBlank() } ?: id,
+                    items = items,
+                )
+            }
+            .sortedBy { order[it.id] ?: Int.MAX_VALUE }
+    }
+
+    /**
      * The TMDB rows. Popular falls back to Trending and Browse falls back to Popular, so these
      * share one coroutine and publish in two waves: the three rows the viewer sees first, then the
      * rest. Splitting them further would not help, since the fallbacks make them interdependent.
+     *
+     * Only reached when the backend has no catalog registry — see [fetchCatalogManifest].
      */
     private suspend fun publishTmdbRails(
         publish: suspend (String, List<HomeRail>) -> Unit,
@@ -1622,6 +1741,22 @@ class StreamDekRepository(
     }
 
     /**
+     * The title the hero shows.
+     *
+     * Continue Watching is skipped because the hero is for discovery, and service tiles and live
+     * channels are skipped because neither has the artwork or the synopsis the hero is built
+     * around. That matters more now the first row is the registry's choice rather than a fixed
+     * one: Streaming Services can legitimately be laid out above everything else.
+     */
+    private fun List<HomeRail>.heroCandidate(): MediaItem? {
+        val eligible = firstNotNullOfOrNull { rail ->
+            if (rail.id == "continue-watching") return@firstNotNullOfOrNull null
+            rail.items.firstOrNull { it.type != "network" && it.type != "live" }
+        }
+        return eligible ?: firstOrNull()?.items?.firstOrNull()
+    }
+
+    /**
      * Matches the mobile app's ordering: live add-on rows sit directly below Streaming Services,
      * everything else from add-ons goes to the end.
      */
@@ -1629,7 +1764,7 @@ class StreamDekRepository(
         val (addonRails, baseRails) = rails.partition { it.id.startsWith(ADDON_RAIL_PREFIX) }
         val (liveAddonRails, otherAddonRails) = addonRails.partition { it.isLive }
         val ordered = baseRails.toMutableList()
-        val networksIndex = ordered.indexOfFirst { it.id == "networks" }
+        val networksIndex = ordered.indexOfFirst { it.id == "networks" || it.id == NETWORKS_CATALOG_ID }
         if (liveAddonRails.isNotEmpty()) {
             if (networksIndex >= 0) ordered.addAll(networksIndex + 1, liveAddonRails) else ordered.addAll(liveAddonRails)
         }
@@ -1656,12 +1791,18 @@ class StreamDekRepository(
         val resolvedId = resolved?.id?.toString() ?: id
         val cacheKey = "$resolvedType:$resolvedId"
         if (!forceRefresh) {
-            detailsCache[cacheKey]?.let { return it }
+            // A cache hit is still the viewer opening the title, so it counts. Missing these
+            // would understate the top of the funnel for exactly the titles people revisit most.
+            detailsCache[cacheKey]?.let {
+                Telemetry.contentOpened(mediaId = it.id, mediaType = it.type, title = it.title)
+                return it
+            }
         }
         val detail = api.get<MediaDetail>("/tmdb/details/$resolvedType/$resolvedId")
             ?: fetchAddonMetaDetail(resolvedId, canonicalType)
         if (detail != null) {
             detailsCache[cacheKey] = detail
+            Telemetry.contentOpened(mediaId = detail.id, mediaType = detail.type, title = detail.title)
         }
         return detail
     }
@@ -1813,6 +1954,9 @@ class StreamDekRepository(
         val results = (liveResults + tmdbResults)
             .distinctBy { item -> listOf(item.type, item.sourceAddonId.orEmpty(), item.sourceCatalogId.orEmpty(), item.id).joinToString(":") }
         searchCache[cacheKey] = results
+        // Only the fresh lookups: a cache hit is the same search the viewer already made, and
+        // counting it again would report a search that never reached anything.
+        Telemetry.searchPerformed(results.size)
         return results
     }
     /**
@@ -3086,19 +3230,7 @@ class StreamDekRepository(
         }.onFailure { TvDebugLogger.w("Subtitles", "download failed: ${it.message}") }.getOrNull()
     }
 
-    private fun normalizeSubtitleLanguage(raw: String?): String {
-        val value = raw?.trim()?.lowercase(Locale.US).orEmpty()
-        return when (value) {
-            "eng", "en-us", "en-gb" -> "en"
-            "spa" -> "es"
-            "fra", "fre" -> "fr"
-            "deu", "ger" -> "de"
-            "ita" -> "it"
-            "por" -> "pt"
-            "jpn" -> "ja"
-            else -> value.substringBefore('-')
-        }
-    }
+    private fun normalizeSubtitleLanguage(raw: String?): String = Languages.normalize(raw)
     suspend fun prefetchPlayback(
 
         mediaType: String,
@@ -3903,24 +4035,21 @@ class StreamDekRepository(
         }
     }
 
+    /**
+     * Every spelling of [preferredLanguage] worth looking for in a release name.
+     *
+     * Was a hand-written table of fourteen languages, which is how a viewer who chose Polish or
+     * Thai got no language matching at all while a viewer who chose French got three spellings.
+     * [Languages] derives the same thing from the JVM's ISO tables for every language there is.
+     */
     private fun audioLanguageAliases(preferredLanguage: String): Set<String> {
-        return when (preferredLanguage.trim().lowercase(Locale.US)) {
-            "auto" -> emptySet()
-            "en", "eng", "english" -> setOf("en", "eng", "english")
-            "es", "spa", "spanish", "espanol" -> setOf("es", "spa", "spanish", "espanol")
-            "fr", "fre", "fra", "french" -> setOf("fr", "fre", "fra", "french")
-            "de", "ger", "deu", "german" -> setOf("de", "ger", "deu", "german")
-            "it", "ita", "italian" -> setOf("it", "ita", "italian")
-            "pt", "por", "portuguese" -> setOf("pt", "por", "portuguese")
-            "ar", "ara", "arabic" -> setOf("ar", "ara", "arabic")
-            "hi", "hin", "hindi" -> setOf("hi", "hin", "hindi")
-            "ja", "jpn", "japanese" -> setOf("ja", "jpn", "japanese")
-            "ko", "kor", "korean" -> setOf("ko", "kor", "korean")
-            "zh", "chi", "zho", "chinese", "mandarin", "cantonese" -> setOf("zh", "chi", "zho", "chinese", "mandarin", "cantonese")
-            "ru", "rus", "russian" -> setOf("ru", "rus", "russian")
-            "tr", "tur", "turkish" -> setOf("tr", "tur", "turkish")
-            else -> setOf(preferredLanguage.trim().lowercase(Locale.US))
-        }
+        if (preferredLanguage.trim().equals("auto", ignoreCase = true)) return emptySet()
+        val tags = Languages.tags(preferredLanguage)
+        if (tags.isEmpty()) return setOf(preferredLanguage.trim().lowercase(Locale.US))
+        // The written-out name too: release names say "French" far more often than "fra".
+        return (tags + Languages.label(preferredLanguage).lowercase(Locale.US))
+            .filter { it.isNotBlank() }
+            .toSet()
     }
 
     private fun guessContentType(url: String): String {
@@ -4260,4 +4389,84 @@ class StreamDekRepository(
     }
 }
 
+/**
+ * Reads the catalog registry out of a `/tmdb/catalogs` payload, skipping anything unusable.
+ *
+ * A row with no id or no title cannot be laid out, ordered or persisted against, so it is dropped
+ * rather than rendered as a nameless carousel.
+ */
+internal fun parseCatalogDefinitions(response: CatalogManifestResponse?): List<CatalogDefinition> =
+    response?.catalogs.orEmpty().mapNotNull { entry ->
+        val id = entry.id?.trim().orEmpty()
+        val title = entry.title?.trim().orEmpty()
+        if (id.isEmpty() || title.isEmpty()) return@mapNotNull null
+        CatalogDefinition(
+            id = id,
+            title = title,
+            mediaType = entry.media_type?.takeIf { it.isNotBlank() } ?: "movie",
+            group = entry.group?.takeIf { it.isNotBlank() } ?: "other",
+            previewLimit = entry.preview_limit.takeIf { it > 0 } ?: 20,
+            maxItems = entry.max_items?.takeIf { it > 0 },
+            paginated = entry.paginated,
+        )
+    }
 
+/**
+ * The registry rows this profile wants, in the order it wants them.
+ *
+ * [layout] is written by mobile and the web portal and synced through the profile, so a row
+ * switched off or moved there is switched off or moved here. Rows the layout has never heard of —
+ * a default added by a later backend deploy — keep their registry position rather than being
+ * appended, because appending would bury a whole deploy's worth of rows beneath rows the viewer
+ * never deliberately ranked. A row the registry has dropped disappears.
+ */
+internal fun orderCatalogRows(
+    definitions: List<CatalogDefinition>,
+    layout: List<HomeCatalogRowPreference>,
+): List<CatalogDefinition> {
+    val named = layout.filter { it.id.isNotBlank() }
+    if (named.isEmpty()) return definitions
+    val known = definitions.associateBy { it.id }
+    val merged = named.sortedBy { it.position }
+        .mapNotNull { row -> known[row.id]?.takeIf { row.enabled } }
+        .toMutableList()
+    val seen = named.mapTo(mutableSetOf()) { it.id }
+    definitions.forEachIndexed { index, definition ->
+        if (definition.id in seen) return@forEachIndexed
+        val after = definitions.take(index).lastOrNull { earlier -> merged.any { it.id == earlier.id } }
+        val at = if (after == null) 0 else merged.indexOfFirst { it.id == after.id } + 1
+        merged.add(at, definition)
+    }
+    return merged
+}
+
+/**
+ * A catalog section item as a card.
+ *
+ * The networks row names its fields differently from a title row, and it is the section's own
+ * `media_type` that says which to read — an item's own `type` is absent on some rows.
+ */
+internal fun CatalogSectionItem.toMediaItem(sectionMediaType: String?): MediaItem {
+    val kind = type?.takeIf { it.isNotBlank() } ?: sectionMediaType?.takeIf { it.isNotBlank() } ?: "movie"
+    if (kind == "network") {
+        return MediaItem(
+            id = id.orEmpty(),
+            tmdbId = id?.toIntOrNull() ?: tmdbId,
+            title = name ?: title.orEmpty(),
+            type = "network",
+            titleLogo = logo,
+            poster = logo,
+        )
+    }
+    return MediaItem(
+        id = id.orEmpty(),
+        tmdbId = tmdbId,
+        title = title ?: name.orEmpty(),
+        type = kind,
+        poster = poster,
+        backdrop = backdrop,
+        description = description,
+        rating = rating,
+        year = year,
+    )
+}

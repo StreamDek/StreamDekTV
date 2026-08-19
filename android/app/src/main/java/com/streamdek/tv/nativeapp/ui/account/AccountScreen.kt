@@ -59,6 +59,7 @@ import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.BuildConfig
+import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
 import com.streamdek.tv.nativeapp.data.DeviceInfo
@@ -934,40 +935,18 @@ private fun preferredAudioLanguageOptions(): List<String> = listOf(
     "tr",
 )
 
-private fun normalizeAudioLanguagePreference(value: String?): String = when (value?.trim()?.lowercase()) {
-    null, "", "auto" -> "auto"
-    "eng", "english" -> "en"
-    "spa", "spanish", "espanol" -> "es"
-    "fra", "fre", "french" -> "fr"
-    "deu", "ger", "german" -> "de"
-    "ita", "italian" -> "it"
-    "por", "portuguese" -> "pt"
-    "ara", "arabic" -> "ar"
-    "hin", "hindi" -> "hi"
-    "jpn", "japanese" -> "ja"
-    "kor", "korean" -> "ko"
-    "zho", "chi", "chinese", "mandarin", "cantonese" -> "zh"
-    "rus", "russian" -> "ru"
-    "tur", "turkish" -> "tr"
-    else -> value.trim().lowercase()
+/** "auto" means leave it alone; everything else is a language however it was written down. */
+private fun normalizeAudioLanguagePreference(value: String?): String {
+    val raw = value?.trim()?.lowercase().orEmpty()
+    if (raw.isEmpty() || raw == "auto") return "auto"
+    return Languages.normalize(raw).ifEmpty { "auto" }
 }
 
-private fun formatAudioLanguage(raw: String): String = when (normalizeAudioLanguagePreference(raw)) {
-    "en" -> "English"
-    "es" -> "Spanish"
-    "fr" -> "French"
-    "de" -> "German"
-    "it" -> "Italian"
-    "pt" -> "Portuguese"
-    "ar" -> "Arabic"
-    "hi" -> "Hindi"
-    "ja" -> "Japanese"
-    "ko" -> "Korean"
-    "zh" -> "Chinese"
-    "ru" -> "Russian"
-    "tr" -> "Turkish"
-    else -> "Auto"
-}
+private fun formatAudioLanguage(raw: String): String =
+    when (val normalized = normalizeAudioLanguagePreference(raw)) {
+        "auto" -> "Auto"
+        else -> Languages.label(normalized)
+    }
 
 @Composable
 private fun ChoiceRow(label: String, value: String, requester: FocusRequester? = null, onCycle: () -> Unit) {

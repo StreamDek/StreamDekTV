@@ -1,6 +1,7 @@
 package com.streamdek.tv.nativeapp.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -101,5 +102,19 @@ class PluginSourceEngineTest {
             ),
             normalized.lines(),
         )
+    }
+    @Test
+    fun `a source exporting onSettings is offered settings whatever its manifest said`() {
+        assertTrue(pluginDeclaresSettings("async function onSettings() { return [] }"))
+        assertTrue(pluginDeclaresSettings("module.exports = { onSettings: async () => [] }"))
+        assertTrue(pluginDeclaresSettings("globalThis.onSettings = async function () { return [] }"))
+    }
+
+    @Test
+    fun `a source without an onSettings export is not offered settings`() {
+        assertFalse(pluginDeclaresSettings("async function getStreams() { return [] }"))
+        // Substring matches are the trap here: neither of these exports onSettings itself.
+        assertFalse(pluginDeclaresSettings("function buildOnSettingsPayload() {}"))
+        assertFalse(pluginDeclaresSettings("const label = 'onSettingsLabel'"))
     }
 }

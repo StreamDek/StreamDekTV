@@ -85,6 +85,7 @@ import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.resolveTrailerPlaybackSource
 import com.streamdek.tv.nativeapp.data.youtubeTrailerKey
+import com.streamdek.tv.nativeapp.data.TrailerResetSignal
 import com.streamdek.tv.nativeapp.data.kinocheckTrailerKey
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.LocalImmersiveContent
@@ -440,7 +441,10 @@ fun DetailScreen(
         trailerCountdown = null
     }
 
-    LaunchedEffect(trailerRequest) {
+    // Re-resolves when trailer state is cleared, so a viewer who cleared the cache to fix
+    // trailers is not left looking at the fallback the broken pipeline settled on.
+    val trailerResetToken = TrailerResetSignal.current()
+    LaunchedEffect(trailerRequest, trailerResetToken) {
         if (trailerRequest == 0 || trailerCandidateUrls.isEmpty()) return@LaunchedEffect
         trailerUnavailable = false
         trailerResolving = true
@@ -456,7 +460,7 @@ fun DetailScreen(
                 // identifier, which for an add-on item is not a TMDB number at all.
                 preferredUrl = detail?.let { current ->
                     val tmdbId = current.tmdbId.takeIf { it > 0 }?.toString() ?: current.id
-                    kinocheckTrailerKey(tmdbId, current.type)?.let { "https://www.youtube.com/watch?v=$it" }
+                    kinocheckTrailerKey(tmdbId, current.type, context)?.let { "https://www.youtube.com/watch?v=$it" }
                 },
             )
         }.onFailure { TvDebugLogger.w("Trailer", "could not resolve a trailer", it) }.getOrNull()

@@ -52,6 +52,7 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import com.streamdek.tv.nativeapp.data.TrailerResetSignal
 import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.trailerDataSourceFactory
@@ -173,13 +174,17 @@ internal fun TrailerStage(
                     },
                 )
             }
-            is TrailerPlayback.Embed -> TrailerEmbedSurface(
-                youtubeKey = playback.youtubeKey,
-                playing = active && !paused,
-                onEnded = onEnded,
-                onFailed = onFailed,
-                modifier = Modifier.fillMaxSize(),
-            )
+            // Keyed on the reset token as well as the video, so clearing trailer state throws the
+            // WebView away rather than leaving the embed on the very session that was refused.
+            is TrailerPlayback.Embed -> key(TrailerResetSignal.current()) {
+                TrailerEmbedSurface(
+                    youtubeKey = playback.youtubeKey,
+                    playing = active && !paused,
+                    onEnded = onEnded,
+                    onFailed = onFailed,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
 
         // Only while paused. A permanent "press back to exit" caption over a trailer is the kind

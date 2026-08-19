@@ -82,13 +82,19 @@ import androidx.tv.material3.Text
 import com.streamdek.tv.BuildConfig
 import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
+import com.streamdek.tv.nativeapp.data.DefaultTrailerCacheClearHours
 import com.streamdek.tv.nativeapp.data.DefaultTrailerDelaySeconds
+import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
 import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
 import com.streamdek.tv.nativeapp.data.RemotePlaylist
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.SyncServiceId
+import com.streamdek.tv.nativeapp.data.TrailerCache
+import com.streamdek.tv.nativeapp.data.TrailerCacheClearChoices
+import com.streamdek.tv.nativeapp.data.clearTrailerState
+import com.streamdek.tv.nativeapp.data.trailerCacheClearLabel
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import com.streamdek.tv.nativeapp.ui.TvChromeSurface
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
@@ -160,6 +166,11 @@ fun SettingsScreen(
     var selected by remember { mutableStateOf(SettingsDestination.Account) }
     var query by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
+    // What the trailer cache holds, refreshed after a clear so the row reports what just happened
+    // rather than what it held when the screen opened.
+    var trailerCacheStatus by remember {
+        mutableStateOf(trailerCacheStatusLabel(TrailerCache.sizeBytes(context), TrailerCache.lastClearedAt(context)))
+    }
     // Held rather than folded into `status`: the code has to stay on screen while the viewer walks
     // to their phone and types it, and a status line is written over by the next thing that happens.
     var signInPrompt by remember { mutableStateOf<DeviceSignIn?>(null) }
@@ -503,6 +514,52 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        // Trailers come from a source that decides for itself whether the caller
+                        // looks like a browser, and it keeps that judgement in cookies and site
+                        // storage the embed leaves behind. Once that state sours, trailers stop
+                        // playing until it is thrown away — and on a television there is no
+                        // "clear app data" a viewer can reasonably be asked to find.
+                        val trailerClearHours = detailPrefs?.trailerCacheClearHours ?: DefaultTrailerCacheClearHours
+                        SettingsDropdownRow(
+                            "Clear trailer cache",
+                            "Trailers can stop playing when the stored playback state goes stale. StreamDek clears it on this schedule, at 9am.",
+                            trailerClearHours.toString(),
+                            // The synced value is folded in so a choice made on the phone that this
+                            // build does not list still reads as an interval rather than a number.
+                            (TrailerCacheClearChoices + (trailerClearHours to trailerCacheClearLabel(trailerClearHours)))
+                                .distinctBy { it.first }
+                                .sortedBy { it.first }
+                                .map { (hours, label) -> hours.toString() to label },
+                        ) { value ->
+                            savePreference("Trailer cache schedule") {
+                                repository.updateDetailPreferences(
+                                    mapOf(
+                                        "trailerCacheClearHours" to
+                                            (value.toIntOrNull() ?: DefaultTrailerCacheClearHours),
+                                    ),
+                                )
+                            }
+                        }
+                        SettingsActionRow(
+                            "Clear trailer cache now",
+                            trailerCacheStatus,
+                            "Clear",
+                            selectedRequester,
+                        ) {
+                            // Synchronous on the main thread by necessity: WebView and
+                            // CookieManager, which hold the state that actually matters here,
+                            // refuse to be touched from anywhere else.
+                            val freed = clearTrailerState(context, "requested from settings")
+                            trailerCacheStatus = trailerCacheStatusLabel(
+                                TrailerCache.sizeBytes(context),
+                                TrailerCache.lastClearedAt(context),
+                            )
+                            status = if (freed > 0) {
+                                "Trailer cache cleared, ${freed / 1024}KB freed."
+                            } else {
+                                "Trailer cache cleared."
+                            }
+                        }
                     }
                 }
                 SettingsDestination.LiveTv -> {
@@ -825,7 +882,7 @@ fun SettingsScreen(
                                                                     complete(updated != null)
                                                                 }
                                                             }
-                                                            if (provider.hasSettings) {
+                                                            if (repository.pluginProviderHasSettings(provider)) {
                                                                 SettingsActionRow(
                                                                     "${provider.name.ifBlank { "This source" }} settings",
                                                                     "API keys and options this source asks for. Stored on this TV.",
@@ -870,7 +927,7 @@ fun SettingsScreen(
                                                                 complete(updated != null)
                                                             }
                                                         }
-                                                        if (provider.hasSettings) {
+                                                        if (repository.pluginProviderHasSettings(provider)) {
                                                             SettingsActionRow(
                                                                 "${provider.name.ifBlank { "This source" }} settings",
                                                                 "API keys and options this source asks for. Stored on this TV.",
@@ -1425,6 +1482,21 @@ private fun SettingsActionRow(title: String, description: String, value: String,
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp),
     ) { Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) { Text(title, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)); Text(description, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Text(value, color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)) }
 }
+/** What the trailer cache currently holds, and when it was last thrown away. */
+private fun trailerCacheStatusLabel(sizeBytes: Long, lastClearedAt: Long): String {
+    val size = if (sizeBytes <= 0L) "Nothing stored" else "${sizeBytes / 1024}KB stored"
+    if (lastClearedAt <= 0L) return "$size · never cleared"
+    val hoursAgo = ((System.currentTimeMillis() - lastClearedAt) / 3_600_000L).toInt()
+    val cleared = when {
+        hoursAgo <= 0 -> "cleared less than an hour ago"
+        hoursAgo == 1 -> "cleared an hour ago"
+        hoursAgo < 24 -> "cleared $hoursAgo hours ago"
+        hoursAgo < 48 -> "cleared yesterday"
+        else -> "cleared ${hoursAgo / 24} days ago"
+    }
+    return "$size · $cleared"
+}
+
 private fun onOff(value: Boolean) = if (value) "On" else "Off"
 private fun serviceStatus(connected: Boolean, username: String?) = if (connected) username?.takeIf { it.isNotBlank() } ?: "Connected" else "Not connected"
 private fun normalizePlayerEngine(value: String?): String = when (value?.trim()?.lowercase()) {
@@ -1447,20 +1519,26 @@ private fun normalizePreferredQuality(value: String?): String = when (value?.tri
     "720p" -> "720p"
     else -> "Auto"
 }
+/**
+ * The stored language as one of the offered values.
+ *
+ * Used to fall back to English for anything outside a list of ten, which did not merely display
+ * wrongly — the row wrote its displayed value back on the next save, so a viewer who chose Polish
+ * on their phone had it silently replaced with English by opening this screen on the television.
+ * Any language the ISO tables know is now kept as itself.
+ */
 private fun normalizeLanguage(value: String?, allowOff: Boolean = false): String {
-    val normalized = value?.trim()?.lowercase().orEmpty()
-    if (allowOff && normalized == "off") return "off"
-    return normalized.takeIf { it in setOf("en", "es", "fr", "de", "it", "pt", "ar", "hi", "ja", "ko") } ?: "en"
+    val raw = value?.trim()?.lowercase().orEmpty()
+    if (allowOff && (raw == "off" || raw == Languages.NONE)) return "off"
+    return Languages.normalize(raw).ifEmpty { "en" }
 }
+
 private fun languageOptions(includeOff: Boolean): List<Pair<String, String>> = buildList {
     if (includeOff) add("off" to "Off")
-    addAll(
-        listOf(
-            "en" to "English", "es" to "Spanish", "fr" to "French", "de" to "German",
-            "it" to "Italian", "pt" to "Portuguese", "ar" to "Arabic", "hi" to "Hindi",
-            "ja" to "Japanese", "ko" to "Korean",
-        ),
-    )
+    // Every ISO language rather than a typed list of ten. The list is long, but the row is a
+    // dropdown a viewer opens knowing what they are looking for, and the alternative is telling
+    // most of the world their language is not available.
+    addAll(Languages.all.map { it.code to it.label })
 }
 private fun directorySize(root: java.io.File) = runCatching { root.walkTopDown().filter { it.isFile }.sumOf { it.length() } }.getOrDefault(0L)
 private fun formatBytes(bytes: Long): String = when { bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0); bytes >= 1_048_576L -> "%.1f MB".format(bytes / 1_048_576.0); bytes >= 1024L -> "%.1f KB".format(bytes / 1024.0); else -> "$bytes B" }

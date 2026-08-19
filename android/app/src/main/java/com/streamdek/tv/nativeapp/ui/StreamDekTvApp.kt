@@ -94,7 +94,11 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import com.streamdek.tv.nativeapp.AppGraph
+import com.streamdek.tv.nativeapp.data.DefaultTrailerCacheClearHours
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
+import com.streamdek.tv.nativeapp.data.TrailerCache
+import com.streamdek.tv.nativeapp.data.TrailerCacheClearHourOfDay
+import com.streamdek.tv.nativeapp.data.clearTrailerState
 import com.streamdek.tv.nativeapp.data.mapAddonCatalogType
 import com.streamdek.tv.nativeapp.data.PlaybackHandoff
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
@@ -369,6 +373,21 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         // has had a chance to begin navigating.
         delay(3500)
         appUpdateManager.runAutomaticCheck()
+    }
+
+    // Trailer housekeeping, once the bootstrap has said how often the household wants it.
+    //
+    // A television is left on standby for weeks rather than restarted, so the YouTube cookies and
+    // site storage the embed accumulates are exactly the kind of state that goes stale unnoticed —
+    // and the symptom is trailers that stop playing, with nothing on screen to explain it.
+    // Deliberately on the main thread and after the shell has painted: WebView and CookieManager
+    // are main-thread only, and this is housekeeping rather than anything the viewer is waiting on.
+    LaunchedEffect(bootstrap?.preferences?.detail?.trailerCacheClearHours) {
+        delay(5000)
+        val hours = bootstrap?.preferences?.detail?.trailerCacheClearHours ?: DefaultTrailerCacheClearHours
+        if (TrailerCache.isClearDue(context, hours, TrailerCacheClearHourOfDay)) {
+            clearTrailerState(context, "scheduled every ${hours}h")
+        }
     }
 
     LaunchedEffect(preferredStartRoute, currentRoute, startScreenApplied, showStartupProfilePicker) {
