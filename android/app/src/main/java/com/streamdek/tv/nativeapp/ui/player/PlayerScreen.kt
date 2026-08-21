@@ -152,6 +152,9 @@ internal fun normalizePlayerEngineSetting(raw: String?): String = when (raw?.tri
 internal fun initialPlaybackEngine(preference: String?): ActivePlaybackEngine =
     if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
 
+/** How often playback position is written back while a title is running. */
+private const val PROGRESS_CHECKPOINT_INTERVAL_MS = 30_000L
+
 internal fun shouldAutoFallbackToMpv(
     preference: String?,
     activeEngine: ActivePlaybackEngine,
@@ -212,10 +215,23 @@ fun PlayerScreen(
     var panel by remember { mutableStateOf<OverlayPanel?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var playerView: MpvPlayerController? by remember { mutableStateOf(null) }
-    var activePlaybackEngine by remember(currentSourceUrl, playbackPreferences.playerEngine) {
-        mutableStateOf(initialPlaybackEngine(playbackPreferences.playerEngine))
-    }
-    var autoEngineFallbackUsed by remember(currentSourceUrl, playbackPreferences.playerEngine) { mutableStateOf(false) }
+    /**
+     * Which engine is playing, and whether the automatic swap to mpv has been spent.
+     *
+     * Deliberately NOT `remember(currentSourceUrl, ...)`. Keying them on the source reset them by
+     * building new state objects every time the source changed -- and the source changes once
+     * during every normal playback, when it resolves from null to a URL. The player view is
+     * created before that happens, and `AndroidView`'s factory runs exactly once, so every
+     * callback the view holds closes over the state objects that existed at that moment. After
+     * the source resolved those objects were orphaned: the callbacks kept writing to them and
+     * nothing was left reading. That is why the profile 7 switch logged its line and then did
+     * nothing at all, and why the error-driven fallback to mpv could never have worked either.
+     *
+     * They are reset explicitly instead, by [resetPlaybackEngineForNewSource] at each point a
+     * genuinely new source starts.
+     */
+    var activePlaybackEngine by remember { mutableStateOf(initialPlaybackEngine(playbackPreferences.playerEngine)) }
+    var autoEngineFallbackUsed by remember { mutableStateOf(false) }
     var failedStreamKeys by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(emptySet<String>()) }
     var sourceFallbackInProgress by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
     /**
@@ -227,8 +243,22 @@ fun PlayerScreen(
      * without this the viewer is looking at a still logo wondering whether anything is happening.
      */
     var sourceFallbackNotice by remember(request.mediaId, request.mediaType) { mutableStateOf<String?>(null) }
-    var pendingEngineResumePositionSec by remember(currentSourceUrl) { mutableStateOf<Double?>(null) }
+    /** Where to pick up after an engine swap. Unkeyed for the same reason as the two above. */
+    var pendingEngineResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
+
+    /**
+     * Puts the engine back to the viewer's preference for a genuinely new source.
+     *
+     * Called where the old `remember` keys used to do it implicitly. The two places that change
+     * source *and* mean to carry something across -- the source-fallback walk and the manual
+     * engine switch -- set these themselves and do not call this.
+     */
+    fun resetPlaybackEngineForNewSource() {
+        activePlaybackEngine = initialPlaybackEngine(playbackPreferences.playerEngine)
+        autoEngineFallbackUsed = false
+        pendingEngineResumePositionSec = null
+    }
 
     // Funnel state for the attempt currently on screen. Keyed on the title so opening something
     // else starts a fresh attempt rather than inheriting the previous one's outcome.
@@ -859,6 +889,7 @@ fun PlayerScreen(
             currentRequestHeaders = defaultPlaybackHeaders + source.requestHeaders
             currentSourceUrl = source.url
             currentLabel = streamLabelOverride ?: source.label
+            resetPlaybackEngineForNewSource()
             TvDebugLogger.i("Player", "source ready addon=${resolvedCandidate?.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}")
         }
         detail = if (isLive) null else repository.fetchDetail(activeRequest.mediaId, activeRequest.mediaType)
@@ -915,6 +946,7 @@ fun PlayerScreen(
         currentRequestHeaders = defaultPlaybackHeaders + resolved.source?.requestHeaders.orEmpty()
         currentSourceUrl = resolved.source?.url
         currentLabel = streamLabelOverride ?: resolved.source?.label ?: "No playable stream found"
+        resetPlaybackEngineForNewSource()
         positionSec = pendingResumePositionSec ?: 0.0
         durationSec = progress?.durationSec ?: 0.0
         nextEpisode = resolveNextEpisode(repository, activeRequest, detail, currentEpisode)
@@ -974,6 +1006,7 @@ fun PlayerScreen(
                 currentRequestHeaders = defaultPlaybackHeaders + recovered.source.requestHeaders
                 currentSourceUrl = recovered.source.url
                 currentLabel = recovered.source.label
+                resetPlaybackEngineForNewSource()
             }
         }
         sourceFallbackNotice = null
@@ -992,6 +1025,7 @@ fun PlayerScreen(
             candidate = null
             currentSourceUrl = null
             currentLabel = streamLabelOverride ?: "No playable stream found"
+            resetPlaybackEngineForNewSource()
             error = when (throwable) {
                 is java.net.SocketTimeoutException -> "Stream lookup timed out. Please try again or choose another source."
                 else -> throwable.message ?: "Could not prepare playback"
@@ -1138,6 +1172,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         activePlaybackEngine = target
     }
 
+    // Changing the engine in Settings while something is playing still takes hold, which the
+    // preference key used to do. A no-op on first composition: it writes the values the state was
+    // just built with.
+    LaunchedEffect(playbackPreferences.playerEngine) { resetPlaybackEngineForNewSource() }
+
     LaunchedEffect(activePlaybackEngine, loading, selectedExternalSubtitleId, currentSourceUrl, subtitleTracks) {
         val selected = externalSubtitles.firstOrNull { it.id == selectedExternalSubtitleId } ?: return@LaunchedEffect
         val source = currentSourceUrl ?: return@LaunchedEffect
@@ -1183,7 +1222,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         val activeSource = currentSourceUrl
         if (activeSource.isNullOrBlank() || paused || completionThresholdReached) return@LaunchedEffect
         while (currentSourceUrl == activeSource && !paused && !completionThresholdReached) {
-            delay(15000)
+            // Every thirty seconds rather than fifteen. The position only has to be right when
+            // playback stops, and pausing, leaving and finishing each write on their own, so the
+            // tighter cadence was twice the traffic to the account for a number nobody reads in
+            // between.
+            delay(PROGRESS_CHECKPOINT_INTERVAL_MS)
             if (currentSourceUrl == activeSource && !paused && !completionThresholdReached) {
                 syncProgressIfEligible()
             }
@@ -1554,6 +1597,23 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             AndroidView(
             factory = { context ->
                 val player = createPlayerView(context, resolvedRenderSurface, activePlaybackEngine)
+                TvDebugLogger.i("Player", "player view created engine=${activePlaybackEngine.name} view=${player.javaClass.simpleName}")
+                // Dolby Vision profile 7 is the one case Media3 loses silently: it decodes, reports
+                // frames, and shows black, so the error-driven fallback below never fires. The
+                // stream is recognised the moment its track is selected and handed to mpv, which
+                // decodes the HEVC base layer and plays it. See Dv7Hevc.
+                (player as? ExoPlaybackView)?.onDolbyVisionProfile7Callback = {
+                    if (activePlaybackEngine == ActivePlaybackEngine.Media3 && !autoEngineFallbackUsed) {
+                        autoEngineFallbackUsed = true
+                        pendingEngineResumePositionSec = positionSec.takeIf { it > 0.0 }
+                        loading = true
+                        error = null
+                        audioTracks = emptyList()
+                        subtitleTracks = emptyList()
+                        TvDebugLogger.i("Player", "Dolby Vision profile 7 detected; switching to libMPV at ${positionSec}s")
+                        activePlaybackEngine = ActivePlaybackEngine.MPV
+                    }
+                }
                 val controller = player as MpvPlayerController
                 controller.apply {
                     setDecoderMode(playbackPreferences.decoderMode)
@@ -2045,6 +2105,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                         currentRequestHeaders = lastWorkingRequestHeaders
                                         currentSourceUrl = lastWorkingSourceUrl
                                         currentLabel = lastWorkingLabel ?: "Previous source"
+                                        resetPlaybackEngineForNewSource()
                                     },
                                 ) {
                                     androidx.tv.material3.Text(
@@ -2413,6 +2474,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 currentRequestHeaders = defaultPlaybackHeaders + selected.source.requestHeaders
                                 currentSourceUrl = selected.source.url
                                 currentLabel = selected.source.label ?: repository.describeStreamOption(stream)
+                                resetPlaybackEngineForNewSource()
                             }
                         },
                         onSelectAudio = {

@@ -30,7 +30,7 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
-import com.streamdek.tv.nativeapp.data.Dv7AwareRenderersFactory
+import com.streamdek.tv.nativeapp.data.Dv7Hevc
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.PlaybackStats
@@ -55,6 +55,14 @@ class ExoPlaybackView @JvmOverloads constructor(
   override var onEndCallback: (() -> Unit)? = null
   override var onErrorCallback: ((message: String) -> Unit)? = null
   override var onTracksChangedCallback: ((List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit)? = null
+
+  /**
+   * Raised when the selected video track is Dolby Vision profile 7 and the viewer has asked for
+   * the fallback. Media3 cannot show these -- see Dv7Hevc -- and, worse, does not fail while
+   * failing to, so the player switches engine on this rather than on an error that never comes.
+   */
+  var onDolbyVisionProfile7Callback: (() -> Unit)? = null
+  private var dolbyVisionProfile7Reported = false
   var onStallChangedCallback: ((Boolean) -> Unit)? = null
   override var onRemoteCenterCallback: (() -> Boolean)? = null
   override var onRemoteDownCallback: (() -> Boolean)? = null
@@ -273,15 +281,14 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   private fun prepareSource(url: String, startPositionMs: Long = 0L) {
+    dolbyVisionProfile7Reported = false
     releasePlayer()
     val httpFactory = DefaultHttpDataSource.Factory()
       .setUserAgent(DEFAULT_USER_AGENT)
       .setAllowCrossProtocolRedirects(true)
       .setDefaultRequestProperties(requestHeaders)
     val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
-    // Dolby Vision profile 7 is mapped down to its HEVC base layer here when the viewer has
-    // asked for it -- see PlaybackCodecOptions. The factory is the same one otherwise.
-    val renderers = Dv7AwareRenderersFactory(context)
+    val renderers = DefaultRenderersFactory(context)
       .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
       .setEnableDecoderFallback(true)
       // Queue codec work off the playback thread on API 24+ TVs.
@@ -366,6 +373,32 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
   }
 
+  /**
+   * Whether the video track that was just selected is Dolby Vision profile 7.
+   *
+   * Checked here rather than inside a renderer because this is the earliest point at which the
+   * chosen format is known to the app, and because it takes no subclassing of Media3 to reach.
+   * Reported once per source: the listener fires again on every track change, and switching engine
+   * twice for the same file would restart playback twice.
+   */
+  private fun reportDolbyVisionProfile7(tracks: Tracks) {
+    if (dolbyVisionProfile7Reported) return
+    tracks.groups.forEach { group ->
+      if (group.type != C.TRACK_TYPE_VIDEO) return@forEach
+      for (index in 0 until group.length) {
+        if (!group.isTrackSelected(index)) continue
+        val format = group.getTrackFormat(index)
+        if (format.sampleMimeType != MimeTypes.VIDEO_DOLBY_VISION) continue
+        Dv7Hevc.log("Dolby Vision video track selected: " + Dv7Hevc.describe(format))
+        if (PlaybackCodecOptions.dv7HevcFallback && Dv7Hevc.isDolbyVisionProfile7(format)) {
+          dolbyVisionProfile7Reported = true
+          onDolbyVisionProfile7Callback?.invoke()
+        }
+        return
+      }
+    }
+  }
+
   private fun dispatchTracks(tracks: Tracks) {
     audioSelections.clear()
     subtitleSelections.clear()
@@ -393,6 +426,7 @@ class ExoPlaybackView @JvmOverloads constructor(
       }
     }
     onTracksChangedCallback?.invoke(audio, subtitles, audio.firstOrNull { it.selected }?.id, subtitles.firstOrNull { it.selected }?.id)
+    reportDolbyVisionProfile7(tracks)
   }
 
   private fun applyTrackSelection(selection: Pair<Tracks.Group, Int>?) {

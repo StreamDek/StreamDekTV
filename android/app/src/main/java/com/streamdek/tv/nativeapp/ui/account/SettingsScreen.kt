@@ -455,7 +455,7 @@ fun SettingsScreen(
                     var tunneledPlayback by remember { mutableStateOf(PlaybackCodecOptions.tunneledPlayback) }
                     SettingsToggleRow(
                         "DV7 - HEVC Fallback",
-                        "Map Dolby Vision Profile 7 to standard HEVC for devices without Dolby Vision hardware support. Turn this on if those files play as a black screen or refuse to start. The picture loses the Dolby Vision grade but plays at full resolution.",
+                        "Dolby Vision Profile 7 files, mostly disc remuxes, play as a black picture on most devices. Play them with mpv instead, which decodes the HEVC base layer. You lose the Dolby Vision grade.",
                         dv7HevcFallback,
                         selectedRequester,
                     ) { next, complete ->
