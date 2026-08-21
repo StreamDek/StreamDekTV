@@ -279,10 +279,15 @@ class PluginSourceEngine(context: Context) {
     }
 
     /**
-     * The settings a provider asks for, by running its `onSettings` export.
+     * The settings a provider asks for.
      *
-     * Gated on the scraper actually exporting `onSettings` rather than on the manifest's
-     * `hasSettings`, which is advisory and routinely missing — see [pluginDeclaresSettings].
+     * The scraper's own `onSettings` export is asked first, and only when it has one — the
+     * manifest's `hasSettings` is advisory and routinely missing, see [pluginDeclaresSettings].
+     * Failing that, the schema carried in the synced profile document is used: a collection can
+     * declare its fields in its manifest rather than in the scraper, and the client that installed
+     * it stores what it found there. Without the fallback such a source opened a settings screen
+     * that could only report that the code exports no `onSettings`, leaving a source that needs a
+     * token with nowhere on the television to see or check one.
      */
     suspend fun settingsSchema(
         state: ProfilePluginState?,
@@ -290,8 +295,12 @@ class PluginSourceEngine(context: Context) {
     ): Result<List<PluginSettingField>> = runCatching {
         val repoVersion = state?.repos.orEmpty().firstOrNull { it.url == provider.repoUrl }?.version.orEmpty()
         val code = providerCode(provider, repoVersion)
-        require(provider.hasSettings || pluginDeclaresSettings(code)) { "This source does not expose any settings." }
-        parseSettingsSchema(executeProvider(provider, code, null, null, null, null, settingsOnly = true))
+        val fromCode = if (!pluginDeclaresSettings(code)) null else runCatching {
+            parseSettingsSchema(executeProvider(provider, code, null, null, null, null, settingsOnly = true))
+        }.getOrNull()
+        fromCode
+            ?: provider.settingsSchema?.takeIf { it.size() > 0 }?.let { parseSettingsSchema(it.toString()) }
+            ?: emptyList()
     }.onFailure { TvDebugLogger.w("Plugins", "settings schema failed name=${provider.name}", it) }
 
     /**
@@ -304,6 +313,8 @@ class PluginSourceEngine(context: Context) {
      */
     fun declaresSettings(provider: ProfilePluginProvider): Boolean {
         if (provider.hasSettings) return true
+        // A manifest-declared schema is as good a reason to offer the row as an exported function.
+        if ((provider.settingsSchema?.size() ?: 0) > 0) return true
         val code = provider.code?.takeIf { it.isNotBlank() }
             ?: codeCache[provider.id]
             ?: prefs.getString(codeKey(provider.id), null)?.takeIf { it.isNotBlank() }
@@ -506,6 +517,11 @@ class PluginSourceEngine(context: Context) {
 
     private fun loadProviderSourceUrls(repoUrl: String): Map<String, String> {
         val manifest = JSONObject(text(repoUrl))
+        // Refused outright rather than installed and filtered: a collection whose whole purpose
+        // is pornography has nothing left once its sources are removed.
+        check(!AdultContentFilter.isBlocked(manifest.optString("name"), manifest.optString("description"))) {
+            "This collection is an adult source and cannot be added."
+        }
         val entries = manifest.optJSONArray("scrapers") ?: throw IllegalStateException("No providers in collection.")
         return buildMap {
             for (index in 0 until entries.length()) {
@@ -715,8 +731,12 @@ class PluginSourceEngine(context: Context) {
                     AddonStream(
                         addonId = "plugin:" + provider.id,
                         addonName = provider.name,
-                        name = item.optString("name").ifBlank { provider.name },
-                        title = item.optString("title").ifBlank { provider.name },
+                        // The source's own name deliberately no longer stands in for a missing
+                        // name or title. It is already shown as the row's attribution, and copying
+                        // it here made every result from such a source read as that name repeated,
+                        // with the actual release, quality and size pushed underneath or lost.
+                        name = item.optString("name").ifBlank { null },
+                        title = item.optString("title").ifBlank { null },
                         description = item.optString("description").ifBlank { null },
                         url = url,
                         infoHash = infoHash,

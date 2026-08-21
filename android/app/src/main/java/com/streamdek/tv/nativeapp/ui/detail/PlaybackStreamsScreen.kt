@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
@@ -56,6 +57,7 @@ import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.AddonStream
+import com.streamdek.tv.nativeapp.data.addonStreamDisplayLabel
 import com.streamdek.tv.nativeapp.data.FusionBadgeSource
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
@@ -78,6 +80,7 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvSkeletonBox
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.search.SearchChip
+import java.util.Locale
 
 private sealed interface PlaybackStreamsUiState {
     data class Loading(val pendingSources: Int = 0) : PlaybackStreamsUiState
@@ -110,6 +113,147 @@ internal fun streamQualityLabel(stream: AddonStream, label: String): String? =
 internal fun streamSizeLabel(stream: AddonStream, label: String): String? =
     stream.size?.takeIf { it.isNotBlank() }
         ?: SizePattern.find(label)?.let { "${it.groupValues[1]} ${it.groupValues[2].uppercase()}" }
+
+
+/**
+ * The quality band a result is filed under, in the order the bands appear on Auto.
+ *
+ * Deliberately coarse. Sources describe quality in whatever words they like — "4K", "2160p",
+ * "UHD", "FullHD" — and a list that made a separate heading of each spelling would be as hard to
+ * read as the ungrouped one it replaced. [Unknown] is a real band rather than a bin for failures:
+ * plenty of sources genuinely do not say, and those results still have to appear.
+ */
+internal enum class StreamQualityTier(val label: String) {
+    Uhd("4K"),
+    Qhd("1440p"),
+    Fhd("1080p"),
+    Hd("720p"),
+    Sd("480p"),
+    Ld("360p"),
+    Unknown("Other"),
+    // Last whatever else is present. A camera recording is not a quality tier so much as a
+    // warning, and it belongs under the results somebody actually wants.
+    Cam("CAM"),
+}
+
+/**
+ * Matched against the whole of a result's text, most specific first.
+ *
+ * Word boundaries throughout, because the loose forms are the dangerous ones: a bare "hd" matches
+ * inside "UHD", "FHD" and "HDR", and "ts" matches inside any number of release names — which is
+ * why the camera-recording forms are spelled out rather than abbreviated.
+ */
+private val StreamQualityTierPatterns: List<Pair<Regex, StreamQualityTier>> = listOf(
+    Regex("\\b(cam|camrip|hdcam|hdts|hdtc|telesync|telecine|ts-?rip)\\b", RegexOption.IGNORE_CASE) to StreamQualityTier.Cam,
+    Regex("\\b(2160p?|4k|uhd|ultra\\s?hd)\\b", RegexOption.IGNORE_CASE) to StreamQualityTier.Uhd,
+    Regex("\\b(1440p?|2k|qhd)\\b", RegexOption.IGNORE_CASE) to StreamQualityTier.Qhd,
+    Regex("\\b(1080p?|fhd|full\\s?hd)\\b", RegexOption.IGNORE_CASE) to StreamQualityTier.Fhd,
+    Regex("\\b(720p?|hd\\s?rip|hdtv|hd)\\b", RegexOption.IGNORE_CASE) to StreamQualityTier.Hd,
+    Regex("\\b(480p?|sd|dvd\\s?rip|dvdrip)\\b", RegexOption.IGNORE_CASE) to StreamQualityTier.Sd,
+    Regex("\\b(360p?|240p?|144p?)\\b", RegexOption.IGNORE_CASE) to StreamQualityTier.Ld,
+)
+
+/**
+ * Which band a result belongs to.
+ *
+ * The source's own `quality` field is asked first and on its own: it is the only field that means
+ * one thing, and reading it together with the title lets a filename like "Movie.2160p.sample" pull
+ * a 720p stream into the 4K band.
+ */
+internal fun streamQualityTier(stream: AddonStream): StreamQualityTier {
+    fun classify(text: String?): StreamQualityTier? {
+        if (text.isNullOrBlank()) return null
+        return StreamQualityTierPatterns.firstOrNull { (pattern, _) -> pattern.containsMatchIn(text) }?.second
+    }
+    classify(stream.quality)?.let { return it }
+    val evidence = listOfNotNull(
+        stream.name, stream.title, stream.behaviorHints?.filename, stream.filename, stream.description,
+    ).joinToString(" ")
+    return classify(evidence) ?: StreamQualityTier.Unknown
+}
+
+private val StreamSizePattern = Regex("([\\d.,]+)\\s*(TB|TiB|GB|GiB|MB|MiB)\\b", RegexOption.IGNORE_CASE)
+
+/**
+ * A result's size in gigabytes, for ordering a band.
+ *
+ * The trailing boundary keeps bitrates out: without it "~7.71 Mbps" reads as 7.71 MB, and a 6 GB
+ * result sorts below a 700 MB one.
+ */
+internal fun streamSizeGigabytes(stream: AddonStream): Double? {
+    val evidence = listOfNotNull(
+        stream.size, stream.title, stream.name, stream.behaviorHints?.filename, stream.filename, stream.description,
+    ).joinToString(" ")
+    val match = StreamSizePattern.find(evidence) ?: return null
+    val value = match.groupValues[1].replace(",", ".").toDoubleOrNull() ?: return null
+    return when (match.groupValues[2].lowercase(Locale.US)) {
+        "tb", "tib" -> value * 1024.0
+        "mb", "mib" -> value / 1024.0
+        else -> value
+    }
+}
+
+/**
+ * Where a band sits under the viewer's chosen quality.
+ *
+ * The Preferred Quality setting already decides what gets played; this makes it decide what gets
+ * seen first too, so the setting means the same thing on a list as it does on a press. Everything
+ * else keeps its natural order behind the preferred band, so the list is still highest-first below
+ * the top.
+ */
+internal fun streamQualityBandOrder(tier: StreamQualityTier, preferredQuality: String): Int {
+    val preferred = when (preferredQuality.trim().lowercase(Locale.US)) {
+        "2160p", "4k" -> StreamQualityTier.Uhd
+        "1440p", "2k" -> StreamQualityTier.Qhd
+        "1080p" -> StreamQualityTier.Fhd
+        "720p" -> StreamQualityTier.Hd
+        "480p" -> StreamQualityTier.Sd
+        "360p" -> StreamQualityTier.Ld
+        else -> null
+    }
+    return if (preferred != null && tier == preferred) -1 else tier.ordinal
+}
+
+/** One line of the picker: a heading the remote skips over, or a result it lands on. */
+internal sealed interface StreamListEntry {
+    data class SourceHeading(val source: String, val count: Int) : StreamListEntry
+    data class QualityHeading(val tier: StreamQualityTier, val count: Int) : StreamListEntry
+    data class Result(val stream: AddonStream) : StreamListEntry
+}
+
+/**
+ * Flattens the picker into source headings, quality headings and results.
+ *
+ * Flat rather than nested so the list stays lazy — a title with two hundred results must not
+ * compose two hundred rows to draw ten of them on a television.
+ *
+ * Source, then quality, then size. Grouped rather than run together into one ranked list because
+ * the question this screen is asked is not "what is best" — the app already answers that by
+ * playing the top result — it is "what has each source got". Size descending within a band: the
+ * larger file is the better encode often enough to be the right default, and results whose size
+ * could not be read sort to the end of their own band rather than being treated as zero.
+ *
+ * Nothing is dropped: every source that answered keeps every result it returned.
+ */
+internal fun buildStreamListEntries(
+    streams: List<AddonStream>,
+    preferredQuality: String,
+    includeSourceHeadings: Boolean,
+): List<StreamListEntry> = buildList {
+    // groupBy keeps first-appearance order, and the list arriving here is already ranked, so the
+    // source holding the best single result leads.
+    streams.groupBy { it.addonName.ifBlank { "Other" } }.forEach { (source, items) ->
+        if (includeSourceHeadings) add(StreamListEntry.SourceHeading(source, items.size))
+        items.groupBy(::streamQualityTier)
+            .toList()
+            .sortedBy { (tier, _) -> streamQualityBandOrder(tier, preferredQuality) }
+            .forEach { (tier, banded) ->
+                add(StreamListEntry.QualityHeading(tier, banded.size))
+                banded.sortedByDescending { streamSizeGigabytes(it) ?: -1.0 }
+                    .forEach { add(StreamListEntry.Result(it)) }
+            }
+    }
+}
 
 /** Verbatim add-on fields used when StreamDek result formatting is disabled. */
 internal fun rawAddonStreamText(stream: AddonStream): Pair<String?, String?> {
@@ -256,8 +400,23 @@ fun PlaybackStreamsScreen(
     // Focus the first row once, when results first appear. Later batches must not yank focus back
     // while the viewer is already reading the list.
     var initialFocusApplied by remember(request) { mutableStateOf(false) }
-    /** Bumped when the filter moved under the list, so the top row can take focus back. */
+    /** Bumped when the filter moved under the list, so the viewer's place can be taken back. */
     var refocusListAfterFilter by remember(request) { mutableIntStateOf(0) }
+    /**
+     * How long the tab strip must ignore focus arriving at one of its chips.
+     *
+     * Each chip selects itself when focused, which is right when someone walks up into the strip
+     * and wrong in the one case that matters here. Moving the filter rebuilds the list underneath
+     * the focused row; for the frame in which the replacement has not been composed there is
+     * nothing focusable in the list, so Compose searches outward and lands on the *first* chip --
+     * "All" -- which promptly selects itself. That is the whole "it snaps back to All" bug: the
+     * filter was moving one step and then being overwritten a frame later.
+     *
+     * A deadline rather than a flag, because it has to survive however many frames the relayout
+     * takes and clear itself without anyone remembering to.
+     */
+    var ignoreTabFocusUntil by remember(request) { mutableStateOf(0L) }
+    val streamsListState = rememberLazyListState()
     val hasStreams = (uiState as? PlaybackStreamsUiState.Ready)?.candidate?.streams?.isNotEmpty() == true
     LaunchedEffect(hasStreams) {
         if (hasStreams && !initialFocusApplied) {
@@ -265,13 +424,6 @@ fun PlaybackStreamsScreen(
             runCatching { firstCardRequester.requestFocus() }
             initialFocusApplied = true
         }
-    }
-
-    LaunchedEffect(refocusListAfterFilter) {
-        if (refocusListAfterFilter == 0) return@LaunchedEffect
-        // After the recomposition the new first row is asking for, not before it.
-        kotlinx.coroutines.delay(60)
-        runCatching { firstCardRequester.requestFocus() }
     }
 
     val ready = uiState as? PlaybackStreamsUiState.Ready
@@ -312,6 +464,41 @@ fun PlaybackStreamsScreen(
     val anySize = remember(filteredStreams, streamsPrefs.showSizeBadges, streamsPrefs.streamDekFormattingEnabled) {
         streamsPrefs.streamDekFormattingEnabled && streamsPrefs.showSizeBadges &&
             filteredStreams.any { streamSizeLabel(it, repository.describeStreamOption(it)) != null }
+    }
+
+    // Source headings are redundant while a single source is being shown -- the tab strip above
+    // already says which one -- so they appear only on "All", and only when there is more than one.
+    val preferredQuality = bootstrap?.preferences?.playback?.preferredQuality ?: "Auto"
+    val streamFallbackName = remember(detail?.title, request.episode) {
+        listOfNotNull(
+            detail?.title?.takeIf { it.isNotBlank() } ?: request.title?.takeIf { it.isNotBlank() },
+            request.episode?.let { episode ->
+                "S%02dE%02d".format(episode.seasonNumber, episode.episodeNumber)
+            },
+        ).joinToString(" · ").ifBlank { "Stream source" }
+    }
+    val streamEntries = remember(filteredStreams, preferredQuality, selectedTab, addonNames) {
+        buildStreamListEntries(
+            streams = filteredStreams,
+            preferredQuality = preferredQuality,
+            includeSourceHeadings = addonNames.size > 1 && selectedTab == "All",
+        )
+    }
+
+    LaunchedEffect(refocusListAfterFilter) {
+        if (refocusListAfterFilter == 0) return@LaunchedEffect
+        // Back to the top of the new source and onto its first result: a different provider is a
+        // different set of files, so there is no "same place" to hold, and the first result is
+        // where reading it starts.
+        runCatching { streamsListState.scrollToItem(0) }
+        // Asked for after the recomposition the new first row arrives in, not before it. A
+        // FocusRequester attached to nothing throws rather than doing nothing.
+        kotlinx.coroutines.delay(60)
+        runCatching { firstCardRequester.requestFocus() }
+        // Held a little past the request: focus can still be settling, and a stray arrival at the
+        // strip in that window is the thing being guarded against.
+        kotlinx.coroutines.delay(200)
+        ignoreTabFocusUntil = 0L
     }
 
     val backgroundColor = MaterialTheme.colorScheme.background
@@ -369,7 +556,14 @@ fun PlaybackStreamsScreen(
                             // Tabs are previews on TV: moving the highlight is the selection. Keep
                             // focus in the strip so left/right can inspect every provider without
                             // an OK press or being pulled down into the first result row.
-                            onFocused = { selectedTab = tab },
+                            //
+                            // Except while the list below is mid-switch, when focus arriving here
+                            // is Compose looking for somewhere to put it rather than the viewer
+                            // walking up. Taking that as a selection is what reset the filter to
+                            // "All" on every left or right press.
+                            onFocused = {
+                                if (System.currentTimeMillis() >= ignoreTabFocusUntil) selectedTab = tab
+                            },
                             onClick = { selectedTab = tab },
                         )
                     }
@@ -390,6 +584,7 @@ fun PlaybackStreamsScreen(
                 )
 
                 is PlaybackStreamsUiState.Ready -> LazyColumn(
+                    state = streamsListState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
@@ -411,9 +606,10 @@ fun PlaybackStreamsScreen(
                             // Clamped rather than wrapped: on a remote, running off the end and
                             // reappearing at the other one reads as the list having jumped.
                             if (next !in sourceTabs.indices) return@onPreviewKeyEvent true
+                            // Armed before the change, so the strip is already deaf by the time the
+                            // relayout lets focus loose. See ignoreTabFocusUntil.
+                            ignoreTabFocusUntil = System.currentTimeMillis() + 1_500L
                             selectedTab = sourceTabs[next]
-                            // Every row's key carries the tab, so switching disposes the row the
-                            // viewer was on and focus would fall out of the list entirely.
                             refocusListAfterFilter += 1
                             true
                         }
@@ -431,33 +627,61 @@ fun PlaybackStreamsScreen(
                             item("empty") { NoStreamsRow(onReload = { refreshGeneration += 1 }) }
                         }
                     } else {
+                        // Headings are deliberately not focusable, so the requester goes on the
+                        // first thing that can actually be pressed.
+                        val focusTargetIndex = streamEntries.indexOfFirst { it is StreamListEntry.Result }
                         itemsIndexed(
-                            filteredStreams,
+                            streamEntries,
                             // The index is part of the key on purpose: two addons can return the
                             // same file, and duplicate keys are fatal in a lazy list.
-                            key = { index, stream -> "${repository.streamSelectionKey(stream)}:$index:$selectedTab" },
-                        ) { index, stream ->
-                            val rowLabel = repository.describeStreamOption(stream)
-                            StreamRow(
-                                stream = stream,
-                                label = rowLabel,
-                                origin = streamOriginLabel(stream, pluginState),
-                                showQuality = anyQuality,
-                                showSize = anySize,
-                                requestFocus = if (index == 0) firstCardRequester else null,
-                                streamsPrefs = streamsPrefs,
-                                fusionBadgeSources = activeFusionBadgeSources,
-                                onPressed = {
-                                    onPlayRequest(
-                                        request.copy(
-                                            selectedStreamKey = repository.streamSelectionKey(stream),
-                                            selectedStreamLabel = repository.describeStreamOption(stream),
-                                            selectedStream = stream,
-                                            availableStreams = streamRows,
-                                        ),
+                            //
+                            // The selected tab is deliberately *not* part of it any more, and that
+                            // is the crash fix. With the tab in every key, moving the filter gave
+                            // every row a new identity at once, so the whole list -- including the
+                            // row currently holding focus -- was disposed inside the same frame
+                            // that had to measure its replacement. Compose answers that with
+                            // "measure is called on a deactivated node" and takes the app down.
+                            // Keyed on the file and its position instead, a switch reuses the slots
+                            // it can and disposes only the rows that genuinely went.
+                            key = { index, entry ->
+                                when (entry) {
+                                    is StreamListEntry.SourceHeading -> "source:${entry.source}:$index"
+                                    is StreamListEntry.QualityHeading -> "band:${entry.tier}:$index"
+                                    is StreamListEntry.Result ->
+                                        "${repository.streamSelectionKey(entry.stream)}:$index"
+                                }
+                            },
+                        ) { index, entry ->
+                            when (entry) {
+                                is StreamListEntry.SourceHeading -> StreamSourceHeading(entry.source, entry.count)
+                                is StreamListEntry.QualityHeading -> StreamQualityHeading(entry.tier, entry.count)
+                                is StreamListEntry.Result -> {
+                                    val stream = entry.stream
+                                    // The title being watched stands in when the source's own text
+                                    // named nothing, so a row is never just a resolution and a size.
+                                    val rowLabel = addonStreamDisplayLabel(stream, streamFallbackName)
+                                    StreamRow(
+                                        stream = stream,
+                                        label = rowLabel,
+                                        origin = streamOriginLabel(stream, pluginState),
+                                        showQuality = anyQuality,
+                                        showSize = anySize,
+                                        requestFocus = if (index == focusTargetIndex) firstCardRequester else null,
+                                        streamsPrefs = streamsPrefs,
+                                        fusionBadgeSources = activeFusionBadgeSources,
+                                        onPressed = {
+                                            onPlayRequest(
+                                                request.copy(
+                                                    selectedStreamKey = repository.streamSelectionKey(stream),
+                                                    selectedStreamLabel = rowLabel,
+                                                    selectedStream = stream,
+                                                    availableStreams = streamRows,
+                                                ),
+                                            )
+                                        },
                                     )
-                                },
-                            )
+                                }
+                            }
                         }
                         if (state.pendingSources > 0) {
                             item("more") { StreamRowSkeleton() }
@@ -551,6 +775,87 @@ private fun StreamsSearchStatus(modifier: Modifier = Modifier) {
 }
 
 /**
+ * A source's name over its results.
+ *
+ * Not focusable and not a card: on a remote, anything that takes focus is another press between
+ * the viewer and the thing they are choosing. The heading scrolls into view with the results
+ * underneath it rather than being stopped on.
+ */
+@Composable
+private fun StreamSourceHeading(source: String, count: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // A short accent stroke rather than a filled bar: it marks where a source begins without
+        // turning every group into a slab the results then have to sit inside.
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(22.dp)
+                .clip(AppPillShape)
+                .background(MaterialTheme.colorScheme.primary),
+        )
+        Text(
+            text = source,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
+        )
+    }
+}
+
+/** A quality band's label, a rule across to its count, and the results below it. */
+@Composable
+private fun StreamQualityHeading(tier: StreamQualityTier, count: Int) {
+    val foreground = MaterialTheme.colorScheme.onSurface
+    val accent = when (tier) {
+        StreamQualityTier.Uhd -> Color(0xFFF59E0B)
+        StreamQualityTier.Qhd -> Color(0xFFA78BFA)
+        StreamQualityTier.Fhd -> Color(0xFF38BDF8)
+        StreamQualityTier.Hd -> Color(0xFF34D399)
+        StreamQualityTier.Sd, StreamQualityTier.Ld -> Color(0xFF94A3B8)
+        StreamQualityTier.Cam -> Color(0xFFF87171)
+        StreamQualityTier.Unknown -> foreground.copy(alpha = 0.55f)
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .clip(AppPillShape)
+                .background(accent.copy(alpha = 0.16f))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        ) {
+            Text(
+                text = tier.label,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                color = accent,
+                maxLines = 1,
+            )
+        }
+        // The rule carries the eye across to the count and gives the band a floor to sit on, which
+        // is what stops a long list reading as one undifferentiated run of cards.
+        Box(Modifier.weight(1f).height(1.dp).background(foreground.copy(alpha = 0.10f)))
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = foreground.copy(alpha = 0.42f),
+        )
+    }
+}
+
+/**
  * One stream, laid out on a fixed grid so the same fact is in the same place on every row.
  *
  * Source and release text on the left; quality, size and availability right-aligned in that order.
@@ -569,6 +874,7 @@ private fun StreamRow(
     requestFocus: FocusRequester?,
     streamsPrefs: StreamsPreferences,
     fusionBadgeSources: List<FusionBadgeSource>,
+    onFocused: () -> Unit = {},
     onPressed: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -598,7 +904,12 @@ private fun StreamRow(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (requestFocus != null) Modifier.focusRequester(requestFocus) else Modifier)
-            .onFocusChanged { focused = it.isFocused },
+            .onFocusChanged {
+                focused = it.isFocused
+                // Reported outward so the screen can put the viewer back on the same result when
+                // the source filter moves under them -- see restoreFocusOrdinal.
+                if (it.isFocused) onFocused()
+            },
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
             containerColor = Color.White.copy(alpha = 0.05f),

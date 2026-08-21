@@ -88,7 +88,9 @@ import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
 import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
+import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.RemotePlaylist
+import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.TrailerCache
@@ -255,6 +257,7 @@ fun SettingsScreen(
         if (integrations?.trakt?.connected == true) add(SyncServiceId.TRAKT to "Trakt")
         if (integrations?.simkl?.connected == true) add(SyncServiceId.SIMKL to "Simkl")
         if (integrations?.mdblist?.connected == true) add(SyncServiceId.MDBLIST to "MDBList")
+        if (integrations?.punchplay?.connected == true) add(SyncServiceId.PUNCHPLAY to "PunchPlay")
         val current = SyncServiceId.normalize(homePrefs?.primarySyncService)
         if (none { it.first == current }) add(current to SyncServiceId.label(current))
     }.distinctBy { it.first }
@@ -444,6 +447,31 @@ fun SettingsScreen(
                         savePreference("StreamDek formatting", complete) {
                             repository.updateStreamsPreferences(mapOf("streamDekFormattingEnabled" to next))
                         }
+                    }
+                    // Decoder choices for this box, kept out of the synced profile: whether Dolby
+                    // Vision needs mapping down, and whether tunneled output works, is a property
+                    // of this hardware and not of the account. See PlaybackCodecOptions.
+                    var dv7HevcFallback by remember { mutableStateOf(PlaybackCodecOptions.dv7HevcFallback) }
+                    var tunneledPlayback by remember { mutableStateOf(PlaybackCodecOptions.tunneledPlayback) }
+                    SettingsToggleRow(
+                        "DV7 - HEVC Fallback",
+                        "Map Dolby Vision Profile 7 to standard HEVC for devices without Dolby Vision hardware support. Turn this on if those files play as a black screen or refuse to start. The picture loses the Dolby Vision grade but plays at full resolution.",
+                        dv7HevcFallback,
+                        selectedRequester,
+                    ) { next, complete ->
+                        PlaybackCodecOptions.setDv7HevcFallback(context, next)
+                        dv7HevcFallback = next
+                        complete(true)
+                    }
+                    SettingsToggleRow(
+                        "Tunneled playback",
+                        "Hand decoding and display to the hardware as one pipeline, which can hold audio and video in step on devices that support it. Turn it off again if the picture goes black while the sound keeps playing.",
+                        tunneledPlayback,
+                        selectedRequester,
+                    ) { next, complete ->
+                        PlaybackCodecOptions.setTunneledPlayback(context, next)
+                        tunneledPlayback = next
+                        complete(true)
                     }
                 }
                 SettingsDestination.Library -> {
@@ -944,6 +972,75 @@ fun SettingsScreen(
                             }
                         }
                     }
+                    // CloudStream (.cs3) collections, in their own panel rather than mixed in
+                    // with the JavaScript ones above. They are a different runtime -- compiled
+                    // Kotlin this box downloads and loads itself -- and switching one on is what
+                    // fetches a multi-megabyte extension, so it is worth being clear which is which.
+                    val cloudStream = pluginState?.cloudstream
+                    if (cloudStream != null && cloudStream.repos.isNotEmpty()) {
+                        SettingsPanel("CloudStream sources") {
+                            InfoLine(
+                                "Collections",
+                                "${cloudStream.repos.size} · ${cloudStream.providers.count { it.enabled }} of ${cloudStream.providers.size} sources on",
+                            )
+                            cloudStream.repos.forEach { repo ->
+                                val parentKey = "cs:${repo.url}"
+                                val expanded = parentKey in expandedPluginParents
+                                val sources = cloudStream.providers.filter { it.repoUrl == repo.url }
+                                key(parentKey) {
+                                    SettingsActionRow(
+                                        repo.name.ifBlank { repo.url },
+                                        "${sources.size} source${if (sources.size == 1) "" else "s"} · ${sources.count { it.enabled }} on",
+                                        if (expanded) "Collapse" else "Expand",
+                                        selectedRequester,
+                                    ) {
+                                        expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
+                                    }
+                                    if (expanded) {
+                                        sources.forEach { source ->
+                                            key("cs:${source.repoUrl}:${source.internalName}") {
+                                                SettingsToggleRow(
+                                                    source.name.ifBlank { source.internalName },
+                                                    listOfNotNull(
+                                                        source.tvTypes.takeIf { it.isNotEmpty() }?.joinToString(", "),
+                                                        source.language,
+                                                    ).joinToString(" · ").ifBlank { "CloudStream extension" },
+                                                    source.enabled,
+                                                    selectedRequester,
+                                                ) { next, complete ->
+                                                    scope.launch {
+                                                        // Written back through the same document the
+                                                        // phone and the portal read, so switching a
+                                                        // source on here switches it on everywhere.
+                                                        val nextState = (pluginState ?: ProfilePluginState()).copy(
+                                                            cloudstream = cloudStream.copy(
+                                                                providers = cloudStream.providers.map {
+                                                                    if (it.repoUrl == source.repoUrl && it.internalName == source.internalName) {
+                                                                        it.copy(enabled = next)
+                                                                    } else {
+                                                                        it
+                                                                    }
+                                                                },
+                                                                updatedAt = System.currentTimeMillis(),
+                                                            ),
+                                                        )
+                                                        val updated = repository.updateProfilePlugins(nextState)
+                                                        if (updated != null) bootstrap = updated
+                                                        status = when {
+                                                            updated == null -> "That source could not be updated."
+                                                            next -> "${source.name.ifBlank { "Source" }} on. It downloads the first time it is used."
+                                                            else -> "${source.name.ifBlank { "Source" }} off."
+                                                        }
+                                                        complete(updated != null)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     SettingsPanel("IPTV playlists") {
                         if (playlists.isEmpty()) {
                             InfoLine("Playlists", "Add one from StreamDek Mobile or the web portal")
@@ -1032,6 +1129,7 @@ fun SettingsScreen(
                         InfoLine("Primary", SyncServiceId.label(SyncServiceId.normalize(homePrefs?.primarySyncService)))
                         InfoLine("Trakt", serviceStatus(integrations?.trakt?.connected == true, integrations?.trakt?.username))
                         InfoLine("Simkl", serviceStatus(integrations?.simkl?.connected == true, integrations?.simkl?.username))
+                        InfoLine("PunchPlay", serviceStatus(integrations?.punchplay?.connected == true, integrations?.punchplay?.username))
                         InfoLine("MDBList", serviceStatus(integrations?.mdblist?.connected == true, integrations?.mdblist?.username))
                         InfoLine("Connect services", "Use StreamDek Mobile for OAuth sign-in")
                     }
@@ -1371,7 +1469,12 @@ private fun SettingsDropdownRow(
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(title, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                Text(description, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                // Two lines while the row is passed over, all of them while it is the row being
+                // read. Exactly one row holds focus on a television and it is the one the viewer is
+                // looking at, so that is where the rest of the explanation belongs -- and it costs
+                // no extra focus stop, which on a remote is the difference between a help affordance
+                // and an obstacle.
+                Text(description, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = if (focused) Int.MAX_VALUE else 2, overflow = if (focused) TextOverflow.Clip else TextOverflow.Ellipsis)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 optionColors[value]?.let { color -> ThemeColorSwatch(color) }
@@ -1449,7 +1552,7 @@ private fun SettingsToggleRow(
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-            Text(description, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(description, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = if (focused) Int.MAX_VALUE else 2, overflow = if (focused) TextOverflow.Clip else TextOverflow.Ellipsis)
         }
         Switch(
             checked = visualChecked,
@@ -1480,7 +1583,7 @@ private fun SettingsActionRow(title: String, description: String, value: String,
     Row(
         Modifier.fillMaxWidth().background(if (focused) Color(0xFF172131) else Color(0xB20E141D), androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).border(if (focused) 2.dp else 1.dp, if (focused) MaterialTheme.colorScheme.primary else Color(0x10FFFFFF), androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess }.clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp),
-    ) { Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) { Text(title, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)); Text(description, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Text(value, color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)) }
+    ) { Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) { Text(title, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)); Text(description, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = if (focused) Int.MAX_VALUE else 2, overflow = if (focused) TextOverflow.Clip else TextOverflow.Ellipsis) }; Text(value, color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)) }
 }
 /** What the trailer cache currently holds, and when it was last thrown away. */
 private fun trailerCacheStatusLabel(sizeBytes: Long, lastClearedAt: Long): String {

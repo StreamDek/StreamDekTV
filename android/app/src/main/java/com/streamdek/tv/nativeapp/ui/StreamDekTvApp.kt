@@ -368,6 +368,13 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         }
     }
 
+    // A television is left running for hours, so a change made on the phone or the web portal
+    // should reach it while it sits there rather than waiting for the next cold start.
+    LaunchedEffect(session?.user?.uid) {
+        if (session == null) return@LaunchedEffect
+        repository.watchProfilePlugins(this)
+    }
+
     LaunchedEffect(Unit) {
         // Defer non-critical OTA work until the shell has painted and the user
         // has had a chance to begin navigating.

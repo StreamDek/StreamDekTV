@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.last
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
@@ -38,6 +39,9 @@ import java.time.Instant
 private val LIVE_ADDON_CATALOG_TYPES = setOf(
     "tv", "channel", "channels", "event", "events", "live", "sport", "sports", "other",
 )
+
+/** How often a running television asks whether the plugin document moved somewhere else. */
+private const val PLUGIN_WATCH_INTERVAL_MS = 15_000L
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
 private const val ADDON_CACHE_SECONDS = 90
@@ -191,6 +195,60 @@ private fun streamSingleLine(value: String?): String? = value?.trim()
     ?.takeIf(String::isNotBlank)
 
 /** Preserve the provider/debrid wording supplied by the add-on instead of hiding it. */
+/**
+ * Words that describe a file rather than name it.
+ *
+ * Several plugin sources answer with nothing but a resolution and a size, and a row reading
+ * "1080p | 2.3 GB" is not a result anyone can identify — five of them from one source are
+ * indistinguishable from each other on a ten-foot screen.
+ */
+private val StreamDescriptorTokens = setOf(
+    "4k", "uhd", "fhd", "qhd", "hd", "sd", "hq", "lq",
+    "hdr", "hdr10", "hdr10+", "dv", "dolby", "vision", "atmos", "dts", "dtshd", "truehd", "ddp", "dd",
+    "ac3", "eac3", "aac", "aac2", "opus", "flac", "mp3", "mp4", "mkv", "m3u8", "avi", "mpd",
+    "x264", "x265", "h264", "h265", "hevc", "avc", "av1", "10bit", "8bit",
+    "web", "webdl", "webrip", "bluray", "brrip", "bdrip", "dvdrip", "hdrip", "hdtv", "remux", "proper", "repack",
+    "cam", "camrip", "ts", "tc", "telesync", "telecine", "multi", "dual", "audio", "sub", "subs", "subbed", "dubbed",
+    "gb", "mb", "tb", "gib", "mib", "tib", "kb", "kbps", "mbps", "fps", "ch", "bit",
+    "auto", "unknown", "stream", "link", "video", "file", "size", "quality", "source",
+)
+
+private val StreamWordSplitPattern = Regex("[^\\p{L}\\p{N}+]+")
+private val StreamResolutionTokenPattern = Regex("\\d{2,4}p")
+private val StreamNumberTokenPattern = Regex("\\d+")
+
+/**
+ * Whether [value] contains anything that names the thing being watched.
+ *
+ * A token counts if it is not a descriptor, not a bare number and not a resolution. Two characters
+ * is the floor, so "4k" and separators do not rescue an otherwise empty label.
+ */
+internal fun streamTextNamesTitle(value: String?): Boolean {
+    if (value.isNullOrBlank()) return false
+    return value.lowercase(Locale.US)
+        .split(StreamWordSplitPattern)
+        .any { token ->
+            token.length > 1 &&
+                token !in StreamDescriptorTokens &&
+                !StreamResolutionTokenPattern.matches(token) &&
+                !StreamNumberTokenPattern.matches(token)
+        }
+}
+
+/**
+ * The same label, with the title being watched put in front when the source named nothing.
+ *
+ * Only the screens that know which title is on offer can supply [fallbackName], which is why this
+ * is a separate entry point rather than a change to the label everything else uses. Nothing is
+ * hidden either way: a result that cannot describe itself still appears, under the name of the
+ * thing it is a copy of.
+ */
+internal fun addonStreamDisplayLabel(stream: AddonStream, fallbackName: String): String {
+    val label = addonStreamDisplayLabel(stream)
+    if (streamTextNamesTitle(label)) return label
+    return listOf(fallbackName, label).filter { it.isNotBlank() }.joinToString(" | ")
+}
+
 internal fun addonStreamDisplayLabel(stream: AddonStream): String = listOfNotNull(
     streamSingleLine(stream.name),
     streamSingleLine(stream.source)?.takeUnless { it.equals(stream.addonName, ignoreCase = true) },
@@ -517,6 +575,9 @@ class StreamDekRepository(
     private val appContext: android.content.Context? = null,
 ) {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Loading a profile's `.cs3` extensions; cancelled when the profile changes under it. */
+    private var cloudStreamLoadJob: kotlinx.coroutines.Job? = null
     private val detailsCache = lruCache<String, MediaDetail>(48)
     private val seasonCache = lruCache<String, SeasonDetail>(32)
     private val homeCache = lruCache<String, HomeContent>(4)
@@ -831,6 +892,7 @@ class StreamDekRepository(
         // The synced snapshot carries plugin configuration but not the scrapers themselves, so
         // fetch those in the background rather than on the first stream lookup.
         pluginEngine?.selectProfile(sessionStore.activeProfileId())
+        applyCloudStreamCollections(bootstrap?.profilePlugins)
         // Before the warm-up, so a scraper that reads its token at module scope has it on the
         // very first lookup rather than on the one after the next bootstrap.
         pluginEngine?.applySyncedSettings(bootstrap?.profilePlugins)
@@ -1091,6 +1153,33 @@ class StreamDekRepository(
             TvDebugLogger.w("Plugins", "settings for ${provider.name} saved on this TV but not synced")
         }
         return updated != null
+    }
+
+    /**
+     * Watches the account for a plugin change made on the phone or the web portal.
+     *
+     * Polls a stamp rather than the document: the document carries every source and every settings
+     * schema, and asking for that on a timer would be wasteful on a stick. Only when the stamp
+     * moves past what this television last saw is the bootstrap actually refreshed -- so the steady
+     * state is a few bytes, and a collection added elsewhere appears here within the interval
+     * rather than on the next cold start.
+     */
+    fun watchProfilePlugins(scope: kotlinx.coroutines.CoroutineScope): kotlinx.coroutines.Job = scope.launch {
+        var lastSeen = bootstrapState.value?.profilePlugins?.updatedAt ?: 0L
+        while (isActive) {
+            kotlinx.coroutines.delay(PLUGIN_WATCH_INTERVAL_MS)
+            val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: continue
+            val version = runCatching {
+                api.get<com.google.gson.JsonObject>(
+                    "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/plugins/version",
+                )?.get("updatedAt")?.asLong ?: 0L
+            }.getOrDefault(0L)
+            if (version > lastSeen) {
+                lastSeen = version
+                TvDebugLogger.i("Plugins", "plugin document changed elsewhere; refreshing")
+                runCatching { refreshBootstrap() }
+            }
+        }
     }
 
     suspend fun updateProfilePlugins(state: ProfilePluginState): AccountBootstrap? {
@@ -1559,6 +1648,7 @@ class StreamDekRepository(
             pending[id] = PendingRail(id, title, portrait)
         }
         reserve("continue-watching", "Continue Watching")
+        reserve("new-episodes", "New Episodes", portrait = true)
         if (catalogRows.isNotEmpty()) {
             catalogRows.forEach { reserve(it.id, it.title, portrait = it.mediaType != "network") }
         } else if (builtInCatalogsEnabled) {
@@ -1573,8 +1663,13 @@ class StreamDekRepository(
 
         // Display order, which with the registry is only known at runtime. The pre-registry slots
         // still come from [HOME_SLOT_ORDER], so the fallback path is unchanged.
-        val slotOrder = if (catalogRows.isEmpty()) HOME_SLOT_ORDER else buildList {
+        val slotOrder = if (catalogRows.isEmpty()) buildList {
             add("continue-watching")
+            add("new-episodes")
+            addAll(HOME_SLOT_ORDER.filterNot { it == "continue-watching" })
+        } else buildList {
+            add("continue-watching")
+            add("new-episodes")
             catalogRows.forEach { add(it.id) }
             add("addon-catalogs")
         }
@@ -1606,6 +1701,11 @@ class StreamDekRepository(
                 val library = runCatching { fetchLibrary() }.getOrDefault(LibraryResponse())
                 val items = library.continueWatching.map(::continueWatchingCard)
                 publish("continue-watching", listOf(HomeRail("continue-watching", "Continue Watching", items)))
+                // Built from the same library read rather than a second one. A television cannot
+                // show a notification -- there is no drawer on Android TV or Fire OS for one to
+                // land in -- so "a new episode is out" has to be somewhere the viewer already
+                // looks, which is Home.
+                publish("new-episodes", newEpisodeRails(library))
             }
 
             if (catalogRows.isNotEmpty()) {
@@ -1652,6 +1752,77 @@ class StreamDekRepository(
 
         homeCache[cacheKey] = complete
         send(complete)
+    }
+
+    /**
+     * Series a viewer follows whose most recent episode landed in the last few days.
+     *
+     * "Follows" is both senses of the word: on the watchlist, or part-way through. Ordered newest
+     * first, so the row reads as a feed of what has just dropped rather than as another catalogue.
+     *
+     * Empty is a perfectly ordinary answer -- most days nothing a given viewer follows has aired --
+     * and an empty rail is dropped by the publisher, so the row simply is not there.
+     */
+    private suspend fun newEpisodeRails(library: LibraryResponse): List<HomeRail> {
+        val followed = (library.watchlist + library.continueWatching.map(::continueWatchingCard))
+            .filter { it.type.equals("tv", ignoreCase = true) || it.type.equals("series", ignoreCase = true) }
+            .mapNotNull { item -> item.tmdbId?.takeIf { it > 0 } ?: item.id.toIntOrNull()?.takeIf { it > 0 } }
+            .distinct()
+        if (followed.isEmpty()) return emptyList()
+
+        val statuses = runCatching { fetchSeriesEpisodeStatus(followed) }
+            .onFailure { TvDebugLogger.w("Home", "new episodes lookup failed", it) }
+            .getOrDefault(emptyList())
+        if (statuses.isEmpty()) return emptyList()
+
+        val today = java.time.LocalDate.now()
+        val earliest = today.minusDays(NEW_EPISODE_WINDOW_DAYS)
+        val recent = statuses.mapNotNull { entry ->
+            val episode = entry.lastEpisode ?: return@mapNotNull null
+            val airDate = runCatching { java.time.LocalDate.parse(episode.airDate?.trim().orEmpty()) }.getOrNull()
+                ?: return@mapNotNull null
+            // Dated in the future is a schedule, not a release: TMDB carries those on the last
+            // episode of a series that is between seasons.
+            if (airDate.isAfter(today) || airDate.isBefore(earliest)) return@mapNotNull null
+            airDate to MediaItem(
+                id = entry.tmdbId.toString(),
+                tmdbId = entry.tmdbId,
+                title = entry.title.orEmpty(),
+                type = "tv",
+                poster = entry.poster,
+                backdrop = entry.backdrop,
+                description = newEpisodeSubtitle(episode),
+                rating = null,
+                year = null,
+                titleLogo = null,
+            )
+        }.sortedByDescending { (airDate, _) -> airDate }.map { (_, item) -> item }
+
+        if (recent.isEmpty()) return emptyList()
+        return listOf(HomeRail("new-episodes", "New Episodes", recent))
+    }
+
+    /** How far back the New Episodes row reaches. A week covers a weekly show plus a late look. */
+    private val NEW_EPISODE_WINDOW_DAYS = 8L
+
+    /** Batched on purpose: one request for the whole followed list, capped and cached server-side. */
+    private suspend fun fetchSeriesEpisodeStatus(tmdbIds: List<Int>): List<SeriesEpisodeStatus> {
+        if (tmdbIds.isEmpty()) return emptyList()
+        val response = api.post<SeriesEpisodeStatusResponse>(
+            "/tmdb/series/episode-status",
+            mapOf("ids" to tmdbIds),
+        )
+        return response?.series.orEmpty()
+    }
+
+    private fun newEpisodeSubtitle(episode: AiringEpisode): String {
+        val code = when {
+            episode.season != null && episode.episode != null -> "S%02dE%02d".format(episode.season, episode.episode)
+            episode.episode != null -> "Episode ${episode.episode}"
+            else -> null
+        }
+        val name = episode.name?.trim()?.takeIf { it.isNotEmpty() }
+        return listOfNotNull(code, name).joinToString(" · ").ifBlank { "A new episode is out." }
     }
 
     private fun continueWatchingCard(item: ContinueWatchingItem): MediaItem = MediaItem(
@@ -1703,7 +1874,7 @@ class StreamDekRepository(
         return response.sections
             .mapNotNull { section ->
                 val id = section.id?.trim().orEmpty().ifEmpty { return@mapNotNull null }
-                val items = section.results.map { it.toMediaItem(section.media_type) }.filter { it.title.isNotBlank() }
+                val items = section.results.map { it.toMediaItem(section.media_type) }.filter { it.title.isNotBlank() }.withoutAdult()
                 // An empty carousel reads as a broken row, so it is dropped rather than shown.
                 if (items.isEmpty()) return@mapNotNull null
                 HomeRail(
@@ -2165,6 +2336,7 @@ class StreamDekRepository(
         return when (SyncServiceId.normalize(service)) {
             SyncServiceId.SIMKL -> integrations.simkl.connected
             SyncServiceId.MDBLIST -> integrations.mdblist.connected
+            SyncServiceId.PUNCHPLAY -> integrations.punchplay.connected
             else -> integrations.trakt.connected || bootstrapState.value?.syncStatus?.traktConnected == true
         }
     }
@@ -2780,6 +2952,39 @@ class StreamDekRepository(
      */
     private fun hasPluginSourcesFor(mediaType: String): Boolean = pluginProviderCount(mediaType) > 0
 
+    /**
+     * Brings this profile's CloudStream collections up from the synced document.
+     *
+     * The record that arrives is a pointer -- a name, a version and a download URL -- so a source
+     * switched on elsewhere is fetched and loaded here the first time it is asked for. Downloading
+     * a multi-megabyte extension is why this runs off the caller's thread and why a failure is
+     * logged rather than surfaced: the rest of the sources should still answer.
+     */
+    private fun applyCloudStreamCollections(plugins: ProfilePluginState?) {
+        if (!CloudStreamPlugins.isInitialized) return
+        val ownerKey = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: "guest"
+        CloudStreamPlugins.manager.selectProfileStorage(ownerKey)
+        val section = plugins?.cloudstream?.let { com.google.gson.Gson().toJson(it) }
+        val changed = runCatching { CloudStreamPlugins.manager.restoreCloudState(section) }.getOrDefault(false)
+        cloudStreamLoadJob?.cancel()
+        cloudStreamLoadJob = repositoryScope.launch(Dispatchers.IO) {
+            runCatching { CloudStreamPlugins.manager.loadEnabledProviders() }
+                .onFailure { TvDebugLogger.w("CloudStream", "could not bring up enabled sources", it) }
+            if (changed) TvDebugLogger.i("CloudStream", "collections updated from the account")
+        }
+    }
+
+    /**
+     * The CloudStream sources ready to answer, or none.
+     *
+     * These search by title rather than by id -- a `.cs3` scrapes a website -- so unlike the JS
+     * plugins they are worth asking only once the title is known.
+     */
+    private fun cloudStreamProviders(): List<com.lagradost.cloudstream3.MainAPI> {
+        if (!CloudStreamPlugins.isInitialized) return emptyList()
+        return runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList())
+    }
+
     /** How many plugin scrapers a lookup of [mediaType] would fan out to. */
     private fun pluginProviderCount(mediaType: String): Int {
         if (mediaType == "live") return 0
@@ -3027,9 +3232,19 @@ class StreamDekRepository(
         // did, so the ones that had already answered looked like they were still running.
         val pluginProviderCount = pluginProviderCount(mediaType)
 
+        // CloudStream extensions search by title, so they need one and are skipped for live.
+        val cloudStreamTitle = if (isLive) null else {
+            peekCachedDetail(mediaId, mediaType)?.title?.takeIf { it.isNotBlank() }
+                ?: runCatching { fetchDetail(mediaId, mediaType)?.title }.getOrNull()?.takeIf { it.isNotBlank() }
+        }
+        val cloudStreamSources = if (cloudStreamTitle == null) emptyList() else cloudStreamProviders()
+        // Counted as one source rather than one per extension: the bridge fans out internally and
+        // reports once, so a per-extension count would never come back down.
+        val cloudStreamPending = if (cloudStreamSources.isEmpty()) 0 else 1
+
         val merged = java.util.concurrent.ConcurrentHashMap<String, AddonStream>()
         val order = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginProviderCount)
+        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginProviderCount + cloudStreamPending)
         val mutex = kotlinx.coroutines.sync.Mutex()
         // Snapshot creation and channel publication must be one serialized operation. Otherwise
         // an earlier, smaller snapshot can suspend in send() and arrive after a later, larger one.
@@ -3074,6 +3289,31 @@ class StreamDekRepository(
         send(StreamCandidatesProgress(emptyList(), pendingSources = remaining.get(), done = false))
 
         supervisorScope {
+            if (cloudStreamPending > 0 && cloudStreamTitle != null) {
+                launch {
+                    runCatching {
+                        // Published as each extension finishes rather than at the end, so the
+                        // picker fills in the same way the add-on and plugin sources do.
+                        val streams = CloudStreamProviderBridge.streams(
+                            providers = cloudStreamSources,
+                            request = CloudStreamProviderBridge.StreamRequest(
+                                title = cloudStreamTitle,
+                                year = peekCachedDetail(mediaId, mediaType)?.year?.toIntOrNull(),
+                                type = if (mediaType == "series") "tv" else mediaType,
+                                season = episode?.seasonNumber,
+                                episode = episode?.episodeNumber,
+                            ),
+                            onProviderResults = { providerStreams ->
+                                mergeStreams(providerStreams)
+                                publish(done = false)
+                            },
+                        )
+                        mergeStreams(streams)
+                    }.onFailure { TvDebugLogger.w("CloudStream", "lookup failed for $cloudStreamTitle", it) }
+                    remaining.decrementAndGet()
+                    publish(done = false)
+                }
+            }
             if (pluginProviderCount > 0) {
                 launch {
                     val reported = java.util.concurrent.atomic.AtomicInteger(0)
@@ -4015,7 +4255,18 @@ class StreamDekRepository(
         val normalizedPreferredAddon = preferredAddonName?.trim()?.lowercase(Locale.US)
         val normalizedPreferredQuality = preferredQualityGroup?.trim()?.lowercase(Locale.US)
         val preferredAudioLanguage = preferredAudioLanguageForAutoSelection()
-        return streams.sortedWith(
+        // Every stream list shown is ordered here first, whatever add-on or plugin produced it,
+        // so this is the one place the block cannot be routed around by a new caller.
+        return streams.filterNot { stream ->
+            AdultContentFilter.isBlocked(
+                stream.name,
+                stream.title,
+                stream.addonName,
+                // A stream description is usually the release name rather than a synopsis, and
+                // that is exactly where the marker tends to sit.
+                stream.description,
+            )
+        }.sortedWith(
             compareByDescending<AddonStream> { it.cachedBy.isNotEmpty() }
                 .thenByDescending { preferredQualityScore(inferredStreamQuality(it), preferredQuality) }
                 .thenByDescending { if (preferredStreamKey != null && streamSelectionKey(it) == preferredStreamKey) 10 else 0 }
@@ -4472,6 +4723,18 @@ internal fun orderCatalogRows(
  * The networks row names its fields differently from a title row, and it is the section's own
  * `media_type` that says which to read — an item's own `type` is absent on some rows.
  */
+/**
+ * Whether a catalogue card is pornography.
+ *
+ * The description is deliberately not searched: a synopsis mentioning pornography is usually a
+ * documentary about it, and hiding those is how a filter earns a reputation for being wrong.
+ */
+internal fun MediaItem.isAdultCard(): Boolean =
+    AdultContentFilter.isBlockedItem(title = title) || AdultContentFilter.isBlocked(sourceCatalogName)
+
+/** Drops adult cards from a row. Applied where rows are built rather than where they render. */
+internal fun List<MediaItem>.withoutAdult(): List<MediaItem> = filterNot { it.isAdultCard() }
+
 internal fun CatalogSectionItem.toMediaItem(sectionMediaType: String?): MediaItem {
     val kind = type?.takeIf { it.isNotBlank() } ?: sectionMediaType?.takeIf { it.isNotBlank() } ?: "movie"
     if (kind == "network") {

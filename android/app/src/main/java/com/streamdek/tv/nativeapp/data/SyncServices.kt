@@ -1,27 +1,30 @@
 package com.streamdek.tv.nativeapp.data
 
 /**
- * A profile can track what it watches with Trakt, Simkl or MDBList. The backend mounts the same
- * route shape for each (`/{service}/sync/...`), so the only thing that varies here is which
- * service a profile has chosen and what that service is able to do.
+ * A profile can track what it watches with Trakt, Simkl, MDBList or PunchPlay. The backend mounts
+ * the same route shape for each (`/{service}/sync/...`), so the only thing that varies here is
+ * which service a profile has chosen and what that service is able to do.
  */
 object SyncServiceId {
     const val TRAKT = "trakt"
     const val SIMKL = "simkl"
     const val MDBLIST = "mdblist"
+    const val PUNCHPLAY = "punchplay"
 
-    val all: List<String> = listOf(TRAKT, SIMKL, MDBLIST)
+    val all: List<String> = listOf(TRAKT, SIMKL, MDBLIST, PUNCHPLAY)
 
     /** Unknown or missing values fall back to Trakt, which is what every older profile used. */
     fun normalize(raw: String?): String = when (raw?.trim()?.lowercase()) {
         SIMKL -> SIMKL
         MDBLIST -> MDBLIST
+        PUNCHPLAY -> PUNCHPLAY
         else -> TRAKT
     }
 
     fun label(service: String): String = when (normalize(service)) {
         SIMKL -> "Simkl"
         MDBLIST -> "MDBList"
+        PUNCHPLAY -> "PunchPlay"
         else -> "Trakt"
     }
 }
@@ -50,6 +53,12 @@ data class SyncServiceCapabilities(
                 watchlist = true,
                 watchlistWrite = true,
                 playback = false,
+                traktOnlyFeatures = false,
+            )
+            SyncServiceId.PUNCHPLAY -> SyncServiceCapabilities(
+                watchlist = true,
+                watchlistWrite = true,
+                playback = true,
                 traktOnlyFeatures = false,
             )
             else -> SyncServiceCapabilities(

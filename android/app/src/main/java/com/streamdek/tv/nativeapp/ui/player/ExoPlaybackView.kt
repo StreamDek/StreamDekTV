@@ -30,7 +30,9 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
+import com.streamdek.tv.nativeapp.data.Dv7AwareRenderersFactory
 import com.streamdek.tv.nativeapp.data.Languages
+import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 
@@ -277,11 +279,21 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setAllowCrossProtocolRedirects(true)
       .setDefaultRequestProperties(requestHeaders)
     val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
-    val renderers = DefaultRenderersFactory(context)
+    // Dolby Vision profile 7 is mapped down to its HEVC base layer here when the viewer has
+    // asked for it -- see PlaybackCodecOptions. The factory is the same one otherwise.
+    val renderers = Dv7AwareRenderersFactory(context)
       .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
       .setEnableDecoderFallback(true)
       // Queue codec work off the playback thread on API 24+ TVs.
       .forceEnableMediaCodecAsynchronousQueueing()
+    // Tunneled output hands decoding and display to the hardware as one pipeline, which is what
+    // holds audio and video in step on a television box. Off by default because the devices that
+    // do not implement it properly fail loudly -- a black picture with the sound still running.
+    val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context).apply {
+      if (PlaybackCodecOptions.tunneledPlayback) {
+        setParameters(buildUponParameters().setTunnelingEnabled(true))
+      }
+    }
     val loadControl = DefaultLoadControl.Builder()
       // Start quickly, retain enough forward/back buffer for stable playback and seeks.
       .setBufferDurationsMs(10_000, 50_000, 750, 2_500)
@@ -289,6 +301,7 @@ class ExoPlaybackView @JvmOverloads constructor(
       .build()
     val active = ExoPlayer.Builder(context)
       .setRenderersFactory(renderers)
+      .setTrackSelector(trackSelector)
       .setLoadControl(loadControl)
       .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
       .setBandwidthMeter(bandwidthMeter)

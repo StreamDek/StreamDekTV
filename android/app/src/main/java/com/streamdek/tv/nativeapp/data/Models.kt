@@ -832,13 +832,53 @@ data class ProfilePluginState(
     val enabled: Boolean = true,
     val repos: List<ProfilePluginRepo> = emptyList(),
     val providers: List<ProfilePluginProvider> = emptyList(),
+    /**
+     * The CloudStream half of the document.
+     *
+     * Typed rather than carried opaquely, now that this television runs `.cs3` extensions itself
+     * and has to read and write it. It still has to be *present* on this class whatever happens to
+     * it: [updateProfilePlugins] sends the whole object back as the document, and a field Gson
+     * does not know about is a field Gson drops -- which would delete every CloudStream collection
+     * on the account the first time a plugin setting was saved here.
+     *
+     * `installedFilePath` is deliberately not part of it. Where a device put its own copy of a
+     * `.cs3` is that device's business and means nothing to any other client.
+     */
+    val cloudstream: ProfileCloudStreamState? = null,
     val updatedAt: Long = 0L,
+)
+
+data class ProfileCloudStreamState(
+    val repos: List<ProfileCloudStreamRepo> = emptyList(),
+    val providers: List<ProfileCloudStreamProvider> = emptyList(),
+    val updatedAt: Long = 0L,
+)
+
+data class ProfileCloudStreamRepo(
+    val url: String = "",
+    val name: String = "",
+    val description: String? = null,
+    val iconUrl: String? = null,
+    val enabled: Boolean = true,
+)
+
+data class ProfileCloudStreamProvider(
+    val repoUrl: String = "",
+    val internalName: String = "",
+    val name: String = "",
+    val version: Int = 0,
+    val downloadUrl: String = "",
+    val tvTypes: List<String> = emptyList(),
+    val language: String? = null,
+    val description: String? = null,
+    val enabled: Boolean = false,
 )
 
 data class IntegrationsEnvelope(
     val trakt: TraktIntegration = TraktIntegration(),
     val simkl: SyncServiceIntegration = SyncServiceIntegration(),
     val mdblist: SyncServiceIntegration = SyncServiceIntegration(),
+    val punchplay: SyncServiceIntegration = SyncServiceIntegration(),
     val debrid: DebridIntegration = DebridIntegration(),
     val addons: AddonsIntegration = AddonsIntegration(),
 )
@@ -906,6 +946,36 @@ data class ContinueWatchingItem(
     val resumeAt: Double? = null,
     val episodeKey: String? = null,
     val episode: EpisodeContext? = null,
+)
+
+/**
+ * When a series' next and most recent episodes air, as the backend reads them off TMDB.
+ *
+ * One record per series rather than a walk through its seasons: the two episodes a viewer
+ * following a show cares about are exactly these, and asking for them by season costs a request
+ * each -- which on a stick is the difference between a row that fills and one that does not.
+ */
+data class SeriesEpisodeStatus(
+    val tmdbId: Int = 0,
+    val title: String? = null,
+    val poster: String? = null,
+    val backdrop: String? = null,
+    val status: String? = null,
+    @com.google.gson.annotations.SerializedName("nextEpisodeToAir") val nextEpisode: AiringEpisode? = null,
+    @com.google.gson.annotations.SerializedName("lastEpisodeToAir") val lastEpisode: AiringEpisode? = null,
+)
+
+data class AiringEpisode(
+    val id: Int? = null,
+    val name: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val airDate: String? = null,
+    val still: String? = null,
+)
+
+data class SeriesEpisodeStatusResponse(
+    val series: List<SeriesEpisodeStatus> = emptyList(),
 )
 
 data class LibraryResponse(

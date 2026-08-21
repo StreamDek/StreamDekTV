@@ -448,6 +448,14 @@ fun DetailScreen(
         if (trailerRequest == 0 || trailerCandidateUrls.isEmpty()) return@LaunchedEffect
         trailerUnavailable = false
         trailerResolving = true
+        // Resolved once and used twice: by the extractor as its preferred video, and by the embed
+        // fallback below when extraction comes back with nothing.
+        // Keyed on tmdbId rather than id: this screen's `id` is the catalogue's own identifier,
+        // which for an add-on item is not a TMDB number at all.
+        val kinocheckKey = detail?.let { current ->
+            val tmdbId = current.tmdbId.takeIf { it > 0 }?.toString() ?: current.id
+            kinocheckTrailerKey(tmdbId, current.type, context)?.let { "https://www.youtube.com/watch?v=$it" }
+        }
         val resolved = runCatching {
             resolveTrailerPlaybackSource(
                 url = trailerCandidateUrls.first(),
@@ -456,12 +464,7 @@ fun DetailScreen(
                 // KinoCheck's curated pick, tried on its own before the metadata service's list.
                 // Their list is every video a studio published, which around a release is a wall of
                 // ticket adverts; this is one video, marked as the trailer.
-                // Keyed on tmdbId rather than id: this screen's `id` is the catalogue's own
-                // identifier, which for an add-on item is not a TMDB number at all.
-                preferredUrl = detail?.let { current ->
-                    val tmdbId = current.tmdbId.takeIf { it > 0 }?.toString() ?: current.id
-                    kinocheckTrailerKey(tmdbId, current.type, context)?.let { "https://www.youtube.com/watch?v=$it" }
-                },
+                preferredUrl = kinocheckKey,
             )
         }.onFailure { TvDebugLogger.w("Trailer", "could not resolve a trailer", it) }.getOrNull()
         trailerResolving = false
@@ -475,8 +478,16 @@ fun DetailScreen(
         // answers "sign in to confirm you're not a bot" to whole networks at a time, and the embed
         // is unaffected by it because it is the published interface rather than an internal one. It
         // also carries the age-gated trailers extraction has never been able to reach.
+        // KinoCheck's pick leads the embed too, not just the extraction.
+        //
+        // The embed was handed the head of `trailerCandidateUrls` — the metadata service's own
+        // order, which is roughly newest first, and around a release that is a wall of ticket
+        // adverts. So every time extraction was refused the fallback played a promo sting, and the
+        // one video actually marked as the trailer was never seen. The embed is the path that
+        // survives the bot wall, which makes it exactly the path that most needs the right video.
+        val embedCandidates = listOfNotNull(kinocheckKey) + trailerCandidateUrls
         val playback = resolved?.source?.let(TrailerPlayback::Native)
-            ?: trailerCandidateUrls.firstNotNullOfOrNull { youtubeTrailerKey(it) }?.let(TrailerPlayback::Embed)
+            ?: embedCandidates.firstNotNullOfOrNull { youtubeTrailerKey(it) }?.let(TrailerPlayback::Embed)
         if (playback == null) {
             TvDebugLogger.i("Trailer", "no playable trailer for ${detail?.title.orEmpty()}")
             trailerUnavailable = true

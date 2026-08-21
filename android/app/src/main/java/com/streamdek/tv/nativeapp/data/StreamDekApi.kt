@@ -297,6 +297,29 @@ class StreamDekApi(
     }
 
     /**
+     * Reads the platform's content policy and hands it to [AdultContentFilter].
+     *
+     * Needs no session: the block applies before anyone signs in. A failure leaves the filter on
+     * rather than reporting an error, because the safe state and the unknown state are the same.
+     */
+    internal suspend fun refreshContentPolicy() {
+        runCatching {
+            val raw = executeRaw("GET", "/public/content-policy", null, null)
+                ?: error("Empty content policy response")
+            val json = org.json.JSONObject(raw)
+            val terms = json.optJSONArray("terms")
+            AdultContentFilter.applyPolicy(
+                blockAdult = json.optBoolean("blockAdult", true),
+                terms = buildList {
+                    if (terms != null) for (index in 0 until terms.length()) {
+                        terms.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+                    }
+                },
+            )
+        }.onFailure { AdultContentFilter.applyPolicy(null, null) }
+    }
+
+    /**
      * Runs one call and returns its body, or null when there is nothing usable to parse.
      *
      * GETs are safe to repeat, so they get a small retry budget for transport errors and for the

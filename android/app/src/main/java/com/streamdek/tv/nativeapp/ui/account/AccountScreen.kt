@@ -464,6 +464,7 @@ fun AccountScreen(
                                     val connected = when (SyncServiceId.normalize(prefs?.home?.primarySyncService)) {
                                         SyncServiceId.SIMKL -> bootstrap?.integrations?.simkl?.connected == true
                                         SyncServiceId.MDBLIST -> bootstrap?.integrations?.mdblist?.connected == true
+                                        SyncServiceId.PUNCHPLAY -> bootstrap?.integrations?.punchplay?.connected == true
                                         else -> bootstrap?.integrations?.trakt?.connected == true ||
                                             bootstrap?.syncStatus?.traktConnected == true
                                     }

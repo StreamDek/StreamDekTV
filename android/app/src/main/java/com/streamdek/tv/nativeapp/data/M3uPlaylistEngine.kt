@@ -404,7 +404,12 @@ internal fun parseM3uLines(
             }
         }
     }
-    return items
+    // A playlist's adult section names itself plainly, and dropping those entries here rather
+    // than where they are displayed keeps them out of browse, search and favourites at once.
+    return items.filterNot { item ->
+        AdultContentFilter.isBlockedItem(title = item.title) ||
+            AdultContentFilter.isBlocked(item.sourceCatalogName)
+    }
 }
 
 /**
