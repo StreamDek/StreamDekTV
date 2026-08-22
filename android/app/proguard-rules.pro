@@ -25,3 +25,8 @@
     public static int d(...);
     public static int i(...);
 }
+# jsoup 1.18 ships an optional RE2/J regex backend (org.jsoup.helper.Re2jRegex). It is used only
+# when com.google.re2j is on the classpath, which it is not here -- jsoup falls back to
+# java.util.regex. R8 still sees the references and fails the release build over classes that are
+# deliberately absent, so they are declared as expected-missing rather than pulled in.
+-dontwarn com.google.re2j.**
