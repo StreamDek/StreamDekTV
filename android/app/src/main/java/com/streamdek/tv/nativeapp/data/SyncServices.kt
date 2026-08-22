@@ -11,6 +11,15 @@ object SyncServiceId {
     const val MDBLIST = "mdblist"
     const val PUNCHPLAY = "punchplay"
 
+    /**
+     * StreamDek's own sync.
+     *
+     * Deliberately absent from [all]: that list drives connection status and the fan-out to
+     * accounts the viewer has linked, and SyncDek is linked to nothing -- it is on whenever they
+     * are signed in. It is a value the primary-source setting can hold, not a service to connect.
+     */
+    const val SYNCDEK = "syncdek"
+
     val all: List<String> = listOf(TRAKT, SIMKL, MDBLIST, PUNCHPLAY)
 
     /** Unknown or missing values fall back to Trakt, which is what every older profile used. */
@@ -18,6 +27,7 @@ object SyncServiceId {
         SIMKL -> SIMKL
         MDBLIST -> MDBLIST
         PUNCHPLAY -> PUNCHPLAY
+        SYNCDEK -> SYNCDEK
         else -> TRAKT
     }
 
@@ -25,6 +35,7 @@ object SyncServiceId {
         SIMKL -> "Simkl"
         MDBLIST -> "MDBList"
         PUNCHPLAY -> "PunchPlay"
+        SYNCDEK -> "SyncDek"
         else -> "Trakt"
     }
 }
@@ -52,13 +63,24 @@ data class SyncServiceCapabilities(
             SyncServiceId.MDBLIST -> SyncServiceCapabilities(
                 watchlist = true,
                 watchlistWrite = true,
-                playback = false,
+                // It does keep paused sessions -- /sync/playback -- which this once assumed it
+                // did not. The backend reads them, so it can drive Continue Watching like the rest.
+                playback = true,
                 traktOnlyFeatures = false,
             )
             SyncServiceId.PUNCHPLAY -> SyncServiceCapabilities(
                 watchlist = true,
                 watchlistWrite = true,
                 playback = true,
+                traktOnlyFeatures = false,
+            )
+            // SyncDek keeps the watchlist. Continue Watching does not come through this path for
+            // it -- the resume rows are read straight from /sync/library -- so playback is false
+            // here to stop anything asking a provider route that does not exist.
+            SyncServiceId.SYNCDEK -> SyncServiceCapabilities(
+                watchlist = true,
+                watchlistWrite = true,
+                playback = false,
                 traktOnlyFeatures = false,
             )
             else -> SyncServiceCapabilities(

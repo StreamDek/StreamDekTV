@@ -59,6 +59,15 @@ data class MediaItem(
     val positionSec: Double? = null,
     val durationSec: Double? = null,
     val episode: EpisodeContext? = null,
+    /**
+     * A line the row wants on the card, above the title.
+     *
+     * Set by New Episodes to say which episode landed and when. Kept off the wire deliberately --
+     * it is presentation the client decides, not something a catalogue supplies.
+     */
+    @Transient val cardSubtitle: String? = null,
+    /** Draws that line as news rather than as metadata. */
+    @Transient val cardHighlight: Boolean = false,
     /** Stremio-native stream type for live addon items (e.g. 'tv', 'events', 'sport'). */
     val streamType: String? = null,
     val sourceAddonId: String? = null,

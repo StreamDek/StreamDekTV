@@ -181,10 +181,15 @@ class TrailerResolverTest {
   }
 
   @Test
-  fun `keeps the only video a title has even when it looks like a promo`() {
-    // Better a short promo than a hero with nothing in it.
-    assertEquals("only", pickBestTrailerCandidate(listOf(TrailerCandidate("only", "Now Playing", 15))))
+  fun `refuses a lone short rather than stretching it across the wall`() {
+    // This used to keep the only video whatever it was -- better a short promo than an empty hero.
+    // On a television that reasoning does not hold: a fifteen-second vertical clip blown up to the
+    // full width reads as a broken trailer. Returning nothing sends the resolver on to the curated
+    // pick, which is a better answer than the promo was.
+    assertNull(pickBestTrailerCandidate(listOf(TrailerCandidate("only", "Now Playing", 15))))
     assertNull(pickBestTrailerCandidate(emptyList()))
+    // The handset still keeps it, which is what allowShortForm is for.
+    assertEquals("only", pickBestTrailerCandidate(listOf(TrailerCandidate("only", "Now Playing", 15)), allowShortForm = true))
   }
 
   @Test

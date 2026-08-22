@@ -173,6 +173,17 @@ fun PremiumMediaCard(
                 if (showProvider) item.sourceAddonName?.takeIf { it.isNotBlank() }?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                item.cardSubtitle?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = if (item.cardHighlight) FontWeight.Black else FontWeight.Normal,
+                        ),
+                        color = if (item.cardHighlight) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.72f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 item.episode?.title?.takeIf { it.isNotBlank() }?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }

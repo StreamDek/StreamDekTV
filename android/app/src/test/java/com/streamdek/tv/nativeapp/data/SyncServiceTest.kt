@@ -21,11 +21,14 @@ class SyncServiceTest {
     }
 
     @Test
-    fun `mdblist reports no playback support`() {
-        // MDBList is a list manager with no resume points, so asking it for them is pointless.
-        assertFalse(SyncServiceCapabilities.of(SyncServiceId.MDBLIST).playback)
+    fun `every connected service can supply resume points`() {
+        // MDBList was long assumed to be a list manager with no resume points. It has scrobble
+        // endpoints and a /sync/playback of its own, and the backend now reads both, so asking it
+        // for them is no longer pointless.
+        assertTrue(SyncServiceCapabilities.of(SyncServiceId.MDBLIST).playback)
         assertTrue(SyncServiceCapabilities.of(SyncServiceId.MDBLIST).watchlist)
         assertTrue(SyncServiceCapabilities.of(SyncServiceId.SIMKL).playback)
+        assertTrue(SyncServiceCapabilities.of(SyncServiceId.PUNCHPLAY).playback)
     }
 
     @Test

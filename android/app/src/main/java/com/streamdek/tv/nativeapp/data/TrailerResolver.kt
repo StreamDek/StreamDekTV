@@ -95,10 +95,15 @@ suspend fun resolveTrailerPlaybackSource(
   /**
    * A trailer somebody has already identified as the right one — today, KinoCheck's pick.
    *
-   * Tried on its own before anything else, and only if it produces nothing does the ranked search
-   * over [url] and [alternates] run. It is deliberately not thrown in with the others: the ranking
-   * exists to find a trailer among adverts by running time, and a curated answer should not have to
-   * win that competition to be used.
+   * The last thing tried, not the first. The ranked search over [url] and [alternates] reads each
+   * candidate's running time and picks the real trailer out of the adverts, and that judgement is
+   * better than a third party's for the titles it can see — it is working from the videos the
+   * studio actually published. KinoCheck is the answer for the titles it cannot: nothing readable
+   * in the list, every candidate walled, or no candidates at all.
+   *
+   * It is still kept out of the ranking rather than thrown in with the others. A curated answer
+   * should not have to win a competition scored on running time; it either gets used whole, sting
+   * trimmed, or not at all.
    */
   preferredUrl: String? = null,
 ): TrailerPlaybackResolution = withContext(Dispatchers.IO) {
@@ -126,31 +131,33 @@ suspend fun resolveTrailerPlaybackSource(
       return if (source.seekable) resolved.copy(source = source.copy(startPositionMs = KINOCHECK_START_MS)) else resolved
     }
 
-    // One client at a time, all the way down, rather than one video at a time through every
-    // client. The curated pick therefore gets a second attempt on the second client instead of
-    // being abandoned after the first refusal — which is what used to happen: KinoCheck's trailer
-    // was tried once, and everything after that came out of the metadata service's list, so the
-    // one video actually marked as the trailer was the one video that never played.
-    attemptPreferred(listOf(trailerClientLadder.first()))?.let { return@withTimeoutOrNull it }
-
-    // A trailer served as a plain file needs none of this. Checked after the curated pick and
-    // before the ranked search, which is where it has always sat.
+    // A trailer served as a plain file needs none of this, and is unambiguous — no ranking, no
+    // client ladder, no third party. First, because it is both the cheapest and the most certain.
     if (trimmed.isNotBlank() && isNativePlayableTrailerUrl(trimmed)) {
       return@withTimeoutOrNull TrailerPlaybackResolution(source = TrailerPlaybackSource(trimmed))
     }
     if (preferredKey == null && candidateKeys.isEmpty()) return@withTimeoutOrNull TrailerPlaybackResolution()
 
-    trailerClientLadder.forEachIndexed { index, client ->
-      val clients = listOf(client)
-      // The first client's turn at the curated pick already happened above, before the plain-file
-      // check; every later client gets its own turn here.
-      if (index > 0) attemptPreferred(clients)?.let { return@withTimeoutOrNull it }
-      if (candidateKeys.isNotEmpty()) {
-        val resolved = resolveTrailerCandidates(candidateKeys, cap, clients)
+    // Then the ranked search, one client at a time all the way down. Running time is what tells a
+    // two-minute trailer from a fifteen-second ticket advert, and no marketing language changes
+    // that — see [trailerCandidateScore]. Each client gets a full pass over the candidates before
+    // the next one is tried, so a title whose videos are all walled on the first client is still
+    // ranked properly on the second rather than falling through on its first refusal.
+    if (candidateKeys.isNotEmpty()) {
+      trailerClientLadder.forEach { client ->
+        val resolved = resolveTrailerCandidates(candidateKeys, cap, listOf(client))
         loginRequired = loginRequired || resolved.youtubeLoginRequired
         if (resolved.source != null) return@withTimeoutOrNull resolved
       }
     }
+
+    // KinoCheck last. By here the title's own videos could not be read or played on any client, so
+    // a curated pick is the difference between a trailer and a blank hero. It gets the same
+    // one-client-at-a-time treatment rather than being abandoned on a single refusal.
+    trailerClientLadder.forEach { client ->
+      attemptPreferred(listOf(client))?.let { return@withTimeoutOrNull it }
+    }
+
     TrailerPlaybackResolution(youtubeLoginRequired = loginRequired)
   } ?: TrailerPlaybackResolution()
 }
@@ -161,7 +168,10 @@ private suspend fun resolveTrailerCandidates(
   clients: List<YoutubeClient> = trailerClientLadder,
 ): TrailerPlaybackResolution {
   val session = youtubeSession(keys.first())
-  if (keys.size == 1) return resolveYoutubePlaybackSource(keys.first(), maxHeight, session, clients)
+  // A single candidate used to skip all of this and play, which meant a title whose only video was
+  // a Short played the Short without anything ever looking at it. One video still gets judged; it
+  // just has nothing to be judged against.
+  //
   // Which of the candidates is the trailer only has to be worked out once per title; after that it
   // is a single request for a fresh playback URL rather than a fan-out across all of them.
   cachedTrailerChoice(keys)?.let { return resolveYoutubePlaybackSource(it, maxHeight, session, clients) }
@@ -187,7 +197,13 @@ private suspend fun resolveTrailerCandidates(
     }.awaitAll()
   }
   val best = pickBestTrailerCandidate(probes.map { (key, probe) -> TrailerCandidate(key, probe.title, probe.durationSeconds) })
-    ?: keys.first()
+    ?: run {
+      // Nothing here is a trailer, and a television does not stand in a Short for one. Reported as
+      // no result so the caller moves on to the next client and, in the end, to the curated pick --
+      // which is where a real trailer for this title is most likely to come from.
+      TvDebugLogger.d(trailerResolverTag, "no full-length candidate among ${keys.size}: " + probes.joinToString { (key, probe) -> "$key(${probe.durationSeconds}s ${probe.title})" })
+      return TrailerPlaybackResolution()
+    }
   TvDebugLogger.d(trailerResolverTag, "picked $best from ${keys.size} candidates: " + probes.joinToString { (key, probe) -> "$key(${probe.durationSeconds}s ${probe.title})" })
   cacheTrailerChoice(keys, best)
 
@@ -207,12 +223,49 @@ internal data class TrailerCandidate(val key: String, val title: String?, val du
  * genuine trailers too — but a theatre notice is fifteen seconds and a trailer is two minutes, and
  * no amount of marketing language changes that.
  */
-internal fun pickBestTrailerCandidate(candidates: List<TrailerCandidate>): String? =
-  candidates.maxWithOrNull(
+/**
+ * Whether a candidate is short-form rather than a trailer.
+ *
+ * Runtime is the signal, as everywhere else here: a minute is not enough to trail a film, whatever
+ * the upload was labelled. The hashtag is checked too because a Short cut to exactly sixty seconds
+ * is otherwise indistinguishable from a brief teaser by duration alone.
+ *
+ * An unknown runtime is not short-form. It is unknown, and punishing it would throw away perfectly
+ * good trailers whose metadata the client could not read.
+ */
+internal fun isShortFormTrailerCandidate(title: String?, durationSeconds: Int?): Boolean {
+  val name = title.orEmpty().lowercase()
+  if (name.contains("#short") || name.contains("#reel")) return true
+  return durationSeconds != null && durationSeconds < 60
+}
+
+/**
+ * Which of a title's videos to play, or none of them.
+ *
+ * Short-form is held back rather than merely ranked low. Ranking alone still plays a Short when it
+ * is the only thing on offer, because the best of a bad set still wins.
+ *
+ * @param allowShortForm false here by default, and that is the point of the parameter. A vertical
+ *   sixty-second clip stretched across a living-room screen reads as a broken trailer rather than
+ *   a short one, so the television would rather show nothing and let the curated fallback answer.
+ *   The handset passes true: there a clip beats a still frame.
+ */
+internal fun pickBestTrailerCandidate(
+  candidates: List<TrailerCandidate>,
+  allowShortForm: Boolean = false,
+): String? {
+  val fullLength = candidates.filterNot { isShortFormTrailerCandidate(it.title, it.durationSeconds) }
+  val pool = when {
+    fullLength.isNotEmpty() -> fullLength
+    allowShortForm -> candidates
+    else -> return null
+  }
+  return pool.maxWithOrNull(
     compareBy<TrailerCandidate> { trailerCandidateScore(it.title, it.durationSeconds) }
       // Between two real trailers, the longer one is the fuller cut.
       .thenBy { it.durationSeconds ?: 0 },
   )?.key
+}
 
 internal fun trailerCandidateScore(title: String?, durationSeconds: Int?): Int {
   val name = title.orEmpty().lowercase()
@@ -233,6 +286,9 @@ internal fun trailerCandidateScore(title: String?, durationSeconds: Int?): Int {
   // These name a different kind of video outright, rather than describing a trailer's release.
   val otherFormat = listOf("featurette", "behind the scenes", "bloopers", "blooper", "interview", "tv spot", "opening scene", "first 10 minutes")
   if (otherFormat.any { name.contains(it) }) score -= 35
+  // A Short that calls itself a trailer is still a Short. Without this the bonus for the word puts
+  // a sixty-second vertical clip above a two-minute trailer that happens not to say "official".
+  if (isShortFormTrailerCandidate(title, durationSeconds)) score -= 60
   return score
 }
 

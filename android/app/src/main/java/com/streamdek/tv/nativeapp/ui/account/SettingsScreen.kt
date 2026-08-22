@@ -254,6 +254,9 @@ fun SettingsScreen(
 
     val trackingOptions = buildList {
         val integrations = bootstrap?.integrations
+        // SyncDek leads and is always offered. It has no account behind it, so unlike the others
+        // it cannot be unavailable -- which also makes it the one safe answer on a fresh TV.
+        add(SyncServiceId.SYNCDEK to "SyncDek — built in, nothing to connect")
         if (integrations?.trakt?.connected == true) add(SyncServiceId.TRAKT to "Trakt")
         if (integrations?.simkl?.connected == true) add(SyncServiceId.SIMKL to "Simkl")
         if (integrations?.mdblist?.connected == true) add(SyncServiceId.MDBLIST to "MDBList")
@@ -1116,8 +1119,8 @@ fun SettingsScreen(
                 SettingsDestination.Connections -> {
                     val integrations = bootstrap?.integrations
                     SettingsDropdownRow(
-                        "Primary library service",
-                        "Choose which connected service supplies watchlist and continue watching",
+                        "Where your sync lives",
+                        "One source supplies Continue Watching and your watchlist. Everything else you connect still receives your watchlist changes.",
                         SyncServiceId.normalize(homePrefs?.primarySyncService),
                         trackingOptions,
                     ) { value ->
@@ -1126,7 +1129,8 @@ fun SettingsScreen(
                         }
                     }
                     SettingsPanel("Cloud tracking") {
-                        InfoLine("Primary", SyncServiceId.label(SyncServiceId.normalize(homePrefs?.primarySyncService)))
+                        InfoLine("In use", SyncServiceId.label(SyncServiceId.normalize(homePrefs?.primarySyncService)))
+                        InfoLine("SyncDek", "Always on — keeps your place and watchlist across your devices")
                         InfoLine("Trakt", serviceStatus(integrations?.trakt?.connected == true, integrations?.trakt?.username))
                         InfoLine("Simkl", serviceStatus(integrations?.simkl?.connected == true, integrations?.simkl?.username))
                         InfoLine("PunchPlay", serviceStatus(integrations?.punchplay?.connected == true, integrations?.punchplay?.username))

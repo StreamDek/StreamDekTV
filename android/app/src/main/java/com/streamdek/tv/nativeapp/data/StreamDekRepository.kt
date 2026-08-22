@@ -1795,6 +1795,8 @@ class StreamDekRepository(
                 rating = null,
                 year = null,
                 titleLogo = null,
+                cardSubtitle = newEpisodeCardSubtitle(episode, airDate),
+                cardHighlight = true,
             )
         }.sortedByDescending { (airDate, _) -> airDate }.map { (_, item) -> item }
 
@@ -1813,6 +1815,28 @@ class StreamDekRepository(
             mapOf("ids" to tmdbIds),
         )
         return response?.series.orEmpty()
+    }
+
+    /**
+     * The line on a New Episodes card.
+     *
+     * Three things in the width of a poster: that this is new, which episode it is, and when it
+     * landed. "NEW" leads because that is the reason the row exists -- without it the card reads
+     * as just another entry in a catalogue. Word for word what the phone shows.
+     */
+    private fun newEpisodeCardSubtitle(episode: AiringEpisode, airDate: java.time.LocalDate): String {
+        val code = when {
+            episode.season != null && episode.episode != null -> "S${episode.season} E${episode.episode}"
+            episode.episode != null -> "Ep ${episode.episode}"
+            else -> null
+        }
+        val today = java.time.LocalDate.now()
+        val whenLabel = when (airDate) {
+            today -> "Today"
+            today.minusDays(1) -> "Yesterday"
+            else -> airDate.format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
+        }
+        return listOfNotNull("NEW", code, whenLabel).joinToString(" · ")
     }
 
     private fun newEpisodeSubtitle(episode: AiringEpisode): String {
@@ -1840,6 +1864,13 @@ class StreamDekRepository(
         positionSec = item.positionSec ?: item.resumeAt,
         durationSec = item.durationSec,
         episode = item.episode,
+        // Which episode you are part-way through, said the same way the phone says it. The card
+        // otherwise leant on the episode title, which many series do not carry.
+        cardSubtitle = item.episode?.let { ep ->
+            val season = ep.seasonNumber
+            val number = ep.episodeNumber
+            if (season != null && number != null) "S$season E$number" else null
+        },
     )
 
     /**
@@ -2093,7 +2124,14 @@ class StreamDekRepository(
         // /sync/library follows the profile's tracking service, so its watchlist is normally the
         // right one already. The direct read stays as a safety net for a TV running ahead of a
         // backend that still answers with Trakt's list only.
-        val watchlist = if (library.watchlist.isNotEmpty() || primarySyncService() == SyncServiceId.TRAKT) {
+        // SyncDek is served by /sync/library itself, so an empty answer there is a genuinely
+        // empty watchlist. Falling through would show a connected provider list instead, which
+        // reads as the setting having been ignored.
+        val watchlist = if (
+            library.watchlist.isNotEmpty() ||
+            primarySyncService() == SyncServiceId.TRAKT ||
+            primarySyncService() == SyncServiceId.SYNCDEK
+        ) {
             library.watchlist
         } else {
             fetchServiceWatchlist() ?: library.watchlist
@@ -2386,12 +2424,15 @@ class StreamDekRepository(
         // Match mobile: a watchlist edit fans out to every connected tracking provider. The
         // selected primary service still owns what Library reads; fan-out keeps Trakt, SIMKL and
         // MDBList in agreement when the viewer changes that selection on another device.
-        val services = syncServiceChain { it.watchlistWrite }
-            .ifEmpty { listOf(primarySyncService()) }
+        // StreamDek's own list is written every time, whatever the profile tracks with, so that
+        // choosing SyncDek later reveals a watchlist that is already there. It leads the chain
+        // because it is the one write that cannot fail for want of a linked account.
+        val services = listOf(SyncServiceId.SYNCDEK) + syncServiceChain { it.watchlistWrite }
         val sourceService = services.first()
         var sourceUpdated = false
         for (service in services) {
-            val response = api.post<Map<String, Any>>("/$service/sync/watchlist/$action", payload)
+            val path = if (service == SyncServiceId.SYNCDEK) "/sync/watchlist/$action" else "/$service/sync/watchlist/$action"
+            val response = api.post<Map<String, Any>>(path, payload)
             if (response != null) {
                 if (service == sourceService) sourceUpdated = true
             } else {
