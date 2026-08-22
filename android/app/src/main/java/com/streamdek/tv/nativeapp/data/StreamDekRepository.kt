@@ -2488,8 +2488,66 @@ class StreamDekRepository(
         }.getOrDefault(false)
     }
 
+    /**
+     * Records a title as finished on the account.
+     *
+     * Written rather than deleted. "Mark as watched" used to clear the progress rows, and a
+     * deletion cannot travel through a list of records, so the phone learnt nothing about it -- a
+     * finished row goes down the same path that watching something to the end already uses.
+     *
+     * A whole series carries no episode key, so its in-progress episodes are dropped first;
+     * otherwise the marker and the half-watched episode it is meant to retire would both come
+     * back in the same sync.
+     */
+    private suspend fun markProgressWatched(item: MediaItem): Boolean {
+        val episode = item.episode
+        return runCatching {
+            if (item.type == "tv" && episode == null) {
+                api.delete<Any>("/sync/progress/tv/${item.id}")
+            }
+            api.request<Any>(
+                method = "PUT",
+                path = "/sync/progress",
+                body = com.google.gson.Gson().toJson(
+                    mapOf(
+                        "entityType" to item.type,
+                        "entityId" to item.id,
+                        "episodeKey" to buildEpisodeKey(episode),
+                        "positionSec" to 0,
+                        "durationSec" to 0,
+                        // Said outright: there is no position to work it out from.
+                        "completed" to true,
+                        "updatedAt" to Instant.now().toString(),
+                        "metadata" to mapOf(
+                            "title" to item.title,
+                            "posterUrl" to item.poster,
+                            "backdropUrl" to item.backdrop,
+                            "year" to item.year,
+                            "seasonNumber" to episode?.seasonNumber,
+                            "episodeNumber" to episode?.episodeNumber,
+                            "episodeTitle" to episode?.title,
+                        ),
+                    ),
+                ),
+            )
+            invalidatePlaybackDerivedCaches()
+            true
+        }.onFailure {
+            TvDebugLogger.w("Playback", "markProgressWatched failed mediaType=${item.type} mediaId=${item.id}")
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Marks a browse item watched.
+     *
+     * The account write is what decides the outcome. Trakt is attempted alongside it and its
+     * result is not the answer: this used to return whatever Trakt said, so on a profile with no
+     * tracking service connected the press reported failure and genuinely did nothing -- it did
+     * not even clear the progress, because that was gated on the same result.
+     */
     suspend fun markBrowseItemWatched(item: MediaItem): Boolean {
-        return if (item.type == "tv" && item.episode == null) {
+        val recorded = markProgressWatched(item)
+        if (item.type == "tv" && item.episode == null) {
             markSeriesWatched(
                 mediaId = item.id,
                 title = item.title,
@@ -2503,11 +2561,8 @@ class StreamDekRepository(
                 year = item.year,
                 episode = item.episode,
             )
-        }.also { ok ->
-            if (ok) {
-                clearBrowseItemProgress(item)
-            }
         }
+        return recorded
     }
 
     suspend fun markSeasonWatched(
@@ -2570,20 +2625,6 @@ class StreamDekRepository(
             invalidatePlaybackDerivedCaches()
         }.onFailure {
             TvDebugLogger.w("Playback", "clearProgress failed mediaType=$mediaType mediaId=$mediaId")
-        }
-    }
-
-    suspend fun clearBrowseItemProgress(item: MediaItem) {
-        if (item.type == "tv" && item.episode == null) {
-            runCatching {
-                val library = fetchLibrary(forceRefresh = true)
-                library.continueWatching
-                    .filter { it.type == "tv" && it.id == item.id && it.episode != null }
-                    .forEach { clearProgress("tv", item.id, it.episode) }
-                clearProgress("tv", item.id, null)
-            }
-        } else {
-            clearProgress(item.type, item.id, item.episode)
         }
     }
 
