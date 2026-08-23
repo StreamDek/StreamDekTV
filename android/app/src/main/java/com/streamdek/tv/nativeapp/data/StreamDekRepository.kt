@@ -29,6 +29,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.util.LinkedHashMap
 import java.util.Locale
 import java.net.URLEncoder
@@ -41,6 +43,17 @@ private val LIVE_ADDON_CATALOG_TYPES = setOf(
 )
 
 /** How often a running television asks whether the plugin document moved somewhere else. */
+/**
+ * What a subtitle download presents itself as.
+ *
+ * The same reasoning as the plugin sandbox's: a request that does not look like a browser is
+ * refused outright by some of the hosts these add-ons point at, and a refusal arrives as a
+ * subtitle that simply never appears.
+ */
+private const val SUBTITLE_USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/131.0.0.0 Safari/537.36"
+
 private const val PLUGIN_WATCH_INTERVAL_MS = 15_000L
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
@@ -3524,7 +3537,10 @@ class StreamDekRepository(
                             .header("User-Agent", "Stremio/4.4.168")
                             .build()
                         api.client.newCall(httpRequest).execute().use { response ->
-                            if (!response.isSuccessful) return@use emptyList()
+                            if (!response.isSuccessful) {
+                                TvDebugLogger.w("Subtitles", "${source.name} answered HTTP ${response.code}")
+                                return@use emptyList()
+                            }
                             val payload = api.gson.fromJson(response.body?.charStream(), StremioSubtitlesResponse::class.java)
                                 ?: return@use emptyList()
                             payload.subtitles.mapNotNull { subtitle ->
@@ -3540,6 +3556,11 @@ class StreamDekRepository(
                                     label = listOf(Languages.label(language), subtitle.release, source.name.ifBlank { "Subtitle addon" })
                                         .filter { it.isNotBlank() }.joinToString(" - "),
                                     url = subtitle.url,
+                                )
+                            }.also { parsed ->
+                                TvDebugLogger.i(
+                                    "Subtitles",
+                                    "${source.name} returned ${payload.subtitles.size} entries, ${parsed.size} usable",
                                 )
                             }
                         }
@@ -3561,26 +3582,77 @@ class StreamDekRepository(
         }
     }
 
+    /**
+     * What this subtitle actually is, read from the file rather than from its address or headers.
+     *
+     * These URLs carry no extension -- ".../file/1962235234" -- and the content type is whatever
+     * the host felt like sending, so a WebVTT or ASS file served as text/plain was saved as .srt
+     * and parsed to nothing. Nothing is exactly what the viewer then sees: no error, no subtitles.
+     */
+    private fun subtitleExtensionFor(text: String): String {
+        val head = text.take(4_096)
+        return when {
+            head.trimStart().startsWith("WEBVTT") -> "vtt"
+            head.contains("[Events]", ignoreCase = true) && head.contains("Dialogue:", ignoreCase = true) -> "ass"
+            head.contains("[Script Info]", ignoreCase = true) -> "ass"
+            Regex("""<tt[\s>]""", RegexOption.IGNORE_CASE).containsMatchIn(head) -> "ttml"
+            else -> "srt"
+        }
+    }
+
+    /**
+     * Text out of whatever the source encoded it in.
+     *
+     * OpenSubtitles alone serves both UTF-8 and CP1252 for the same title, and a CP1252 file read
+     * as UTF-8 loses every accented character. Strict decoding tells them apart -- real UTF-8
+     * either decodes or throws -- and everything is rewritten as UTF-8 so the players see one
+     * encoding.
+     */
+    private fun decodeSubtitleBytes(bytes: ByteArray): String {
+        val body = if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
+            bytes.copyOfRange(3, bytes.size)
+        } else {
+            bytes
+        }
+        return runCatching {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(body))
+                .toString()
+        }.getOrElse { String(body, Charsets.ISO_8859_1) }
+    }
+
     suspend fun downloadSubtitleToCache(url: String, cacheDir: File): String? = withContext(Dispatchers.IO) {
         runCatching {
-            val request = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0 StreamDekTV").build()
-            api.client.newCall(request).execute().use { response ->
-                check(response.isSuccessful) { "Subtitle download failed: ${response.code}" }
-                val extensionFromUrl = response.request.url.encodedPath.substringAfterLast('.', "").lowercase(Locale.US)
-                    .takeIf { it in setOf("srt", "vtt", "ass", "ssa", "ttml", "xml") }
-                val extension = extensionFromUrl ?: when {
-                    response.body?.contentType()?.subtype?.contains("vtt", ignoreCase = true) == true -> "vtt"
-                    response.body?.contentType()?.subtype?.contains("ttml", ignoreCase = true) == true -> "ttml"
-                    else -> "srt"
+            // Presented as a browser: several of these hosts answer anything else with a refusal
+            // rather than a file, and a refusal arrives as a subtitle that never appears.
+            val request = okhttp3.Request.Builder()
+                .url(url)
+                .header("User-Agent", SUBTITLE_USER_AGENT)
+                .header("Accept", "*/*")
+                .apply {
+                    runCatching { java.net.URI(url) }.getOrNull()
+                        ?.let { uri -> uri.scheme?.let { scheme -> uri.host?.let { host -> "$scheme://$host/" } } }
+                        ?.let { header("Referer", it) }
                 }
-                val directory = File(cacheDir, "subtitles").apply { mkdirs() }
-                val target = File(directory, "${url.hashCode().toUInt()}.$extension")
-                if (target.exists() && target.length() > 0L) return@use target.absolutePath
-                response.body?.byteStream()?.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
-                    ?: error("Empty subtitle response")
-                check(target.length() > 0L) { "Empty subtitle response" }
-                target.absolutePath
+                .build()
+            val directory = File(cacheDir, "subtitles").apply { mkdirs() }
+            val stem = "${url.hashCode().toUInt()}"
+            // Whatever extension was written for this URL before; the content decided it then.
+            directory.listFiles { file -> file.name.startsWith("$stem.") }
+                ?.firstOrNull { it.length() > 0L }
+                ?.let { return@runCatching it.absolutePath }
+            val bytes = api.client.newCall(request).execute().use { response ->
+                check(response.isSuccessful) { "Subtitle download failed: ${response.code}" }
+                response.body?.bytes() ?: error("Empty subtitle response")
             }
+            val text = decodeSubtitleBytes(bytes)
+            check(text.isNotBlank()) { "Empty subtitle response" }
+            val target = File(directory, "$stem.${subtitleExtensionFor(text)}")
+            target.writeText(text, Charsets.UTF_8)
+            TvDebugLogger.i("Subtitles", "cached ${target.name} (${bytes.size} bytes)")
+            target.absolutePath
         }.onFailure { TvDebugLogger.w("Subtitles", "download failed: ${it.message}") }.getOrNull()
     }
 

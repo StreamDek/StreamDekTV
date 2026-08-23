@@ -106,6 +106,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** How many copies of the same language to try before telling the viewer none of them loaded. */
+private const val SUBTITLE_ATTEMPT_LIMIT = 4
+
 private const val ControlsHideDelayMs = 3000L
 private const val LiveControlsHideDelayMs = 2000L
 private const val LiveChannelInfoHideDelayMs = 5000L
@@ -2522,9 +2525,26 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     showControls(focusPlay = !isLive)
                                     return@launch
                                 }
-                                val localPath = repository.downloadSubtitleToCache(subtitle.url, context.cacheDir)
+                                // These files sit on hosts that expire links and refuse requests,
+                                // so one failing is ordinary rather than exceptional. The next copy
+                                // in the same language is tried before the viewer is told anything,
+                                // exactly as a failed stream falls through to the next source.
+                                val candidates = listOf(subtitle) + externalSubtitles.filter {
+                                    it.id != subtitle.id && Languages.matches(it.language, subtitle.language)
+                                }
+                                var localPath: String? = null
+                                for (candidate in candidates.take(SUBTITLE_ATTEMPT_LIMIT)) {
+                                    if (currentSourceUrl != source || selectedExternalSubtitleId != subtitle.id) return@launch
+                                    localPath = repository.downloadSubtitleToCache(candidate.url, context.cacheDir)
+                                    if (localPath != null) {
+                                        if (candidate.id != subtitle.id) {
+                                            TvDebugLogger.i("Subtitles", "fell through to ${candidate.label}")
+                                        }
+                                        break
+                                    }
+                                }
                                 if (localPath == null) {
-                                    error = "Could not download this subtitle."
+                                    error = "That subtitle could not be downloaded, and neither could the others in that language."
                                     selectedExternalSubtitleId = null
                                     return@launch
                                 }
