@@ -88,6 +88,7 @@ import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
+import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
@@ -105,6 +106,7 @@ import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.detail.streamQualityLabel
 import com.streamdek.tv.nativeapp.ui.detail.streamSizeLabel
+import com.streamdek.tv.nativeapp.ui.detail.streamTextFingerprint
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -890,9 +892,10 @@ internal fun PlayerOptionPanel(
                 }
                 OverlayPanel.Audio -> {
                     itemsIndexed(audioTracks) { index, track ->
+                        val language = trackLanguageName(track.language)
                         OptionButton(
-                            label = track.title ?: track.language ?: "Track ${track.id}",
-                            subtitle = listOfNotNull(track.language, track.codec).joinToString(" • ").ifBlank { null },
+                            label = track.title ?: language ?: "Track ${track.id}",
+                            subtitle = listOfNotNull(language, track.codec).joinToString(" • ").ifBlank { null },
                             active = selectedAudioId == track.id,
                             activeBadge = if (selectedAudioId == track.id) "Selected" else null,
                             requestFocus = if (index == 0) firstItemRequester else null,
@@ -914,9 +917,10 @@ internal fun PlayerOptionPanel(
                         )
                     }
                     itemsIndexed(subtitleTracks) { index, track ->
+                        val language = trackLanguageName(track.language)
                         OptionButton(
-                            label = track.title ?: track.language ?: "Subtitle ${track.id}",
-                            subtitle = listOfNotNull(track.language, track.codec).joinToString(" • ").ifBlank { null },
+                            label = track.title ?: language ?: "Subtitle ${track.id}",
+                            subtitle = listOfNotNull(language, track.codec).joinToString(" • ").ifBlank { null },
                             active = selectedExternalSubtitleId == null && selectedSubtitleId == track.id,
                             activeBadge = if (selectedExternalSubtitleId == null && selectedSubtitleId == track.id) "Selected" else null,
                             requestFocus = if (index == 0 && subtitleTracks.isEmpty()) firstItemRequester else null,
@@ -938,7 +942,8 @@ internal fun PlayerOptionPanel(
                     itemsIndexed(externalSubtitles) { _, subtitle ->
                         OptionButton(
                             label = subtitle.label,
-                            subtitle = "Add-on subtitle - ${subtitle.language.uppercase()}",
+                            // The label already leads with the language, spelled out.
+                            subtitle = "Add-on subtitle",
                             active = selectedExternalSubtitleId == subtitle.id,
                             activeBadge = if (selectedExternalSubtitleId == subtitle.id) "Selected" else null,
                             onInteract = onInteract,
@@ -1305,6 +1310,21 @@ internal fun NextEpisodeDialog(
     }
 }
 
+/**
+ * A track's language spelled out, rather than the tag the container happened to carry.
+ *
+ * Containers say "eng", "fre", "pt-BR" and occasionally "English"; none of those is what a viewer
+ * is looking for when they open this list to find their own language. [Languages] already knows
+ * every spelling, so the tag is resolved through it and the full name shown instead. A tag it does
+ * not recognise is left as it was written — a track labelled with something private to one encoder
+ * is still better identified by that than by "Unknown".
+ */
+private fun trackLanguageName(raw: String?): String? {
+    val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val normalized = Languages.normalize(value)
+    return if (normalized.isEmpty()) value.uppercase() else Languages.label(normalized)
+}
+
 @Composable
 private fun OptionButton(
     label: String,
@@ -1488,15 +1508,19 @@ private fun StreamOptionButton(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            stream.description?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.5f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            // Second line only when it has something the first did not say. Several sources fill
+            // every text field with the same string, and this row printed it twice.
+            stream.description
+                ?.takeIf { it.isNotBlank() && streamTextFingerprint(it) != streamTextFingerprint(releaseLabel) }
+                ?.let {
+                    Text(
+                        text = it,
+                        style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.5f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 quality?.let { QualityPill(it) }
                 size?.let { QualityPill(it) }

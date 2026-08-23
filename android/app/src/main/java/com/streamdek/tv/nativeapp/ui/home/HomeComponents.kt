@@ -320,6 +320,8 @@ internal fun HomeShelf(
     rowState: LazyListState,
     compact: Boolean,
     portraitCards: Boolean,
+    /** Drop the title overlay from poster cards. See AppPreferences.hideHomeCardTitles. */
+    hideCardTitles: Boolean = false,
     firstCardRequester: FocusRequester?,
     focusItemKey: String?,
     onFocusItemHandled: () -> Unit,
@@ -425,14 +427,20 @@ internal fun HomeShelf(
                         onPressed = { onItemPressed(item) },
                     )
                 } else {
+                    val variant = when {
+                        item.type == "live" -> TvMediaCardVariant.Live
+                        row.id == "continue-watching" -> TvMediaCardVariant.ContinueWatching
+                        portraitCards -> TvMediaCardVariant.Poster
+                        else -> TvMediaCardVariant.Landscape
+                    }
                     PremiumMediaCard(
                         item = item,
-                        variant = when {
-                            item.type == "live" -> TvMediaCardVariant.Live
-                            row.id == "continue-watching" -> TvMediaCardVariant.ContinueWatching
-                            portraitCards -> TvMediaCardVariant.Poster
-                            else -> TvMediaCardVariant.Landscape
-                        },
+                        variant = variant,
+                        // Plain posters only. A live card is identified by its channel name and a
+                        // Continue Watching card carries the episode and the progress bar in the
+                        // same block -- dropping it there would take those with it, which is not
+                        // what "the poster already says the title" means.
+                        metaOnTop = hideCardTitles && variant == TvMediaCardVariant.Poster,
                         modifier = Modifier
                             .focusRequester(effective)
                             .width(size)

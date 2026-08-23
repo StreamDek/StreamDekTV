@@ -987,6 +987,7 @@ class StreamDekRepository(
                     "largeText" to (partial["largeText"] ?: existing.largeText),
                     "reducedMotion" to (partial["reducedMotion"] ?: existing.reducedMotion),
                     "hideHomeSynopsis" to (partial["hideHomeSynopsis"] ?: existing.hideHomeSynopsis),
+                    "hideHomeCardTitles" to (partial["hideHomeCardTitles"] ?: existing.hideHomeCardTitles),
                     "transparentNavigation" to (partial["transparentNavigation"] ?: existing.transparentNavigation),
                 ),
             ),
@@ -3463,9 +3464,10 @@ class StreamDekRepository(
 
 
     /**
-     * Mobile and the web portal keep this alongside the other stream-picker settings, while older
-     * TV builds wrote it with playback. Both are read so the viewer's choice is honoured whichever
-     * client last saved it.
+     * The stream-picker copy is the one every client now writes -- mobile, the web portal, and this
+     * app's own settings screen -- so it is the one read here. PlaybackPreferences carries a field
+     * of the same name that older TV builds wrote; it is left alone rather than folded in, because
+     * with no timestamp on either there is no way to tell a stale "off" from a current one.
      */
     private fun rememberLastSourceEnabled(): Boolean {
         val preferences = bootstrapState.value?.preferences ?: return true
@@ -3531,7 +3533,11 @@ class StreamDekRepository(
                                 ExternalSubtitleTrack(
                                     id = "${source.id}:${subtitle.id}",
                                     language = language,
-                                    label = listOf(language.uppercase(Locale.US), subtitle.release, source.name.ifBlank { "Subtitle addon" })
+                                    // Named, not coded. "FR - <release> - OpenSubtitles" asks a
+                                    // viewer to know that FR is French before they can pick their
+                                    // own language out of eighty rows; the add-on's two-letter tag
+                                    // is what this list is sorted by, not what it is read by.
+                                    label = listOf(Languages.label(language), subtitle.release, source.name.ifBlank { "Subtitle addon" })
                                         .filter { it.isNotBlank() }.joinToString(" - "),
                                     url = subtitle.url,
                                 )

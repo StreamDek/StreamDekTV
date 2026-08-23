@@ -1401,7 +1401,10 @@ private fun AppUpdatePrompt(
                         onClick = {},
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 140.dp, max = 180.dp)
+                            // Taller than the single paragraph this used to hold: rendered notes
+                            // carry headings and one line per bullet, and 180dp of a television
+                            // showed about three of them before the viewer had to scroll.
+                            .heightIn(min = 160.dp, max = 260.dp)
                             .focusRequester(notesRequester)
                             .focusProperties {
                                 down = installRequester
@@ -1470,10 +1473,14 @@ private fun AppUpdatePrompt(
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
                                     color = MaterialTheme.colorScheme.onBackground,
                                 )
-                                Text(
-                                    text = notes,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+                                // Authored as Markdown, so shown as Markdown -- see MarkdownText.
+                                // Handed to a plain Text the notes arrived as their own
+                                // punctuation: "## What's New" hashes and all, every bullet a
+                                // hyphen, and no gap between one section and the next.
+                                MarkdownText(
+                                    markdown = notes,
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                    bodyAlpha = 0.8f,
                                 )
                             }
 

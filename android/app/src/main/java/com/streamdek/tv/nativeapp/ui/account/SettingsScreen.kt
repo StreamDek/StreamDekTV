@@ -139,7 +139,7 @@ private enum class SettingsDestination(val label: String, val description: Strin
     Playback("Playback", "Player, audio, subtitles and compatibility", "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
     SkipAndAutoplay("Skip & Autoplay", "Intros, recaps and the next episode", "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
     Streams("Streams & Quality", "Preferred quality, limits and result labels", "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
-    Library("Home & Layout", "Rows, cards and browsing layout", "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page", Icons.Outlined.VideoLibrary),
+    Library("Home & Layout", "Rows, cards and browsing layout", "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page card titles hide titles overlay label", Icons.Outlined.VideoLibrary),
     LiveTv("Live TV", "Channel lists, cards and the live player", "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
     Appearance("Appearance", "Theme, motion and presentation", "accent colour theme animation blur transparent navigation", Icons.Outlined.Palette),
     Accessibility("Accessibility", "Contrast, text and reduced motion", "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
@@ -486,6 +486,14 @@ fun SettingsScreen(
                     }
                     SettingsDropdownRow("Home row cards", "Use landscape or portrait artwork on the Home screen", appPrefs?.homeRowCardStyle ?: "landscape", listOf("landscape" to "Landscape", "portrait" to "Portrait")) { value ->
                         savePreference("Home row cards") { repository.updateAppPreferences(mapOf("homeRowCardStyle" to value)) }
+                    }
+                    // Directly under the style it belongs to, and only when that style is portrait.
+                    // A landscape still is often unidentifiable without its title, so the setting
+                    // does nothing there -- and a switch that does nothing is worse than no switch.
+                    if ((appPrefs?.homeRowCardStyle ?: "landscape") == "portrait") {
+                        SettingsToggleRow("Hide card titles", "Most posters already carry the title, so drop the overlay and leave the year and rating", appPrefs?.hideHomeCardTitles == true, selectedRequester) { next, complete ->
+                            savePreference("Hide card titles", complete) { repository.updateAppPreferences(mapOf("hideHomeCardTitles" to next)) }
+                        }
                     }
                     SettingsDropdownRow("Card density", "Comfortable or compact browsing", appPrefs?.cardDensity ?: "comfortable", listOf("comfortable" to "Comfortable", "compact" to "Compact")) { value ->
                         savePreference("Card density") { repository.updateAppPreferences(mapOf("cardDensity" to value)) }

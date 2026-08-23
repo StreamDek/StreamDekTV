@@ -391,6 +391,16 @@ data class AppPreferences(
      */
     val hideHomeSynopsis: Boolean = true,
     /**
+     * Drops the title block from Home cards, leaving year and rating along the top.
+     *
+     * Only read when the Home rows are portrait, which is why the setting is only offered there: a
+     * poster carries its own title in the artwork, so the overlay repeats in worse type what the
+     * picture already says and covers the bottom third of it doing so. Landscape stills carry no
+     * such lettering and are frequently unidentifiable without the line, so they keep it whatever
+     * this says. Off by default -- the title block is what the screen has always shown.
+     */
+    val hideHomeCardTitles: Boolean = false,
+    /**
      * Lets the backdrop show through the navigation rail. Capped at 15% by design: the rail carries
      * the only persistent sense of where you are in the app, and past that it stops reading as a
      * surface at all over bright artwork.

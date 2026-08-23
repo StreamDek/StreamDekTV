@@ -128,6 +128,10 @@ fun HomeScreen(
     // Default-on, so it also holds before preferences have loaded: starting hidden and staying
     // hidden beats showing a paragraph that vanishes a moment later.
     val hideHomeSynopsis = appPrefs?.hideHomeSynopsis != false
+    // Portrait only, whatever the stored value says. The preference syncs, and another client --
+    // or this one before the rows were switched back to landscape -- can leave it on for a layout
+    // where the title is the only thing identifying the card.
+    val hideCardTitles = portraitCards && appPrefs?.hideHomeCardTitles == true
 
     val shelfListState = rememberLazyListState()
     val rowStates = remember { mutableMapOf<String, LazyListState>() }
@@ -444,6 +448,7 @@ fun HomeScreen(
                                 rowState = rowState,
                                 compact = activeRowId != null && activeRowId != row.id,
                                 portraitCards = portraitCards,
+                                hideCardTitles = hideCardTitles,
                                 firstCardRequester = if (rowIndex == 0) firstCardRequester else null,
                                 focusItemKey = pendingRestoreKey?.takeIf { it.startsWith("${row.id}:") },
                                 onFocusItemHandled = { pendingRestoreKey = null },

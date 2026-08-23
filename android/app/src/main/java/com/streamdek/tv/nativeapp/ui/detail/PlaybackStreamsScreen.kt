@@ -255,11 +255,24 @@ internal fun buildStreamListEntries(
     }
 }
 
-/** Verbatim add-on fields used when StreamDek result formatting is disabled. */
+/** Whitespace and case removed, so two spellings of the same sentence compare equal. */
+internal fun streamTextFingerprint(value: String): String =
+    value.replace(Regex("""\s+"""), " ").trim().lowercase(Locale.US)
+
+/**
+ * Verbatim add-on fields used when StreamDek result formatting is disabled.
+ *
+ * The second line is the add-on's detail block -- unless it is the first line over again. Plenty
+ * of sources fill `name` and `title` with the same string, and every one of their results rendered
+ * as two identical lines because of it. Printing a line twice is not the add-on's text being
+ * respected, it is a row that wastes half its height saying nothing new, so a detail that matches
+ * the label is skipped and the next field that has something else to say is used instead.
+ */
 internal fun rawAddonStreamText(stream: AddonStream): Pair<String?, String?> {
     val label = stream.name?.takeIf { it.isNotBlank() }
-    val detail = stream.title?.takeIf { it.isNotBlank() }
-        ?: stream.description?.takeIf { it.isNotBlank() }
+    val labelPrint = label?.let(::streamTextFingerprint)
+    val detail = listOfNotNull(stream.title, stream.description)
+        .firstOrNull { it.isNotBlank() && streamTextFingerprint(it) != labelPrint }
     return if (label == null && detail == null) {
         (stream.filename?.takeIf { it.isNotBlank() } ?: "Stream source") to null
     } else {
@@ -457,12 +470,17 @@ fun PlaybackStreamsScreen(
     }
 
     // Decided across the whole list so the columns line up and empty ones disappear entirely.
-    val anyQuality = remember(filteredStreams, streamsPrefs.streamDekFormattingEnabled) {
-        streamsPrefs.streamDekFormattingEnabled &&
-            filteredStreams.any { streamQualityLabel(it, repository.describeStreamOption(it)) != null }
+    //
+    // In both modes now. These columns are read out of what the add-on already sent -- the same
+    // fields the player's loading screen prints beside the release name -- so a result that showed
+    // "FebBox - 4K" here and "FebBox - 4K | 4K | 5.01 GB" a second later on the loading screen was
+    // hiding a size it had all along. Verbatim mode's promise is that the add-on's own text is
+    // never rewritten, and an aligned column beside that text does not touch a word of it.
+    val anyQuality = remember(filteredStreams) {
+        filteredStreams.any { streamQualityLabel(it, repository.describeStreamOption(it)) != null }
     }
-    val anySize = remember(filteredStreams, streamsPrefs.showSizeBadges, streamsPrefs.streamDekFormattingEnabled) {
-        streamsPrefs.streamDekFormattingEnabled && streamsPrefs.showSizeBadges &&
+    val anySize = remember(filteredStreams, streamsPrefs.showSizeBadges) {
+        streamsPrefs.showSizeBadges &&
             filteredStreams.any { streamSizeLabel(it, repository.describeStreamOption(it)) != null }
     }
 
@@ -998,13 +1016,11 @@ private fun StreamRow(
                 }
 
                 // Fixed-width columns so these line up down the list.
-                if (formatted) {
-                    if (showQuality) StreamFact(streamQualityLabel(stream, label) ?: "—", 92.dp)
-                    if (showSize) StreamFact(streamSizeLabel(stream, label) ?: "—", 92.dp)
-                    // Cached rows say so in the tag above; the column keeps the cases the tag
-                    // has nothing to say about, so how a stream arrives is still one glance.
-                    if (readyLabel == null) StreamFact(availability.first, 88.dp)
-                }
+                if (showQuality) StreamFact(streamQualityLabel(stream, label) ?: "—", 92.dp)
+                if (showSize) StreamFact(streamSizeLabel(stream, label) ?: "—", 92.dp)
+                // Cached rows say so in the tag above; the column keeps the cases the tag has
+                // nothing to say about, so how a stream arrives is still one glance.
+                if (readyLabel == null) StreamFact(availability.first, 88.dp)
             }
             if (fusionBadges.isNotEmpty()) {
                 FusionBadgeRow(badges = fusionBadges)

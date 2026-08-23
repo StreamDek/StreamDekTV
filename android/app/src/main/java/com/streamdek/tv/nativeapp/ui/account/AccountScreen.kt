@@ -74,6 +74,7 @@ import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.countEnabledFilters
 import com.streamdek.tv.nativeapp.data.countGroupsWithFilters
 import com.streamdek.tv.nativeapp.data.groupSourceFilters
+import com.streamdek.tv.nativeapp.ui.MarkdownText
 import com.streamdek.tv.nativeapp.ui.TvChromeSurface
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
@@ -541,10 +542,10 @@ fun AccountScreen(
                                     )
                                 }
                                 release.releaseNotes?.takeIf { it.isNotBlank() }?.let { notes ->
-                                    Text(
-                                        text = notes,
-                                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
-                                        style = MaterialTheme.typography.bodySmall,
+                                    MarkdownText(
+                                        markdown = notes,
+                                        color = MaterialTheme.colorScheme.onBackground,
+                                        bodyAlpha = 0.72f,
                                     )
                                 }
                             }
