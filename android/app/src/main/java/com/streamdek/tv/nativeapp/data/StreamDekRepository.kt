@@ -1813,6 +1813,18 @@ class StreamDekRepository(
                 rating = null,
                 year = null,
                 titleLogo = null,
+                episode = if (episode.season != null && episode.episode != null) {
+                    EpisodeContext(
+                        seasonNumber = episode.season,
+                        episodeNumber = episode.episode,
+                        title = episode.name,
+                        still = episode.still,
+                        airDate = episode.airDate,
+                        tmdbEpisodeId = episode.id,
+                    )
+                } else {
+                    null
+                },
                 cardSubtitle = newEpisodeCardSubtitle(episode, airDate),
                 cardHighlight = true,
             )
@@ -2715,16 +2727,11 @@ class StreamDekRepository(
 
     /** One lightweight SyncDek read used while a series detail page is visible on another device. */
     suspend fun fetchSyncedEpisodeWatchState(mediaId: String): SyncedEpisodeWatchState {
-        val encodedId = URLEncoder.encode(mediaId, "UTF-8")
-        val records = api.get<PlaybackProgressListResponse>(
-            "/sync/progress?entityType=tv&entityId=$encodedId&limit=250",
-        )?.results.orEmpty()
+        val records = fetchSeriesProgressRecords(mediaId)
         val completed = linkedSetOf<String>()
         val unwatched = linkedSetOf<String>()
         records.forEach { record ->
-            val season = record.seasonNumber ?: return@forEach
-            val episode = record.episodeNumber ?: return@forEach
-            val key = "s$season:e$episode"
+            val key = record.compactEpisodeKey() ?: return@forEach
             when (record.status.lowercase()) {
                 "completed" -> completed += key
                 "unwatched" -> unwatched += key
@@ -2823,15 +2830,12 @@ class StreamDekRepository(
 
     suspend fun fetchSeriesResumeState(detail: MediaDetail): SeriesResumeState = supervisorScope {
         val progressDeferred = async {
-            api.get<PlaybackProgressListResponse>(
-                "/sync/progress?entityType=tv&entityId=${URLEncoder.encode(detail.id, "UTF-8")}&limit=100",
-            )?.results.orEmpty()
+            fetchSeriesProgressRecords(detail.id)
         }
         val watchedDeferred = async { fetchWatchedKeys(forceRefresh = true) }
         val providerPlaybackDeferred = async { runCatching { fetchServicePlayback() }.getOrDefault(emptyList()) }
         val syncDekEvents = progressDeferred.await().mapNotNull { record ->
-            val season = record.seasonNumber ?: return@mapNotNull null
-            val episode = record.episodeNumber ?: return@mapNotNull null
+            val (season, episode) = record.episodeNumbers() ?: return@mapNotNull null
             SeriesProgressEvent(
                 seasonNumber = season,
                 episodeNumber = episode,
@@ -2861,6 +2865,29 @@ class StreamDekRepository(
             key.takeIf { it.startsWith(prefix) }?.removePrefix(prefix)
         }.toSet()
         getSeriesResumeState(seriesEpisodeSlots(detail.seasons), syncDekEvents + providerEvents, providerWatched)
+    }
+
+    /**
+     * Returns every episode row for one series.
+     *
+     * Older backends interpret entityType + entityId as an exact lookup even without an
+     * episodeKey. Try the explicit list contract first, then omit entityType as a compatibility
+     * fallback and filter the resulting DTOs locally.
+     */
+    private suspend fun fetchSeriesProgressRecords(mediaId: String): List<PlaybackProgressRecord> {
+        val encodedId = URLEncoder.encode(mediaId, "UTF-8")
+        val scoped = api.get<PlaybackProgressListResponse>(
+            "/sync/progress?list=true&entityType=tv&entityId=$encodedId&limit=500",
+        )?.results.orEmpty()
+        val records = if (scoped.isNotEmpty()) scoped else {
+            api.get<PlaybackProgressListResponse>(
+                "/sync/progress?entityId=$encodedId&limit=500",
+            )?.results.orEmpty()
+        }
+        return records.filter { record ->
+            (record.entityType == null || record.entityType.equals("tv", ignoreCase = true)) &&
+                (record.entityId == null || record.entityId == mediaId)
+        }
     }
 
     suspend fun fetchContinueWatchingItem(

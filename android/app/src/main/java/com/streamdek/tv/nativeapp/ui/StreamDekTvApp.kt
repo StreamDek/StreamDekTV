@@ -349,12 +349,16 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         navController.navigate(detailRoute(mediaType, mediaId))
     }
 
-    fun returnHomeAfterProfileSelection() {
+    fun prepareHomeAfterProfileSelection() {
         lastHomeRowId = null
         lastHomeItemKey = null
         homeResetToTopToken += 1
         startScreenApplied = true
         pendingDestinationFocus = TopLevelDestination.Home.route
+    }
+
+    fun returnHomeAfterProfileSelection() {
+        prepareHomeAfterProfileSelection()
         navController.navigate(TopLevelDestination.Home.route) {
             popUpTo(TopLevelDestination.Home.route) { inclusive = false }
             launchSingleTop = true
@@ -366,7 +370,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         val next = activeProfile?.id
         val previous = observedProfileId
         observedProfileId = next
-        if (previous != null && next != null && previous != next) returnHomeAfterProfileSelection()
+        // The startup picker is composed instead of NavHost, so its controller has no graph yet.
+        // Once the picker leaves composition, Home is the graph's start destination already.
+        if (previous != null && next != null && previous != next && !showStartupProfilePicker) {
+            returnHomeAfterProfileSelection()
+        }
     }
 
     LaunchedEffect(currentRoute) {
@@ -550,9 +558,12 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         repository.refreshBootstrap()
                         val remainingTransitionMs = 520L - (System.currentTimeMillis() - transitionStartedAt)
                         if (remainingTransitionMs > 0L) delay(remainingTransitionMs)
+                        // Prepare Home before dismissing the startup destination. Do not navigate
+                        // here: NavHost is intentionally not composed behind this picker, and its
+                        // controller therefore has no graph until the next composition.
+                        prepareHomeAfterProfileSelection()
                         startupProfileHandled = true
                         startupProfileSwitching = false
-                        returnHomeAfterProfileSelection()
                     }
                 }
             },

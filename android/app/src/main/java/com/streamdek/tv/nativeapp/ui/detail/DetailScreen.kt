@@ -970,11 +970,7 @@ fun DetailScreen(
                                 entries = episodeEntries,
                                 rowFocusKey = "${d.id}:$anchorSeasonNumber",
                                 loadingNextSeason = loadingNextSeason,
-                                isEpisodeWatched = { entry ->
-                                    watchedEpisodeKeys.contains(
-                                        watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber),
-                                    )
-                                },
+                                watchedEpisodeKeys = watchedEpisodeKeys,
                                 seasonWatched = selectedSeasonWatched,
                                 watchedSeasonNumbers = watchedSeasons,
                                 markingSeason = markingSeasonWatched,

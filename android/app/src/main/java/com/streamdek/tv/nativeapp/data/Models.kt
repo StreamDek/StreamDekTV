@@ -1081,6 +1081,8 @@ data class PlaybackProgressRecord(
     val lastDevice: String? = null,
     val lastPlatform: String? = null,
     val status: String = "in-progress",
+    val entityType: String? = null,
+    val entityId: String? = null,
 )
 
 data class PlaybackProgressResponse(

@@ -538,7 +538,7 @@ internal fun EpisodesBand(
     /** Identity of the run of episodes. Focus memory resets when this changes, not on every append. */
     rowFocusKey: Any?,
     loadingNextSeason: Boolean,
-    isEpisodeWatched: (SeasonEpisodeEntry) -> Boolean,
+    watchedEpisodeKeys: Set<String>,
     seasonWatched: Boolean,
     watchedSeasonNumbers: Set<Int>,
     markingSeason: Boolean,
@@ -629,7 +629,7 @@ internal fun EpisodesBand(
                         stillHeight = stillHeight,
                         episode = entry.episode,
                         seasonNumber = entry.seasonNumber,
-                        watched = isEpisodeWatched(entry),
+                        watched = watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber) in watchedEpisodeKeys,
                         released = isEpisodeReleased(entry.episode.airDate),
                         showSeason = spansSeasons,
                         onFocused = { onEpisodeFocused(index, entry) },
