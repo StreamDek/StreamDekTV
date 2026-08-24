@@ -101,6 +101,7 @@ import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import com.streamdek.tv.nativeapp.ui.TvChromeSurface
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
 import com.streamdek.tv.nativeapp.ui.streamDekThemeAccent
+import com.streamdek.tv.nativeapp.ui.player.normalizeSubtitleDefaultSource
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -387,6 +388,14 @@ fun SettingsScreen(
                     }
                     SettingsToggleRow("Show only preferred language", "Hide embedded and add-on subtitles in other languages", playbackPrefs?.showOnlyPreferredSubtitleLanguages == true, selectedRequester) { next, complete ->
                         savePreference("Show only preferred language", complete) { repository.updatePlaybackPreferences(mapOf("showOnlyPreferredSubtitleLanguages" to next)) }
+                    }
+                    SettingsDropdownRow(
+                        "Preferred subtitle source",
+                        "Choose which subtitle sources are shown first when the player opens",
+                        normalizeSubtitleDefaultSource(playbackPrefs?.subtitleDefaultSource),
+                        listOf("All" to "All sources", "BuiltIn" to "Built-in", "Addons" to "Add-ons"),
+                    ) { value ->
+                        savePreference("Preferred subtitle source") { repository.updatePlaybackPreferences(mapOf("subtitleDefaultSource" to value)) }
                     }
                     // Last on the page: only worth opening when something will not play.
                     SettingsPanel("If a video will not play") {

@@ -453,6 +453,8 @@ data class PlaybackPreferences(
     val showOnlyPreferredSubtitleLanguages: Boolean = false,
     val secondarySubtitleLanguage: String = "none",
     val addonSubtitleLoading: String = "preferred",
+    /** Which source view the subtitle picker opens on: All, BuiltIn or Addons. */
+    val subtitleDefaultSource: String = "All",
     val nextEpisodeThresholdMode: String = "minutes",
     val nextEpisodeThresholdPercent: Int = 95,
     val nextEpisodeThresholdMinutes: Int = 2,

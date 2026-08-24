@@ -134,9 +134,23 @@ internal data class SpeedOption(
     val value: Double,
 )
 
-/** The two halves of the Subtitles panel: which track plays, and how it looks. */
+internal fun normalizeSubtitleDefaultSource(value: String?): String = when (value?.trim()?.lowercase()) {
+    "builtin", "built-in", "embedded" -> "BuiltIn"
+    "addons", "add-ons", "addon" -> "Addons"
+    else -> "All"
+}
+
+internal fun subtitleSourceIncludesBuiltIn(value: String?): Boolean =
+    normalizeSubtitleDefaultSource(value) != "Addons"
+
+internal fun subtitleSourceIncludesAddons(value: String?): Boolean =
+    normalizeSubtitleDefaultSource(value) != "BuiltIn"
+
+/** Subtitle-source views plus the appearance controls. */
 internal enum class SubtitlePanelTab(val label: String) {
-    Tracks("Tracks"),
+    All("All sources"),
+    BuiltIn("Built-in"),
+    Addons("Add-ons"),
     Adjust("Adjust"),
 }
 
@@ -727,12 +741,20 @@ internal fun PlayerOptionPanel(
     isLive: Boolean = false,
     /** Resolves a plugin source back to the collection it was installed from. */
     pluginState: ProfilePluginState = ProfilePluginState(),
+    subtitleDefaultSource: String = "All",
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    // Which half of the Subtitles panel is showing. Reset per panel opening so the viewer always
-    // arrives at the track list, which is what the button on the control bar promises.
-    var subtitleTab by remember(panel) { mutableStateOf(SubtitlePanelTab.Tracks) }
+    // Reset per opening, but honour the account preference rather than always choosing one source.
+    var subtitleTab by remember(panel, subtitleDefaultSource) {
+        mutableStateOf(
+            when (normalizeSubtitleDefaultSource(subtitleDefaultSource)) {
+                "BuiltIn" -> SubtitlePanelTab.BuiltIn
+                "Addons" -> SubtitlePanelTab.Addons
+                else -> SubtitlePanelTab.All
+            },
+        )
+    }
 
     PlayerGlassSurface(
         modifier = modifier
@@ -904,8 +926,8 @@ internal fun PlayerOptionPanel(
                         )
                     }
                 }
-                OverlayPanel.Subtitles -> if (subtitleTab == SubtitlePanelTab.Tracks) {
-                    item {
+                OverlayPanel.Subtitles -> if (subtitleTab != SubtitlePanelTab.Adjust) {
+                    if (subtitleSourceIncludesBuiltIn(subtitleTab.name)) item {
                         OptionButton(
                             label = "Subtitles Off",
                             subtitle = "Disable subtitles for this stream",
@@ -916,7 +938,7 @@ internal fun PlayerOptionPanel(
                             onClick = onDisableSubtitles,
                         )
                     }
-                    itemsIndexed(subtitleTracks) { index, track ->
+                    if (subtitleSourceIncludesBuiltIn(subtitleTab.name)) itemsIndexed(subtitleTracks) { index, track ->
                         val language = trackLanguageName(track.language)
                         OptionButton(
                             label = track.title ?: language ?: "Subtitle ${track.id}",
@@ -928,7 +950,7 @@ internal fun PlayerOptionPanel(
                             onClick = { onSelectSubtitle(track.id) },
                         )
                     }
-                    if (subtitlesLoading) {
+                    if (subtitleSourceIncludesAddons(subtitleTab.name) && subtitlesLoading) {
                         item {
                             OptionButton(
                                 label = "Searching subtitle add-ons...",
@@ -939,7 +961,7 @@ internal fun PlayerOptionPanel(
                             )
                         }
                     }
-                    itemsIndexed(externalSubtitles) { _, subtitle ->
+                    if (subtitleSourceIncludesAddons(subtitleTab.name)) itemsIndexed(externalSubtitles) { _, subtitle ->
                         OptionButton(
                             label = subtitle.label,
                             // The label already leads with the language, spelled out.

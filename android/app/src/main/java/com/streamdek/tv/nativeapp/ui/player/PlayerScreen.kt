@@ -2638,6 +2638,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         durationSec = durationSec,
                         isLive = isLive,
                         pluginState = bootstrap?.profilePlugins ?: ProfilePluginState(),
+                        subtitleDefaultSource = playbackPreferences.subtitleDefaultSource,
                     )
                 }
             }

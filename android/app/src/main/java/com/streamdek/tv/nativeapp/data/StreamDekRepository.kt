@@ -968,6 +968,7 @@ class StreamDekRepository(
                     "showOnlyPreferredSubtitleLanguages" to (partial["showOnlyPreferredSubtitleLanguages"] ?: existing.showOnlyPreferredSubtitleLanguages),
                     "secondarySubtitleLanguage" to (partial["secondarySubtitleLanguage"] ?: existing.secondarySubtitleLanguage),
                     "addonSubtitleLoading" to (partial["addonSubtitleLoading"] ?: existing.addonSubtitleLoading),
+                    "subtitleDefaultSource" to (partial["subtitleDefaultSource"] ?: existing.subtitleDefaultSource),
                     "nextEpisodeThresholdMode" to (partial["nextEpisodeThresholdMode"] ?: existing.nextEpisodeThresholdMode),
                     "nextEpisodeThresholdPercent" to (partial["nextEpisodeThresholdPercent"] ?: existing.nextEpisodeThresholdPercent),
                     "nextEpisodeThresholdMinutes" to (partial["nextEpisodeThresholdMinutes"] ?: existing.nextEpisodeThresholdMinutes),
