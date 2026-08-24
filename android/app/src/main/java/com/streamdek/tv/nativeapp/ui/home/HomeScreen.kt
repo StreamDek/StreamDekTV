@@ -122,6 +122,7 @@ fun HomeScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
+    val libraryRevision by repository.libraryRevision.collectAsState()
     val reachability by repository.reachability.collectAsState()
     val appPrefs = bootstrap?.preferences?.app
     val portraitCards = appPrefs?.homeRowCardStyle == "portrait"
@@ -160,7 +161,20 @@ fun HomeScreen(
     val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration) {
         "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration"
     }
-    LaunchedEffect(loadKey) { homeViewModel.load(loadKey) }
+    LaunchedEffect(loadKey) {
+        // A retained HomeViewModel must not turn its first snapshot into a session-long cache.
+        // Refresh immediately when Home is re-entered, then poll only while this screen is visible
+        // so progress written by another device appears without restarting the TV app.
+        if (homeViewModel.uiState.value.content == null) homeViewModel.load(loadKey)
+        else homeViewModel.forceRefresh(loadKey)
+        while (true) {
+            delay(15_000L)
+            homeViewModel.forceRefresh(loadKey)
+        }
+    }
+    LaunchedEffect(loadKey, libraryRevision) {
+        if (libraryRevision > 0L) homeViewModel.forceRefresh(loadKey)
+    }
 
     val content = screenState.content
     val spotlightItem = focusedItem ?: content?.featured ?: content?.rails?.firstOrNull()?.items?.firstOrNull()

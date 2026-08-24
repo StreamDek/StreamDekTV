@@ -1239,6 +1239,8 @@ data class PlaybackRequest(
     val requestHeaders: Map<String, String> = emptyMap(),
     val startPositionSec: Double? = null,
     val returnToDetailOnBack: Boolean = false,
+    /** Launched from a Continue Watching card, so stale-source recovery can explain itself. */
+    val fromContinueWatching: Boolean = false,
 )
 
 data class PlaybackHandoffPayload(

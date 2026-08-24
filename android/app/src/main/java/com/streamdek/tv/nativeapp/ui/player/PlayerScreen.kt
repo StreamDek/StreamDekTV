@@ -108,6 +108,8 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 
 /** How many copies of the same language to try before telling the viewer none of them loaded. */
 private const val SUBTITLE_ATTEMPT_LIMIT = 4
@@ -249,6 +251,7 @@ fun PlayerScreen(
      * without this the viewer is looking at a still logo wondering whether anything is happening.
      */
     var sourceFallbackNotice by remember(request.mediaId, request.mediaType) { mutableStateOf<String?>(null) }
+    var continueSourceNotice by remember(request.mediaId, request.mediaType) { mutableStateOf<String?>(null) }
     /** Where to pick up after an engine swap. Unkeyed for the same reason as the two above. */
     var pendingEngineResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -960,19 +963,45 @@ fun PlayerScreen(
             "ContinueWatching",
             "contentId=${activeRequest.mediaId} contentType=${activeRequest.mediaType} season=${currentEpisode?.seasonNumber} episode=${currentEpisode?.episodeNumber} originDevice=${continueWatchingItem?.lastPlatform ?: "this-tv"} destinationDevice=tv resumePosition=${pendingResumePositionSec ?: 0.0}",
         )
-        val resolved = resolvedCandidate ?: repository.resolvePlayback(
-            activeRequest.mediaType,
-            activeRequest.mediaId,
-            effectiveImdbId,
-            currentEpisode,
-            preferredStreamKey = streamKeyOverride,
-            forceRefresh = forceRefresh,
-            streamType = activeRequest.streamType,
-            directStreamUrl = activeRequest.directStreamUrl,
-            requestHeaders = activeRequest.requestHeaders,
-            sourceAddonId = activeRequest.sourceAddonId,
-            sourceAddonName = activeRequest.sourceAddonName,
-        ).also { resolvedCandidate = it }
+        val rememberedKey = if (activeRequest.fromContinueWatching) {
+            repository.rememberedStreamKey(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
+        } else {
+            null
+        }
+        if (activeRequest.fromContinueWatching) {
+            continueSourceNotice = if (rememberedKey == null) {
+                "No remembered source for this episode. Finding a new source…"
+            } else {
+                "Checking your remembered source…"
+            }
+        }
+        val resolved = resolvedCandidate ?: withTimeout(60_000L) {
+            repository.resolvePlayback(
+                activeRequest.mediaType,
+                activeRequest.mediaId,
+                effectiveImdbId,
+                currentEpisode,
+                preferredStreamKey = streamKeyOverride,
+                forceRefresh = forceRefresh,
+                streamType = activeRequest.streamType,
+                directStreamUrl = activeRequest.directStreamUrl,
+                requestHeaders = activeRequest.requestHeaders,
+                sourceAddonId = activeRequest.sourceAddonId,
+                sourceAddonName = activeRequest.sourceAddonName,
+            )
+        }.also { resolvedCandidate = it }
+        if (activeRequest.fromContinueWatching) {
+            val selectedKey = resolved.stream?.let(repository::streamSelectionKey)
+            continueSourceNotice = when {
+                rememberedKey != null && selectedKey == rememberedKey -> "Resuming with your remembered source…"
+                rememberedKey != null && selectedKey != null -> {
+                    repository.forgetRememberedStream(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
+                    "Remembered source expired or is unavailable. Trying ${resolved.stream?.addonName?.ifBlank { "a new source" }}…"
+                }
+                rememberedKey == null && selectedKey != null -> "Found a new source. Starting playback…"
+                else -> null
+            }
+        }
         candidate = resolved
         TvDebugLogger.i("Player", "playback load complete addon=${resolved.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}")
         currentRequestHeaders = defaultPlaybackHeaders + resolved.source?.requestHeaders.orEmpty()
@@ -1044,8 +1073,11 @@ fun PlayerScreen(
         sourceFallbackNotice = null
         val playable = candidate?.source
         if (playable == null) {
-            error = repository.lastUsenetFailureMessage
-                ?: "No playable stream could be resolved"
+            error = repository.lastUsenetFailureMessage ?: if (activeRequest.fromContinueWatching) {
+                "No saved source could be resumed, and no new playable source was found. Choose a source to continue."
+            } else {
+                "No playable stream could be resolved"
+            }
             loading = false
             controlsVisible = true
         } else {
@@ -1056,14 +1088,18 @@ fun PlayerScreen(
             // Changing from an unresolved series request to its exact episode restarts the keyed
             // effect. Compose cancels the old load with LeftCompositionCancellationException;
             // cancellation is control flow, not a playback failure the viewer can retry.
-            if (throwable is kotlinx.coroutines.CancellationException) throw throwable
+            if (throwable is kotlinx.coroutines.CancellationException && throwable !is TimeoutCancellationException) throw throwable
             TvDebugLogger.e("Player", "loadPlayback failed mediaType=${activeRequest.mediaType} mediaId=${activeRequest.mediaId}", throwable)
             candidate = null
             currentSourceUrl = null
             currentLabel = streamLabelOverride ?: "No playable stream found"
             resetPlaybackEngineForNewSource()
             error = when (throwable) {
-                is java.net.SocketTimeoutException -> "Stream lookup timed out. Please try again or choose another source."
+                is java.net.SocketTimeoutException, is TimeoutCancellationException -> if (activeRequest.fromContinueWatching) {
+                    "The saved source could not be resumed and the fresh source search timed out. Choose a source to continue."
+                } else {
+                    "Stream lookup timed out. Please try again or choose another source."
+                }
                 else -> throwable.message ?: "Could not prepare playback"
             }
             loading = false
@@ -1998,6 +2034,16 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                continueSourceNotice?.let { notice ->
+                    Text(
+                        text = notice,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Text(
                     text = currentLabel,
                     style = MaterialTheme.typography.bodyMedium,
@@ -2102,11 +2148,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     scope.launch {
                                         syncProgressIfEligible()
                                     }
-                                    backExitPlayback()
+                                    if (request.fromContinueWatching) onExitToStreams() else backExitPlayback()
                                 },
                                 modifier = Modifier.focusRequester(errorBackRequester),
                             ) {
-                                androidx.tv.material3.Text("Go Back")
+                                androidx.tv.material3.Text(if (request.fromContinueWatching) "Choose a Source" else "Go Back")
                             }
                             androidx.tv.material3.OutlinedButton(
                                 onClick = {

@@ -636,6 +636,7 @@ class StreamDekRepository(
         .build()
     private val episodeSegmentCache = lruCache<String, List<PlaybackSegment>>(32)
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
+    private val libraryRevisionState = MutableStateFlow(0L)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
     /** Prevent an older bootstrap response from publishing after a newer settings mutation. */
     private val bootstrapRefreshMutex = kotlinx.coroutines.sync.Mutex()
@@ -662,6 +663,8 @@ class StreamDekRepository(
 
     val session: StateFlow<AuthSession?> = sessionStore.session
     val bootstrap: StateFlow<AccountBootstrap?> = bootstrapState
+    /** Changes after a local progress/watched mutation so visible library surfaces refresh now. */
+    val libraryRevision: StateFlow<Long> = libraryRevisionState
 
     /** Whether the backend is answering, and whether what is on screen came out of the cache. */
     val reachability: StateFlow<ApiReachability> = api.reachability
@@ -1716,7 +1719,9 @@ class StreamDekRepository(
 
         supervisorScope {
             launch {
-                val library = runCatching { fetchLibrary() }.getOrDefault(LibraryResponse())
+                // A forced Home refresh must reach the account, not merely bypass Home's outer
+                // cache and then rebuild the row from the still-stale library cache beneath it.
+                val library = runCatching { fetchLibrary(forceRefresh = forceRefresh) }.getOrDefault(LibraryResponse())
                 val items = library.continueWatching.map(::continueWatchingCard)
                 publish("continue-watching", listOf(HomeRail("continue-watching", "Continue Watching", items)))
                 // Built from the same library read rather than a second one. A television cannot
@@ -2902,6 +2907,15 @@ class StreamDekRepository(
                 it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber
             } == true
         } ?: matches.firstOrNull()
+    }
+
+    fun rememberedStreamKey(mediaType: String, mediaId: String, episode: EpisodeContext?): String? {
+        if (!rememberLastSourceEnabled()) return null
+        return sessionStore.preferredStreamKey(mediaType, mediaId, buildEpisodeKey(episode))
+    }
+
+    fun forgetRememberedStream(mediaType: String, mediaId: String, episode: EpisodeContext?) {
+        sessionStore.savePreferredStreamKey(mediaType, mediaId, buildEpisodeKey(episode), null)
     }
 
     suspend fun fetchWatchedKeys(forceRefresh: Boolean = false): Set<String> {
@@ -4810,6 +4824,7 @@ class StreamDekRepository(
         libraryCache.clear()
         homeCache.clear()
         watchedHistoryCache.clear()
+        libraryRevisionState.value = libraryRevisionState.value + 1L
     }
 
     private fun buildSessionProfileCacheKey(): String {

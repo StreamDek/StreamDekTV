@@ -604,6 +604,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 title = item.title,
                 startPositionSec = item.positionSec,
                 returnToDetailOnBack = true,
+                fromContinueWatching = true,
             ),
         )
         navController.navigate("player")
