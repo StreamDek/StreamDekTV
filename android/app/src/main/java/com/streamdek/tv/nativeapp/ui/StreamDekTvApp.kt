@@ -326,6 +326,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     var lastHomeRowId by remember { mutableStateOf<String?>(null) }
     var lastHomeItemKey by remember { mutableStateOf<String?>(null) }
     var homeFocusRestoreToken by remember { mutableStateOf(0) }
+    var homeResetToTopToken by remember { mutableStateOf(0) }
     var pendingDestinationFocus by remember { mutableStateOf<String?>(null) }
     // The rail is always composed on browse routes. During a pop the returning screen may not
     // have a focus target until its content is ready, so Android's spatial fallback briefly
@@ -346,6 +347,26 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val openDetail: (String, String) -> Unit = { mediaType, mediaId ->
         detailNavigationInProgress = true
         navController.navigate(detailRoute(mediaType, mediaId))
+    }
+
+    fun returnHomeAfterProfileSelection() {
+        lastHomeRowId = null
+        lastHomeItemKey = null
+        homeResetToTopToken += 1
+        startScreenApplied = true
+        pendingDestinationFocus = TopLevelDestination.Home.route
+        navController.navigate(TopLevelDestination.Home.route) {
+            popUpTo(TopLevelDestination.Home.route) { inclusive = false }
+            launchSingleTop = true
+        }
+    }
+
+    var observedProfileId by remember(session?.user?.uid) { mutableStateOf(activeProfile?.id) }
+    LaunchedEffect(activeProfile?.id) {
+        val next = activeProfile?.id
+        val previous = observedProfileId
+        observedProfileId = next
+        if (previous != null && next != null && previous != next) returnHomeAfterProfileSelection()
     }
 
     LaunchedEffect(currentRoute) {
@@ -531,6 +552,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         if (remainingTransitionMs > 0L) delay(remainingTransitionMs)
                         startupProfileHandled = true
                         startupProfileSwitching = false
+                        returnHomeAfterProfileSelection()
                     }
                 }
             },
@@ -690,6 +712,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         restoreRowId = lastHomeRowId,
                         restoreItemKey = lastHomeItemKey,
                         restoreToken = homeFocusRestoreToken,
+                        resetToTopToken = homeResetToTopToken,
                         onPositionChanged = { rowId, itemKey ->
                             lastHomeRowId = rowId
                             lastHomeItemKey = itemKey

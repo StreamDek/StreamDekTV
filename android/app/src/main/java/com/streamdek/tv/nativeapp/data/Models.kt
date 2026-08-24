@@ -120,6 +120,7 @@ data class SeasonRef(
     @SerializedName("season_number") val seasonNumber: Int,
     val name: String,
     @SerializedName("episode_count") val episodeCount: Int = 0,
+    @SerializedName("air_date") val airDate: String? = null,
 )
 
 data class MediaDetail(
@@ -1088,6 +1089,11 @@ data class PlaybackProgressResponse(
 
 data class PlaybackProgressListResponse(
     val results: List<PlaybackProgressRecord> = emptyList(),
+)
+
+data class SyncedEpisodeWatchState(
+    val completed: Set<String> = emptySet(),
+    val unwatched: Set<String> = emptySet(),
 )
 
 data class PlaybackSegment(

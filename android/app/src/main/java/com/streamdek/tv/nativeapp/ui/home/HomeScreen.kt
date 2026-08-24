@@ -113,6 +113,8 @@ fun HomeScreen(
     restoreItemKey: String? = null,
     /** Bumped by the host to request a position restore. */
     restoreToken: Int = 0,
+    /** Bumped after profile selection to discard all remembered shelf/card position. */
+    resetToTopToken: Int = 0,
     onPositionChanged: (rowId: String, itemKey: String) -> Unit = { _, _ -> },
 ) {
     val homeViewModel: HomeViewModel = viewModel(factory = remember(repository) { HomeViewModelFactory(repository) })
@@ -352,6 +354,20 @@ fun HomeScreen(
                 var pendingRestoreKey by remember { mutableStateOf<String?>(null) }
                 var restoreHandledToken by remember { mutableIntStateOf(0) }
                 var restoreApplied by remember { mutableStateOf(false) }
+
+                LaunchedEffect(resetToTopToken, rows) {
+                    if (resetToTopToken <= 0 || rows.isEmpty()) return@LaunchedEffect
+                    val firstRow = rows.first()
+                    val firstItem = firstRow.items.firstOrNull() ?: return@LaunchedEffect
+                    activeRowId = firstRow.id
+                    focusedItem = firstItem
+                    rowFocusIndices.clear()
+                    rowFocusIndices[firstRow.id] = 0
+                    rowStates.values.forEach { it.scrollToItem(0) }
+                    shelfListState.scrollToItem(0)
+                    delay(180)
+                    runCatching { firstCardRequester.requestFocus() }
+                }
 
                 val canRestore = restoreToken > 0 &&
                     restoreToken != restoreHandledToken &&

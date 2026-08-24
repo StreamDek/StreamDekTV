@@ -2044,8 +2044,17 @@ class StreamDekRepository(
                 return it
             }
         }
-        val detail = api.get<MediaDetail>("/tmdb/details/$resolvedType/$resolvedId")
-            ?: fetchAddonMetaDetail(resolvedId, canonicalType)
+        val detail = (api.get<MediaDetail>("/tmdb/details/$resolvedType/$resolvedId")
+            ?: fetchAddonMetaDetail(resolvedId, canonicalType))?.let { resolvedDetail ->
+            if (resolvedDetail.type == "tv") {
+                val releasedSeasons = availableSeasons(resolvedDetail.seasons)
+                resolvedDetail.copy(
+                    seasons = releasedSeasons,
+                    numberOfSeasons = releasedSeasons.size,
+                    numberOfEpisodes = releasedSeasons.sumOf(SeasonRef::episodeCount),
+                )
+            } else resolvedDetail
+        }
         if (detail != null) {
             detailsCache[cacheKey] = detail
             Telemetry.contentOpened(mediaId = detail.id, mediaType = detail.type, title = detail.title)
@@ -2639,20 +2648,89 @@ class StreamDekRepository(
         year: String?,
         seasonNumber: Int,
         watched: Boolean,
+        seasonDetail: SeasonDetail? = null,
     ): Boolean {
         val detail = fetchDetail(mediaId, "tv") ?: return false
-        val season = fetchSeason(mediaId, seasonNumber) ?: return false
+        val season = seasonDetail ?: fetchSeason(mediaId, seasonNumber) ?: return false
         if (season.episodes.isEmpty()) return false
-        val results = season.episodes.map { episode ->
-            setEpisodeWatched(
-                detail = detail.copy(title = title.ifBlank { detail.title }, year = year ?: detail.year),
-                episode = EpisodeContext(seasonNumber, episode.episodeNumber),
-                watched = watched,
+        val resolvedDetail = detail.copy(title = title.ifBlank { detail.title }, year = year ?: detail.year)
+        val updatedAt = Instant.now().toString()
+        val items = season.episodes.map { episode ->
+            val context = EpisodeContext(
+                seasonNumber = seasonNumber,
+                episodeNumber = episode.episodeNumber,
+                title = episode.name,
+                overview = episode.overview,
+                still = episode.still,
+                runtime = episode.runtime,
+                airDate = episode.airDate,
+                tmdbEpisodeId = episode.id,
+            )
+            mapOf(
+                "entityType" to "tv",
+                "entityId" to mediaId,
+                "episodeKey" to buildEpisodeKey(context),
+                "positionSec" to 0,
+                "durationSec" to 0,
+                "completed" to watched,
+                "unwatched" to !watched,
+                "updatedAt" to updatedAt,
+                "lastDevice" to "StreamDek TV",
+                "lastPlatform" to "tv",
+                "metadata" to buildSyncMetadata(resolvedDetail, context),
             )
         }
-        val synced = results.all { it }
-        if (synced) invalidatePlaybackDerivedCaches()
-        return synced
+        val syncDek = runCatching {
+            api.request<Any>(
+                method = "POST",
+                path = "/sync/progress/batch",
+                body = com.google.gson.Gson().toJson(mapOf("items" to items)),
+            )
+            true
+        }.onFailure {
+            TvDebugLogger.w("Playback", "season watched batch failed mediaId=$mediaId season=$seasonNumber")
+        }.getOrDefault(false)
+
+        if (syncDek && isSyncServiceConnected(SyncServiceId.TRAKT)) {
+            val endpoint = if (watched) "/trakt/sync/watched" else "/trakt/sync/history/remove"
+            val payload = mapOf(
+                "movies" to emptyList<Any>(),
+                "shows" to listOf(mapOf(
+                    "title" to resolvedDetail.title,
+                    "ids" to mapOf("tmdb" to mediaId.toIntOrNull(), "imdb" to resolvedDetail.imdbId),
+                    "seasons" to listOf(mapOf(
+                        "number" to seasonNumber,
+                        "episodes" to season.episodes.map { episode ->
+                            mapOf("number" to episode.episodeNumber, "watched_at" to updatedAt)
+                        },
+                    )),
+                )),
+            )
+            runCatching { api.post<Any>(endpoint, payload) }
+                .onFailure { TvDebugLogger.w("Trakt", "season watched sync failed mediaId=$mediaId season=$seasonNumber") }
+        }
+        if (syncDek) invalidatePlaybackDerivedCaches()
+        return syncDek
+    }
+
+    /** One lightweight SyncDek read used while a series detail page is visible on another device. */
+    suspend fun fetchSyncedEpisodeWatchState(mediaId: String): SyncedEpisodeWatchState {
+        val encodedId = URLEncoder.encode(mediaId, "UTF-8")
+        val records = api.get<PlaybackProgressListResponse>(
+            "/sync/progress?entityType=tv&entityId=$encodedId&limit=250",
+        )?.results.orEmpty()
+        val completed = linkedSetOf<String>()
+        val unwatched = linkedSetOf<String>()
+        records.forEach { record ->
+            val season = record.seasonNumber ?: return@forEach
+            val episode = record.episodeNumber ?: return@forEach
+            val key = "s$season:e$episode"
+            when (record.status.lowercase()) {
+                "completed" -> completed += key
+                "unwatched" -> unwatched += key
+            }
+        }
+        return SyncedEpisodeWatchState(completed, unwatched)
     }
 
     suspend fun clearProgress(

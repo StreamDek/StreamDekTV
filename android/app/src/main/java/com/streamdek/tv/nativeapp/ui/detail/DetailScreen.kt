@@ -203,6 +203,7 @@ fun DetailScreen(
     var markedWatched by remember(mediaType, mediaId) { mutableStateOf(false) }
     /** Watched episodes across every loaded season, keyed by [watchedEpisodeKey]. */
     var watchedEpisodeKeys by remember(mediaType, mediaId) { mutableStateOf<Set<String>>(emptySet()) }
+    var suppressRemoteWatchedRefreshUntil by remember(mediaType, mediaId) { mutableStateOf(0L) }
     var markingSeasonWatched by remember(mediaType, mediaId, activeSeasonNumber) { mutableStateOf(false) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
     var episodeAction by remember(mediaType, mediaId) { mutableStateOf<SeasonEpisodeEntry?>(null) }
@@ -645,6 +646,16 @@ fun DetailScreen(
         watchedEpisodeKeys = repository.fetchSeriesResumeState(currentDetail).watchedEpisodeKeys
     }
 
+    LaunchedEffect(mediaType, mediaId, detail?.id) {
+        if (mediaType != "tv" || detail == null) return@LaunchedEffect
+        while (true) {
+            delay(4_000L)
+            if (System.currentTimeMillis() < suppressRemoteWatchedRefreshUntil) continue
+            val synced = runCatching { repository.fetchSyncedEpisodeWatchState(mediaId) }.getOrNull() ?: continue
+            watchedEpisodeKeys = (watchedEpisodeKeys - synced.unwatched) + synced.completed
+        }
+    }
+
     LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, progressFraction, detail?.id) {
         val currentDetail = detail ?: return@LaunchedEffect
         markedWatched = repository.isWatched(
@@ -980,6 +991,12 @@ fun DetailScreen(
                                     val season = activeSeasonDetail ?: return@markSeason
                                     if (markingSeasonWatched) return@markSeason
                                     val targetWatched = !selectedSeasonWatched
+                                    val seasonKeys = season.episodes.map {
+                                        watchedEpisodeKey(season.seasonNumber, it.episodeNumber)
+                                    }.toSet()
+                                    val before = watchedEpisodeKeys
+                                    watchedEpisodeKeys = if (targetWatched) before + seasonKeys else before - seasonKeys
+                                    suppressRemoteWatchedRefreshUntil = System.currentTimeMillis() + 6_000L
                                     markingSeasonWatched = true
                                     scope.launch {
                                         val marked = repository.setSeasonWatched(
@@ -988,17 +1005,9 @@ fun DetailScreen(
                                             year = d.year,
                                             seasonNumber = season.seasonNumber,
                                             watched = targetWatched,
+                                            seasonDetail = season,
                                         )
-                                        if (marked) {
-                                            val seasonKeys = season.episodes.map {
-                                                watchedEpisodeKey(season.seasonNumber, it.episodeNumber)
-                                            }
-                                            watchedEpisodeKeys = if (targetWatched) {
-                                                watchedEpisodeKeys + seasonKeys
-                                            } else {
-                                                watchedEpisodeKeys - seasonKeys.toSet()
-                                            }
-                                        }
+                                        if (!marked) watchedEpisodeKeys = before
                                         markingSeasonWatched = false
                                     }
                                 },
