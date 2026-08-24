@@ -88,6 +88,9 @@ import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
+import com.streamdek.tv.nativeapp.data.ExternalSubtitleOrigin
+import com.streamdek.tv.nativeapp.data.subtitleOriginVisible
+import com.streamdek.tv.nativeapp.data.preferredSubtitleLanguageAllowed
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.PlaybackStats
@@ -703,6 +706,8 @@ internal fun PlayerOptionPanel(
     audioTracks: List<MpvTrackInfo>,
     subtitleTracks: List<MpvTrackInfo>,
     externalSubtitles: List<ExternalSubtitleTrack>,
+    showOnlyPreferredSubtitleLanguages: Boolean = false,
+    preferredSubtitleLanguages: List<String> = emptyList(),
     subtitlesLoading: Boolean,
     selectedAudioId: Int,
     selectedSubtitleId: Int,
@@ -754,6 +759,19 @@ internal fun PlayerOptionPanel(
                 else -> SubtitlePanelTab.All
             },
         )
+    }
+    val configuredSubtitleSource = normalizeSubtitleDefaultSource(subtitleDefaultSource)
+    val availableSubtitleTabs = remember(configuredSubtitleSource) {
+        when (configuredSubtitleSource) {
+            "BuiltIn" -> listOf(SubtitlePanelTab.BuiltIn, SubtitlePanelTab.Adjust)
+            "Addons" -> listOf(SubtitlePanelTab.Addons, SubtitlePanelTab.Adjust)
+            else -> SubtitlePanelTab.entries
+        }
+    }
+    val allowedSubtitleLanguages = remember(preferredSubtitleLanguages) {
+        preferredSubtitleLanguages.map(Languages::normalize)
+            .filter { it.isNotBlank() && it != Languages.NONE }
+            .distinct()
     }
 
     PlayerGlassSurface(
@@ -857,7 +875,7 @@ internal fun PlayerOptionPanel(
             if (panel == OverlayPanel.Subtitles) {
                 item {
                     PanelTabRow(
-                        tabs = SubtitlePanelTab.entries,
+                        tabs = availableSubtitleTabs,
                         selected = subtitleTab,
                         labelOf = { it.label },
                         onInteract = onInteract,
@@ -927,10 +945,27 @@ internal fun PlayerOptionPanel(
                     }
                 }
                 OverlayPanel.Subtitles -> if (subtitleTab != SubtitlePanelTab.Adjust) {
-                    if (subtitleSourceIncludesBuiltIn(subtitleTab.name)) item {
+                    val visibleEmbeddedTracks = if (subtitleSourceIncludesBuiltIn(subtitleTab.name)) subtitleTracks.filter { track ->
+                        preferredSubtitleLanguageAllowed(
+                            track.language ?: track.title,
+                            preferredSubtitleLanguages.getOrNull(0),
+                            preferredSubtitleLanguages.getOrNull(1),
+                            showOnlyPreferredSubtitleLanguages,
+                        )
+                    } else emptyList()
+                    val visibleExternalSubtitles = externalSubtitles.filter { subtitle ->
+                        subtitleOriginVisible(subtitleTab.name, subtitle.origin) &&
+                            preferredSubtitleLanguageAllowed(
+                                subtitle.language,
+                                preferredSubtitleLanguages.getOrNull(0),
+                                preferredSubtitleLanguages.getOrNull(1),
+                                showOnlyPreferredSubtitleLanguages,
+                            )
+                    }
+                    item {
                         OptionButton(
                             label = "Subtitles Off",
-                            subtitle = "Disable subtitles for this stream",
+                            subtitle = "Disable every subtitle track",
                             active = selectedSubtitleId < 0 && selectedExternalSubtitleId == null,
                             activeBadge = if (selectedSubtitleId < 0 && selectedExternalSubtitleId == null) "Selected" else null,
                             requestFocus = firstItemRequester,
@@ -938,11 +973,14 @@ internal fun PlayerOptionPanel(
                             onClick = onDisableSubtitles,
                         )
                     }
-                    if (subtitleSourceIncludesBuiltIn(subtitleTab.name)) itemsIndexed(subtitleTracks) { index, track ->
+                    if (visibleEmbeddedTracks.isNotEmpty()) item {
+                        Text("Embedded in video", color = Color.White.copy(alpha = 0.62f), fontWeight = FontWeight.Bold)
+                    }
+                    itemsIndexed(visibleEmbeddedTracks) { index, track ->
                         val language = trackLanguageName(track.language)
                         OptionButton(
-                            label = track.title ?: language ?: "Subtitle ${track.id}",
-                            subtitle = listOfNotNull(language, track.codec).joinToString(" • ").ifBlank { null },
+                            label = language ?: track.title ?: "Subtitle ${track.id}",
+                            subtitle = listOfNotNull("Embedded", track.title, track.codec).distinct().joinToString(" • "),
                             active = selectedExternalSubtitleId == null && selectedSubtitleId == track.id,
                             activeBadge = if (selectedExternalSubtitleId == null && selectedSubtitleId == track.id) "Selected" else null,
                             requestFocus = if (index == 0 && subtitleTracks.isEmpty()) firstItemRequester else null,
@@ -950,26 +988,71 @@ internal fun PlayerOptionPanel(
                             onClick = { onSelectSubtitle(track.id) },
                         )
                     }
-                    if (subtitleSourceIncludesAddons(subtitleTab.name) && subtitlesLoading) {
+                    if (subtitlesLoading) {
                         item {
                             OptionButton(
-                                label = "Searching subtitle add-ons...",
-                                subtitle = "OpenSubtitles and installed add-ons",
+                                label = "Searching subtitle sources...",
+                                subtitle = when (subtitleTab) {
+                                    SubtitlePanelTab.BuiltIn -> "OpenSubtitles and StreamDek sources"
+                                    SubtitlePanelTab.Addons -> "Installed subtitle add-ons"
+                                    else -> "Built-in sources and installed add-ons"
+                                },
                                 active = false,
                                 onInteract = onInteract,
                                 onClick = {},
                             )
                         }
                     }
-                    if (subtitleSourceIncludesAddons(subtitleTab.name)) itemsIndexed(externalSubtitles) { _, subtitle ->
+                    if (visibleExternalSubtitles.isNotEmpty()) item {
+                        Text(
+                            when (subtitleTab) {
+                                SubtitlePanelTab.BuiltIn -> "StreamDek sources"
+                                SubtitlePanelTab.Addons -> "Subtitle add-ons"
+                                else -> "Online subtitles"
+                            },
+                            color = Color.White.copy(alpha = 0.62f),
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    itemsIndexed(visibleExternalSubtitles) { index, subtitle ->
+                        val duplicateNumber = visibleExternalSubtitles.take(index + 1).count {
+                            it.language == subtitle.language && it.sourceName == subtitle.sourceName
+                        }
+                        val duplicateCount = visibleExternalSubtitles.count {
+                            it.language == subtitle.language && it.sourceName == subtitle.sourceName
+                        }
                         OptionButton(
-                            label = subtitle.label,
-                            // The label already leads with the language, spelled out.
-                            subtitle = "Add-on subtitle",
+                            label = Languages.label(subtitle.language),
+                            subtitle = listOfNotNull(
+                                subtitle.sourceName,
+                                if (subtitle.origin == ExternalSubtitleOrigin.BuiltIn) "Built-in source" else "Add-on",
+                                subtitle.release,
+                                if (duplicateCount > 1) "Option $duplicateNumber" else null,
+                            ).joinToString(" • "),
                             active = selectedExternalSubtitleId == subtitle.id,
                             activeBadge = if (selectedExternalSubtitleId == subtitle.id) "Selected" else null,
                             onInteract = onInteract,
                             onClick = { onSelectExternalSubtitle(subtitle) },
+                        )
+                    }
+                    if (!subtitlesLoading && visibleEmbeddedTracks.isEmpty() && visibleExternalSubtitles.isEmpty()) item {
+                        val requestedLanguages = allowedSubtitleLanguages.joinToString(" or ") { Languages.label(it) }
+                        OptionButton(
+                            label = if (showOnlyPreferredSubtitleLanguages && requestedLanguages.isNotBlank()) {
+                                "No subtitles found for $requestedLanguages"
+                            } else when (subtitleTab) {
+                                SubtitlePanelTab.BuiltIn -> "No built-in subtitles found"
+                                SubtitlePanelTab.Addons -> "No subtitle add-on results found"
+                                else -> "No matching subtitles found"
+                            },
+                            subtitle = when (subtitleTab) {
+                                SubtitlePanelTab.BuiltIn -> "No embedded tracks or StreamDek source results"
+                                SubtitlePanelTab.Addons -> "Try another language or enable another subtitle add-on"
+                                else -> "Try another language or subtitle source"
+                            },
+                            active = false,
+                            onInteract = onInteract,
+                            onClick = {},
                         )
                     }
                 } else {

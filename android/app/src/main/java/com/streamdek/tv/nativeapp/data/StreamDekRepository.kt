@@ -3595,9 +3595,8 @@ class StreamDekRepository(
         }
         val type = if (isSeries) "series" else "movie"
         val preferences = bootstrapState.value?.preferences?.playback ?: PlaybackPreferences()
-        if (preferences.addonSubtitleLoading.equals("off", ignoreCase = true)) return@withContext emptyList()
         val preferredLanguages = listOf(
-            activeStreamProfile(bootstrapState.value)?.subtitleLanguage ?: preferences.defaultSubtitleLanguage,
+            preferences.defaultSubtitleLanguage,
             preferences.secondarySubtitleLanguage,
         ).map(Languages::normalize).filter { it.isNotBlank() && it != Languages.NONE }.toSet()
         val cloudSources = (preferences.subtitleSources + preferences.customSubtitleSources)
@@ -3624,8 +3623,13 @@ class StreamDekRepository(
                     SubtitleSourcePreference("addon:${addon.id}", addon.manifest.name.ifBlank { addon.id }, it)
                 }
             }
-        val sources = (listOf(SubtitleSourcePreference("opensubtitles", "OpenSubtitles", "https://opensubtitles-v3.strem.io")) +
-            cloudSources + addonSources).distinctBy { it.baseUrl.lowercase(Locale.US) }
+        val enabledBuiltInSources = if (!subtitleSourceAllowsOrigin(preferences.subtitleDefaultSource, ExternalSubtitleOrigin.BuiltIn)) emptyList() else
+            listOf(SubtitleSourcePreference("opensubtitles", "OpenSubtitles", "https://opensubtitles-v3.strem.io")) + cloudSources
+        val enabledAddonSources = if (
+            !subtitleSourceAllowsOrigin(preferences.subtitleDefaultSource, ExternalSubtitleOrigin.Addon) ||
+            preferences.addonSubtitleLoading.equals("off", ignoreCase = true)
+        ) emptyList() else addonSources
+        val sources = (enabledBuiltInSources + enabledAddonSources).distinctBy { it.baseUrl.lowercase(Locale.US) }
 
         supervisorScope {
             sources.map { source ->
@@ -3657,6 +3661,9 @@ class StreamDekRepository(
                                     label = listOf(Languages.label(language), subtitle.release, source.name.ifBlank { "Subtitle addon" })
                                         .filter { it.isNotBlank() }.joinToString(" - "),
                                     url = subtitle.url,
+                                    origin = externalSubtitleOrigin(source.id),
+                                    sourceName = source.name.ifBlank { if (source.id.startsWith("addon:")) "Subtitle add-on" else "StreamDek" },
+                                    release = subtitle.release.takeIf { it.isNotBlank() },
                                 )
                             }.also { parsed ->
                                 TvDebugLogger.i(
@@ -3675,14 +3682,18 @@ class StreamDekRepository(
                     val matching = results.filter { Languages.normalize(it.language) in preferredLanguages }
                     when {
                         preferences.showOnlyPreferredSubtitleLanguages -> matching
-                        preferences.addonSubtitleLoading.equals("preferred", ignoreCase = true) -> matching.ifEmpty { results }
+                        preferences.addonSubtitleLoading.equals("preferred", ignoreCase = true) -> {
+                            val builtIn = results.filter { it.origin == ExternalSubtitleOrigin.BuiltIn }
+                            val addons = results.filter { it.origin == ExternalSubtitleOrigin.Addon }
+                            val matchingAddons = addons.filter { Languages.normalize(it.language) in preferredLanguages }
+                            builtIn + matchingAddons.ifEmpty { addons }
+                        }
                         else -> results
                     }
                 }
                 .sortedWith(compareBy<ExternalSubtitleTrack> {
                     when (it.language) {
-                        normalizeSubtitleLanguage(activeStreamProfile(bootstrapState.value)?.subtitleLanguage
-                            ?: preferences.defaultSubtitleLanguage) -> 0
+                        normalizeSubtitleLanguage(preferences.defaultSubtitleLanguage) -> 0
                         "en" -> 1
                         else -> 2
                     }

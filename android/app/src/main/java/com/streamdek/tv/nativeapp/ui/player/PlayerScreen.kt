@@ -86,6 +86,8 @@ import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
+import com.streamdek.tv.nativeapp.data.ExternalSubtitleOrigin
+import com.streamdek.tv.nativeapp.data.subtitleSourceAllowsOrigin
 import com.streamdek.tv.nativeapp.data.contentScopedResumePosition
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.Languages
@@ -1159,15 +1161,19 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }.getOrDefault(emptyList())
         if (currentSourceUrl != source) return@LaunchedEffect
-        externalSubtitles = results
+        val allowedLanguages = listOf(
+            playbackPreferences.defaultSubtitleLanguage,
+            playbackPreferences.secondarySubtitleLanguage,
+        ).map(Languages::normalize).filter { it.isNotBlank() && it != Languages.NONE }.toSet()
+        externalSubtitles = if (playbackPreferences.showOnlyPreferredSubtitleLanguages) {
+            results.filter { Languages.normalize(it.language) in allowedLanguages }
+        } else results
         externalSubtitlesPreparedForSource = source
         subtitlesLoading = false
         if (playbackPreferences.autoLoadSubtitles && selectedSubtitleId < 0 && selectedExternalSubtitleId == null) {
-            val preferredLanguage = repository.activeStreamProfile(repository.bootstrap.value)?.subtitleLanguage
-                ?.takeIf { it.isNotBlank() }
-                ?: playbackPreferences.defaultSubtitleLanguage
-            val preferred = results.firstOrNull { Languages.matches(it.language, preferredLanguage) }
-                ?: results.firstOrNull { it.language == "en" }
+            val preferredLanguage = playbackPreferences.defaultSubtitleLanguage
+            val preferred = externalSubtitles.firstOrNull { Languages.matches(it.language, preferredLanguage) }
+                ?: externalSubtitles.firstOrNull { Languages.matches(it.language, playbackPreferences.secondarySubtitleLanguage) }
             if (preferred != null) {
                 selectedExternalSubtitleId = preferred.id
             }
@@ -1874,14 +1880,17 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         if (
                             currentSource != null &&
                             playbackPreferences.autoLoadSubtitles &&
+                            subtitleSourceAllowsOrigin(
+                                playbackPreferences.subtitleDefaultSource,
+                                ExternalSubtitleOrigin.BuiltIn,
+                            ) &&
                             selectedExternalSubtitleId == null &&
                             subtitlePreferenceAppliedForSource != currentSource
                         ) {
                             subtitlePreferenceAppliedForSource = currentSource
                             preferredSubtitleTrack(
                                 subtitles = subtitles,
-                                preferredLanguage = activeProfile?.subtitleLanguage?.takeIf { it.isNotBlank() }
-                                    ?: currentBootstrap?.preferences?.playback?.defaultSubtitleLanguage
+                                preferredLanguage = currentBootstrap?.preferences?.playback?.defaultSubtitleLanguage
                                     ?: "en",
                             )?.let { preferredTrack ->
                                 if (selectedSubtitleTrackId != preferredTrack.id) {
@@ -2441,14 +2450,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         panel = activePanel,
                         candidate = candidate,
                         audioTracks = audioTracks,
-                        subtitleTracks = subtitleTracks.filter { track ->
-                            !playbackPreferences.showOnlyPreferredSubtitleLanguages || Languages.matches(
-                                track.language ?: track.title,
-                                repository.activeStreamProfile(repository.bootstrap.value)?.subtitleLanguage
-                                    ?: playbackPreferences.defaultSubtitleLanguage,
-                            ) || Languages.matches(track.language ?: track.title, playbackPreferences.secondarySubtitleLanguage)
-                        },
+                        subtitleTracks = subtitleTracks,
                         externalSubtitles = externalSubtitles,
+                        showOnlyPreferredSubtitleLanguages = playbackPreferences.showOnlyPreferredSubtitleLanguages,
+                        preferredSubtitleLanguages = listOf(
+                            playbackPreferences.defaultSubtitleLanguage,
+                            playbackPreferences.secondarySubtitleLanguage,
+                        ),
                         subtitlesLoading = subtitlesLoading,
                         selectedAudioId = selectedAudioId,
                         selectedSubtitleId = selectedSubtitleId,

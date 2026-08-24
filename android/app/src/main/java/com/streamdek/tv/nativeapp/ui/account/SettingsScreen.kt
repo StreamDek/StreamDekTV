@@ -390,8 +390,8 @@ fun SettingsScreen(
                         savePreference("Show only preferred language", complete) { repository.updatePlaybackPreferences(mapOf("showOnlyPreferredSubtitleLanguages" to next)) }
                     }
                     SettingsDropdownRow(
-                        "Preferred subtitle source",
-                        "Choose which subtitle sources are shown first when the player opens",
+                        "Subtitle sources",
+                        "Choose which subtitle sources the player searches and shows",
                         normalizeSubtitleDefaultSource(playbackPrefs?.subtitleDefaultSource),
                         listOf("All" to "All sources", "BuiltIn" to "Built-in", "Addons" to "Add-ons"),
                     ) { value ->

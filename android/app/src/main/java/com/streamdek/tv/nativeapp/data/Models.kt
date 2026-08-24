@@ -421,7 +421,40 @@ data class ExternalSubtitleTrack(
     val language: String,
     val label: String,
     val url: String,
+    val origin: ExternalSubtitleOrigin,
+    val sourceName: String,
+    val release: String? = null,
 )
+enum class ExternalSubtitleOrigin { BuiltIn, Addon }
+fun externalSubtitleOrigin(sourceId: String): ExternalSubtitleOrigin =
+    if (sourceId.startsWith("addon:")) ExternalSubtitleOrigin.Addon else ExternalSubtitleOrigin.BuiltIn
+
+fun subtitleOriginVisible(tab: String, origin: ExternalSubtitleOrigin): Boolean = when (tab) {
+    "All" -> true
+    "BuiltIn" -> origin == ExternalSubtitleOrigin.BuiltIn
+    "Addons" -> origin == ExternalSubtitleOrigin.Addon
+    else -> false
+}
+fun subtitleSourceAllowsOrigin(selection: String?, origin: ExternalSubtitleOrigin): Boolean {
+    val normalized = when (selection?.lowercase()) {
+        "builtin", "built-in", "built_in" -> "BuiltIn"
+        "addons", "add-ons", "addon" -> "Addons"
+        else -> "All"
+    }
+    return subtitleOriginVisible(normalized, origin)
+}
+
+fun preferredSubtitleLanguageAllowed(
+    language: String?,
+    primary: String?,
+    secondary: String?,
+    strict: Boolean,
+): Boolean {
+    if (!strict) return true
+    val allowed = listOf(primary, secondary).map(Languages::normalize)
+        .filter { it.isNotBlank() && it != Languages.NONE }.toSet()
+    return Languages.normalize(language) in allowed
+}
 data class StremioSubtitleItem(
     val id: String = "",
     @SerializedName(value = "lang", alternate = ["language", "languageCode", "locale"]) val language: String = "",
@@ -453,7 +486,7 @@ data class PlaybackPreferences(
     val showOnlyPreferredSubtitleLanguages: Boolean = false,
     val secondarySubtitleLanguage: String = "none",
     val addonSubtitleLoading: String = "preferred",
-    /** Which source view the subtitle picker opens on: All, BuiltIn or Addons. */
+    /** Which subtitle sources are searched and shown: All, BuiltIn or Addons. */
     val subtitleDefaultSource: String = "All",
     val nextEpisodeThresholdMode: String = "minutes",
     val nextEpisodeThresholdPercent: Int = 95,
