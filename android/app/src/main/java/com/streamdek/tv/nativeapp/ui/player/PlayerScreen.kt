@@ -916,14 +916,14 @@ fun PlayerScreen(
             repository.fetchLibrary().watchlist.any { it.id == activeRequest.mediaId && it.type == activeRequest.mediaType }
         }.getOrDefault(false)
         val continueWatchingItem = if (activeRequest.mediaType == "tv") {
-            repository.fetchContinueWatchingItem(activeRequest.mediaType, activeRequest.mediaId)
+            repository.fetchContinueWatchingItem(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
         } else {
             null
         }
         if (activeRequest.mediaType == "tv" && currentEpisode == null) {
             val firstSeason = detail?.seasons?.firstOrNull()?.seasonNumber
             val season = firstSeason?.let { repository.fetchSeason(activeRequest.mediaId, it) }
-            currentEpisode = continueWatchingItem?.episode ?: season?.episodes?.firstOrNull()?.let {
+            currentEpisode = continueWatchingItem?.exactEpisode() ?: season?.episodes?.firstOrNull()?.let {
                 EpisodeContext(
                     seasonNumber = season.seasonNumber,
                     episodeNumber = it.episodeNumber,
@@ -1051,6 +1051,10 @@ fun PlayerScreen(
         }
         }
         loadResult.onFailure { throwable ->
+            // Changing from an unresolved series request to its exact episode restarts the keyed
+            // effect. Compose cancels the old load with LeftCompositionCancellationException;
+            // cancellation is control flow, not a playback failure the viewer can retry.
+            if (throwable is kotlinx.coroutines.CancellationException) throw throwable
             TvDebugLogger.e("Player", "loadPlayback failed mediaType=${activeRequest.mediaType} mediaId=${activeRequest.mediaId}", throwable)
             candidate = null
             currentSourceUrl = null

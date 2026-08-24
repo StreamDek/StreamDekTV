@@ -495,13 +495,13 @@ private fun MarkSeasonWatchedRow(
     onMarkSeasonWatched: () -> Unit,
 ) {
     val label = when {
-        seasonWatched -> "Season watched"
-        markingSeason -> "Marking season..."
-        else -> "Mark season watched"
+        markingSeason -> "Updating season..."
+        seasonWatched -> "Mark Season as Unwatched"
+        else -> "Mark Season as Watched"
     }
     Row(modifier = Modifier.padding(horizontal = DetailInset)) {
         DetailFocusCard(
-            onClick = { if (!seasonWatched && !markingSeason) onMarkSeasonWatched() },
+            onClick = { if (!markingSeason) onMarkSeasonWatched() },
             shape = AppPillShape,
             modifier = Modifier
                 .focusRequester(requester)

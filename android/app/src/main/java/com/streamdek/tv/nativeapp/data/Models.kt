@@ -975,7 +975,19 @@ data class ContinueWatchingItem(
     val updatedAt: String? = null,
     val lastDevice: String? = null,
     val lastPlatform: String? = null,
-)
+) {
+    /**
+     * The exact episode represented by this progress row.
+     *
+     * Sync providers do not all serialize episode identity the same way: SyncDek and some mobile
+     * writes expose season/episode beside the progress fields, while enriched provider rows may
+     * carry a nested episode object. Normalize that wire variation once so cards and playback can
+     * never disagree about which episode a timestamp belongs to.
+     */
+    fun exactEpisode(): EpisodeContext? = episode ?: seasonNumber?.let { season ->
+        episodeNumber?.let { number -> EpisodeContext(seasonNumber = season, episodeNumber = number) }
+    }
+}
 
 /**
  * When a series' next and most recent episodes air, as the backend reads them off TMDB.

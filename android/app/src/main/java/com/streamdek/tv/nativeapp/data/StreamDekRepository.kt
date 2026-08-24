@@ -1881,10 +1881,10 @@ class StreamDekRepository(
         progress = item.progress,
         positionSec = item.positionSec ?: item.resumeAt,
         durationSec = item.durationSec,
-        episode = item.episode,
+        episode = item.exactEpisode(),
         // Which episode you are part-way through, said the same way the phone says it. The card
         // otherwise leant on the episode title, which many series do not carry.
-        cardSubtitle = item.episode?.let { ep ->
+        cardSubtitle = item.exactEpisode()?.let { ep ->
             val season = ep.seasonNumber
             val number = ep.episodeNumber
             if (season != null && number != null) "S$season E$number" else null
@@ -2631,45 +2631,28 @@ class StreamDekRepository(
         title: String,
         year: String?,
         seasonNumber: Int,
+    ): Boolean = setSeasonWatched(mediaId, title, year, seasonNumber, watched = true)
+
+    suspend fun setSeasonWatched(
+        mediaId: String,
+        title: String,
+        year: String?,
+        seasonNumber: Int,
+        watched: Boolean,
     ): Boolean {
         val detail = fetchDetail(mediaId, "tv") ?: return false
         val season = fetchSeason(mediaId, seasonNumber) ?: return false
         if (season.episodes.isEmpty()) return false
-        val watchedAt = Instant.now().toString()
-        val payload = mapOf(
-            "movies" to emptyList<Any>(),
-            "shows" to listOf(
-                mapOf(
-                    "title" to title,
-                    "year" to year?.take(4)?.toIntOrNull(),
-                    "ids" to mapOf(
-                        "tmdb" to mediaId.toIntOrNull(),
-                        "imdb" to detail.imdbId,
-                    ),
-                    "seasons" to listOf(
-                        mapOf(
-                            "number" to seasonNumber,
-                            "episodes" to season.episodes.map {
-                                mapOf(
-                                    "number" to it.episodeNumber,
-                                    "watched_at" to watchedAt,
-                                )
-                            },
-                        ),
-                    ),
-                ),
-            ),
-        )
-        return runCatching {
-            val ok = api.post<Any>("/trakt/sync/watched", payload) != null
-            if (ok) {
-                clearSeasonProgress(mediaId, seasonNumber, season)
-                invalidatePlaybackDerivedCaches()
-            }
-            ok
-        }.onFailure {
-            TvDebugLogger.w("Trakt", "markSeasonWatched failed mediaId=$mediaId season=$seasonNumber")
-        }.getOrDefault(false)
+        val results = season.episodes.map { episode ->
+            setEpisodeWatched(
+                detail = detail.copy(title = title.ifBlank { detail.title }, year = year ?: detail.year),
+                episode = EpisodeContext(seasonNumber, episode.episodeNumber),
+                watched = watched,
+            )
+        }
+        val synced = results.all { it }
+        if (synced) invalidatePlaybackDerivedCaches()
+        return synced
     }
 
     suspend fun clearProgress(
@@ -2802,8 +2785,18 @@ class StreamDekRepository(
         getSeriesResumeState(seriesEpisodeSlots(detail.seasons), syncDekEvents + providerEvents, providerWatched)
     }
 
-    suspend fun fetchContinueWatchingItem(mediaType: String, mediaId: String): ContinueWatchingItem? {
-        return fetchLibrary().continueWatching.firstOrNull { it.type == mediaType && it.id == mediaId }
+    suspend fun fetchContinueWatchingItem(
+        mediaType: String,
+        mediaId: String,
+        episode: EpisodeContext? = null,
+    ): ContinueWatchingItem? {
+        val matches = fetchLibrary().continueWatching.filter { it.type == mediaType && it.id == mediaId }
+        if (episode == null) return matches.firstOrNull()
+        return matches.firstOrNull { item ->
+            item.exactEpisode()?.let {
+                it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber
+            } == true
+        } ?: matches.firstOrNull()
     }
 
     suspend fun fetchWatchedKeys(forceRefresh: Boolean = false): Set<String> {

@@ -978,18 +978,25 @@ fun DetailScreen(
                                 },
                                 onMarkSeasonWatched = markSeason@{
                                     val season = activeSeasonDetail ?: return@markSeason
-                                    if (markingSeasonWatched || selectedSeasonWatched) return@markSeason
+                                    if (markingSeasonWatched) return@markSeason
+                                    val targetWatched = !selectedSeasonWatched
                                     markingSeasonWatched = true
                                     scope.launch {
-                                        val marked = repository.markSeasonWatched(
+                                        val marked = repository.setSeasonWatched(
                                             mediaId = d.id,
                                             title = d.title,
                                             year = d.year,
                                             seasonNumber = season.seasonNumber,
+                                            watched = targetWatched,
                                         )
                                         if (marked) {
-                                            watchedEpisodeKeys = watchedEpisodeKeys + season.episodes.map {
+                                            val seasonKeys = season.episodes.map {
                                                 watchedEpisodeKey(season.seasonNumber, it.episodeNumber)
+                                            }
+                                            watchedEpisodeKeys = if (targetWatched) {
+                                                watchedEpisodeKeys + seasonKeys
+                                            } else {
+                                                watchedEpisodeKeys - seasonKeys.toSet()
                                             }
                                         }
                                         markingSeasonWatched = false

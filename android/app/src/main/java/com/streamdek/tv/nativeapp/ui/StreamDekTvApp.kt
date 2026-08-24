@@ -569,6 +569,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 mediaType = item.type,
                 episode = item.episode,
                 title = item.title,
+                startPositionSec = item.positionSec,
                 returnToDetailOnBack = true,
             ),
         )
