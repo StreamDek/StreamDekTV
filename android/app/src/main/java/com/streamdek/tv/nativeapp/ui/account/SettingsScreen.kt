@@ -379,8 +379,14 @@ fun SettingsScreen(
                     SettingsDropdownRow("Default subtitles", "Choose a preferred subtitle language or leave subtitles off", normalizeLanguage(playbackPrefs?.defaultSubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
                         savePreference("Default subtitles") { repository.updatePlaybackPreferences(mapOf("defaultSubtitleLanguage" to value)) }
                     }
+                    SettingsDropdownRow("Secondary subtitles", "Used only when the preferred language is unavailable", normalizeLanguage(playbackPrefs?.secondarySubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
+                        savePreference("Secondary subtitles") { repository.updatePlaybackPreferences(mapOf("secondarySubtitleLanguage" to value)) }
+                    }
                     SettingsToggleRow("Auto-load subtitles", "Automatically select matching subtitles when playback starts", playbackPrefs?.autoLoadSubtitles != false, selectedRequester) { next, complete ->
                         savePreference("Auto-load subtitles", complete) { repository.updatePlaybackPreferences(mapOf("autoLoadSubtitles" to next)) }
+                    }
+                    SettingsToggleRow("Show only preferred language", "Hide embedded and add-on subtitles in other languages", playbackPrefs?.showOnlyPreferredSubtitleLanguages == true, selectedRequester) { next, complete ->
+                        savePreference("Show only preferred language", complete) { repository.updatePlaybackPreferences(mapOf("showOnlyPreferredSubtitleLanguages" to next)) }
                     }
                     // Last on the page: only worth opening when something will not play.
                     SettingsPanel("If a video will not play") {

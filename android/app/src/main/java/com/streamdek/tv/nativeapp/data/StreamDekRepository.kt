@@ -965,6 +965,9 @@ class StreamDekRepository(
                         ?: existing.isAutoPlayNextEpisodeEnabled()),
                     "preferBingeGroupNextEpisode" to (partial["preferBingeGroupNextEpisode"] ?: existing.preferBingeGroupNextEpisode),
                     "autoLoadSubtitles" to (partial["autoLoadSubtitles"] ?: existing.autoLoadSubtitles),
+                    "showOnlyPreferredSubtitleLanguages" to (partial["showOnlyPreferredSubtitleLanguages"] ?: existing.showOnlyPreferredSubtitleLanguages),
+                    "secondarySubtitleLanguage" to (partial["secondarySubtitleLanguage"] ?: existing.secondarySubtitleLanguage),
+                    "addonSubtitleLoading" to (partial["addonSubtitleLoading"] ?: existing.addonSubtitleLoading),
                     "nextEpisodeThresholdMode" to (partial["nextEpisodeThresholdMode"] ?: existing.nextEpisodeThresholdMode),
                     "nextEpisodeThresholdPercent" to (partial["nextEpisodeThresholdPercent"] ?: existing.nextEpisodeThresholdPercent),
                     "nextEpisodeThresholdMinutes" to (partial["nextEpisodeThresholdMinutes"] ?: existing.nextEpisodeThresholdMinutes),
@@ -2573,6 +2576,8 @@ class StreamDekRepository(
                         // Said outright: there is no position to work it out from.
                         "completed" to true,
                         "updatedAt" to Instant.now().toString(),
+                        "lastDevice" to "StreamDek TV",
+                        "lastPlatform" to "tv",
                         "metadata" to mapOf(
                             "title" to item.title,
                             "posterUrl" to item.poster,
@@ -2754,6 +2759,48 @@ class StreamDekRepository(
         return api.get<PlaybackProgressResponse>(query)?.progress
     }
 
+    suspend fun fetchSeriesResumeState(detail: MediaDetail): SeriesResumeState = supervisorScope {
+        val progressDeferred = async {
+            api.get<PlaybackProgressListResponse>(
+                "/sync/progress?entityType=tv&entityId=${URLEncoder.encode(detail.id, "UTF-8")}&limit=100",
+            )?.results.orEmpty()
+        }
+        val watchedDeferred = async { fetchWatchedKeys(forceRefresh = true) }
+        val providerPlaybackDeferred = async { runCatching { fetchServicePlayback() }.getOrDefault(emptyList()) }
+        val syncDekEvents = progressDeferred.await().mapNotNull { record ->
+            val season = record.seasonNumber ?: return@mapNotNull null
+            val episode = record.episodeNumber ?: return@mapNotNull null
+            SeriesProgressEvent(
+                seasonNumber = season,
+                episodeNumber = episode,
+                positionSec = record.positionSec,
+                progress = record.progress,
+                status = record.status,
+                updatedAtMillis = record.updatedAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() } ?: 0L,
+            )
+        }
+        val providerEvents = providerPlaybackDeferred.await().mapNotNull { item ->
+            if (item.type != "tv" || (item.id != detail.id && item.tmdbId.toString() != detail.id)) return@mapNotNull null
+            val season = item.episode?.seasonNumber ?: item.seasonNumber ?: return@mapNotNull null
+            val episode = item.episode?.episodeNumber ?: item.episodeNumber ?: return@mapNotNull null
+            SeriesProgressEvent(
+                seasonNumber = season,
+                episodeNumber = episode,
+                positionSec = item.positionSec
+                    ?: item.durationSec?.times((item.progress ?: 0.0) / 100.0)
+                    ?: 0.0,
+                progress = item.progress ?: 0.0,
+                status = "in-progress",
+                updatedAtMillis = item.updatedAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() } ?: 0L,
+            )
+        }
+        val prefix = "tv:${detail.id}:"
+        val providerWatched = watchedDeferred.await().mapNotNull { key ->
+            key.takeIf { it.startsWith(prefix) }?.removePrefix(prefix)
+        }.toSet()
+        getSeriesResumeState(seriesEpisodeSlots(detail.seasons), syncDekEvents + providerEvents, providerWatched)
+    }
+
     suspend fun fetchContinueWatchingItem(mediaType: String, mediaId: String): ContinueWatchingItem? {
         return fetchLibrary().continueWatching.firstOrNull { it.type == mediaType && it.id == mediaId }
     }
@@ -2784,7 +2831,60 @@ class StreamDekRepository(
         episode: EpisodeContext? = null,
         forceRefresh: Boolean = false,
     ): Boolean {
+        val syncDek = fetchProgress(mediaType, mediaId, episode)
+        if (syncDek?.status == "completed") return true
+        if (syncDek?.status == "unwatched") return false
         return fetchWatchedKeys(forceRefresh).contains(watchedHistoryKey(mediaType, mediaId, episode))
+    }
+
+    suspend fun setEpisodeWatched(detail: MediaDetail, episode: EpisodeContext, watched: Boolean): Boolean {
+        val syncDek = runCatching {
+            api.request<Any>(
+                method = "PUT",
+                path = "/sync/progress",
+                body = com.google.gson.Gson().toJson(
+                    mapOf(
+                        "entityType" to "tv",
+                        "entityId" to detail.id,
+                        "episodeKey" to buildEpisodeKey(episode),
+                        "positionSec" to 0,
+                        "durationSec" to 0,
+                        "completed" to watched,
+                        "unwatched" to !watched,
+                        "updatedAt" to Instant.now().toString(),
+                        "lastDevice" to "StreamDek TV",
+                        "lastPlatform" to "tv",
+                        "metadata" to buildSyncMetadata(detail, episode),
+                    ),
+                ),
+            )
+            true
+        }.getOrDefault(false)
+
+        if (isSyncServiceConnected(SyncServiceId.TRAKT)) {
+            val payload = mapOf(
+                "movies" to emptyList<Any>(),
+                "shows" to listOf(
+                    mapOf(
+                        "title" to detail.title,
+                        "ids" to mapOf("tmdb" to detail.id.toIntOrNull(), "imdb" to detail.imdbId),
+                        "seasons" to listOf(
+                            mapOf(
+                                "number" to episode.seasonNumber,
+                                "episodes" to listOf(
+                                    mapOf("number" to episode.episodeNumber, "watched_at" to Instant.now().toString()),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            val endpoint = if (watched) "/trakt/sync/watched" else "/trakt/sync/history/remove"
+            runCatching { api.post<Any>(endpoint, payload) }
+                .onFailure { TvDebugLogger.w("Trakt", "episode watched toggle failed ${detail.id}:${episode.seasonNumber}:${episode.episodeNumber}") }
+        }
+        if (syncDek) invalidatePlaybackDerivedCaches()
+        return syncDek
     }
 
     suspend fun syncProgress(
@@ -2808,6 +2908,8 @@ class StreamDekRepository(
                         "durationSec" to durationSec,
                         "episodeKey" to buildEpisodeKey(episode),
                         "updatedAt" to Instant.now().toString(),
+                        "lastDevice" to "StreamDek TV",
+                        "lastPlatform" to "tv",
                         "metadata" to buildSyncMetadata(detail, episode),
                     ),
                 ),
@@ -3499,6 +3601,11 @@ class StreamDekRepository(
         }
         val type = if (isSeries) "series" else "movie"
         val preferences = bootstrapState.value?.preferences?.playback ?: PlaybackPreferences()
+        if (preferences.addonSubtitleLoading.equals("off", ignoreCase = true)) return@withContext emptyList()
+        val preferredLanguages = listOf(
+            activeStreamProfile(bootstrapState.value)?.subtitleLanguage ?: preferences.defaultSubtitleLanguage,
+            preferences.secondarySubtitleLanguage,
+        ).map(Languages::normalize).filter { it.isNotBlank() && it != Languages.NONE }.toSet()
         val cloudSources = (preferences.subtitleSources + preferences.customSubtitleSources)
             .filter { it.enabled }
             .mapNotNull { source ->
@@ -3570,6 +3677,14 @@ class StreamDekRepository(
             }.map { it.await() }
                 .flatten()
                 .distinctBy { it.url }
+                .let { results ->
+                    val matching = results.filter { Languages.normalize(it.language) in preferredLanguages }
+                    when {
+                        preferences.showOnlyPreferredSubtitleLanguages -> matching
+                        preferences.addonSubtitleLoading.equals("preferred", ignoreCase = true) -> matching.ifEmpty { results }
+                        else -> results
+                    }
+                }
                 .sortedWith(compareBy<ExternalSubtitleTrack> {
                     when (it.language) {
                         normalizeSubtitleLanguage(activeStreamProfile(bootstrapState.value)?.subtitleLanguage
@@ -3609,6 +3724,12 @@ class StreamDekRepository(
      * encoding.
      */
     private fun decodeSubtitleBytes(bytes: ByteArray): String {
+        if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+            return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+        }
+        if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+            return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+        }
         val body = if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
             bytes.copyOfRange(3, bytes.size)
         } else {
@@ -3620,8 +3741,41 @@ class StreamDekRepository(
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(body))
                 .toString()
-        }.getOrElse { String(body, Charsets.ISO_8859_1) }
+        }.getOrElse { String(body, charset("windows-1252")) }
     }
+
+    /** Writes an explicit completion marker so SyncDek and every mirrored service see the finish. */
+    suspend fun completeProgress(
+        mediaType: String,
+        mediaId: String,
+        episode: EpisodeContext?,
+        detail: MediaDetail?,
+        positionSec: Double,
+        durationSec: Double,
+    ): Boolean = runCatching {
+        api.request<Any>(
+            method = "PUT",
+            path = "/sync/progress",
+            body = com.google.gson.Gson().toJson(
+                mapOf(
+                    "entityType" to mediaType,
+                    "entityId" to mediaId,
+                    "positionSec" to positionSec.coerceAtLeast(0.0),
+                    "durationSec" to durationSec.coerceAtLeast(0.0),
+                    "episodeKey" to buildEpisodeKey(episode),
+                    "completed" to true,
+                    "updatedAt" to Instant.now().toString(),
+                    "lastDevice" to "StreamDek TV",
+                    "lastPlatform" to "tv",
+                    "metadata" to buildSyncMetadata(detail, episode),
+                ),
+            ),
+        )
+        invalidatePlaybackDerivedCaches()
+        true
+    }.onFailure {
+        TvDebugLogger.w("Playback", "completeProgress failed mediaType=$mediaType mediaId=$mediaId")
+    }.getOrDefault(false)
 
     suspend fun downloadSubtitleToCache(url: String, cacheDir: File): String? = withContext(Dispatchers.IO) {
         runCatching {
@@ -3642,14 +3796,19 @@ class StreamDekRepository(
             // Whatever extension was written for this URL before; the content decided it then.
             directory.listFiles { file -> file.name.startsWith("$stem.") }
                 ?.firstOrNull { it.length() > 0L }
-                ?.let { return@runCatching it.absolutePath }
+                ?.let { cached ->
+                    if (runCatching { subtitleTextHasTimedCues(cached.readText(), cached.extension.lowercase()) }.getOrDefault(false)) return@runCatching cached.absolutePath
+                    cached.delete()
+                }
             val bytes = api.client.newCall(request).execute().use { response ->
                 check(response.isSuccessful) { "Subtitle download failed: ${response.code}" }
                 response.body?.bytes() ?: error("Empty subtitle response")
             }
             val text = decodeSubtitleBytes(bytes)
             check(text.isNotBlank()) { "Empty subtitle response" }
-            val target = File(directory, "$stem.${subtitleExtensionFor(text)}")
+            val extension = subtitleExtensionFor(text)
+            check(subtitleTextHasTimedCues(text, extension)) { "Subtitle response contained no timed cues" }
+            val target = File(directory, "$stem.$extension")
             target.writeText(text, Charsets.UTF_8)
             TvDebugLogger.i("Subtitles", "cached ${target.name} (${bytes.size} bytes)")
             target.absolutePath

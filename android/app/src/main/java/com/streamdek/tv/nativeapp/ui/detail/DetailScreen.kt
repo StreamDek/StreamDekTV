@@ -79,6 +79,7 @@ import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.SeasonDetail
 import com.streamdek.tv.nativeapp.data.SeasonEpisode
+import com.streamdek.tv.nativeapp.data.SeriesEpisodeSlot
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TraktCommentItem
 import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
@@ -195,6 +196,7 @@ fun DetailScreen(
     var loadedSeasons by remember(mediaType, mediaId) { mutableStateOf<List<SeasonDetail>>(emptyList()) }
     var loadingNextSeason by remember(mediaType, mediaId) { mutableStateOf(false) }
     var resumeEpisodeContext by remember(mediaType, mediaId) { mutableStateOf<EpisodeContext?>(null) }
+    var resumeTargetSlot by remember(mediaType, mediaId) { mutableStateOf<SeriesEpisodeSlot?>(null) }
     var progressFraction by remember(mediaType, mediaId) { mutableStateOf<Float?>(null) }
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
@@ -296,6 +298,7 @@ fun DetailScreen(
         episodeActionLoading = false
         episodeActionError = null
         resumeEpisodeContext = null
+        resumeTargetSlot = null
         runCatching { repository.refreshBootstrap() }
 
         val libraryDeferred = supervisorScope { async { runCatching { repository.fetchLibrary() }.getOrNull() } }
@@ -304,6 +307,18 @@ fun DetailScreen(
             if (existingDetail == null) uiState = DetailUiState.Error("Could not load title details")
             onContentReady()
             return@LaunchedEffect
+        }
+        val seriesResume = if (detail.type == "tv") {
+            runCatching { repository.fetchSeriesResumeState(detail) }.getOrNull()
+        } else null
+        seriesResume?.let { state ->
+            watchedEpisodeKeys = state.watchedEpisodeKeys
+            resumeTargetSlot = state.target
+            resumeEpisodeContext = state.target?.let { EpisodeContext(it.seasonNumber, it.episodeNumber) }
+            state.target?.let { target ->
+                anchorSeasonNumber = target.seasonNumber
+                activeSeasonNumber = target.seasonNumber
+            }
         }
         uiState = DetailUiState.Ready(detail)
         onContentReady()
@@ -316,8 +331,10 @@ fun DetailScreen(
             inWatchlist = repository.isInWatchlist(
                 MediaItem(id = mediaId, tmdbId = detail.tmdbId, title = detail.title, type = mediaType),
             )
-            resumeEpisodeContext = library.continueWatching
-                .firstOrNull { it.id == mediaId && it.type == mediaType }?.episode
+            if (resumeEpisodeContext == null) {
+                resumeEpisodeContext = library.continueWatching
+                    .firstOrNull { it.id == mediaId && it.type == mediaType }?.episode
+            }
         }
     }
 
@@ -566,6 +583,17 @@ fun DetailScreen(
         loadedSeasons = listOfNotNull(repository.fetchSeason(currentDetail.id, anchorSeasonNumber))
     }
 
+    LaunchedEffect(loadedSeasons, resumeTargetSlot) {
+        val target = resumeTargetSlot ?: return@LaunchedEffect
+        val index = loadedSeasons.flatMap { season ->
+            season.episodes.map { episode -> season.seasonNumber to episode.episodeNumber }
+        }.indexOf(target.seasonNumber to target.episodeNumber)
+        if (index >= 0) {
+            selectedEpisodeIndex = index
+            activeSeasonNumber = target.seasonNumber
+        }
+    }
+
     /**
      * Pulls in the season after the last one loaded.
      *
@@ -614,10 +642,7 @@ fun DetailScreen(
         }
         // Keep the entire series history, not only episodes in seasons that happen to be loaded.
         // Season chips exist before their episode rows are fetched and still need their ticks.
-        watchedEpisodeKeys = seriesWatchedEpisodeKeys(
-            repository.fetchWatchedKeys(forceRefresh = true),
-            currentDetail.id,
-        )
+        watchedEpisodeKeys = repository.fetchSeriesResumeState(currentDetail).watchedEpisodeKeys
     }
 
     LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, progressFraction, detail?.id) {
@@ -946,6 +971,8 @@ fun DetailScreen(
                                 upRequester = playRequester,
                                 onSelectSeason = {
                                     if (anchorSeasonNumber != it) {
+                                        resumeTargetSlot = null
+                                        resumeEpisodeContext = null
                                         anchorSeasonNumber = it
                                     }
                                 },
@@ -1114,27 +1141,32 @@ fun DetailScreen(
                             episodeActionError = null
                         }
                     },
-                    onMarkWatched = {
+                    onToggleWatched = {
                         if (!episodeActionLoading) {
                             episodeActionLoading = true
                             episodeActionError = null
                             scope.launch {
                                 val context = entry.episode.toEpisodeContext(entry.seasonNumber)
-                                val marked = repository.markWatched(
-                                    mediaType = "tv",
-                                    mediaId = currentDetail.id,
-                                    title = currentDetail.title,
-                                    year = currentDetail.year,
-                                    episode = context,
-                                    imdbId = currentDetail.imdbId,
-                                )
+                                val key = watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber)
+                                val targetWatched = key !in watchedEpisodeKeys
+                                val marked = repository.setEpisodeWatched(currentDetail, context, targetWatched)
                                 if (marked) {
-                                    repository.clearProgress("tv", currentDetail.id, context)
-                                    watchedEpisodeKeys = watchedEpisodeKeys +
-                                        watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber)
+                                    // Re-run the same unified policy used when the detail page opens.
+                                    // This advances after a completed episode and returns to the exact
+                                    // episode after an explicit unwatched tombstone.
+                                    val refreshed = repository.fetchSeriesResumeState(currentDetail)
+                                    watchedEpisodeKeys = refreshed.watchedEpisodeKeys
+                                    resumeTargetSlot = refreshed.target
+                                    resumeEpisodeContext = refreshed.target?.let {
+                                        EpisodeContext(it.seasonNumber, it.episodeNumber)
+                                    }
+                                    refreshed.target?.let { target ->
+                                        anchorSeasonNumber = target.seasonNumber
+                                        activeSeasonNumber = target.seasonNumber
+                                    }
                                     episodeAction = null
                                 } else {
-                                    episodeActionError = "Could not mark this episode watched."
+                                    episodeActionError = "Could not update this episode's watched state."
                                 }
                                 episodeActionLoading = false
                             }
@@ -1640,7 +1672,7 @@ private fun EpisodeActionDialog(
     loading: Boolean,
     error: String?,
     onDismiss: () -> Unit,
-    onMarkWatched: () -> Unit,
+    onToggleWatched: () -> Unit,
 ) {
     val actionRequester = remember { FocusRequester() }
 
@@ -1666,7 +1698,7 @@ private fun EpisodeActionDialog(
             )
             Text(
                 text = when {
-                    watched -> "This episode is already marked watched."
+                    watched -> "Marking it unwatched will make it eligible for series continuation again."
                     loading -> "Updating your watched history..."
                     else -> "Choose an action for this episode."
                 },
@@ -1677,12 +1709,18 @@ private fun EpisodeActionDialog(
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFFFB4AB))
             }
             Button(
-                onClick = onMarkWatched,
-                enabled = !watched && !loading,
+                onClick = onToggleWatched,
+                enabled = !loading,
                 modifier = Modifier.fillMaxWidth().focusRequester(actionRequester),
                 shape = ButtonDefaults.shape(AppPillShape),
             ) {
-                Text(if (watched) "Episode watched" else if (loading) "Marking..." else "Mark episode watched")
+                Text(
+                    when {
+                        loading -> "Updating..."
+                        watched -> "Mark as Unwatched"
+                        else -> "Mark as Watched"
+                    },
+                )
             }
             OutlinedButton(
                 onClick = onDismiss,

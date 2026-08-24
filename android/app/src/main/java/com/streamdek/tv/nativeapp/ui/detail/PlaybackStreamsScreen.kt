@@ -96,7 +96,8 @@ private sealed interface PlaybackStreamsUiState {
 private val StreamsInset = TvSpacing.ScreenHorizontal
 
 private val QualityPattern = Regex("""(2160p|1080p|720p|480p|4k|uhd)""", RegexOption.IGNORE_CASE)
-private val SizePattern = Regex("""(\d+(?:[.,]\d+)?)\s?(GB|MB)""", RegexOption.IGNORE_CASE)
+// The trailing boundary keeps bitrates out: `9.6 Mbps` is not a 9.6 MB movie.
+private val SizePattern = Regex("""(\d+(?:[.,]\d+)?)\s?(GB|MB)\b""", RegexOption.IGNORE_CASE)
 
 /**
  * Quality and size as shown in the columns.
@@ -106,13 +107,30 @@ private val SizePattern = Regex("""(\d+(?:[.,]\d+)?)\s?(GB|MB)""", RegexOption.I
  * makes the columns worth having; when a value genuinely is not there the column is dropped for
  * the whole list rather than filled with placeholders.
  */
+private fun qualityToken(text: String?): String? = text
+    ?.takeIf { it.isNotBlank() }
+    ?.let(QualityPattern::find)
+    ?.value
+    ?.uppercase()
+    ?.replace("UHD", "2160P")
+
 internal fun streamQualityLabel(stream: AddonStream, label: String): String? =
-    stream.quality?.takeIf { it.isNotBlank() }
-        ?: QualityPattern.find(label)?.value?.uppercase()?.replace("UHD", "2160P")
+    qualityToken(stream.quality) ?: qualityToken(label)
 
 internal fun streamSizeLabel(stream: AddonStream, label: String): String? =
-    stream.size?.takeIf { it.isNotBlank() }
-        ?: SizePattern.find(label)?.let { "${it.groupValues[1]} ${it.groupValues[2].uppercase()}" }
+    sequenceOf(stream.size, label, stream.title, stream.name, stream.behaviorHints?.filename, stream.filename, stream.description)
+        .filterNotNull()
+        .flatMap { SizePattern.findAll(it) }
+        .mapNotNull { match ->
+            val value = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return@mapNotNull null
+            val unit = match.groupValues[2].uppercase()
+            val gigabytes = if (unit == "GB") value else value / 1024.0
+            Triple(gigabytes, match.groupValues[1], unit)
+        }
+        // Some providers put a response/chunk size in `size` and the actual release size in their
+        // display text. A film-sized value is the useful one, so choose the largest valid value.
+        .maxByOrNull { it.first }
+        ?.let { (_, value, unit) -> "$value $unit" }
 
 
 /**
@@ -944,10 +962,11 @@ private fun StreamRow(
         glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = TvMotion.focusScale()),
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 13.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Box(Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 13.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     // Above the release rather than out in the columns, and in both modes.
@@ -956,7 +975,7 @@ private fun StreamRow(
                     // sources, so it sits where the eye already is — on the source's own name.
                     // Verbatim mode keeps it too: that mode's promise is that the add-on's text is
                     // never rewritten, and a line above it does not touch a word of what was sent.
-                    if (formatted || readyLabel != null) {
+                    if (formatted) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -980,12 +999,6 @@ private fun StreamRow(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                 }
-                            }
-                            readyLabel?.let { ready ->
-                                // Pinned right, so it lands in the same place down the whole list
-                                // and can be read without following the source names in and out.
-                                Spacer(Modifier.weight(1f))
-                                ReadyServiceTag(ready)
                             }
                         }
                     }
@@ -1025,15 +1038,24 @@ private fun StreamRow(
             if (fusionBadges.isNotEmpty()) {
                 FusionBadgeRow(badges = fusionBadges)
             }
+            }
+            readyLabel?.let { ready ->
+                // This is a card-level status, not source metadata. Overlaying it against the card
+                // edge keeps it at the real top-right even when the quality/size columns change.
+                ReadyServiceTag(
+                    text = ready,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 13.dp, end = 18.dp),
+                )
+            }
         }
     }
 }
 
 /** The premium service promising an instant start. See [readyServiceLabel]. */
 @Composable
-private fun ReadyServiceTag(text: String) {
+private fun ReadyServiceTag(text: String, modifier: Modifier = Modifier) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(999.dp))
             .background(MaterialTheme.colorScheme.primary)
             .padding(horizontal = 9.dp, vertical = 3.dp),

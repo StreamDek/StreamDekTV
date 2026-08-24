@@ -86,6 +86,7 @@ import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
+import com.streamdek.tv.nativeapp.data.contentScopedResumePosition
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaItem
@@ -293,6 +294,7 @@ fun PlayerScreen(
     var lastLiveProgressPositionSec by remember { mutableDoubleStateOf(-1.0) }
     var pendingSeekJob by remember { mutableStateOf<Job?>(null) }
     var pendingResumePositionSec by remember { mutableStateOf<Double?>(null) }
+    var pendingResumeContentKey by remember { mutableStateOf<String?>(null) }
     var lastWorkingSourceUrl by remember { mutableStateOf<String?>(null) }
     var lastWorkingLabel by remember { mutableStateOf<String?>(null) }
     var lastWorkingRequestHeaders by remember { mutableStateOf(defaultPlaybackHeaders) }
@@ -737,7 +739,14 @@ fun PlayerScreen(
 
     suspend fun markWatchedAndClearProgressIfNeeded() {
         if (watchedMarked) return
-        repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+        val syncCompleted = repository.completeProgress(
+            request.mediaType,
+            request.mediaId,
+            currentEpisode,
+            detail,
+            positionSec,
+            durationSec,
+        )
         val marked = repository.markWatched(
             mediaType = request.mediaType,
             mediaId = request.mediaId,
@@ -746,8 +755,7 @@ fun PlayerScreen(
             episode = currentEpisode,
             imdbId = request.imdbId ?: detail?.imdbId,
         )
-        watchedMarked = marked
-        repository.clearProgress(request.mediaType, request.mediaId, currentEpisode)
+        watchedMarked = syncCompleted || marked
     }
 
     suspend fun removeFromWatchlistIfNeeded() {
@@ -783,6 +791,7 @@ fun PlayerScreen(
 
     fun beginNextEpisode(streamIndex: Int? = null) {
         val targetEpisode = nextEpisode ?: return
+        val fromEpisode = currentEpisode
         val selectedStream = when {
             streamIndex != null -> nextEpisodeCandidate?.streams?.getOrNull(streamIndex)
             else -> nextEpisodeCandidate?.stream ?: nextEpisodeCandidate?.streams?.firstOrNull()
@@ -808,6 +817,10 @@ fun PlayerScreen(
             nextEpisodeCandidate = null
             paused = false
             currentEpisode = targetEpisode
+            TvDebugLogger.i(
+                "EpisodeTransition",
+                "from=S${fromEpisode?.seasonNumber}E${fromEpisode?.episodeNumber} to=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} previousEpisodeCompleted=$watchedMarked",
+            )
         }
     }
 
@@ -857,6 +870,8 @@ fun PlayerScreen(
         pendingSeekJob?.cancel()
         pendingSeekJob = null
         seekTargetSec = null
+        pendingResumePositionSec = null
+        pendingResumeContentKey = null
         loading = true
         controlsVisible = false
         pauseInfoVisible = false
@@ -922,15 +937,27 @@ fun PlayerScreen(
             }
         }
         val progress = if (isLive) null else repository.fetchProgress(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
-        pendingResumePositionSec = if (isLive) {
-            null
-        } else {
-            activeRequest.startPositionSec?.takeIf { it > 0.0 }
-                ?: progress?.positionSec
-                ?.takeIf { it > 0.0 }
-                ?: continueWatchingItem?.positionSec
-                ?: continueWatchingItem?.resumeAt
-        }
+        val contentKey = listOf(
+            activeRequest.mediaType,
+            activeRequest.mediaId,
+            currentEpisode?.seasonNumber ?: -1,
+            currentEpisode?.episodeNumber ?: -1,
+        ).joinToString(":")
+        pendingResumePositionSec = if (isLive) null else contentScopedResumePosition(
+            mediaType = activeRequest.mediaType,
+            explicitPosition = activeRequest.startPositionSec,
+            exactProgressPosition = progress?.positionSec,
+            continuePosition = continueWatchingItem?.positionSec ?: continueWatchingItem?.resumeAt,
+            continueSeason = continueWatchingItem?.episode?.seasonNumber ?: continueWatchingItem?.seasonNumber,
+            continueEpisode = continueWatchingItem?.episode?.episodeNumber ?: continueWatchingItem?.episodeNumber,
+            targetSeason = currentEpisode?.seasonNumber,
+            targetEpisode = currentEpisode?.episodeNumber,
+        )
+        pendingResumeContentKey = contentKey
+        TvDebugLogger.i(
+            "ContinueWatching",
+            "contentId=${activeRequest.mediaId} contentType=${activeRequest.mediaType} season=${currentEpisode?.seasonNumber} episode=${currentEpisode?.episodeNumber} originDevice=${continueWatchingItem?.lastPlatform ?: "this-tv"} destinationDevice=tv resumePosition=${pendingResumePositionSec ?: 0.0}",
+        )
         val resolved = resolvedCandidate ?: repository.resolvePlayback(
             activeRequest.mediaType,
             activeRequest.mediaId,
@@ -1080,28 +1107,16 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         subtitlePreferenceAppliedForSource = null
         seekTargetSec = null
         val source = currentSourceUrl
-        // Media3 must receive every sidecar before its first prepare. Selecting one later is then
-        // a track override and cannot interrupt the video. MPV already supports sub-add live.
-        if (
-            activePlaybackEngine == ActivePlaybackEngine.Media3 &&
-            !isLive &&
-            !source.isNullOrBlank() &&
-            externalSubtitlesPreparedForSource != source
-        ) return@LaunchedEffect
+        // External subtitles are downloaded and validated before being attached as local
+        // sidecars. Keep source preparation independent so a bad subtitle cannot block video.
         playerView?.setHeaders(currentRequestHeaders)
-        if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
-            playerView?.setExternalSubtitleTracks(externalSubtitles)
-        }
         if (!source.isNullOrBlank()) playerView?.setSource(source)
         // Re-asserted per source: both engines reset caption styling when they reconfigure their
         // subtitle chain, so a size chosen on the last episode would otherwise be lost on this one.
         playerView?.setSubtitleFontSize(subtitleFontSize)
         playerView?.setSubtitlePosition(subtitlePosition)
-        val resumeAt = pendingResumePositionSec
-        if (resumeAt != null && resumeAt > 0.0) {
-            delay(1200)
-            playerView?.seekTo(resumeAt)
-        }
+        // Resume is applied by onLoad after the engine reports this media ready. A timed seek here
+        // could outlive an episode switch and land the previous episode's timestamp on the next.
     }
 
     // The engines are polled rather than made to push, and only while the panel that reads them is
@@ -1147,7 +1162,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             val preferredLanguage = repository.activeStreamProfile(repository.bootstrap.value)?.subtitleLanguage
                 ?.takeIf { it.isNotBlank() }
                 ?: playbackPreferences.defaultSubtitleLanguage
-            val preferred = results.firstOrNull { it.language.equals(preferredLanguage, ignoreCase = true) }
+            val preferred = results.firstOrNull { Languages.matches(it.language, preferredLanguage) }
                 ?: results.firstOrNull { it.language == "en" }
             if (preferred != null) {
                 selectedExternalSubtitleId = preferred.id
@@ -1185,19 +1200,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         val source = currentSourceUrl ?: return@LaunchedEffect
         val key = "${activePlaybackEngine.name}:$source:${selected.id}"
         if (externalSubtitleAppliedKey == key) return@LaunchedEffect
-        if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
-            if (playerView?.selectExternalSubtitleTrack(selected.id) == true) {
-                selectedSubtitleId = -1
-                externalSubtitleAppliedKey = key
-                TvDebugLogger.i("Subtitles", "selected pre-attached ${selected.label}")
-            }
-            return@LaunchedEffect
-        }
         if (loading) return@LaunchedEffect
         val localPath = repository.downloadSubtitleToCache(selected.url, context.cacheDir) ?: return@LaunchedEffect
         if (currentSourceUrl == source && selectedExternalSubtitleId == selected.id) {
             playerView?.addSubtitleFile(localPath)
             externalSubtitleAppliedKey = key
+            TvDebugLogger.i("Subtitle", "source=${selected.id.substringBefore(':')} language=${selected.language} format=${localPath.substringAfterLast('.')} load=success trackAttached=true")
         }
     }
     LaunchedEffect(speed) {
@@ -1682,10 +1690,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         } else {
                             showControls(focusPlay = true)
                         }
-                        (pendingEngineResumePositionSec ?: pendingResumePositionSec)?.takeIf { it > 0.0 }?.let { resumeAt ->
+                        val loadedContentKey = listOf(
+                            request.mediaType,
+                            request.mediaId,
+                            currentEpisode?.seasonNumber ?: -1,
+                            currentEpisode?.episodeNumber ?: -1,
+                        ).joinToString(":")
+                        (pendingEngineResumePositionSec ?: pendingResumePositionSec)
+                            ?.takeIf { it > 0.0 && (pendingEngineResumePositionSec != null || pendingResumeContentKey == loadedContentKey) }
+                            ?.let { resumeAt ->
                             pendingEngineResumePositionSec = null
                             pendingResumePositionSec = null
+                            pendingResumeContentKey = null
                             seekTo(resumeAt)
+                            TvDebugLogger.i("Player", "contentId=${request.mediaId} requestedResumePosition=$resumeAt seekApplied=$resumeAt")
                         }
                     }
                     onProgressCallback = { position, duration ->
@@ -2419,7 +2437,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         panel = activePanel,
                         candidate = candidate,
                         audioTracks = audioTracks,
-                        subtitleTracks = subtitleTracks,
+                        subtitleTracks = subtitleTracks.filter { track ->
+                            !playbackPreferences.showOnlyPreferredSubtitleLanguages || Languages.matches(
+                                track.language ?: track.title,
+                                repository.activeStreamProfile(repository.bootstrap.value)?.subtitleLanguage
+                                    ?: playbackPreferences.defaultSubtitleLanguage,
+                            ) || Languages.matches(track.language ?: track.title, playbackPreferences.secondarySubtitleLanguage)
+                        },
                         externalSubtitles = externalSubtitles,
                         subtitlesLoading = subtitlesLoading,
                         selectedAudioId = selectedAudioId,
@@ -2515,16 +2539,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 val source = currentSourceUrl ?: return@launch
                                 selectedExternalSubtitleId = subtitle.id
                                 subtitlePreferenceAppliedForSource = source
-                                if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
-                                    selectedSubtitleId = -1
-                                    if (playerView?.selectExternalSubtitleTrack(subtitle.id) == true) {
-                                        externalSubtitleAppliedKey = "${activePlaybackEngine.name}:$source:${subtitle.id}"
-                                    }
-                                    panel = null
-                                    panelClosedAtMs = System.currentTimeMillis()
-                                    showControls(focusPlay = !isLive)
-                                    return@launch
-                                }
                                 // These files sit on hosts that expire links and refuse requests,
                                 // so one failing is ordinary rather than exceptional. The next copy
                                 // in the same language is tried before the viewer is told anything,

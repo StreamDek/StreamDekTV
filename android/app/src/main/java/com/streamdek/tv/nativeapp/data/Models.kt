@@ -424,7 +424,7 @@ data class ExternalSubtitleTrack(
 )
 data class StremioSubtitleItem(
     val id: String = "",
-    @SerializedName("lang") val language: String = "",
+    @SerializedName(value = "lang", alternate = ["language", "languageCode", "locale"]) val language: String = "",
     @SerializedName("m") val release: String = "",
     val url: String = "",
 )
@@ -450,6 +450,9 @@ data class PlaybackPreferences(
     val introDbApiKey: String = "",
     val preferBingeGroupNextEpisode: Boolean = true,
     val autoLoadSubtitles: Boolean = true,
+    val showOnlyPreferredSubtitleLanguages: Boolean = false,
+    val secondarySubtitleLanguage: String = "none",
+    val addonSubtitleLoading: String = "preferred",
     val nextEpisodeThresholdMode: String = "minutes",
     val nextEpisodeThresholdPercent: Int = 95,
     val nextEpisodeThresholdMinutes: Int = 2,
@@ -965,6 +968,11 @@ data class ContinueWatchingItem(
     val resumeAt: Double? = null,
     val episodeKey: String? = null,
     val episode: EpisodeContext? = null,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val updatedAt: String? = null,
+    val lastDevice: String? = null,
+    val lastPlatform: String? = null,
 )
 
 /**
@@ -1018,10 +1026,21 @@ data class PlaybackProgressRecord(
     val positionSec: Double,
     val durationSec: Double,
     val progress: Double,
+    val episodeKey: String? = null,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val updatedAt: String? = null,
+    val lastDevice: String? = null,
+    val lastPlatform: String? = null,
+    val status: String = "in-progress",
 )
 
 data class PlaybackProgressResponse(
     val progress: PlaybackProgressRecord? = null,
+)
+
+data class PlaybackProgressListResponse(
+    val results: List<PlaybackProgressRecord> = emptyList(),
 )
 
 data class PlaybackSegment(
