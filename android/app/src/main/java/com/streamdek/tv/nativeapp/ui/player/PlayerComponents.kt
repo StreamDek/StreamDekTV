@@ -123,6 +123,13 @@ internal enum class OverlayPanel {
     Info,
 }
 
+/** One predictable remote press, with a slightly larger step for feature-length playback. */
+internal fun tvSeekStepSeconds(durationSec: Double): Double = when {
+    durationSec >= 7200.0 -> 20.0
+    durationSec >= 3600.0 -> 12.0
+    else -> 10.0
+}
+
 /** Subtitle sizing offered in the player, around mpv's default of 55. */
 internal val SubtitleSizeRange = 28..84
 
@@ -251,11 +258,7 @@ internal fun PlayerBottomBar(
     // the first key press after focus with the previous composition's value; left appeared to
     // "arm" scrubbing only because it gave recomposition time to catch up before right was used.
     val timelineFocused = remember { mutableStateOf(false) }
-    val timelineSeekStep = when {
-        durationSec >= 7200.0 -> 20.0
-        durationSec >= 3600.0 -> 12.0
-        else -> 8.0
-    }
+    val timelineSeekStep = tvSeekStepSeconds(durationSec)
     Box(
         modifier = modifier
             .fillMaxWidth()

@@ -145,10 +145,35 @@ internal enum class ActivePlaybackEngine { Media3, MPV }
 
 internal enum class LiveRetryAction { Reload, Refetch, GiveUp }
 
+internal enum class PlayerInteractionLayer { Playback, Controls, Seeking, Drawer, Dialog }
+
+internal fun playerInteractionLayer(
+    dialogVisible: Boolean,
+    drawerVisible: Boolean,
+    seeking: Boolean,
+    controlsVisible: Boolean,
+): PlayerInteractionLayer = when {
+    dialogVisible -> PlayerInteractionLayer.Dialog
+    drawerVisible -> PlayerInteractionLayer.Drawer
+    seeking -> PlayerInteractionLayer.Seeking
+    controlsVisible -> PlayerInteractionLayer.Controls
+    else -> PlayerInteractionLayer.Playback
+}
+
 internal fun liveRetryAction(attempt: Int): LiveRetryAction = when (attempt) {
     in 1..2 -> LiveRetryAction.Reload
     in 3..LiveReconnectMaxAttempts -> LiveRetryAction.Refetch
     else -> LiveRetryAction.GiveUp
+}
+
+internal fun continueWatchingCameFromAnotherPlatform(lastPlatform: String?, destination: String): Boolean {
+    val origin = lastPlatform?.trim()?.lowercase().orEmpty()
+    if (origin.isBlank()) return false
+    return when (destination.trim().lowercase()) {
+        "tv" -> origin !in setOf("tv", "androidtv", "firetv")
+        "mobile" -> origin !in setOf("mobile", "android", "android-mobile")
+        else -> origin != destination.trim().lowercase()
+    }
 }
 
 internal fun normalizePlayerEngineSetting(raw: String?): String = when (raw?.trim()?.lowercase()) {
@@ -253,6 +278,7 @@ fun PlayerScreen(
      */
     var sourceFallbackNotice by remember(request.mediaId, request.mediaType) { mutableStateOf<String?>(null) }
     var continueSourceNotice by remember(request.mediaId, request.mediaType) { mutableStateOf<String?>(null) }
+    var continueSourceChoiceRequired by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
     /** Where to pick up after an engine swap. Unkeyed for the same reason as the two above. */
     var pendingEngineResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -387,6 +413,13 @@ fun PlayerScreen(
     val liveProgressRequester = remember { FocusRequester() }
     val panelCloseRequester = remember { FocusRequester() }
     val panelFirstItemRequester = remember { FocusRequester() }
+    val interactionLayer = playerInteractionLayer(
+        dialogVisible = segmentPromptActive || nextEpisodeDialogVisible || watchlistPromptVisible ||
+            smartSwitchCandidate != null || (error != null && !loading),
+        drawerVisible = panel != null || liveFavouritesDrawerVisible || liveChannelRowVisible,
+        seeking = controlsVisible && seekTargetSec != null,
+        controlsVisible = controlsVisible || (paused && !pauseInfoVisible),
+    )
     val playerRootRequester = remember { FocusRequester() }
     val liveChannelFirstRequester = remember { FocusRequester() }
     val liveChannelListState = rememberLazyListState()
@@ -641,6 +674,25 @@ fun PlayerScreen(
         controlsVisible = true
         scheduleControlsHide()
         if (focusPlay) requestPlaybackFocus()
+    }
+
+    fun restoreControlsAfterPanel(closedPanel: OverlayPanel) {
+        pauseInfoVisible = false
+        controlsVisible = true
+        scheduleControlsHide()
+        val requester = when (closedPanel) {
+            OverlayPanel.Streams -> sourcesRequester
+            OverlayPanel.Engine -> engineRequester
+            OverlayPanel.Audio -> audioRequester
+            OverlayPanel.Subtitles -> subtitlesRequester
+            OverlayPanel.Speed -> speedRequester
+            OverlayPanel.Info -> infoRequester
+        }
+        scope.launch {
+            delay(60)
+            runCatching { requester.requestFocus() }
+                .onFailure { TvDebugLogger.w("Player", "panel opener focus restore skipped: ${it.message}") }
+        }
     }
 
     fun registerInteraction() {
@@ -903,6 +955,7 @@ fun PlayerScreen(
         pendingResumeContentKey = null
         loading = true
         controlsVisible = false
+        continueSourceChoiceRequired = false
         pauseInfoVisible = false
         watchlistPromptVisible = false
         watchlistPromptShown = false
@@ -1000,6 +1053,19 @@ fun PlayerScreen(
             }
         }
         val rememberedAttempt = activeRequest.fromContinueWatching && rememberedKey != null
+        val continueOriginPlatform = continueWatchingItem?.lastPlatform ?: progress?.lastPlatform
+        if (
+            activeRequest.fromContinueWatching &&
+            rememberedKey == null &&
+            continueWatchingCameFromAnotherPlatform(continueOriginPlatform, destination = "tv")
+        ) {
+            continueSourceNotice = null
+            continueSourceChoiceRequired = true
+            error = "This was started on another device. Choose a source to continue from where you left off."
+            loading = false
+            controlsVisible = false
+            return@runCatching
+        }
         val resolved = resolvedCandidate ?: withTimeout(if (rememberedAttempt) 16_000L else 60_000L) {
             repository.resolvePlayback(
                 activeRequest.mediaType,
@@ -1350,7 +1416,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     // full hard-stall timeout. Offer the next already-ranked source once, excluding the current
     // source and anything that has failed in this episode.
     LaunchedEffect(media3Buffering) {
-        if (isLive || !media3Buffering || loading || error != null) return@LaunchedEffect
+        if (isLive || !media3Buffering || loading || error != null || panel != null || nextEpisodeDialogVisible || watchlistPromptVisible) return@LaunchedEffect
         val now = android.os.SystemClock.elapsedRealtime()
         recentPlaybackStalls = (recentPlaybackStalls + now).filter { now - it <= 120_000L }
         if (recentPlaybackStalls.size < 3 || now < smartSwitchCooldownUntil || smartSwitchCandidate != null) return@LaunchedEffect
@@ -1361,6 +1427,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             key != currentKey && key !in failedStreamKeys
         }
         if (smartSwitchCandidate != null) {
+            controlsHideJob?.cancel()
+            controlsHideJob = null
+            controlsVisible = false
             delay(80)
             runCatching { smartSwitchRequester.requestFocus() }
         }
@@ -1583,6 +1652,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             segmentAction?.let { markSegmentHandled(it.segmentType) }
             segmentPromptActive = false
             scope.launch { runCatching { playerRootRequester.requestFocus() } }
+        } else if (smartSwitchCandidate != null) {
+            smartSwitchCandidate = null
+            recentPlaybackStalls = emptyList()
+            smartSwitchCooldownUntil = android.os.SystemClock.elapsedRealtime() + 180_000L
+            showControls(focusPlay = !isLive)
         } else if (liveFavouritesDrawerVisible) {
             liveFavouritesDrawerVisible = false
             scope.launch { runCatching { playerRootRequester.requestFocus() } }
@@ -1599,8 +1673,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             paused = false
             scheduleControlsHide()
         } else if (panel != null) {
+            val closedPanel = panel!!
             panel = null
-            showControls(focusPlay = !isLive)
+            restoreControlsAfterPanel(closedPanel)
         } else if (controlsVisible) {
             hideControlsNow()
             scope.launch { runCatching { playerRootRequester.requestFocus() } }
@@ -1652,10 +1727,10 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     // The video surface deliberately does not take focus, so the player root holds it
     // whenever no control is focused. Without this, D-pad presses while the controls
     // are hidden would not reach any key handler at all.
-    LaunchedEffect(controlsVisible, panel, loading, error, isLive, watchlistPromptVisible, nextEpisodeDialogVisible, segmentPromptActive) {
+    LaunchedEffect(controlsVisible, panel, loading, error, isLive, watchlistPromptVisible, nextEpisodeDialogVisible, segmentPromptActive, smartSwitchCandidate) {
         // Taking the controls down to show a skip prompt would otherwise land focus back here and
         // pull it straight off the chip that was just raised.
-        if (!controlsVisible && panel == null && error == null && !watchlistPromptVisible && !nextEpisodeDialogVisible && !segmentPromptActive) {
+        if (interactionLayer == PlayerInteractionLayer.Playback) {
             delay(40)
             runCatching { playerRootRequester.requestFocus() }
         }
@@ -1679,6 +1754,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 }
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
                 if (nextEpisodeDialogVisible) return@onPreviewKeyEvent false
+                if (smartSwitchCandidate != null) return@onPreviewKeyEvent false
                 if (isLive && !controlsVisible && panel == null && !loading && error == null && !watchlistPromptVisible && !liveFavouritesDrawerVisible) {
                     if (liveChannelRowVisible) return@onPreviewKeyEvent false
                     when (event.key) {
@@ -1702,12 +1778,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         else -> return@onPreviewKeyEvent false
                     }
                 }
-                if (!loading && panel == null && !controlsVisible && error == null && !watchlistPromptVisible &&
-                    !liveFavouritesDrawerVisible && !liveChannelRowVisible
-                ) {
+                if (!loading && interactionLayer == PlayerInteractionLayer.Playback) {
                     when (event.key) {
                         Key.DirectionLeft, Key.DirectionRight -> {
                             controlsVisible = true
+                            scheduleRelativeSeek(
+                                if (event.key == Key.DirectionRight) tvSeekStepSeconds(durationSec) else -tvSeekStepSeconds(durationSec),
+                            )
                             scheduleControlsHide()
                             scope.launch {
                                 delay(60)
@@ -2184,9 +2261,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         androidx.tv.material3.Text(
-                            text = "Playback Error",
+                            text = if (continueSourceChoiceRequired) "Continue watching from another device" else "Playback Error",
                             style = androidx.tv.material3.MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Black),
-                            color = Color(0xFFFFB4AB),
+                            color = if (continueSourceChoiceRequired) MaterialTheme.colorScheme.onSurface else Color(0xFFFFB4AB),
                         )
                         androidx.tv.material3.Text(
                             text = error!!,
@@ -2211,14 +2288,16 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             ) {
                                 androidx.tv.material3.Text(if (request.fromContinueWatching) "Choose a Source" else "Go Back")
                             }
-                            androidx.tv.material3.OutlinedButton(
-                                onClick = {
-                                    TvDebugLogger.i("Player", "error overlay retry with fresh streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
-                                    error = null
-                                    scope.launch { loadPlayback(forceRefresh = true) }
-                                },
-                            ) {
-                                androidx.tv.material3.Text("Retry")
+                            if (!continueSourceChoiceRequired) {
+                                androidx.tv.material3.OutlinedButton(
+                                    onClick = {
+                                        TvDebugLogger.i("Player", "error overlay retry with fresh streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
+                                        error = null
+                                        scope.launch { loadPlayback(forceRefresh = true) }
+                                    },
+                                ) {
+                                    androidx.tv.material3.Text("Retry")
+                                }
                             }
                             if (hasMultipleStreams) {
                                 androidx.tv.material3.OutlinedButton(
@@ -2332,7 +2411,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
 
         if (!loading && error == null && !nextEpisodeDialogVisible) {
             PlayerOverlayVisibility(
-                visible = controlsVisible || panel != null || (paused && !pauseInfoVisible),
+                visible = interactionLayer == PlayerInteractionLayer.Controls || interactionLayer == PlayerInteractionLayer.Seeking,
                 modifier = Modifier.align(Alignment.BottomCenter),
             ) {
                 PlayerBottomBar(
@@ -2387,7 +2466,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     },
                     onOpenPanel = {
                         panel = it
-                        controlsVisible = true
+                        controlsHideJob?.cancel()
+                        controlsHideJob = null
+                        controlsVisible = false
                     },
                     isLive = isLive,
                     isVod = isVod,
@@ -2448,51 +2529,63 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }
 
         smartSwitchCandidate?.let { suggested ->
-            PlayerGlassSurface(
-                modifier = Modifier.align(Alignment.BottomCenter).width(720.dp).padding(bottom = 24.dp),
-                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp),
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xB8000000))
+                    .focusGroup(),
+                contentAlignment = Alignment.BottomCenter,
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                PlayerGlassSurface(
+                    modifier = Modifier.width(720.dp).padding(bottom = 24.dp),
+                    contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp),
                 ) {
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("This source keeps buffering", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black), color = Color.White)
-                        Text("Switch to ${suggested.addonName.ifBlank { "the next ranked source" }} and keep your position?", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.72f))
-                    }
-                    androidx.tv.material3.OutlinedButton(onClick = {
-                        smartSwitchCandidate = null
-                        recentPlaybackStalls = emptyList()
-                        smartSwitchCooldownUntil = android.os.SystemClock.elapsedRealtime() + 180_000L
-                    }) { Text("Keep") }
-                    androidx.tv.material3.Button(
-                        onClick = {
-                            val resumeAt = positionSec.coerceAtLeast(0.0)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("This source keeps buffering", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black), color = Color.White)
+                            Text("Switch to ${suggested.addonName.ifBlank { "the next ranked source" }} and keep your position?", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.72f))
+                        }
+                        androidx.tv.material3.OutlinedButton(onClick = {
                             smartSwitchCandidate = null
                             recentPlaybackStalls = emptyList()
-                            scope.launch {
-                                val resolved = repository.resolveSelectedPlayback(
-                                    request = playbackRequest.copy(episode = currentEpisode),
-                                    stream = suggested,
-                                    streams = candidate?.streams.orEmpty(),
-                                    forceRefresh = true,
-                                )
-                                if (resolved.source != null) {
-                                    candidate = resolved
-                                    currentRequestHeaders = defaultPlaybackHeaders + resolved.source.requestHeaders
-                                    currentSourceUrl = resolved.source.url
-                                    currentLabel = resolved.source.label
-                                    pendingEngineResumePositionSec = resumeAt.takeIf { it > 0.0 }
-                                    activePlaybackEngine = initialPlaybackEngine(playbackPreferences.playerEngine)
-                                    autoEngineFallbackUsed = false
-                                    loading = true
-                                    error = null
+                            smartSwitchCooldownUntil = android.os.SystemClock.elapsedRealtime() + 180_000L
+                            showControls(focusPlay = !isLive)
+                        }) { Text("Keep") }
+                        androidx.tv.material3.Button(
+                            onClick = {
+                                val resumeAt = positionSec.coerceAtLeast(0.0)
+                                smartSwitchCandidate = null
+                                recentPlaybackStalls = emptyList()
+                                scope.launch {
+                                    val resolved = repository.resolveSelectedPlayback(
+                                        request = playbackRequest.copy(episode = currentEpisode),
+                                        stream = suggested,
+                                        streams = candidate?.streams.orEmpty(),
+                                        forceRefresh = true,
+                                    )
+                                    if (resolved.source != null) {
+                                        candidate = resolved
+                                        currentRequestHeaders = defaultPlaybackHeaders + resolved.source.requestHeaders
+                                        currentSourceUrl = resolved.source.url
+                                        currentLabel = resolved.source.label
+                                        pendingEngineResumePositionSec = resumeAt.takeIf { it > 0.0 }
+                                        activePlaybackEngine = initialPlaybackEngine(playbackPreferences.playerEngine)
+                                        autoEngineFallbackUsed = false
+                                        loading = true
+                                        error = null
+                                    } else {
+                                        error = "That replacement source could not be prepared. Choose another source."
+                                        controlsVisible = false
+                                    }
                                 }
-                            }
-                        },
-                        modifier = Modifier.focusRequester(smartSwitchRequester),
-                    ) { Text("Switch") }
+                            },
+                            modifier = Modifier.focusRequester(smartSwitchRequester),
+                        ) { Text("Switch") }
+                    }
                 }
             }
         }
@@ -2619,9 +2712,10 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         closeRequester = panelCloseRequester,
                         firstItemRequester = panelFirstItemRequester,
                         onClose = {
+                            val closedPanel = activePanel
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
-                            showControls(focusPlay = !isLive)
+                            restoreControlsAfterPanel(closedPanel)
                         },
                         onInteract = { if (!isLive) registerInteraction() },
                         onSelectStream = { index ->
@@ -2675,7 +2769,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
                             playerView?.setPaused(paused)
-                            showControls(focusPlay = !isLive)
+                            restoreControlsAfterPanel(OverlayPanel.Audio)
                         },
                         onDisableSubtitles = {
                             selectedExternalSubtitleId = null
@@ -2685,7 +2779,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
                             playerView?.setPaused(paused)
-                            showControls(focusPlay = !isLive)
+                            restoreControlsAfterPanel(OverlayPanel.Subtitles)
                         },
                         onSelectSubtitle = {
                             selectedExternalSubtitleId = null
@@ -2697,7 +2791,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             // Track switches must never interrupt playback: re-assert the
                             // intended pause state after mpv reconfigures its track chain.
                             playerView?.setPaused(paused)
-                            showControls(focusPlay = !isLive)
+                            restoreControlsAfterPanel(OverlayPanel.Subtitles)
                         },
                         onSelectExternalSubtitle = { subtitle ->
                             scope.launch {
@@ -2734,14 +2828,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 panel = null
                                 panelClosedAtMs = System.currentTimeMillis()
                                 playerView?.setPaused(paused)
-                                showControls(focusPlay = !isLive)
+                                restoreControlsAfterPanel(OverlayPanel.Subtitles)
                             }
                         },
                         onSelectSpeed = {
                             speed = it
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
-                            showControls(focusPlay = !isLive)
+                            restoreControlsAfterPanel(OverlayPanel.Speed)
                         },
                         onSelectEngine = ::switchPlaybackEngine,
                         // Appearance changes stay in the panel rather than closing it: these are

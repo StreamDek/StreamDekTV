@@ -79,6 +79,32 @@ class AddonSourceCompatibilityTest {
     }
 
     @Test
+    fun `Eclipsia result retains its full generic source metadata`() {
+        val parsed = parseAddonStreamsPayload(
+            """
+            {"streams":[{
+              "addonId":"eclipsia","addonName":"Eclipsia","name":"Release group",
+              "title":"Show.S03E01.2160p.WEB-DL.DV.HDR.HEVC.DDP5.1",
+              "description":"English • Dolby Vision • DDP 5.1 • 42 seeders",
+              "quality":"2160p","size":"10.72 GB","source":"ThePirateBay",
+              "infoHash":"0123456789012345678901234567890123456789",
+              "filename":"Show.S03E01.2160p.mkv","cachedBy":["Premiumize"]
+            }]}
+            """.trimIndent(),
+        ).single()
+
+        assertEquals("Eclipsia", parsed.addonName)
+        assertEquals("Release group", parsed.name)
+        assertTrue(parsed.title.orEmpty().contains("DV.HDR.HEVC"))
+        assertTrue(parsed.description.orEmpty().contains("42 seeders"))
+        assertEquals("2160p", parsed.quality)
+        assertEquals("10.72 GB", parsed.size)
+        assertEquals("ThePirateBay", parsed.source)
+        assertEquals("Show.S03E01.2160p.mkv", parsed.filename)
+        assertEquals(listOf("Premiumize"), parsed.cachedBy)
+    }
+
+    @Test
     fun `AIOStreams usenet aliases survive direct addon parsing`() {
         val response = Gson().fromJson(
             """{"streams":[{"name":"Usenet","nzb_url":"https://example/nzb/1","nntp_servers":["nntps://reader@example:563"]}]}""",
