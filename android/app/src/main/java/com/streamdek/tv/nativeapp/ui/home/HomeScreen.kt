@@ -72,6 +72,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 private data class BrowseActionState(
     val item: MediaItem,
     val restoreFocusRequester: FocusRequester,
+    val fromContinueWatching: Boolean = false,
 )
 
 /** Stable, null-safe AnimatedContent key for addon items whose decoded fields may be absent. */
@@ -499,7 +500,11 @@ fun HomeScreen(
                                 },
                                 onItemMenu = { item, requester ->
                                     if (item.type != "network" && item.type != "live") {
-                                        actionState = BrowseActionState(item, requester)
+                                        actionState = BrowseActionState(
+                                            item,
+                                            requester,
+                                            fromContinueWatching = row.id == "continue-watching",
+                                        )
                                     }
                                 },
                             )
@@ -539,6 +544,7 @@ fun HomeScreen(
             BrowseItemActionMenu(
                 repository = repository,
                 item = state.item,
+                showRemoveFromContinueWatching = state.fromContinueWatching,
                 onDismiss = {
                     val restoreRequester = state.restoreFocusRequester
                     actionState = null

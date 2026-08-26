@@ -208,6 +208,7 @@ object StreamDekHttp {
         val httpCache = okhttp3.Cache(java.io.File(context.applicationContext.cacheDir, "streamdek-http"), CACHE_BYTES)
         cache = httpCache
         return OkHttpClient.Builder()
+            .dns(StreamDekDns(context.applicationContext))
             .cache(httpCache)
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(25, TimeUnit.SECONDS)

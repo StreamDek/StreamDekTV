@@ -177,6 +177,7 @@ fun PlayerScreen(
     request: PlaybackRequest,
     onBack: () -> Unit,
     onExitToStreams: () -> Unit,
+    onExitToDetail: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -194,7 +195,7 @@ fun PlayerScreen(
     val liveAddonFavourites = if (isLive) favouriteChannels else emptyList()
     val favouriteChannelKeys = favouriteChannels.mapTo(linkedSetOf()) { "${it.sourceAddonId}:${it.id}" }
     val currentChannelTitle = playbackRequest.title?.takeIf { it.isNotBlank() } ?: "Live TV"
-    val completePlaybackExit: () -> Unit = if (isLive) onBack else onExitToStreams
+    val completePlaybackExit: () -> Unit = if (isLive) onBack else onExitToDetail
     val backExitPlayback: () -> Unit = if (isLive || request.returnToDetailOnBack) onBack else onExitToStreams
 
     // Seeded from the cache the detail and streams screens already filled, so the start-up screen
@@ -255,6 +256,10 @@ fun PlayerScreen(
     /** Where to pick up after an engine swap. Unkeyed for the same reason as the two above. */
     var pendingEngineResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var media3Buffering by remember { mutableStateOf(false) }
+    var recentPlaybackStalls by remember(request.mediaId, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(emptyList<Long>()) }
+    var smartSwitchCandidate by remember(request.mediaId, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<com.streamdek.tv.nativeapp.data.AddonStream?>(null) }
+    var smartSwitchCooldownUntil by remember(request.mediaId, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(0L) }
 
     /**
      * Puts the engine back to the viewer's preference for a genuinely new source.
@@ -377,6 +382,7 @@ fun PlayerScreen(
     val segmentChipRequester = remember { FocusRequester() }
     val nextEpisodePlayRequester = remember { FocusRequester() }
     val nextEpisodeCancelRequester = remember { FocusRequester() }
+    val smartSwitchRequester = remember { FocusRequester() }
     val progressRequester = remember { FocusRequester() }
     val liveProgressRequester = remember { FocusRequester() }
     val panelCloseRequester = remember { FocusRequester() }
@@ -776,6 +782,9 @@ fun PlayerScreen(
         markSegmentHandled("outro")
         paused = true
         controlsVisible = false
+        // The next-episode card deliberately remains on the left. Only retire the completed
+        // episode's delayed synopsis overlay on the right while source discovery is in progress.
+        pauseInfoVisible = false
         nextEpisodeDialogVisible = true
         nextEpisodeLoading = true
         nextEpisodeCountdown = null
@@ -803,7 +812,23 @@ fun PlayerScreen(
         } ?: return
         nextEpisodeDialogVisible = false
         nextEpisodeCountdown = null
+        // Retire the completed episode visually before any watched/sync write is allowed to wait.
+        // Keeping its source attached was what left the paused synopsis over the next-episode
+        // search and also made the old player position look authoritative during the hand-off.
         paused = true
+        pauseInfoVisible = false
+        controlsVisible = false
+        panel = null
+        loading = true
+        currentLabel = "Searching for next episode…"
+        continueSourceNotice = null
+        sourceFallbackNotice = null
+        currentSourceUrl = null
+        candidate = null
+        pendingResumePositionSec = null
+        pendingResumeContentKey = null
+        positionSec = 0.0
+        durationSec = 0.0
         scope.launch {
             markWatchedAndClearProgressIfNeeded()
             if (traktScrobbledStart) {
@@ -847,7 +872,6 @@ fun PlayerScreen(
         }
         scope.launch {
             markWatchedAndClearProgressIfNeeded()
-            removeFromWatchlistIfNeeded()
             TvDebugLogger.i("Player", "completion exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
             completePlaybackExit()
         }
@@ -975,7 +999,8 @@ fun PlayerScreen(
                 "Checking your remembered source…"
             }
         }
-        val resolved = resolvedCandidate ?: withTimeout(60_000L) {
+        val rememberedAttempt = activeRequest.fromContinueWatching && rememberedKey != null
+        val resolved = resolvedCandidate ?: withTimeout(if (rememberedAttempt) 16_000L else 60_000L) {
             repository.resolvePlayback(
                 activeRequest.mediaType,
                 activeRequest.mediaId,
@@ -1096,7 +1121,7 @@ fun PlayerScreen(
             resetPlaybackEngineForNewSource()
             error = when (throwable) {
                 is java.net.SocketTimeoutException, is TimeoutCancellationException -> if (activeRequest.fromContinueWatching) {
-                    "The saved source could not be resumed and the fresh source search timed out. Choose a source to continue."
+                    "Remembered source is taking too long. Choose another source."
                 } else {
                     "Stream lookup timed out. Please try again or choose another source."
                 }
@@ -1259,14 +1284,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         playerView?.setSpeed(speed)
     }
 
-    LaunchedEffect(paused, panel, loading, error, watchlistPromptVisible) {
+    LaunchedEffect(paused, panel, loading, error, watchlistPromptVisible, nextEpisodeDialogVisible) {
         playerView?.setPaused(paused)
-        if (watchlistPromptVisible) {
+        if (watchlistPromptVisible || nextEpisodeDialogVisible) {
             pauseInfoVisible = false
         } else if (paused && panel == null && !loading && error == null) {
             pauseInfoVisible = false
             delay(2500)
-            if (paused && panel == null && !loading && error == null && !watchlistPromptVisible) {
+            if (paused && panel == null && !loading && error == null && !watchlistPromptVisible && !nextEpisodeDialogVisible) {
                 controlsVisible = false
                 pauseInfoVisible = true
             }
@@ -1287,6 +1312,57 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             if (currentSourceUrl == activeSource && !paused && !completionThresholdReached) {
                 syncProgressIfEligible()
             }
+        }
+    }
+
+    // A resolved URL and a player that never reaches READY are a preparation/startup stall, not a
+    // source-discovery timeout. Bound this stage independently so a broken range implementation or
+    // a server that sends no media bytes cannot leave a large file spinning forever.
+    LaunchedEffect(currentSourceUrl, loading, error) {
+        val source = currentSourceUrl
+        if (isLive || source.isNullOrBlank() || !loading || error != null) return@LaunchedEffect
+        delay(30_000L)
+        if (currentSourceUrl == source && loading && error == null) {
+            TvDebugLogger.w("Player", "startup stalled before first frame source=${source.substringBefore('?')}")
+            loading = false
+            error = "This source is not delivering playable media. Choose another source."
+            controlsVisible = true
+        }
+    }
+
+    // Once playback has started, only sustained buffering with no position progress is a stall.
+    // Ordinary short rebuffers remain untouched, including high-bitrate 4K streams filling their
+    // forward buffer.
+    LaunchedEffect(media3Buffering, currentSourceUrl, loading, error) {
+        val source = currentSourceUrl
+        if (isLive || !media3Buffering || source.isNullOrBlank() || loading || error != null) return@LaunchedEffect
+        val positionAtStall = positionSec
+        delay(30_000L)
+        if (media3Buffering && currentSourceUrl == source && !loading && error == null && kotlin.math.abs(positionSec - positionAtStall) < 1.0) {
+            TvDebugLogger.w("Player", "playback buffering stalled source=${source.substringBefore('?')} position=$positionSec")
+            paused = true
+            error = "Playback has stalled with no incoming media. Choose another source."
+            controlsVisible = true
+        }
+    }
+
+    // Several distinct rebuffers in a short window are a quality problem even when none lasts the
+    // full hard-stall timeout. Offer the next already-ranked source once, excluding the current
+    // source and anything that has failed in this episode.
+    LaunchedEffect(media3Buffering) {
+        if (isLive || !media3Buffering || loading || error != null) return@LaunchedEffect
+        val now = android.os.SystemClock.elapsedRealtime()
+        recentPlaybackStalls = (recentPlaybackStalls + now).filter { now - it <= 120_000L }
+        if (recentPlaybackStalls.size < 3 || now < smartSwitchCooldownUntil || smartSwitchCandidate != null) return@LaunchedEffect
+        val currentKey = candidate?.stream?.let(repository::streamSelectionKey)
+        currentKey?.let { failedStreamKeys = failedStreamKeys + it }
+        smartSwitchCandidate = candidate?.streams.orEmpty().firstOrNull { stream ->
+            val key = repository.streamSelectionKey(stream)
+            key != currentKey && key !in failedStreamKeys
+        }
+        if (smartSwitchCandidate != null) {
+            delay(80)
+            runCatching { smartSwitchRequester.requestFocus() }
         }
     }
 
@@ -1671,6 +1747,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         activePlaybackEngine = ActivePlaybackEngine.MPV
                     }
                 }
+                (player as? ExoPlaybackView)?.onStallChangedCallback = { buffering ->
+                    media3Buffering = buffering
+                }
                 val controller = player as MpvPlayerController
                 controller.apply {
                     setDecoderMode(playbackPreferences.decoderMode)
@@ -2021,34 +2100,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                // Above the source label rather than replacing it: which source is being tried and
-                // which one just failed are both worth reading, and one without the other leaves
-                // the viewer guessing at what the wait is for.
-                sourceFallbackNotice?.let { notice ->
-                    Text(
-                        text = notice,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 2,
-                        textAlign = TextAlign.Center,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                continueSourceNotice?.let { notice ->
-                    Text(
-                        text = notice,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 2,
-                        textAlign = TextAlign.Center,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
                 Text(
-                    text = currentLabel,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f),
-                    maxLines = 1,
+                    text = sourceFallbackNotice ?: continueSourceNotice ?: currentLabel,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    color = if (sourceFallbackNotice != null || continueSourceNotice != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f),
+                    maxLines = 2,
+                    textAlign = TextAlign.Center,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -2273,7 +2330,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        if (!loading && error == null) {
+        if (!loading && error == null && !nextEpisodeDialogVisible) {
             PlayerOverlayVisibility(
                 visible = controlsVisible || panel != null || (paused && !pauseInfoVisible),
                 modifier = Modifier.align(Alignment.BottomCenter),
@@ -2390,7 +2447,57 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        if (pauseInfoVisible && paused && !loading && error == null && panel == null && !controlsVisible) {
+        smartSwitchCandidate?.let { suggested ->
+            PlayerGlassSurface(
+                modifier = Modifier.align(Alignment.BottomCenter).width(720.dp).padding(bottom = 24.dp),
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("This source keeps buffering", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black), color = Color.White)
+                        Text("Switch to ${suggested.addonName.ifBlank { "the next ranked source" }} and keep your position?", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.72f))
+                    }
+                    androidx.tv.material3.OutlinedButton(onClick = {
+                        smartSwitchCandidate = null
+                        recentPlaybackStalls = emptyList()
+                        smartSwitchCooldownUntil = android.os.SystemClock.elapsedRealtime() + 180_000L
+                    }) { Text("Keep") }
+                    androidx.tv.material3.Button(
+                        onClick = {
+                            val resumeAt = positionSec.coerceAtLeast(0.0)
+                            smartSwitchCandidate = null
+                            recentPlaybackStalls = emptyList()
+                            scope.launch {
+                                val resolved = repository.resolveSelectedPlayback(
+                                    request = playbackRequest.copy(episode = currentEpisode),
+                                    stream = suggested,
+                                    streams = candidate?.streams.orEmpty(),
+                                    forceRefresh = true,
+                                )
+                                if (resolved.source != null) {
+                                    candidate = resolved
+                                    currentRequestHeaders = defaultPlaybackHeaders + resolved.source.requestHeaders
+                                    currentSourceUrl = resolved.source.url
+                                    currentLabel = resolved.source.label
+                                    pendingEngineResumePositionSec = resumeAt.takeIf { it > 0.0 }
+                                    activePlaybackEngine = initialPlaybackEngine(playbackPreferences.playerEngine)
+                                    autoEngineFallbackUsed = false
+                                    loading = true
+                                    error = null
+                                }
+                            }
+                        },
+                        modifier = Modifier.focusRequester(smartSwitchRequester),
+                    ) { Text("Switch") }
+                }
+            }
+        }
+
+        if (pauseInfoVisible && paused && !loading && error == null && panel == null && !controlsVisible && !nextEpisodeDialogVisible) {
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)

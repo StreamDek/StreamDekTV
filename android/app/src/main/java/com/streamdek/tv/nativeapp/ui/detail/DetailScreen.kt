@@ -1184,6 +1184,26 @@ fun DetailScreen(
                             }
                         }
                     },
+                    onMarkPreviousWatched = {
+                        if (!episodeActionLoading) {
+                            episodeActionLoading = true
+                            episodeActionError = null
+                            scope.launch {
+                                val context = entry.episode.toEpisodeContext(entry.seasonNumber)
+                                val marked = repository.markPreviousEpisodesWatched(currentDetail, context)
+                                if (marked) {
+                                    val refreshed = repository.fetchSeriesResumeState(currentDetail)
+                                    watchedEpisodeKeys = refreshed.watchedEpisodeKeys
+                                    resumeTargetSlot = refreshed.target
+                                    resumeEpisodeContext = refreshed.target?.let { EpisodeContext(it.seasonNumber, it.episodeNumber) }
+                                    episodeAction = null
+                                } else {
+                                    episodeActionError = "Could not mark the previous episodes watched."
+                                }
+                                episodeActionLoading = false
+                            }
+                        }
+                    },
                 )
             }
         }
@@ -1685,6 +1705,7 @@ private fun EpisodeActionDialog(
     error: String?,
     onDismiss: () -> Unit,
     onToggleWatched: () -> Unit,
+    onMarkPreviousWatched: () -> Unit,
 ) {
     val actionRequester = remember { FocusRequester() }
 
@@ -1734,6 +1755,12 @@ private fun EpisodeActionDialog(
                     },
                 )
             }
+            OutlinedButton(
+                onClick = onMarkPreviousWatched,
+                enabled = !loading && (seasonNumber > 1 || episode.episodeNumber > 1),
+                modifier = Modifier.fillMaxWidth(),
+                shape = ButtonDefaults.shape(AppPillShape),
+            ) { Text("Mark All Previous Episodes as Watched") }
             OutlinedButton(
                 onClick = onDismiss,
                 enabled = !loading,

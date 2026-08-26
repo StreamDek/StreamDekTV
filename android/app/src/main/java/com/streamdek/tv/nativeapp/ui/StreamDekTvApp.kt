@@ -857,6 +857,14 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                                     }
                                 }
                             },
+                            onExitToDetail = {
+                                if (!navController.popBackStack(DetailRoutePattern, inclusive = false)) {
+                                    navController.navigate("detail/${Uri.encode(request.mediaType)}/${Uri.encode(request.mediaId)}") {
+                                        popUpTo(TopLevelDestination.Home.route) { inclusive = false }
+                                        launchSingleTop = true
+                                    }
+                                }
+                            },
                         )
                     }
                 }

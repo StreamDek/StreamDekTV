@@ -2164,6 +2164,7 @@ class StreamDekRepository(
         val mergedContinueWatching = mergeContinueWatching(
             primary = library.continueWatching,
             secondary = servicePlayback,
+            progressRecords = library.progress,
         )
         // /sync/library follows the profile's tracking service, so its watchlist is normally the
         // right one already. The direct read stays as a safety net for a TV running ahead of a
@@ -2659,6 +2660,86 @@ class StreamDekRepository(
         seasonNumber: Int,
     ): Boolean = setSeasonWatched(mediaId, title, year, seasonNumber, watched = true)
 
+    /** Marks every regular episode before [selected] in one SyncDek/provider operation. */
+    suspend fun markPreviousEpisodesWatched(detail: MediaDetail, selected: EpisodeContext): Boolean {
+        val seasons = detail.seasons
+            .map(SeasonRef::seasonNumber)
+            .filter { it > 0 && it <= selected.seasonNumber }
+            .distinct()
+            .sorted()
+        val previous = supervisorScope {
+            seasons.map { seasonNumber -> async { fetchSeason(detail.id, seasonNumber) } }
+                .mapNotNull { it.await() }
+        }.flatMap { season ->
+            season.episodes.filter { episode ->
+                val beforeSelected = season.seasonNumber < selected.seasonNumber || episode.episodeNumber < selected.episodeNumber
+                val released = episode.airDate?.take(10)?.let { date ->
+                    runCatching { !java.time.LocalDate.parse(date).isAfter(java.time.LocalDate.now()) }.getOrDefault(true)
+                } ?: true
+                beforeSelected && released
+            }.map { episode ->
+                EpisodeContext(
+                    seasonNumber = season.seasonNumber,
+                    episodeNumber = episode.episodeNumber,
+                    title = episode.name,
+                    overview = episode.overview,
+                    still = episode.still,
+                    runtime = episode.runtime,
+                    airDate = episode.airDate,
+                    tmdbEpisodeId = episode.id,
+                )
+            }
+        }
+        if (previous.isEmpty()) return true
+        val updatedAt = Instant.now().toString()
+        val items = previous.map { episode ->
+            mapOf(
+                "entityType" to "tv",
+                "entityId" to detail.id,
+                "episodeKey" to buildEpisodeKey(episode),
+                "positionSec" to 0,
+                "durationSec" to 0,
+                "completed" to true,
+                "updatedAt" to updatedAt,
+                "lastDevice" to "StreamDek TV",
+                "lastPlatform" to "tv",
+                "metadata" to buildSyncMetadata(detail, episode),
+            )
+        }
+        val syncDek = runCatching {
+            api.request<Any>(
+                method = "POST",
+                path = "/sync/progress/batch",
+                body = com.google.gson.Gson().toJson(mapOf("items" to items)),
+            )
+            true
+        }.onFailure {
+            TvDebugLogger.w("Playback", "previous episodes batch failed mediaId=${detail.id}")
+        }.getOrDefault(false)
+        if (!syncDek) return false
+
+        if (isSyncServiceConnected(SyncServiceId.TRAKT)) {
+            val traktSeasons = previous.groupBy(EpisodeContext::seasonNumber).map { (season, episodes) ->
+                mapOf(
+                    "number" to season,
+                    "episodes" to episodes.map { mapOf("number" to it.episodeNumber, "watched_at" to updatedAt) },
+                )
+            }
+            val payload = mapOf(
+                "movies" to emptyList<Any>(),
+                "shows" to listOf(mapOf(
+                    "title" to detail.title,
+                    "ids" to mapOf("tmdb" to detail.id.toIntOrNull(), "imdb" to detail.imdbId),
+                    "seasons" to traktSeasons,
+                )),
+            )
+            runCatching { api.post<Any>("/trakt/sync/watched", payload) }
+                .onFailure { TvDebugLogger.w("Trakt", "previous episodes sync failed mediaId=${detail.id}") }
+        }
+        invalidatePlaybackDerivedCaches()
+        return true
+    }
+
     suspend fun setSeasonWatched(
         mediaId: String,
         title: String,
@@ -2749,17 +2830,18 @@ class StreamDekRepository(
         mediaType: String,
         mediaId: String,
         episode: EpisodeContext? = null,
-    ) {
+    ): Boolean {
         val path = buildString {
             append("/sync/progress/$mediaType/$mediaId")
             buildEpisodeKey(episode)?.let { append("?episodeKey=$it") }
         }
-        runCatching {
+        return runCatching {
             api.delete<Any>(path)
             invalidatePlaybackDerivedCaches()
+            true
         }.onFailure {
             TvDebugLogger.w("Playback", "clearProgress failed mediaType=$mediaType mediaId=$mediaId")
-        }
+        }.getOrDefault(false)
     }
 
     suspend fun clearSeasonProgress(
@@ -5039,10 +5121,18 @@ class StreamDekRepository(
     private fun mergeContinueWatching(
         primary: List<ContinueWatchingItem>,
         secondary: List<ContinueWatchingItem>,
+        progressRecords: List<PlaybackProgressRecord> = emptyList(),
     ): List<ContinueWatchingItem> {
-        if (secondary.isEmpty()) return primary
+        val dismissals = progressRecords.filter { it.status.equals("dismissed", ignoreCase = true) }
+        fun isDismissed(item: ContinueWatchingItem): Boolean = dismissals.any { record ->
+            record.entityType.equals(item.type, ignoreCase = true) &&
+                record.entityId == item.id &&
+                (record.episodeKey.isNullOrBlank() || record.episodeKey.equals(item.episodeKey, ignoreCase = true))
+        }
+        val eligibleSecondary = secondary.filterNot(::isDismissed)
+        if (eligibleSecondary.isEmpty()) return primary.filterNot(::isDismissed)
         val merged = linkedMapOf<String, ContinueWatchingItem>()
-        (primary + secondary).forEach { item ->
+        (primary + eligibleSecondary).filterNot(::isDismissed).forEach { item ->
             val key = listOf(
                 item.type,
                 item.id,

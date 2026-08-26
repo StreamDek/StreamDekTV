@@ -1056,6 +1056,7 @@ data class SeriesEpisodeStatusResponse(
 data class LibraryResponse(
     val continueWatching: List<ContinueWatchingItem> = emptyList(),
     val watchlist: List<MediaItem> = emptyList(),
+    val progress: List<PlaybackProgressRecord> = emptyList(),
 )
 
 data class TraktPlaybackResponse(

@@ -40,6 +40,7 @@ import kotlinx.coroutines.launch
 fun BrowseItemActionMenu(
     repository: StreamDekRepository,
     item: MediaItem,
+    showRemoveFromContinueWatching: Boolean = false,
     onDismiss: () -> Unit,
     onOpenDetail: () -> Unit,
     onChanged: suspend () -> Unit,
@@ -47,6 +48,7 @@ fun BrowseItemActionMenu(
     val scope = rememberCoroutineScope()
     val primaryRequester = remember { FocusRequester() }
     val watchlistRequester = remember { FocusRequester() }
+    val continueRequester = remember { FocusRequester() }
     val secondaryRequester = remember { FocusRequester() }
     val closeRequester = remember { FocusRequester() }
     var loading by remember(item.type, item.id) { mutableStateOf(true) }
@@ -156,11 +158,43 @@ fun BrowseItemActionMenu(
                             .focusRequester(watchlistRequester)
                             .focusProperties {
                                 up = primaryRequester
-                                down = secondaryRequester
+                                down = if (showRemoveFromContinueWatching) continueRequester else secondaryRequester
                             },
                         scale = androidx.tv.material3.ButtonDefaults.scale(focusedScale = 1f),
                     ) {
                         Text(if (inWatchlist) "Remove from Watchlist" else "Add to Watchlist")
+                    }
+
+                    if (showRemoveFromContinueWatching) {
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    val result = runCatching {
+                                        // This is intentionally only a progress deletion. It neither
+                                        // writes a completion marker nor adds the title to watched history.
+                                        check(repository.clearProgress(item.type, item.id, item.episode)) {
+                                            "Could not remove this title from Continue Watching."
+                                        }
+                                        onDismiss()
+                                        onChanged()
+                                    }
+                                    result.onFailure {
+                                        actionError = it.message ?: "Could not remove this title from Continue Watching."
+                                    }
+                                }
+                            },
+                            enabled = !loading,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(continueRequester)
+                                .focusProperties {
+                                    up = watchlistRequester
+                                    down = secondaryRequester
+                                },
+                            scale = androidx.tv.material3.ButtonDefaults.scale(focusedScale = 1f),
+                        ) {
+                            Text("Remove from Continue Watching")
+                        }
                     }
 
                     OutlinedButton(
@@ -183,18 +217,19 @@ fun BrowseItemActionMenu(
                                 }
                             }
                         },
-                        enabled = !loading && !watched,
+                        enabled = !loading && (!watched || item.progress?.let { it > 0.0 } == true),
                         modifier = Modifier
                             .fillMaxWidth()
                             .focusRequester(secondaryRequester)
                             .focusProperties {
-                                up = watchlistRequester
+                                up = if (showRemoveFromContinueWatching) continueRequester else watchlistRequester
                                 down = closeRequester
                             },
                         scale = androidx.tv.material3.ButtonDefaults.scale(focusedScale = 1f),
                     ) {
                         Text(
                             when {
+                                watched && item.progress?.let { it > 0.0 } == true -> "Mark as Watched Again"
                                 watched -> "Already Watched"
                                 item.type == "tv" && item.episode == null -> "Mark Series Watched"
                                 else -> "Mark as Watched"

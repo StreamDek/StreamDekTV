@@ -333,6 +333,7 @@ fun LibraryScreen(
             BrowseItemActionMenu(
                 repository = repository,
                 item = state.item,
+                showRemoveFromContinueWatching = section == LibrarySection.Continue,
                 onDismiss = {
                     val restoreRequester = state.restoreFocusRequester
                     actionState = null

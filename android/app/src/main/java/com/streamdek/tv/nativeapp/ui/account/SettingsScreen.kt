@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Palette
@@ -83,6 +84,7 @@ import com.streamdek.tv.BuildConfig
 import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
 import com.streamdek.tv.nativeapp.data.DefaultTrailerCacheClearHours
+import com.streamdek.tv.nativeapp.data.DoHSettings
 import com.streamdek.tv.nativeapp.data.DefaultTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
@@ -92,6 +94,7 @@ import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.RemotePlaylist
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.StreamDekDoHProviders
 import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.TrailerCache
 import com.streamdek.tv.nativeapp.data.TrailerCacheClearChoices
@@ -146,6 +149,7 @@ private enum class SettingsDestination(val label: String, val description: Strin
     Accessibility("Accessibility", "Contrast, text and reduced motion", "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
     Sources("Sources", "Add-ons, plugins and premium services", "providers addon plugin cloudstream debrid premium install", Icons.Outlined.Extension),
     Connections("Connections", "Tracking services, devices and sessions", "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
+    Network("Network", "DNS privacy and connection behaviour", "network dns doh dns over https privacy resolver", Icons.Outlined.Dns),
     About("About", "Version, updates and health", "release update version diagnostics health cache network runtime", Icons.Outlined.Info),
 }
 
@@ -191,6 +195,10 @@ fun SettingsScreen(
     var rememberLastProfileAtStartup by remember {
         mutableStateOf(repository.rememberLastProfileAtStartup())
     }
+    val dohSettings = remember(context) { DoHSettings(context) }
+    var dohEnabled by remember { mutableStateOf(dohSettings.enabled) }
+    var dohProviderId by remember { mutableStateOf(dohSettings.providerId) }
+    var customDohEntry by remember { mutableStateOf(false) }
     val contentEntryRequester = remember { FocusRequester() }
     val destinationRequesters = remember(entryFocusRequester) {
         SettingsDestination.entries.associateWith { if (it == SettingsDestination.Account) entryFocusRequester else FocusRequester() }
@@ -1169,6 +1177,57 @@ fun SettingsScreen(
                     }
                     SettingsActionRow("Refresh connections", "Update tracking services, devices and sync status", "Refresh", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); status = "Connections refreshed." } }
                 }
+                SettingsDestination.Network -> {
+                    SettingsPanel("DNS privacy") {
+                        InfoLine("Scope", "Encrypts DNS for StreamDek API and app-controlled HTTP requests")
+                        InfoLine("Not a VPN", "Video traffic is not tunnelled through the DNS provider")
+                    }
+                    SettingsToggleRow("DNS over HTTPS", "Resolve StreamDek hostnames through an encrypted HTTPS resolver", dohEnabled, selectedRequester) { next, complete ->
+                        if (next && dohSettings.endpoint() == null) {
+                            status = "Choose a valid DNS over HTTPS provider first."
+                            complete(false)
+                        } else {
+                            dohSettings.enabled = next
+                            dohEnabled = next
+                            status = if (next) "DNS over HTTPS enabled." else "DNS over HTTPS disabled."
+                            complete(true)
+                        }
+                    }
+                    if (dohEnabled) {
+                        SettingsDropdownRow(
+                            "DoH provider",
+                            "Use the provider's official RFC 8484 HTTPS endpoint",
+                            dohProviderId,
+                            StreamDekDoHProviders.map { it.id to it.label },
+                        ) { value ->
+                            if (value == "custom") {
+                                customDohEntry = true
+                            } else {
+                                dohSettings.providerId = value
+                                dohProviderId = value
+                                status = "DNS provider changed to ${StreamDekDoHProviders.first { it.id == value }.label}."
+                            }
+                        }
+                        SettingsPanel("Provider addresses") {
+                            StreamDekDoHProviders.forEach { provider ->
+                                InfoLine(
+                                    provider.label,
+                                    provider.endpoint ?: dohSettings.customEndpoint.ifBlank { "Not configured" },
+                                )
+                            }
+                        }
+                        if (dohProviderId == "custom") {
+                            SettingsActionRow("Custom DoH endpoint", dohSettings.customEndpoint.ifBlank { "Enter an HTTPS RFC 8484 endpoint" }, "Edit", selectedRequester) {
+                                customDohEntry = true
+                            }
+                        }
+                        SettingsPanel("Platform coverage") {
+                            InfoLine("Protected", "StreamDek API calls made through the shared HTTP client")
+                            InfoLine("System-owned", "Media3, MPV and third-party extensions may resolve DNS independently")
+                            InfoLine("Failure policy", "No silent system-DNS fallback while DoH is enabled")
+                        }
+                    }
+                }
                 SettingsDestination.About -> {
                     SettingsPanel("StreamDek TV") { InfoLine("Version", BuildConfig.VERSION_NAME); InfoLine("Client", "Android TV / Fire TV"); InfoLine("Profile", activeProfile?.name ?: "Not selected"); InfoLine("Update", updateState.statusText ?: updateState.errorMessage ?: "Ready") }
                     SettingsToggleRow("Automatic update checks", "Notify when a release is ready", updateState.autoCheckEnabled, selectedRequester) { next, complete ->
@@ -1208,6 +1267,19 @@ fun SettingsScreen(
                 status = "$providerLabel connected as $username."
             },
             onDismiss = { debridKeyEntry = null },
+        )
+    }
+    if (customDohEntry) {
+        CustomDoHEndpointDialog(
+            initialValue = dohSettings.customEndpoint,
+            onSave = { endpoint ->
+                dohSettings.customEndpoint = endpoint
+                dohSettings.providerId = "custom"
+                dohProviderId = "custom"
+                customDohEntry = false
+                status = "Custom DNS over HTTPS endpoint saved."
+            },
+            onDismiss = { customDohEntry = false },
         )
     }
 }
