@@ -1290,7 +1290,9 @@ private fun SettingsSearchBox(query: String, onQueryChange: (String) -> Unit, na
     var editorWasFocused by remember { mutableStateOf(false) }
     LaunchedEffect(editing) { if (editing) { delay(60); runCatching { editorRequester.requestFocus() }; keyboard?.show() } }
     val keyHandler: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { event ->
-        if (event.type != KeyEventType.KeyDown) false else when (event.key) { Key.DirectionLeft -> runCatching { navRequester.requestFocus() }.isSuccess; Key.DirectionRight -> runCatching { contentRequester.requestFocus() }.isSuccess; else -> false }
+        // Left is left alone: the shell answers a Left that nothing in the page consumed by opening
+        // the navigation menu, which is the one place that transition lives now.
+        if (event.type != KeyEventType.KeyDown) false else when (event.key) { Key.DirectionRight -> runCatching { contentRequester.requestFocus() }.isSuccess; else -> false }
     }
     if (editing) {
         OutlinedTextField(
@@ -1311,7 +1313,7 @@ private fun SettingsSearchBox(query: String, onQueryChange: (String) -> Unit, na
 private fun SettingsDestinationRow(destination: SettingsDestination, selected: Boolean, requester: FocusRequester, navRequester: FocusRequester, contentRequester: FocusRequester, onFocused: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().height(42.dp).background(when { focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.22f); selected -> Color(0x16FFFFFF); else -> Color.Transparent }, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).border(if (focused) 2.dp else 0.dp, if (focused) MaterialTheme.colorScheme.primary else Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).focusRequester(requester).onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }.onPreviewKeyEvent { e -> if (e.type != KeyEventType.KeyDown) false else when (e.key) { Key.DirectionLeft -> runCatching { navRequester.requestFocus() }.isSuccess; Key.DirectionRight -> runCatching { contentRequester.requestFocus() }.isSuccess; else -> false } }.clickable(onClick = onFocused).padding(horizontal = 10.dp),
+        Modifier.fillMaxWidth().height(42.dp).background(when { focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.22f); selected -> Color(0x16FFFFFF); else -> Color.Transparent }, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).border(if (focused) 2.dp else 0.dp, if (focused) MaterialTheme.colorScheme.primary else Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).focusRequester(requester).onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }.onPreviewKeyEvent { e -> if (e.type != KeyEventType.KeyDown) false else when (e.key) { Key.DirectionRight -> runCatching { contentRequester.requestFocus() }.isSuccess; else -> false } }.clickable(onClick = onFocused).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) { Icon(destination.icon, null, tint = if (focused || selected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.55f), modifier = Modifier.size(19.dp)); Text(destination.label, color = Color.White.copy(alpha = if (focused || selected) 0.96f else 0.66f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.Medium)) }
 }

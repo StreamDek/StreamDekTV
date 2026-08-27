@@ -58,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -211,6 +212,7 @@ internal fun PlayerGlassSurface(
     }
 }
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun PlayerBottomBar(
     detail: MediaDetail?,
@@ -239,6 +241,8 @@ internal fun PlayerBottomBar(
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onMarkWatched: () -> Unit,
+    /** Seconds to move by, signed. Owned by the seek row and by nothing else. */
+    onSeekBy: (Double) -> Unit,
     focusRegion: PlayerControlsFocusRegion,
     onFocusRegionChanged: (PlayerControlsFocusRegion) -> Unit,
     onOpenPanel: (OverlayPanel) -> Unit,
@@ -254,7 +258,9 @@ internal fun PlayerBottomBar(
     // Live broadcasts have no seekable timeline — the progress bar is replaced
     // by a LIVE indicator, so focus targets that pointed at it move to Play.
     val hasSeekableTimeline = !isLive || (showLiveProgress && durationSec > 0.0)
-    val timelineUpRequester = if (hasSeekableTimeline) progressRequester else playRequester
+    // Null when there is no seek row to go up to, which the buttons read as "cancel the search"
+    // rather than as "find something". A live channel has nothing above Play.
+    val timelineUpRequester = progressRequester.takeIf { hasSeekableTimeline }
     val onControlsFocused = {
         onFocusRegionChanged(PlayerControlsFocusRegion.Controls)
         onInteract()
@@ -356,21 +362,23 @@ internal fun PlayerBottomBar(
                     )
                 }
             } else if (hasSeekableTimeline) {
-                // The timeline owns one focus island. Horizontal D-pad input is consumed by the
-                // timeline itself; only an explicit Down crosses into the controls island below.
-                Box(Modifier.fillMaxWidth().focusGroup()) {
-                    PlayerTimeline(
-                        positionSec = positionSec,
-                        durationSec = durationSec,
-                        requester = progressRequester,
-                        onInteract = onInteract,
-                        onFocusedChanged = {
-                            timelineFocused.value = it
-                            if (it) onFocusRegionChanged(PlayerControlsFocusRegion.Seek)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
+                PlayerSeekFocusGroup(
+                    positionSec = positionSec,
+                    durationSec = durationSec,
+                    requester = progressRequester,
+                    controlsEntryRequester = playRequester,
+                    onSeekBy = onSeekBy,
+                    onEnterControls = {
+                        onFocusRegionChanged(PlayerControlsFocusRegion.Controls)
+                        onInteract()
+                    },
+                    onInteract = onInteract,
+                    onFocusedChanged = {
+                        timelineFocused.value = it
+                        if (it) onFocusRegionChanged(PlayerControlsFocusRegion.Seek)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             } else if (isLive) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -395,9 +403,28 @@ internal fun PlayerBottomBar(
             }
 
             Row(
-                // Controls deliberately form a separate focus island. Every control has an
-                // explicit Up target back to the timeline, while horizontal traversal stays here.
-                modifier = Modifier.fillMaxWidth().focusGroup(),
+                // PlayerControlsFocusGroup: the second of the bottom bar's two focus islands.
+                //
+                // Horizontal traversal is internal to this row and cannot leave it — the first
+                // control cancels a Left search and the last cancels a Right one, so a held button
+                // stops at the end of the row instead of falling out of the bar. Up is the single
+                // sanctioned way back to the seek row above; there is nothing below, so Down is
+                // cancelled outright rather than left to spatial search.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusGroup()
+                    .focusProperties {
+                        enter = { playRequester }
+                        exit = { direction ->
+                            when (direction) {
+                                FocusDirection.Left, FocusDirection.Right, FocusDirection.Down ->
+                                    FocusRequester.Cancel
+                                FocusDirection.Up ->
+                                    timelineUpRequester ?: FocusRequester.Cancel
+                                else -> FocusRequester.Default
+                            }
+                        }
+                    },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
@@ -538,7 +565,14 @@ internal fun PlayerBottomBar(
     }
 }
 
-@OptIn(ExperimentalTvMaterial3Api::class)
+/**
+ * One control in [PlayerControlsFocusGroup].
+ *
+ * Every direction is named. A null neighbour means "there is nothing that way", which is expressed
+ * as [FocusRequester.Cancel] rather than left to spatial focus search: the search is what used to
+ * carry the highlight out of the bar and onto whatever happened to be laid out nearby.
+ */
+@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun PlayerControlIconButton(
     icon: ImageVector,
@@ -582,9 +616,10 @@ private fun PlayerControlIconButton(
             .size(size)
             .focusRequester(requester)
             .focusProperties {
-                if (upRequester != null) up = upRequester
-                if (leftRequester != null) left = leftRequester
-                if (rightRequester != null) right = rightRequester
+                up = upRequester ?: FocusRequester.Cancel
+                left = leftRequester ?: FocusRequester.Cancel
+                right = rightRequester ?: FocusRequester.Cancel
+                down = FocusRequester.Cancel
             }
             .onFocusChanged {
                 focused = it.isFocused
@@ -606,20 +641,111 @@ private fun PlayerControlIconButton(
     }
 }
 
+/**
+ * PlayerSeekFocusGroup: the bottom bar's first focus island.
+ *
+ * The row is one focus target, not a row of them — the current time, the bar and the duration are
+ * presentation, and there is nothing inside for a horizontal search to travel to. The group then
+ * cancels a Left, Right or Up search outright, so Compose never runs the spatial search that used
+ * to hand the highlight to Sources or Play mid-scrub. Down is the only direction that resolves to
+ * a real target, and it is the sanctioned way into [PlayerControlsFocusGroup] below.
+ *
+ * Both halves matter. Cancelling the search is what makes the boundary structural: consuming the
+ * key press alone left a window during a recomposition, or during the repeats of a held button,
+ * where the framework got there first.
+ */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+private fun PlayerSeekFocusGroup(
+    positionSec: Double,
+    durationSec: Double,
+    requester: FocusRequester,
+    controlsEntryRequester: FocusRequester,
+    onSeekBy: (Double) -> Unit,
+    onEnterControls: () -> Unit,
+    onInteract: () -> Unit,
+    onFocusedChanged: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .focusGroup()
+            .focusProperties {
+                enter = { requester }
+                exit = { direction ->
+                    when (direction) {
+                        FocusDirection.Left, FocusDirection.Right, FocusDirection.Up ->
+                            FocusRequester.Cancel
+                        else -> FocusRequester.Default
+                    }
+                }
+            },
+    ) {
+        PlayerTimeline(
+            positionSec = positionSec,
+            durationSec = durationSec,
+            requester = requester,
+            controlsEntryRequester = controlsEntryRequester,
+            onSeekBy = onSeekBy,
+            onEnterControls = onEnterControls,
+            onInteract = onInteract,
+            onFocusedChanged = onFocusedChanged,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun PlayerTimeline(
     positionSec: Double,
     durationSec: Double,
     requester: FocusRequester,
+    controlsEntryRequester: FocusRequester? = null,
+    onSeekBy: (Double) -> Unit = {},
+    onEnterControls: () -> Unit = {},
     onInteract: () -> Unit,
     onFocusedChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
     val progress = if (durationSec > 0.0) (positionSec / durationSec).coerceIn(0.0, 1.0).toFloat() else 0f
+    // Read from the state object inside the key handler rather than from a captured Boolean, so
+    // the first press after focus arrives sees this frame's value and not the previous one.
+    val durationState = remember { mutableStateOf(durationSec) }
+    durationState.value = durationSec
     Row(
         modifier = modifier
             .focusRequester(requester)
+            .focusProperties {
+                // Named in full, so no direction is left to spatial search.
+                left = FocusRequester.Cancel
+                right = FocusRequester.Cancel
+                up = FocusRequester.Cancel
+                down = controlsEntryRequester ?: FocusRequester.Cancel
+            }
+            .onPreviewKeyEvent { event ->
+                when (event.key) {
+                    Key.DirectionLeft, Key.DirectionRight -> {
+                        if (event.type == KeyEventType.KeyDown) {
+                            val step = tvSeekStepSeconds(durationState.value)
+                            onSeekBy(if (event.key == Key.DirectionRight) step else -step)
+                        }
+                        // Both edges. tv-material fires clicks on key-up without requiring the
+                        // matching key-down, so a release that escaped here would land on whatever
+                        // took focus next.
+                        true
+                    }
+                    Key.DirectionUp -> true
+                    Key.DirectionDown -> {
+                        if (event.type == KeyEventType.KeyDown) onEnterControls()
+                        // Not consumed: `down` above names the controls row, and letting the
+                        // framework perform that move keeps one mechanism responsible for it.
+                        false
+                    }
+                    else -> false
+                }
+            }
             .onFocusChanged {
                 focused = it.isFocused
                 onFocusedChanged(it.isFocused)

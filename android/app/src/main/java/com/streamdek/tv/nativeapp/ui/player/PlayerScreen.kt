@@ -435,6 +435,18 @@ fun PlayerScreen(
         seeking = controlsVisible && seekTargetSec != null,
         controlsVisible = controlsVisible || (paused && !pauseInfoVisible),
     )
+    // Whether the bottom bar — and therefore the seek row — is on screen and able to own focus.
+    //
+    // This is deliberately the same expression the bar itself is composed under. The key handler
+    // used to gate on `controlsVisible` alone, which is a different thing: the bar is also shown
+    // while paused, and in that state the seek row held focus while the root declined to treat
+    // horizontal input as seeking, so the framework's spatial search took the press and carried
+    // the highlight into the controls.
+    val bottomBarOnScreen = !loading && error == null && !nextEpisodeDialogVisible &&
+        (interactionLayer == PlayerInteractionLayer.Controls ||
+            interactionLayer == PlayerInteractionLayer.Seeking)
+    /** Mirrors PlayerBottomBar: a live channel only has a seek row once its progress bar is on. */
+    val hasSeekableTimeline = !isLive || (showLiveProgress && durationSec > 0.0)
     val playerRootRequester = remember { FocusRequester() }
     val liveChannelFirstRequester = remember { FocusRequester() }
     val liveChannelListState = rememberLazyListState()
@@ -679,6 +691,11 @@ fun PlayerScreen(
     fun requestPlaybackFocus() {
         scope.launch {
             delay(60)
+            // A deferred focus request is always a frame or two behind the viewer. If they have
+            // taken the seek row in the meantime — which a single Left or Right does — this is no
+            // longer the place focus belongs, and landing it anyway is how the highlight used to
+            // arrive somewhere nobody asked for.
+            if (controlsFocusRegion != PlayerControlsFocusRegion.Controls) return@launch
             runCatching { playRequester.requestFocus() }
                 .onFailure { TvDebugLogger.w("Player", "play focus request skipped: ${it.message}") }
         }
@@ -1144,22 +1161,45 @@ fun PlayerScreen(
             "ContinueWatching",
             "contentId=${activeRequest.mediaId} contentType=${activeRequest.mediaType} season=${currentEpisode?.seasonNumber} episode=${currentEpisode?.episodeNumber} originDevice=${continueWatchingItem?.lastPlatform ?: "this-tv"} destinationDevice=tv resumePosition=${pendingResumePositionSec ?: 0.0}",
         )
-        val rememberedKey = if (activeRequest.fromContinueWatching) {
+        // Did the viewer pick this source, or is the app picking one for them?
+        //
+        // Everything below narrates one of those two stories, and telling the wrong one is what
+        // put "Resuming with your remembered source" on screen a moment after someone had chosen a
+        // different source from the list. A selection travels here as `selectedStreamKey` — from
+        // the stream picker, from the in-player source list, from the next-episode dialog — and it
+        // survives into `streamKeyOverride`, so either being set means the choice was the viewer's.
+        val chosenStream = queuedEpisodeSelection?.stream ?: activeRequest.selectedStream
+        val viewerChoseSource = queuedEpisodeSelection != null ||
+            streamKeyOverride != null ||
+            activeRequest.selectedStreamKey != null
+        // Continue Watching resuming on its own, which is the only case remembered-source wording
+        // describes.
+        val autoContinueResume = activeRequest.fromContinueWatching && !viewerChoseSource
+        val rememberedKey = if (autoContinueResume) {
             repository.rememberedStreamKey(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
         } else {
             null
         }
-        if (activeRequest.fromContinueWatching) {
+        if (viewerChoseSource) {
+            val chosenLabel = streamLabelOverride
+                ?: activeRequest.selectedStreamLabel
+                ?: chosenStream?.addonName?.takeIf { it.isNotBlank() }
+            continueSourceNotice = if (chosenLabel.isNullOrBlank()) {
+                "Opening the source you chose…"
+            } else {
+                "Opening $chosenLabel…"
+            }
+        } else if (autoContinueResume) {
             continueSourceNotice = if (rememberedKey == null) {
                 "No remembered source for this episode. Finding a new source…"
             } else {
                 "Checking your remembered source…"
             }
         }
-        val rememberedAttempt = activeRequest.fromContinueWatching && rememberedKey != null
+        val rememberedAttempt = autoContinueResume && rememberedKey != null
         val continueOriginPlatform = continueWatchingItem?.lastPlatform ?: progress?.lastPlatform
         if (
-            activeRequest.fromContinueWatching &&
+            autoContinueResume &&
             rememberedKey == null &&
             continueWatchingCameFromAnotherPlatform(continueOriginPlatform, destination = "tv")
         ) {
@@ -1185,7 +1225,7 @@ fun PlayerScreen(
                 sourceAddonName = activeRequest.sourceAddonName,
             )
         }.also { resolvedCandidate = it }
-        if (activeRequest.fromContinueWatching) {
+        if (autoContinueResume) {
             val selectedKey = resolved.stream?.let(repository::streamSelectionKey)
             continueSourceNotice = when {
                 rememberedKey != null && selectedKey == rememberedKey -> "Resuming with your remembered source…"
@@ -1195,6 +1235,15 @@ fun PlayerScreen(
                 }
                 rememberedKey == null && selectedKey != null -> "Found a new source. Starting playback…"
                 else -> null
+            }
+        } else if (viewerChoseSource) {
+            // The chosen row did not resolve and the walk below picked something else. Say so,
+            // rather than leaving the viewer reading the name of a source that is not playing.
+            val selectedKey = resolved.stream?.let(repository::streamSelectionKey)
+            val chosenKey = chosenStream?.let(repository::streamSelectionKey) ?: streamKeyOverride
+            if (chosenKey != null && selectedKey != null && selectedKey != chosenKey) {
+                continueSourceNotice =
+                    "That source could not be opened. Trying ${resolved.stream?.addonName?.ifBlank { "another source" }}…"
             }
         }
         candidate = resolved
@@ -1268,10 +1317,12 @@ fun PlayerScreen(
         sourceFallbackNotice = null
         val playable = candidate?.source
         if (playable == null) {
-            error = repository.lastUsenetFailureMessage ?: if (activeRequest.fromContinueWatching) {
-                "No saved source could be resumed, and no new playable source was found. Choose a source to continue."
-            } else {
-                "No playable stream could be resolved"
+            error = repository.lastUsenetFailureMessage ?: when {
+                viewerChoseSource ->
+                    "The source you chose could not be opened, and no alternative worked. Choose another source."
+                autoContinueResume ->
+                    "No saved source could be resumed, and no new playable source was found. Choose a source to continue."
+                else -> "No playable stream could be resolved"
             }
             loading = false
             controlsVisible = true
@@ -1290,10 +1341,14 @@ fun PlayerScreen(
             currentLabel = streamLabelOverride ?: "No playable stream found"
             resetPlaybackEngineForNewSource()
             error = when (throwable) {
-                is java.net.SocketTimeoutException, is TimeoutCancellationException -> if (activeRequest.fromContinueWatching) {
-                    "Remembered source is taking too long. Choose another source."
-                } else {
-                    "Stream lookup timed out. Please try again or choose another source."
+                is java.net.SocketTimeoutException, is TimeoutCancellationException -> when {
+                    // Recomputed here: the load body's locals are out of scope, and the wording
+                    // has to match what the viewer actually did rather than how they arrived.
+                    activeRequest.selectedStreamKey != null || streamKeyOverride != null ->
+                        "The source you chose is taking too long. Choose another source."
+                    activeRequest.fromContinueWatching ->
+                        "Remembered source is taking too long. Choose another source."
+                    else -> "Stream lookup timed out. Please try again or choose another source."
                 }
                 else -> throwable.message ?: "Could not prepare playback"
             }
@@ -1856,10 +1911,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     }
                 }
                 // SEEK is an authoritative interaction region, not merely whichever child happens
-                // to hold focus this frame. The root sees D-pad input before Compose spatial focus
-                // search, so horizontal presses cannot escape even during rapid key repeats or a
-                // recomposition of the timeline. Down is the sole transition into controls.
-                if (!loading && controlsVisible && controlsFocusRegion == PlayerControlsFocusRegion.Seek &&
+                // to hold focus this frame. The seek row cancels horizontal focus search in its own
+                // right — see PlayerSeekFocusGroup — and this is the region-level backstop above it,
+                // covering the frames in which the row is being composed or recomposed and the
+                // presses that arrive while the bar is on screen but the row has not been given
+                // focus yet. Down is the sole transition into the controls row.
+                if (bottomBarOnScreen && controlsFocusRegion == PlayerControlsFocusRegion.Seek &&
+                    hasSeekableTimeline &&
                     panel == null && !nextEpisodeDialogVisible && smartSwitchCandidate == null
                 ) {
                     when (event.key) {
@@ -1877,6 +1935,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             if (event.type == KeyEventType.KeyDown) {
                                 controlsFocusRegion = PlayerControlsFocusRegion.Controls
                                 runCatching { playRequester.requestFocus() }
+                                registerInteraction()
                             }
                             return@onPreviewKeyEvent true
                         }
@@ -2015,6 +2074,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         }
                         loading = false
                         error = null
+                        // The load narration described getting here. It has no meaning once the
+                        // picture is up, and leaving it set is what made the next load — a source
+                        // the viewer had just chosen by hand — open under the previous journey's
+                        // sentence.
+                        continueSourceNotice = null
+                        sourceFallbackNotice = null
                         liveReconnectJob?.cancel()
                         liveReconnectJob = null
                         liveReconnectAttempt = 0
@@ -2027,7 +2092,19 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             controlsVisible = false
                             liveChannelInfoVisible = false
                         } else {
-                            showControls(focusPlay = true)
+                            // The engine reaching READY is not the viewer asking for anything, and
+                            // it does not happen once. It fires again on every rebuffer — including
+                            // the one a scrub causes — so taking focus here is what carried the
+                            // highlight out of the seek row and onto Play in the middle of
+                            // scrubbing, after which Right walked along the controls instead of
+                            // seeking. This was the focus escape; the seek row was never the thing
+                            // letting go.
+                            //
+                            // Raising the controls is still right: that is playback starting, and
+                            // they time out on their own. Focus is only placed when nobody owns it.
+                            val nobodyOwnsFocus = !controlsVisible &&
+                                controlsFocusRegion != PlayerControlsFocusRegion.Seek
+                            showControls(focusPlay = nobodyOwnsFocus)
                         }
                         val loadedContentKey = listOf(
                             request.mediaType,
@@ -2591,6 +2668,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         nextEpisode?.let { currentEpisode = it }
                         registerInteraction()
                     },
+                    // The seek row's own path, used on the frames the region backstop above does
+                    // not cover. Both end up in the same place, and only one of them ever runs for
+                    // a given press.
+                    onSeekBy = { delta ->
+                        controlsFocusRegion = PlayerControlsFocusRegion.Seek
+                        scheduleRelativeSeek(delta)
+                        scheduleControlsHide()
+                    },
                     onMarkWatched = {
                         scope.launch {
                             markWatchedAndClearProgressIfNeeded()
@@ -2711,10 +2796,15 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                         pendingEngineResumePositionSec = resumeAt.takeIf { it > 0.0 }
                                         activePlaybackEngine = initialPlaybackEngine(playbackPreferences.playerEngine)
                                         autoEngineFallbackUsed = false
+                                        continueSourceNotice = suggested.addonName.takeIf { it.isNotBlank() }
+                                            ?.let { "Switching to $it and keeping your position…" }
+                                            ?: "Switching source and keeping your position…"
+                                        sourceFallbackNotice = null
                                         loading = true
                                         error = null
                                     } else {
                                         error = "That replacement source could not be prepared. Choose another source."
+                                        continueSourceNotice = null
                                         controlsVisible = false
                                     }
                                 }
@@ -2861,6 +2951,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 panelClosedAtMs = System.currentTimeMillis()
                                 loading = true
                                 controlsVisible = false
+                                // Say what is happening now. This path never re-enters
+                                // loadPlayback, so without it the loading screen carried whatever
+                                // sentence the previous load had left behind.
+                                continueSourceNotice = stream.addonName.takeIf { it.isNotBlank() }
+                                    ?.let { "Opening $it…" }
+                                    ?: "Opening the source you chose…"
+                                sourceFallbackNotice = null
                                 pendingResumePositionSec = positionSec.takeIf { it > 0.0 }
                                 val selected = try {
                                     repository.resolveSelectedPlayback(
@@ -2874,6 +2971,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     )
                                 } catch (e: Exception) {
                                     error = "Could not load this source: ${e.message ?: "Unknown error"}"
+                                    continueSourceNotice = null
                                     loading = false
                                     controlsVisible = true
                                     return@launch
@@ -2888,6 +2986,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     } else {
                                         "This source could not be resolved. Please try another."
                                     }
+                                    continueSourceNotice = null
                                     loading = false
                                     controlsVisible = true
                                     return@launch

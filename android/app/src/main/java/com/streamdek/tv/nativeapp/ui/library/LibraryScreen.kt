@@ -60,6 +60,7 @@ import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 
 private data class BrowseActionState(
     val item: MediaItem,
@@ -195,6 +196,8 @@ fun LibraryScreen(
 
     // A position held from a longer list has no meaning in a shorter one, and leaving the grid
     // scrolled where the previous section was reads as the new section having lost its first rows.
+    val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
+
     LaunchedEffect(section, typeFilter) {
         runCatching { gridState.scrollToItem(0) }
     }
@@ -202,6 +205,8 @@ fun LibraryScreen(
     LaunchedEffect(loading, error) {
         if (loading) return@LaunchedEffect
         delay(160)
+        // Not while the side navigation owns the D-pad — see LocalSideNavOwnsFocus.
+        if (sideNavOwnsFocus) return@LaunchedEffect
         runCatching { firstChipRequester.requestFocus() }
     }
 

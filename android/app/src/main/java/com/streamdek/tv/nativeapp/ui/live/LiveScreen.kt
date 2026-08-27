@@ -64,6 +64,7 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 
 private val LiveSidebarWidth = 236.dp
 
@@ -194,10 +195,14 @@ fun LiveScreen(
      * back to ordinary focus search, which finds nothing to the right and stays put.
      */
     val contentFocusTarget = if (visibleItems.isEmpty()) FocusRequester.Default else firstCardRequester
+    val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
 
     LaunchedEffect(isLoading) {
         if (isLoading) return@LaunchedEffect
         kotlinx.coroutines.delay(160)
+        // Not while the side navigation owns the D-pad: taking the highlight off a viewer who has
+        // just opened the menu is what read as the drawer closing by itself.
+        if (sideNavOwnsFocus) return@LaunchedEffect
         runCatching { sidebarEntry.requestFocus() }
     }
 

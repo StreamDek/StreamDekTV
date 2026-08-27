@@ -66,6 +66,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
@@ -159,6 +160,22 @@ private enum class NavigationFocusRegion { Content, SideNav }
  */
 private const val NavRailTransparentAlpha = 0.85f
 
+/**
+ * How long the rail waits before believing it has lost focus.
+ *
+ * Long enough to absorb a frame in which focus is in flight between two nav items, short enough
+ * that a viewer who has genuinely left never sees the drawer linger.
+ */
+private const val NavRailCloseSettleMs = 90L
+
+/**
+ * How long a claim on the navigation region waits for the rail to answer it by taking focus.
+ *
+ * Comfortably more than the few frames the rail needs to become focusable and place its highlight,
+ * and short enough that a route which carries no rail at all does not appear to swallow the press.
+ */
+private const val NavRailOpenConfirmMs = 260L
+
 /** The navigation route the title page is registered under, kept in one place. */
 private const val DetailRoutePattern = "detail/{type}/{id}"
 private const val PersonRoutePattern = "person/{id}"
@@ -196,9 +213,39 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     /** The title page's own way back in from the rail, and the rail's way of being reached. */
     val detailContentRequester = remember { FocusRequester() }
     val personContentRequester = remember { FocusRequester() }
-    val navRailRequester = remember { FocusRequester() }
     val navigationFocusScope = rememberCoroutineScope()
+    /**
+     * Which region owns the D-pad: the page, or the side navigation. Exactly one of them, always.
+     *
+     * The rail reports what its focus is actually doing and this follows, so "the menu is open" and
+     * "the menu holds the highlight" cannot come apart. Everything that wants the menu closed does
+     * it by moving focus back into the page rather than by setting this directly — see
+     * [openSideNavigation] for the one exception, which is optimistic and self-correcting.
+     */
     var navigationFocusRegion by remember { mutableStateOf(NavigationFocusRegion.Content) }
+    val sideNavOwnsFocus = navigationFocusRegion == NavigationFocusRegion.SideNav
+    /**
+     * Bumped every time the rail newly takes focus.
+     *
+     * Screens hand focus to their content over a short retry window, and "the viewer opened the
+     * menu while that was running" has to win — otherwise the menu is torn back open-and-shut one
+     * attempt at a time, which is what made opening it from a Home row take two presses. Comparing
+     * this against the value a transfer started with distinguishes that from the ordinary case of a
+     * transfer that began in the rail because the viewer chose a destination from it.
+     */
+    var sideNavFocusEpoch by remember { mutableStateOf(0) }
+    /** Set once the rail has actually taken focus, as opposed to having merely been claimed. */
+    var sideNavFocusConfirmed by remember { mutableStateOf(false) }
+    /**
+     * Whether anything at all in the app window holds the highlight.
+     *
+     * On a television there is no pointer and no other way to address the screen, so a moment with
+     * no focus owner is a moment the remote does nothing — which is how it is reported, as the page
+     * having gone dead. Screens aim focus for themselves and usually land it; this is only the
+     * floor under them, and it is deliberately the last thing to act.
+     */
+    var appHasFocus by remember { mutableStateOf(false) }
+    val appView = androidx.compose.ui.platform.LocalView.current
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
     var liveBrowseSelection by remember { mutableStateOf(LiveBrowseSelection()) }
@@ -435,9 +482,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     }
 
     LaunchedEffect(currentRoute) {
-        // A destination change always starts in content. The rail can only become authoritative
-        // again after a deliberate Left transition from the newly visible page.
-        navigationFocusRegion = NavigationFocusRegion.Content
+        // A destination change always starts in content. The rail hands focus to the new page
+        // below, and its own state follows that focus; nothing is set here, or the rail could be
+        // drawn shut for a frame while it still held the highlight.
         if (currentRoute == TopLevelDestination.Live.route && previousRoute == "player") {
             liveFocusRestoreToken += 1
         }
@@ -487,16 +534,79 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         // while the returning destination is being attached. It must remain bounded: some entry
         // requesters legitimately reject programmatic focus (or the content is already focused),
         // and that must never leave the navigation rail permanently disabled.
-        repeat(7) { attempt ->
-            delay(if (attempt == 0) 32L else 80L)
-            val accepted = runCatching { requester.requestFocus() }.getOrDefault(false) == true
-            if (accepted) {
-                navigationFocusRegion = NavigationFocusRegion.Content
+        //
+        // It stops at the first request that lands. The success test used to compare the Unit
+        // returned by requestFocus against `true` and so was never satisfied, which turned this
+        // into half a second of repeated focus grabs: a viewer who opened the menu just after
+        // arriving on a page had the highlight dragged back out of it, and the drawer collapsed
+        // with them. That is also why moving down the menu appeared to close it.
+        val epochAtStart = sideNavFocusEpoch
+        // A transfer the rail asked for has to land, because while the rail still holds focus the
+        // destination stands down from placing its own — so nothing else would finish the job. An
+        // incidental route change has the screen's own placement and the focus floor behind it and
+        // does not need to keep trying.
+        val explicitTransfer = pendingDestinationFocus == route
+        repeat(if (explicitTransfer) 24 else 7) { attempt ->
+            delay(if (attempt == 0) 32L else if (explicitTransfer) 120L else 80L)
+            // The viewer has reached for the menu since this started. It owns focus now, and
+            // dragging the highlight back into the page is precisely the behaviour being fixed.
+            if (sideNavFocusEpoch != epochAtStart) {
+                pendingDestinationFocus = null
+                return@LaunchedEffect
+            }
+            if (requester.requestFocusOrFalse()) {
                 pendingDestinationFocus = null
                 return@LaunchedEffect
             }
         }
         pendingDestinationFocus = null
+    }
+
+    /**
+     * The focus floor.
+     *
+     * Every screen places its own focus, and every one of those placements can miss — a restored
+     * card whose row no longer exists, a requester asked for before its target was attached, a
+     * transition that disposed the screen holding the highlight. Individually those are recoverable;
+     * together they left the app with nothing focused and no way for the remote to reach anything,
+     * which is what going back to Home quickly from the player used to produce.
+     *
+     * Deliberately slow to act and easy to pre-empt: the first attempt is well after a screen's own
+     * placement would have landed, and the effect is cancelled the instant anything takes focus. It
+     * stands down entirely while another window — a dialog, the system — owns input, since the
+     * highlight in there is not this composition's to take back.
+     */
+    LaunchedEffect(appHasFocus, currentRoute, showStartupProfilePicker) {
+        if (appHasFocus || showStartupProfilePicker) return@LaunchedEffect
+        val requester = destinationContentRequesters[currentRoute] ?: return@LaunchedEffect
+        repeat(10) { attempt ->
+            delay(if (attempt == 0) 420L else 160L)
+            if (appView.hasWindowFocus()) requester.requestFocusOrFalse()
+        }
+    }
+
+    /**
+     * The one way the side navigation opens, from anywhere in the app.
+     *
+     * The region is claimed first so the rail is already drawing as a menu on the frame the
+     * highlight arrives in it — there is no intermediate state where the viewer has pressed Left
+     * and nothing visible has happened. If the rail cannot take focus, because this route does not
+     * carry it, the claim is handed straight back rather than left standing.
+     */
+    fun openSideNavigation() {
+        if (navigationFocusRegion == NavigationFocusRegion.SideNav) return
+        navigationFocusRegion = NavigationFocusRegion.SideNav
+        sideNavFocusEpoch += 1
+        navigationFocusScope.launch {
+            // Which item the highlight should land on is the rail's own knowledge — the page the
+            // viewer is on, or the one they last left the menu from — so the rail answers this
+            // claim by taking focus itself. That answer coming back is also how the claim is
+            // confirmed. If none arrives, this route carries no rail and the claim is withdrawn.
+            delay(NavRailOpenConfirmMs)
+            if (navigationFocusRegion == NavigationFocusRegion.SideNav && !sideNavFocusConfirmed) {
+                navigationFocusRegion = NavigationFocusRegion.Content
+            }
+        }
     }
 
     LaunchedEffect(exitHintVisible) {
@@ -622,46 +732,75 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             androidx.compose.animation.scaleIn(TvMotion.enterSpec(), initialScale = 1.02f)
         val screenPopExit = androidx.compose.animation.fadeOut(TvMotion.exitSpec()) +
             androidx.compose.animation.scaleOut(TvMotion.exitSpec(), targetScale = backScaleOut)
+        // Set by whichever screen has taken the display — today the title page, while a trailer
+        // is playing over it. The shell's own furniture stands down for the duration.
+        var immersiveContent by remember { mutableStateOf(false) }
+        // The shell's furniture leaves on the same curve the screen underneath is using, rather
+        // than blinking out from over a page that is still fading. One value for both pieces,
+        // so the clock and the rail go together.
+        val chromeAlpha by androidx.compose.animation.core.animateFloatAsState(
+            targetValue = if (immersiveContent) 0f else 1f,
+            animationSpec = TvMotion.standardSpec(TvMotion.Expand),
+            label = "app-chrome",
+        )
+        // A title page is somewhere you browse, not somewhere you commit to: you arrive on it
+        // from a row, decide against it, and want to be somewhere else. Without the rail the
+        // only way out was Back, and only back the way you came. It still stays off the player
+        // and the stream picker, where it would sit over the picture or over a decision.
+        // The rail is furniture, not a feature of certain screens.
+        //
+        // It used to be listed on per route, which meant a viewer three screens deep — a
+        // network's catalogue, all of Live — had no way to anywhere except back the way they
+        // came. Every browsing screen now carries it, and the exclusions below are the screens
+        // where it would be in the way rather than the ones nobody thought to add.
+        //
+        // Off the player, where it would sit over the picture. Off the stream picker, which is
+        // a decision to make rather than a place to browse from. Off a cast page, whose whole
+        // width is one person's work and which is reached from a title rather than from the
+        // menu. Off the sign-in screen, which is not somewhere to navigate away from.
+        val railRoutes = remember {
+            topLevelDestinations.map { it.route } +
+                listOf(DetailRoutePattern, "live-view-all", "network/{id}/{name}")
+        }
+        val railOnScreen = currentRoute in railRoutes && !detailNavigationInProgress &&
+            !showUpdatePrompt && chromeAlpha > 0.001f
+        val shellFocusManager = androidx.compose.ui.platform.LocalFocusManager.current
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
+                .background(MaterialTheme.colorScheme.background)
+                // Covers the pages, the rail and everything drawn over them, so `hasFocus` here is
+                // the honest answer to "does the remote currently address anything".
+                .onFocusChanged { appHasFocus = it.hasFocus }
+                // The content/menu boundary, in one place, for every screen.
+                //
+                // This is the bubble phase, so it only ever sees a Left press that the focused
+                // screen — and every container between it and here — declined to handle. Such a
+                // press is exactly the one Compose would otherwise hand to a spatial search, so the
+                // search is run here instead and its answer used: something further left inside the
+                // page, or, when there is nothing, the menu.
+                //
+                // Doing it this way is what lets the collapsed rail stop being a focus target at
+                // all. Screens used to reach it by aiming a focus redirect at it or by simply
+                // letting the search find it, which meant *any* search that ran out of page — most
+                // damagingly Compose's own recovery when a screen was disposed mid-transition —
+                // landed in the rail and pulled it open. Returning Home from an inner page did it
+                // every time.
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                    if (event.key != Key.DirectionLeft) return@onKeyEvent false
+                    if (!railOnScreen || sideNavOwnsFocus) return@onKeyEvent false
+                    if (shellFocusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Left)) {
+                        return@onKeyEvent true
+                    }
+                    openSideNavigation()
+                    true
+                }
+                .focusGroup(),
         ) {
-            // Set by whichever screen has taken the display — today the title page, while a trailer
-            // is playing over it. The shell's own furniture stands down for the duration.
-            var immersiveContent by remember { mutableStateOf(false) }
-            // The shell's furniture leaves on the same curve the screen underneath is using, rather
-            // than blinking out from over a page that is still fading. One value for both pieces,
-            // so the clock and the rail go together.
-            val chromeAlpha by androidx.compose.animation.core.animateFloatAsState(
-                targetValue = if (immersiveContent) 0f else 1f,
-                animationSpec = TvMotion.standardSpec(TvMotion.Expand),
-                label = "app-chrome",
-            )
-            // A title page is somewhere you browse, not somewhere you commit to: you arrive on it
-            // from a row, decide against it, and want to be somewhere else. Without the rail the
-            // only way out was Back, and only back the way you came. It still stays off the player
-            // and the stream picker, where it would sit over the picture or over a decision.
-            // The rail is furniture, not a feature of certain screens.
-            //
-            // It used to be listed on per route, which meant a viewer three screens deep — a
-            // network's catalogue, all of Live — had no way to anywhere except back the way they
-            // came. Every browsing screen now carries it, and the exclusions below are the screens
-            // where it would be in the way rather than the ones nobody thought to add.
-            //
-            // Off the player, where it would sit over the picture. Off the stream picker, which is
-            // a decision to make rather than a place to browse from. Off a cast page, whose whole
-            // width is one person's work and which is reached from a title rather than from the
-            // menu. Off the sign-in screen, which is not somewhere to navigate away from.
-            val railRoutes = remember {
-                topLevelDestinations.map { it.route } +
-                    listOf(DetailRoutePattern, "live-view-all", "network/{id}/{name}")
-            }
-            val railOnScreen = currentRoute in railRoutes && !detailNavigationInProgress &&
-                !showUpdatePrompt && chromeAlpha > 0.001f
             CompositionLocalProvider(
                 LocalImmersiveContent provides { active -> immersiveContent = active },
-                LocalNavRailFocus provides navRailRequester.takeIf { railOnScreen },
+                LocalSideNavOwnsFocus provides sideNavOwnsFocus,
             ) {
             NavHost(
                 navController = navController,
@@ -701,15 +840,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                             lastHomeRowId = rowId
                             lastHomeItemKey = itemKey
                         },
-                        onOpenNavigation = {
-                            navigationFocusRegion = NavigationFocusRegion.SideNav
-                            navigationFocusScope.launch {
-                                // State changes first so the rail is visibly open before focus is
-                                // transferred; this removes the collapsed/invisible intermediate.
-                                delay(16L)
-                                runCatching { navRailRequester.requestFocus() }
-                            }
-                        },
+                        onOpenNavigation = ::openSideNavigation,
                     )
                 }
                 composable(PersonRoutePattern) { backStackEntryInner ->
@@ -914,6 +1045,14 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 )
             }
 
+            // The rail is composed per route. When it goes — into the player, into a title page
+            // mid-transition, behind a trailer — it takes its focus with it, and nothing would
+            // otherwise report that. Leaving the region claiming SIDE_NAV is what brought a viewer
+            // back to Home with the menu drawn open and the highlight sitting on a card.
+            LaunchedEffect(railOnScreen) {
+                if (!railOnScreen) navigationFocusRegion = NavigationFocusRegion.Content
+            }
+
             if (railOnScreen) {
                 TvSideNav(
                     destinations = topLevelDestinations,
@@ -923,13 +1062,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     currentRoute = currentRoute.orEmpty(),
                     contentRequesters = destinationContentRequesters,
                     transparent = appPrefs?.transparentNavigation != false,
-                    railRequester = navRailRequester,
-                    open = navigationFocusRegion == NavigationFocusRegion.SideNav,
+                    open = sideNavOwnsFocus,
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .graphicsLayer { alpha = chromeAlpha },
+                    // Choosing a destination does not collapse the rail directly. It asks the
+                    // destination to take focus, and the rail closes because it stopped holding it
+                    // — so the drawer is never drawn shut while the highlight is still inside it,
+                    // and no open state can leak into the page being opened.
                     onNavigate = { route ->
-                        navigationFocusRegion = NavigationFocusRegion.Content
                         pendingDestinationFocus = route
                         if (route != currentRoute) {
                             navController.navigate(route) {
@@ -938,7 +1079,14 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                             }
                         }
                     },
-                    onFocusRegionChanged = { navigationFocusRegion = it },
+                    onOpenChanged = { open ->
+                        if (open && navigationFocusRegion != NavigationFocusRegion.SideNav) {
+                            sideNavFocusEpoch += 1
+                        }
+                        sideNavFocusConfirmed = open
+                        navigationFocusRegion =
+                            if (open) NavigationFocusRegion.SideNav else NavigationFocusRegion.Content
+                    },
                 )
             }
 
@@ -1613,6 +1761,29 @@ private fun RailInsetDestination(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize().padding(start = TvNavRailInset)) { content() }
 }
 
+/**
+ * The side navigation.
+ *
+ * ## Two pieces of state, one invariant
+ *
+ * Which item is highlighted ([highlightedRoute]) and whether the drawer is a menu ([open]) are
+ * separate things, and moving between items changes only the first. They used to influence each
+ * other, which is why travelling down the menu collapsed it after every press.
+ *
+ * What ties them together is a single invariant: **the rail is open exactly while it holds focus**.
+ * That is reported, not assumed — focus arriving anywhere inside the rail opens it, focus genuinely
+ * leaving closes it, and [onOpenChanged] tells the shell so its authoritative region follows. The
+ * consequence is that the two failures the viewer actually notices become unrepresentable: a drawer
+ * drawn open while the page still answers the D-pad, and a highlight sitting inside a drawer that
+ * has already collapsed.
+ *
+ * It also means nothing closes this by setting a flag. Everything that wants the menu shut — Back,
+ * Right, choosing a destination — does it by handing focus back to the page, and the drawer follows.
+ *
+ * The close is deferred by [NavRailCloseSettleMs]. Compose can report the container as unfocused for
+ * an instant while focus moves between two of its own children, and acting on that instant is what
+ * made the drawer flicker under fast repeated presses.
+ */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun TvSideNav(
@@ -1623,21 +1794,29 @@ private fun TvSideNav(
     currentRoute: String,
     contentRequesters: Map<String, FocusRequester>,
     transparent: Boolean,
-    /** Attached to the rail itself, so a screen can send focus here without naming a destination. */
-    railRequester: FocusRequester,
-    /** Visibility is owned by the shell, independently from which destination item is focused. */
+    /**
+     * Whether the rail is drawn as a menu. Mirrors the shell's navigation region, which in turn
+     * mirrors what this composable reports through [onOpenChanged] — so it is this rail's own focus,
+     * one hop away, rather than an independent flag that can drift from it.
+     */
     open: Boolean,
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
-    onFocusRegionChanged: (NavigationFocusRegion) -> Unit,
+    /**
+     * Reports what the rail's focus is actually doing, so the shell's region can never disagree
+     * with what is on screen. This is the only thing that opens or closes the rail.
+     */
+    onOpenChanged: (Boolean) -> Unit,
 ) {
     var highlightedRoute by remember { mutableStateOf(currentRoute) }
-    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val itemRequesters = remember(destinations, profileFocusRequester) {
         destinations.associateWith { destination ->
             if (destination == TopLevelDestination.Profile) profileFocusRequester else FocusRequester()
         }
     }
+    // True while any descendant holds focus — so travelling between nav items does not register
+    // here at all, which is exactly the distinction the drawer needs and did not have.
+    val railHasFocus = remember { mutableStateOf(false) }
     // One value for the whole rail, and the same one in both directions.
     //
     // The width, the labels and the surface each had their own animation before, on three
@@ -1656,18 +1835,47 @@ private fun TvSideNav(
     val labelAlpha = ((railOpen - 0.35f) / 0.65f).coerceIn(0f, 1f)
     val railSurfaceAlpha = railOpen * if (transparent) NavRailTransparentAlpha else 1f
 
-    LaunchedEffect(currentRoute) {
-        highlightedRoute = currentRoute
-        // Navigation can complete while the select/back key release is still owned by the rail.
-        // Collapse immediately, then hand focus to the destination if it is already composed.
-        // Its own restore effect will take over when content finishes loading.
-        if (open) {
-            onFocusRegionChanged(NavigationFocusRegion.Content)
-            delay(32L)
-            val accepted = contentRequesters[currentRoute]?.let { requester ->
-                runCatching { requester.requestFocus() }.getOrDefault(false)
-            } == true
-            if (!accepted) focusManager.clearFocus(force = true)
+    // The highlight follows the page the viewer is on, but only while the menu is shut. Re-syncing
+    // it under an open menu would drag the highlight off whatever the viewer is currently reading.
+    LaunchedEffect(currentRoute, open) {
+        if (!open) highlightedRoute = currentRoute
+    }
+
+    // Entry focus belongs to the rail, because only the rail knows where the highlight should land
+    // — the page the viewer is on, or the item they last left the menu from. Asking the container
+    // for focus from outside got the answer wrong: the group's own entry rule was not consulted for
+    // a programmatic request, so opening the menu from Library put the highlight on Home.
+    //
+    // Retried across a few frames: the items only become focusable on the composition that made the
+    // rail a menu, and the first attempt can land a frame ahead of it.
+    LaunchedEffect(open) {
+        if (!open) return@LaunchedEffect
+        val target = itemRequesters[destinations.firstOrNull { it.route == highlightedRoute }]
+            ?: itemRequesters[destinations.firstOrNull { it.route == currentRoute }]
+            ?: itemRequesters[destinations.firstOrNull()]
+            ?: return@LaunchedEffect
+        repeat(5) {
+            if (railHasFocus.value) return@LaunchedEffect
+            delay(16L)
+            target.requestFocusOrFalse()
+        }
+    }
+
+    // The invariant: the rail is open exactly while it holds focus.
+    //
+    // Edge-triggered, so this reports a change and never re-asserts a state the shell has moved on
+    // from — that is what lets a destination selection collapse the rail as focus leaves without
+    // this effect immediately reopening it. Opening is immediate; the viewer pressed Left and the
+    // menu has to be there in the same frame. Closing settles for a moment first, because Compose
+    // can report the container as unfocused for an instant while focus crosses between two of its
+    // own items, and collapsing on that instant is what made the drawer flicker under fast presses.
+    val railFocused = railHasFocus.value
+    LaunchedEffect(railFocused) {
+        if (railFocused) {
+            onOpenChanged(true)
+        } else {
+            delay(NavRailCloseSettleMs)
+            onOpenChanged(false)
         }
     }
 
@@ -1692,13 +1900,13 @@ private fun TvSideNav(
     // the rail still shut, and a viewer pressing Back through that means to leave the screen; the
     // press was being eaten to close a menu that was never on screen.
     BackHandler(enabled = open) {
-        val returned = contentRequesters[currentRoute]?.let { requester ->
-            runCatching { requester.requestFocus() }.getOrDefault(false)
-        } == true
-        onFocusRegionChanged(NavigationFocusRegion.Content)
-        // Nothing to hand focus back to on this screen: at least let the rail collapse rather than
-        // swallowing the press entirely.
-        if (!returned) focusManager.clearFocus()
+        // Hand focus back first. The rail closes because it stopped owning focus, which keeps the
+        // drawer and the highlight from ever disagreeing about where the viewer is. If the page has
+        // nothing to take it, close explicitly rather than force-clearing focus and leaving the
+        // screen with no focus owner at all.
+        if (contentRequesters[currentRoute]?.requestFocusOrFalse() != true) {
+            onOpenChanged(false)
+        }
     }
 
     Box(
@@ -1730,16 +1938,26 @@ private fun TvSideNav(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .focusRequester(railRequester)
+            // One observer for the whole rail. `hasFocus` is true for any descendant, so travelling
+            // between nav items does not register here at all — which is the point. Only focus
+            // genuinely arriving at or leaving the rail moves the open state.
+            .onFocusChanged { state -> railHasFocus.value = state.hasFocus }
             .focusProperties {
-                enter = {
-                    itemRequesters[destinations.firstOrNull { it.route == currentRoute }]
-                        ?: FocusRequester.Default
+                // There is nothing to the left of the menu. Without this a Left press from a nav
+                // item ran an ordinary spatial search, which on some layouts found page content
+                // underneath the rail and took focus out of an open drawer.
+                exit = { direction ->
+                    if (direction == androidx.compose.ui.focus.FocusDirection.Left) {
+                        FocusRequester.Cancel
+                    } else {
+                        FocusRequester.Default
+                    }
                 }
             }
-            // `enter` is only consulted for a focus group. Without this the rail was an ordinary
-            // container, so returning to it used plain spatial navigation and landed on whichever
-            // item was nearest — in practice always Home — instead of the page you are on.
+            // A group, so nothing above treats the five items as loose neighbours of page content.
+            // Where the highlight lands on the way in is decided explicitly by the effect above,
+            // not by a spatial search or by the group's entry rule — which turned out not to be
+            // consulted for a programmatic request, and quietly answered "Home" every time.
             .focusGroup()
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,
@@ -1762,51 +1980,69 @@ private fun TvSideNav(
                         ).value,
                     )
                     .focusRequester(itemRequesters.getValue(destination))
+                    // A collapsed rail is not a focus target at all.
+                    //
+                    // This is the other half of the shell's boundary handler: with nothing here
+                    // focusable while the menu is shut, no spatial search — including Compose's own
+                    // recovery when a screen is disposed mid-transition — can put the highlight
+                    // inside a drawer the viewer cannot see. The one way in is
+                    // `openSideNavigation`, which claims the region first and so has already made
+                    // these focusable by the time it asks for focus a frame later.
+                    .focusProperties { canFocus = open }
+                    // Vertical movement inside the rail is named, never searched for.
+                    //
+                    // Spatial focus search runs against the laid-out tree, and while the rail is
+                    // animating its width that tree includes page content sitting under it. On Fire
+                    // TV the search picked the page for a frame — the drawer collapsed, and the
+                    // press that caused it appeared to do nothing. Every direction is answered here
+                    // and every press is consumed, so the search never runs and the drawer never
+                    // sees focus leave for a frame it did not mean to.
+                    .focusProperties {
+                        up = destinations.getOrNull(index - 1)?.let { itemRequesters[it] }
+                            ?: FocusRequester.Cancel
+                        down = destinations.getOrNull(index + 1)?.let { itemRequesters[it] }
+                            ?: FocusRequester.Cancel
+                        left = FocusRequester.Cancel
+                    }
                     .onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                         when (event.key) {
-                            // Do not leave vertical movement to spatial focus search while the rail
-                            // is changing width. On Fire TV that search can choose page content for
-                            // a frame, collapsing the rail; the same Down press then appears to do
-                            // nothing. An explicit neighbour makes every press move exactly once.
-                            Key.DirectionUp -> {
-                                val target = destinations.getOrNull(index - 1)
-                                target?.let { itemRequesters[it] }
-                                    ?.let { requester -> runCatching { requester.requestFocus(); true }.getOrDefault(false) }
-                                    ?: true
+                            // Consumed on both edges. The framework move is driven by the
+                            // focusProperties above; letting the release through as well gave
+                            // tv-material a chance to fire a click on whatever landed under it.
+                            Key.DirectionUp, Key.DirectionDown -> {
+                                if (event.type == KeyEventType.KeyDown) {
+                                    val target = destinations.getOrNull(
+                                        if (event.key == Key.DirectionUp) index - 1 else index + 1,
+                                    )
+                                    target?.let { itemRequesters[it] }?.requestFocusOrFalse()
+                                }
+                                true
                             }
-                            Key.DirectionDown -> {
-                                val target = destinations.getOrNull(index + 1)
-                                target?.let { itemRequesters[it] }
-                                    ?.let { requester -> runCatching { requester.requestFocus(); true }.getOrDefault(false) }
-                                    ?: true
-                            }
+                            Key.DirectionLeft -> true
                             Key.DirectionRight -> {
+                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent true
                                 // Back to the page the viewer is actually on, not the one the
                                 // highlighted item would open. On a top-level screen those are usually
                                 // the same and the difference never showed; on a title page every item
                                 // names somewhere else, so this looked up a requester belonging to a
                                 // screen that was not composed, failed, and left the viewer in the menu
                                 // with no way out.
-                                val transferred = (contentRequesters[currentRoute] ?: contentRequesters[destination.route])
-                                    ?.let { requester -> runCatching { requester.requestFocus(); true }.getOrDefault(false) }
-                                    ?: false
-                                onFocusRegionChanged(NavigationFocusRegion.Content)
-                                transferred
+                                // Closing follows the focus leaving, never the press itself. If the
+                                // page has nothing to take it the menu simply stays — a drawer that
+                                // collapsed here would leave the highlight inside a hidden rail.
+                                (contentRequesters[currentRoute] ?: contentRequesters[destination.route])
+                                    ?.requestFocusOrFalse()
+                                true
                             }
                             else -> false
                         }
                     }
                     .onFocusChanged {
-                        if (it.isFocused) {
-                            highlightedRoute = destination.route
-                            if (!open) onFocusRegionChanged(NavigationFocusRegion.SideNav)
-                        }
+                        // Which item is highlighted, and nothing else. The drawer's open state is
+                        // the container's business — see the observer on the Column above.
+                        if (it.isFocused) highlightedRoute = destination.route
                     }
-                    .clickable {
-                        onFocusRegionChanged(NavigationFocusRegion.Content)
-                        onNavigate(destination.route)
-                    }
+                    .clickable { onNavigate(destination.route) }
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {

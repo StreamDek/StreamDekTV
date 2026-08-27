@@ -57,6 +57,7 @@ import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Year
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 
 private data class BrowseActionState(
     val item: MediaItem,
@@ -173,10 +174,13 @@ fun NetworkBrowseScreen(
         results.filter { minRating == null || (it.rating ?: 0.0) >= minRating!!.toDouble() }
     }
 
+    val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
+
     LaunchedEffect(loading, failed) {
         if (loading) return@LaunchedEffect
         delay(160)
-        runCatching { firstChipRequester.requestFocus() }
+        // Not while the side navigation owns the D-pad — see LocalSideNavOwnsFocus.
+        if (!sideNavOwnsFocus) runCatching { firstChipRequester.requestFocus() }
     }
 
     LaunchedEffect(openTray) {

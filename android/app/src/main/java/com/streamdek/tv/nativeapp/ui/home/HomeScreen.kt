@@ -36,8 +36,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -61,7 +63,9 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvNavRailInset
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.glideToItem
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.highResolutionCardArtwork
+import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -119,6 +123,12 @@ fun HomeScreen(
     onPositionChanged: (rowId: String, itemKey: String) -> Unit = { _, _ -> },
     onOpenNavigation: () -> Unit = {},
 ) {
+    /**
+     * Home places focus on a card several times as it settles — an opening focus, a restored
+     * position, a row that finished loading — and each of those is a retry loop. While the side
+     * navigation owns the D-pad, none of them may reach for focus.
+     */
+    val contentFocusSuspended = LocalSideNavOwnsFocus.current
     val homeViewModel: HomeViewModel = viewModel(factory = remember(repository) { HomeViewModelFactory(repository) })
     val screenState by homeViewModel.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -248,7 +258,15 @@ fun HomeScreen(
     val heroFadeIn = TvMotion.fadeInSpec(TvMotion.Quick)
     val heroFadeOut = TvMotion.fadeOutSpec(TvMotion.Instant)
 
-    Box(Modifier.fillMaxSize().background(backgroundColor)) {
+    // Whether anything on this page holds the highlight. See the focus floor further down.
+    var homeHasFocus by remember { mutableStateOf(false) }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(backgroundColor)
+            .onFocusChanged { homeHasFocus = it.hasFocus }
+            .focusGroup(),
+    ) {
         val art = (spotlightItem?.backdrop ?: spotlightItem?.poster)
             ?.takeIf { initialArtworkReady }
             ?.takeIf { spotlightItem?.type != "network" }
@@ -382,7 +400,7 @@ fun HomeScreen(
                     rowStates.values.forEach { it.scrollToItem(0) }
                     shelfListState.scrollToItem(0)
                     delay(180)
-                    runCatching { firstCardRequester.requestFocus() }
+                    if (!contentFocusSuspended) firstCardRequester.requestFocusOrFalse()
                 }
 
                 val canRestore = restoreToken > 0 &&
@@ -408,7 +426,15 @@ fun HomeScreen(
                     // applying Home's saved card. Otherwise the rail can win the final focus pass
                     // and remain expanded even though the viewer has already returned Home.
                     delay(320)
+                    if (contentFocusSuspended) return@LaunchedEffect
                     pendingRestoreKey = "${row.id}:${homeItemKey(row.items[itemIndex])}"
+                }
+
+                // A restore in flight when the viewer opens the menu is abandoned, not deferred.
+                // Its retry loop would otherwise spend the next half second pulling the highlight
+                // back out of the drawer, one attempt at a time.
+                LaunchedEffect(contentFocusSuspended) {
+                    if (contentFocusSuspended) pendingRestoreKey = null
                 }
 
                 // Home places focus on its first card when it opens, and only then.
@@ -425,10 +451,30 @@ fun HomeScreen(
                     if (canRestore || restoreApplied || pendingRestoreKey != null) return@LaunchedEffect
                     if (rows.isEmpty()) return@LaunchedEffect
                     delay(150)
+                    if (contentFocusSuspended) return@LaunchedEffect
                     // Marked only once the request was actually made, so a first attempt against a
                     // requester that is not attached yet does not spend the single shot.
-                    if (runCatching { firstCardRequester.requestFocus(); true }.getOrDefault(false)) {
-                        openingFocusApplied = true
+                    if (firstCardRequester.requestFocusOrFalse()) openingFocusApplied = true
+                }
+
+                // The floor under all three of the focus placements above.
+                //
+                // Each of them can legitimately come to nothing: a saved card whose row has since
+                // been reordered out of the content, an opening shot spent before the shelves were
+                // attached, a restore that ran out of retries. Individually that is fine. Together
+                // it meant Home could settle with no focus owner at all — the page was drawn and
+                // the remote did nothing, which is what returning quickly from the player used to
+                // produce. Nothing here competes with the placements above; it only notices that
+                // the page has ended up with no highlight and puts one back.
+                LaunchedEffect(homeHasFocus, rows.isEmpty(), contentFocusSuspended) {
+                    if (homeHasFocus || rows.isEmpty() || contentFocusSuspended) return@LaunchedEffect
+                    repeat(12) {
+                        delay(140)
+                        if (homeHasFocus || contentFocusSuspended) return@LaunchedEffect
+                        // A restore is still working through its own retries. Let it finish.
+                        if (pendingRestoreKey == null && firstCardRequester.requestFocusOrFalse()) {
+                            return@LaunchedEffect
+                        }
                     }
                 }
 

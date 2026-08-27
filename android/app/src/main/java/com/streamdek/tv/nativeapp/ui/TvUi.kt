@@ -74,13 +74,33 @@ val TvNavRailWidth = 64.dp
 val TvNavRailInset = TvNavRailWidth + 4.dp
 
 /**
- * The navigation rail, for a screen that wants left out of its content to land there.
+ * Whether the side navigation currently owns the D-pad.
  *
- * Null wherever the rail is not on screen, and that distinction is load-bearing: a focus redirect
- * naming a requester with nothing attached to it cancels the move outright, so a screen that
- * pointed at the rail unconditionally would trap focus on every surface the rail is hidden from.
+ * Only one region is authoritative at a time. Screens place their own focus over a short retry
+ * window as their content arrives — an opening shot, a restored position, a row that just landed —
+ * and every one of those has to stand down while the menu is open. Otherwise a viewer who reached
+ * for the menu mid-load has the highlight dragged back into the page one retry at a time, which is
+ * indistinguishable, from the sofa, from the drawer collapsing on its own.
+ *
+ * Not `static`: it changes, and the screens reading it need to recompose when it does.
  */
-val LocalNavRailFocus = androidx.compose.runtime.staticCompositionLocalOf<FocusRequester?> { null }
+val LocalSideNavOwnsFocus = androidx.compose.runtime.compositionLocalOf { false }
+
+/**
+ * Ask for focus, and say whether the request could be made at all.
+ *
+ * [FocusRequester.requestFocus] returns nothing and throws when nothing is attached to it, so "did
+ * that land" is the absence of an exception and nothing else. This exists because the shell kept
+ * writing it out by hand as `runCatching { requestFocus() }.getOrDefault(false) == true`, which
+ * compares `Unit` against `true` and is therefore *always* false — every focus handoff in the
+ * navigation rail was silently treated as having failed, and the fallback for a failed handoff was
+ * to clear focus outright. That is what left screens with no visible focus owner at all.
+ *
+ * A true result means the requester was attached and the request was dispatched. It is not a
+ * promise that a particular child accepted it; where that matters, observe the focus instead.
+ */
+internal fun FocusRequester.requestFocusOrFalse(): Boolean =
+    runCatching { requestFocus() }.isSuccess
 
 /**
  * The app's motion vocabulary.

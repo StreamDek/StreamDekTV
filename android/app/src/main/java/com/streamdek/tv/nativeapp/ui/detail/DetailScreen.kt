@@ -90,7 +90,8 @@ import com.streamdek.tv.nativeapp.data.TrailerResetSignal
 import com.streamdek.tv.nativeapp.data.kinocheckTrailerKey
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.LocalImmersiveContent
-import com.streamdek.tv.nativeapp.ui.LocalNavRailFocus
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
+import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
 import com.streamdek.tv.nativeapp.ui.TvNavRailInset
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
@@ -258,7 +259,7 @@ fun DetailScreen(
     val trailerRequester = remember(mediaType, mediaId) { FocusRequester() }
     val setImmersiveContent = LocalImmersiveContent.current
     /** Null wherever the rail is not on screen, in which case left out of the page stays put. */
-    val navRailRequester = LocalNavRailFocus.current
+    val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
 
     // Kept per title, so that opening one title page from another cannot leave two screens holding
     // the same requester while the transition crossfades and land focus on the one going away.
@@ -348,7 +349,11 @@ fun DetailScreen(
     LaunchedEffect(detail?.id) {
         detail ?: return@LaunchedEffect
         delay(140)
-        runCatching { playRequester.requestFocus() }
+        // Unless the viewer has reached for the menu while the page was loading. Only one region
+        // owns the D-pad, and taking the highlight back off them here is what read as the drawer
+        // closing by itself.
+        if (sideNavOwnsFocus) return@LaunchedEffect
+        playRequester.requestFocusOrFalse()
     }
 
     val bootstrap by repository.bootstrap.collectAsState()
@@ -835,15 +840,20 @@ fun DetailScreen(
                         .padding(top = heroTop, start = DetailNavRailClearance)
                         // One group around the whole page, purely so leaving it sideways can be
                         // aimed. Everything inside still moves by ordinary focus search; this is
-                        // only consulted when focus is on its way out of the page entirely, which
-                        // to the left means the rail — and the rail is drawn on top of the page
-                        // rather than beside it, so a search for "something further left" found
-                        // nothing to hand it to from anywhere below the hero.
+                        // only consulted when focus is on its way out of the page entirely.
+                        //
+                        // Left out of the page means the navigation menu, and the shell owns that
+                        // transition — see the boundary handler in StreamDekTvApp. Cancelling here
+                        // ends the search rather than letting it wander into whatever happens to be
+                        // laid out under the page, and a cancelled search is precisely the signal
+                        // the shell answers by opening the menu. Aiming the redirect straight at the
+                        // rail, which is what this used to do, meant a collapsed drawer had to stay
+                        // focusable — and then every stray search in the app could fall into it.
                         .focusGroup()
                         .focusProperties {
                             exit = { direction ->
-                                if (direction == FocusDirection.Left && navRailRequester != null) {
-                                    navRailRequester
+                                if (direction == FocusDirection.Left) {
+                                    FocusRequester.Cancel
                                 } else {
                                     FocusRequester.Default
                                 }

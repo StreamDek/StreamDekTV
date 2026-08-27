@@ -58,6 +58,7 @@ import com.streamdek.tv.nativeapp.ui.search.SearchFilterTray
 import com.streamdek.tv.nativeapp.ui.search.SearchQueryDisplay
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlinx.coroutines.delay
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 
 private enum class OpenTray { None, Source, Catalogue }
 
@@ -152,9 +153,11 @@ fun LiveBrowseScreen(
     // the Live page's sidebar had. Default falls back to ordinary focus search.
     val gridFocusTarget = if (filteredItems.isEmpty()) FocusRequester.Default else firstCardRequester
 
+    val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
+
     LaunchedEffect(Unit) {
         delay(160)
-        runCatching { queryRequester.requestFocus() }
+        if (!sideNavOwnsFocus) runCatching { queryRequester.requestFocus() }
     }
 
     LaunchedEffect(openTray) {
