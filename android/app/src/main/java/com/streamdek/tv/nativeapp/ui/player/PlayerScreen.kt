@@ -321,6 +321,10 @@ fun PlayerScreen(
 
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsFocusRegion by remember { mutableStateOf(PlayerControlsFocusRegion.Controls) }
+    /** Where in the controls row the highlight belongs next. Null means Play, the row's default. */
+    var controlsEntryRequester by remember { mutableStateOf<FocusRequester?>(null) }
+    /** Bumped to ask the bar to place that highlight, so repeating the same request still lands. */
+    var controlsFocusToken by remember { mutableIntStateOf(0) }
     var showLiveProgress by remember(playbackRequest.mediaId, playbackPreferences.liveProgressBarEnabled) {
         mutableStateOf(playbackPreferences.liveProgressBarEnabled)
     }
@@ -344,6 +348,14 @@ fun PlayerScreen(
     var pendingResumePositionSec by remember { mutableStateOf<Double?>(null) }
     var pendingResumeContentKey by remember { mutableStateOf<String?>(null) }
     var lastWorkingSourceUrl by remember { mutableStateOf<String?>(null) }
+    /**
+     * Whether this attempt started from the stored URL rather than from a resolve.
+     *
+     * Two things hang off it: the stream list behind the Sources panel has not been fetched, so it
+     * is filled in on demand; and if the picture never arrives, the stored URL has gone stale and
+     * must be dropped rather than tried again on the next resume.
+     */
+    var startedFromRememberedSource by remember { mutableStateOf(false) }
     var lastWorkingLabel by remember { mutableStateOf<String?>(null) }
     var lastWorkingRequestHeaders by remember { mutableStateOf(defaultPlaybackHeaders) }
     var liveReconnectJob by remember { mutableStateOf<Job?>(null) }
@@ -688,17 +700,18 @@ fun PlayerScreen(
         }
     }
 
-    fun requestPlaybackFocus() {
-        scope.launch {
-            delay(60)
-            // A deferred focus request is always a frame or two behind the viewer. If they have
-            // taken the seek row in the meantime — which a single Left or Right does — this is no
-            // longer the place focus belongs, and landing it anyway is how the highlight used to
-            // arrive somewhere nobody asked for.
-            if (controlsFocusRegion != PlayerControlsFocusRegion.Controls) return@launch
-            runCatching { playRequester.requestFocus() }
-                .onFailure { TvDebugLogger.w("Player", "play focus request skipped: ${it.message}") }
-        }
+    /**
+     * Hands the controls row focus, naming where in it the highlight should land.
+     *
+     * The bar places it, because the bar is the thing that knows when its buttons exist. The shell
+     * used to place it too — a delayed request fired from here — and the two raced: whichever ran
+     * after the bar attached won, so dismissing a drawer landed on Play about as often as it landed
+     * on the icon that opened the drawer. One side asks, the other places.
+     */
+    fun focusControls(target: FocusRequester? = null) {
+        controlsEntryRequester = target
+        controlsFocusRegion = PlayerControlsFocusRegion.Controls
+        controlsFocusToken += 1
     }
 
     fun showControls(focusPlay: Boolean = false) {
@@ -708,29 +721,60 @@ fun PlayerScreen(
         pauseInfoVisible = false
         controlsVisible = true
         scheduleControlsHide()
-        if (focusPlay) {
-            controlsFocusRegion = PlayerControlsFocusRegion.Controls
-            requestPlaybackFocus()
-        }
+        if (focusPlay) focusControls()
     }
 
     fun restoreControlsAfterPanel(closedPanel: OverlayPanel) {
         pauseInfoVisible = false
         controlsVisible = true
-        controlsFocusRegion = PlayerControlsFocusRegion.Controls
         scheduleControlsHide()
-        val requester = when (closedPanel) {
-            OverlayPanel.Streams -> sourcesRequester
-            OverlayPanel.Engine -> engineRequester
-            OverlayPanel.Audio -> audioRequester
-            OverlayPanel.Subtitles -> subtitlesRequester
-            OverlayPanel.Speed -> speedRequester
-            OverlayPanel.Info -> infoRequester
-        }
+        // Back to the icon that opened it. A drawer is somewhere the viewer went from a specific
+        // place, and coming out somewhere else — always Play, several steps away — makes trying a
+        // second option cost a journey back across the row.
+        focusControls(
+            when (closedPanel) {
+                OverlayPanel.Streams -> sourcesRequester
+                OverlayPanel.Engine -> engineRequester
+                OverlayPanel.Audio -> audioRequester
+                OverlayPanel.Subtitles -> subtitlesRequester
+                OverlayPanel.Speed -> speedRequester
+                OverlayPanel.Info -> infoRequester
+            },
+        )
+    }
+
+    /**
+     * Refills the list behind the Sources panel.
+     *
+     * Also the price of the remembered fast path: starting from a stored URL means no stream lookup
+     * ran, so the panel would otherwise open onto the single source that is playing. Deferring the
+     * lookup to the moment someone actually opens the panel keeps the resume instant and charges
+     * nobody who never looks.
+     */
+    fun reloadStreamCandidates(forceRefresh: Boolean) {
+        if (streamsReloading) return
+        streamsReloading = true
         scope.launch {
-            delay(60)
-            runCatching { requester.requestFocus() }
-                .onFailure { TvDebugLogger.w("Player", "panel opener focus restore skipped: ${it.message}") }
+            runCatching {
+                repository.streamCandidates(
+                    mediaType = playbackRequest.mediaType,
+                    mediaId = playbackRequest.mediaId,
+                    imdbId = playbackRequest.imdbId ?: detail?.imdbId,
+                    episode = currentEpisode,
+                    streamType = playbackRequest.streamType,
+                    directStreamUrl = playbackRequest.directStreamUrl,
+                    requestHeaders = playbackRequest.requestHeaders,
+                    sourceAddonId = playbackRequest.sourceAddonId,
+                    sourceAddonName = playbackRequest.sourceAddonName,
+                    forceRefresh = forceRefresh,
+                ).collect { progress ->
+                    // Published per batch, so the panel fills as the scrapers answer rather than
+                    // at the end.
+                    candidate = candidate?.copy(streams = progress.streams)
+                        ?: ResolvedPlaybackCandidate(null, null, progress.streams)
+                }
+            }
+            streamsReloading = false
         }
     }
 
@@ -1079,7 +1123,38 @@ fun PlayerScreen(
         val selectedStream = queuedEpisodeSelection?.stream ?: activeRequest.selectedStream?.takeIf {
             currentEpisode == activeRequest.episode && streamKeyOverride == activeRequest.selectedStreamKey
         }
-        var resolvedCandidate = selectedStream?.let {
+        // Did the viewer pick this source, or is the app picking one for them? Everything that
+        // follows narrates one of those two stories, and the fast path below belongs only to the
+        // second one — a source the viewer just chose is not a source to second-guess.
+        val chosenStream = queuedEpisodeSelection?.stream ?: activeRequest.selectedStream
+        val viewerChoseSource = queuedEpisodeSelection != null ||
+            streamKeyOverride != null ||
+            activeRequest.selectedStreamKey != null
+
+        // The remembered source, started immediately.
+        //
+        // This is what "remember last source" was always supposed to buy. The URL that played last
+        // time is on disk, so there is nothing to look up: the engine can be handed it now, and
+        // detail, progress, segments and the stream list all carry on loading around a picture that
+        // is already up. Previously the setting only remembered *which row* had been chosen, and
+        // resuming still had to re-ask the add-on for its streams and re-resolve that row into a
+        // URL — the same two round trips it would have made anyway, which is why a remembered
+        // resume was never faster and routinely timed out waiting for them.
+        //
+        // Only where the content is already identified. A series entered without an episode has to
+        // find out which one it is first, and that answer is what the stored source is keyed by.
+        val rememberedSource = if (
+            !isLive &&
+            !forceRefresh &&
+            !viewerChoseSource &&
+            (activeRequest.mediaType != "tv" || currentEpisode != null)
+        ) {
+            repository.rememberedPlaybackSource(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
+        } else {
+            null
+        }
+        var resolvedCandidate = rememberedSource?.let(repository::candidateFromRememberedSource)
+            ?: selectedStream?.let {
             val availableStreams = queuedEpisodeSelection?.streams.orEmpty().ifEmpty { activeRequest.availableStreams }
             if (queuedEpisodeSelection != null) {
                 // The selection already came from the next-episode dialog. Resolve only that row
@@ -1103,6 +1178,10 @@ fun PlayerScreen(
             }
         }
         if (queuedEpisodeSelection != null) pendingEpisodeSelection = null
+        startedFromRememberedSource = rememberedSource != null
+        if (rememberedSource != null) {
+            continueSourceNotice = "Resuming your remembered source…"
+        }
         // Start the player as soon as the chosen source resolves. Detail, library, resume,
         // IntroDB, and watched metadata can continue loading without blocking decoder startup.
         resolvedCandidate?.source?.let { source ->
@@ -1111,7 +1190,10 @@ fun PlayerScreen(
             currentSourceUrl = source.url
             currentLabel = streamLabelOverride ?: source.label
             resetPlaybackEngineForNewSource()
-            TvDebugLogger.i("Player", "source ready addon=${resolvedCandidate?.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}")
+            TvDebugLogger.i(
+                "Player",
+                "source ready addon=${resolvedCandidate?.stream?.addonName} remembered=${rememberedSource != null} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}",
+            )
         }
         detail = if (isLive) null else repository.fetchDetail(activeRequest.mediaId, activeRequest.mediaType)
         val effectiveImdbId = activeRequest.imdbId ?: detail?.imdbId
@@ -1161,26 +1243,21 @@ fun PlayerScreen(
             "ContinueWatching",
             "contentId=${activeRequest.mediaId} contentType=${activeRequest.mediaType} season=${currentEpisode?.seasonNumber} episode=${currentEpisode?.episodeNumber} originDevice=${continueWatchingItem?.lastPlatform ?: "this-tv"} destinationDevice=tv resumePosition=${pendingResumePositionSec ?: 0.0}",
         )
-        // Did the viewer pick this source, or is the app picking one for them?
-        //
-        // Everything below narrates one of those two stories, and telling the wrong one is what
-        // put "Resuming with your remembered source" on screen a moment after someone had chosen a
-        // different source from the list. A selection travels here as `selectedStreamKey` — from
-        // the stream picker, from the in-player source list, from the next-episode dialog — and it
-        // survives into `streamKeyOverride`, so either being set means the choice was the viewer's.
-        val chosenStream = queuedEpisodeSelection?.stream ?: activeRequest.selectedStream
-        val viewerChoseSource = queuedEpisodeSelection != null ||
-            streamKeyOverride != null ||
-            activeRequest.selectedStreamKey != null
         // Continue Watching resuming on its own, which is the only case remembered-source wording
-        // describes.
+        // describes. A selection travels here as `selectedStreamKey` — from the stream picker, from
+        // the in-player source list, from the next-episode dialog — and it survives into
+        // `streamKeyOverride`, so `viewerChoseSource` above being set means the choice was theirs
+        // and none of this wording applies.
         val autoContinueResume = activeRequest.fromContinueWatching && !viewerChoseSource
         val rememberedKey = if (autoContinueResume) {
             repository.rememberedStreamKey(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
         } else {
             null
         }
-        if (viewerChoseSource) {
+        if (rememberedSource != null) {
+            // Already said, and already true — the picture is starting from it while this runs.
+            // Nothing below is allowed to narrate a lookup that is not happening.
+        } else if (viewerChoseSource) {
             val chosenLabel = streamLabelOverride
                 ?: activeRequest.selectedStreamLabel
                 ?: chosenStream?.addonName?.takeIf { it.isNotBlank() }
@@ -1200,6 +1277,7 @@ fun PlayerScreen(
         val continueOriginPlatform = continueWatchingItem?.lastPlatform ?: progress?.lastPlatform
         if (
             autoContinueResume &&
+            rememberedSource == null &&
             rememberedKey == null &&
             continueWatchingCameFromAnotherPlatform(continueOriginPlatform, destination = "tv")
         ) {
@@ -1225,7 +1303,9 @@ fun PlayerScreen(
                 sourceAddonName = activeRequest.sourceAddonName,
             )
         }.also { resolvedCandidate = it }
-        if (autoContinueResume) {
+        if (rememberedSource != null) {
+            // No lookup ran, so there is nothing to report about one.
+        } else if (autoContinueResume) {
             val selectedKey = resolved.stream?.let(repository::streamSelectionKey)
             continueSourceNotice = when {
                 rememberedKey != null && selectedKey == rememberedKey -> "Resuming with your remembered source…"
@@ -1547,13 +1627,27 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     LaunchedEffect(currentSourceUrl, loading, error) {
         val source = currentSourceUrl
         if (isLive || source.isNullOrBlank() || !loading || error != null) return@LaunchedEffect
-        delay(30_000L)
-        if (currentSourceUrl == source && loading && error == null) {
-            TvDebugLogger.w("Player", "startup stalled before first frame source=${source.substringBefore('?')}")
-            loading = false
-            error = "This source is not delivering playable media. Choose another source."
-            controlsVisible = true
+        // A stored URL gets a much shorter rope. It is a guess — a good one, but a guess — and an
+        // expired link often hangs rather than erroring, so waiting the full window would turn the
+        // fast path into the slowest one there is. There is a proper resolve to fall back to, and
+        // no reason to make anyone watch a spinner while deciding to use it.
+        val startedRemembered = startedFromRememberedSource
+        delay(if (startedRemembered) 9_000L else 30_000L)
+        if (currentSourceUrl != source || !loading || error != null) return@LaunchedEffect
+        if (startedRemembered) {
+            TvDebugLogger.w("Player", "remembered source did not start; resolving from scratch")
+            startedFromRememberedSource = false
+            repository.forgetRememberedStream(request.mediaType, request.mediaId, currentEpisode)
+            candidate = null
+            currentSourceUrl = null
+            continueSourceNotice = "That source has expired. Finding a new one…"
+            scope.launch { loadPlayback(forceRefresh = true) }
+            return@LaunchedEffect
         }
+        TvDebugLogger.w("Player", "startup stalled before first frame source=${source.substringBefore('?')}")
+        loading = false
+        error = "This source is not delivering playable media. Choose another source."
+        controlsVisible = true
     }
 
     // Once playback has started, only sustained buffering with no position progress is a stall.
@@ -1933,8 +2027,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         }
                         Key.DirectionDown -> {
                             if (event.type == KeyEventType.KeyDown) {
-                                controlsFocusRegion = PlayerControlsFocusRegion.Controls
-                                runCatching { playRequester.requestFocus() }
+                                focusControls()
                                 registerInteraction()
                             }
                             return@onPreviewKeyEvent true
@@ -2086,6 +2179,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         lastWorkingSourceUrl = currentSourceUrl
                         lastWorkingLabel = currentLabel
                         lastWorkingRequestHeaders = currentRequestHeaders
+                        // A first frame is the only honest proof that a URL plays, so this is where
+                        // it is written down. Remembering at resolve time instead would enshrine
+                        // URLs that resolve and then refuse to open — and they would be tried first
+                        // on every future resume, failing first every time.
+                        if (!isLive) {
+                            candidate?.let { played ->
+                                repository.rememberPlaybackSource(
+                                    mediaType = request.mediaType,
+                                    mediaId = request.mediaId,
+                                    episode = currentEpisode,
+                                    candidate = played,
+                                )
+                            }
+                        }
                         if (isLive) {
                             lastLiveProgressAtMs = System.currentTimeMillis()
                             lastLiveProgressPositionSec = positionSec
@@ -2254,6 +2361,18 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         } else if (isLive) {
                             scheduleLiveReconnect(message)
                         } else {
+                            // A stored URL that will not open has gone stale — a debrid link that
+                            // expired, a signed CDN URL that lapsed. Drop it before recovering, so
+                            // the next resume resolves properly instead of starting here again.
+                            if (startedFromRememberedSource) {
+                                startedFromRememberedSource = false
+                                repository.forgetRememberedStream(
+                                    request.mediaType,
+                                    request.mediaId,
+                                    currentEpisode,
+                                )
+                                TvDebugLogger.i("Player", "remembered source stale; resolving from scratch")
+                            }
                             error = "Source failed. Trying another stream…"
                             loading = true
                             beginSourceFallback(message)
@@ -2683,12 +2802,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         }
                     },
                     focusRegion = controlsFocusRegion,
+                    controlsEntryRequester = controlsEntryRequester,
+                    controlsFocusToken = controlsFocusToken,
+                    onControlsEntryPlaced = { controlsEntryRequester = null },
                     onFocusRegionChanged = { controlsFocusRegion = it },
                     onOpenPanel = {
                         panel = it
                         controlsHideJob?.cancel()
                         controlsHideJob = null
                         controlsVisible = false
+                        // A remembered start never looked any streams up, so this is the first
+                        // moment the list is actually wanted. See reloadStreamCandidates.
+                        if (it == OverlayPanel.Streams && candidate?.streams.orEmpty().size <= 1) {
+                            reloadStreamCandidates(forceRefresh = false)
+                        }
                     },
                     isLive = isLive,
                     isVod = isVod,
@@ -3097,33 +3224,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         // Refreshes the list in place. Leaving for the picker would tear down
                         // playback to answer a question about what else is available, which is the
                         // opposite of what an in-player source list is for.
-                        onReloadStreams = {
-                            if (!streamsReloading) {
-                                streamsReloading = true
-                                scope.launch {
-                                    runCatching {
-                                        repository.streamCandidates(
-                                            mediaType = playbackRequest.mediaType,
-                                            mediaId = playbackRequest.mediaId,
-                                            imdbId = playbackRequest.imdbId,
-                                            episode = currentEpisode,
-                                            streamType = playbackRequest.streamType,
-                                            directStreamUrl = playbackRequest.directStreamUrl,
-                                            requestHeaders = playbackRequest.requestHeaders,
-                                            sourceAddonId = playbackRequest.sourceAddonId,
-                                            sourceAddonName = playbackRequest.sourceAddonName,
-                                            forceRefresh = true,
-                                        ).collect { progress ->
-                                            // Published per batch, so the panel fills as the
-                                            // scrapers answer rather than at the end.
-                                            candidate = candidate?.copy(streams = progress.streams)
-                                                ?: ResolvedPlaybackCandidate(null, null, progress.streams)
-                                        }
-                                    }
-                                    streamsReloading = false
-                                }
-                            }
-                        },
+                        onReloadStreams = { reloadStreamCandidates(forceRefresh = true) },
                         streamsReloading = streamsReloading,
                         playbackStats = playbackStats,
                         currentStreamUrl = currentSourceUrl,

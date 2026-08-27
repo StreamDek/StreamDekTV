@@ -244,6 +244,12 @@ internal fun PlayerBottomBar(
     /** Seconds to move by, signed. Owned by the seek row and by nothing else. */
     onSeekBy: (Double) -> Unit,
     focusRegion: PlayerControlsFocusRegion,
+    /** Which control the highlight should land on next. Null means Play, the row's default. */
+    controlsEntryRequester: FocusRequester? = null,
+    /** Changes when the host wants that highlight placed again. */
+    controlsFocusToken: Int = 0,
+    /** Reported once placed, so a named target is used once rather than becoming the new default. */
+    onControlsEntryPlaced: () -> Unit = {},
     onFocusRegionChanged: (PlayerControlsFocusRegion) -> Unit,
     onOpenPanel: (OverlayPanel) -> Unit,
     modifier: Modifier = Modifier,
@@ -265,15 +271,24 @@ internal fun PlayerBottomBar(
         onFocusRegionChanged(PlayerControlsFocusRegion.Controls)
         onInteract()
     }
-    LaunchedEffect(focusRegion, hasSeekableTimeline) {
+    LaunchedEffect(focusRegion, hasSeekableTimeline, controlsFocusToken) {
         // Visibility and focus ownership change together. This is the only automatic handoff
         // between the two rows; horizontal movement never participates in focus search.
-        kotlinx.coroutines.delay(16L)
-        when {
-            focusRegion == PlayerControlsFocusRegion.Seek && hasSeekableTimeline ->
-                runCatching { progressRequester.requestFocus() }
-            focusRegion == PlayerControlsFocusRegion.Controls ->
-                runCatching { playRequester.requestFocus() }
+        //
+        // It is also the only place the highlight is placed inside either row. The bar is what
+        // knows when its own buttons are attached — which is not the same frame the host asked, and
+        // reliably later still when the bar is arriving from behind a drawer that just closed.
+        val target = when {
+            focusRegion == PlayerControlsFocusRegion.Seek && hasSeekableTimeline -> progressRequester
+            focusRegion == PlayerControlsFocusRegion.Controls -> controlsEntryRequester ?: playRequester
+            else -> return@LaunchedEffect
+        }
+        repeat(6) { attempt ->
+            kotlinx.coroutines.delay(if (attempt == 0) 16L else 32L)
+            if (runCatching { target.requestFocus() }.isSuccess) {
+                if (focusRegion == PlayerControlsFocusRegion.Controls) onControlsEntryPlaced()
+                return@LaunchedEffect
+            }
         }
     }
     // Read the state object directly in the key handler. Capturing the delegated Boolean leaves

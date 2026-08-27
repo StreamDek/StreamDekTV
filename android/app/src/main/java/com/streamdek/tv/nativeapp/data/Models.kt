@@ -1202,6 +1202,33 @@ data class ResolvedPlaybackSource(
     val requestHeaders: Map<String, String> = emptyMap(),
 )
 
+/**
+ * The exact source a title last played from, kept so that resuming it does not have to be
+ * rediscovered.
+ *
+ * "Remember last source" used to mean remembering only which *row* in the stream list was chosen.
+ * Resuming still had to ask the add-on for its streams again and then resolve the chosen one back
+ * into a playable URL — two network round trips, frequently slower than picking a source by hand,
+ * and the reason a remembered resume could sit on a spinner for fifteen seconds or time out
+ * entirely. Keeping the resolved URL alongside the key is what makes "remembered" mean instant.
+ *
+ * Written only once a source has actually played, so this is a URL known to have worked rather than
+ * one that merely resolved. It can still go stale — debrid links and tokenised CDN URLs expire —
+ * which is why [savedAtMs] exists and why the player treats a failure here as a cue to fall back to
+ * a full resolve rather than as an error worth showing anyone.
+ */
+data class RememberedPlaybackSource(
+    val streamKey: String,
+    val url: String,
+    val contentType: String = "",
+    val label: String = "",
+    val filename: String? = null,
+    val requestHeaders: Map<String, String> = emptyMap(),
+    val addonId: String = "",
+    val addonName: String = "",
+    val savedAtMs: Long = 0L,
+)
+
 data class ResolvedPlaybackCandidate(
     val source: ResolvedPlaybackSource?,
     val stream: AddonStream?,

@@ -431,6 +431,16 @@ private const val NETWORKS_CATALOG_ID = "streaming_networks"
  * candidates are only reused for a short window before being re-resolved.
  */
 private const val RESOLVED_PLAYBACK_CACHE_TTL_MS = 3 * 60_000L
+
+/**
+ * How long a remembered source URL is worth trying before the player resolves from scratch instead.
+ *
+ * Deliberately long. Debrid links and cookie-signed CDN URLs outlive this often enough to be worth
+ * it, and a URL that has gone stale costs one failed request that the player already knows how to
+ * recover from — against which the alternative is making every single remembered resume pay for a
+ * full stream lookup.
+ */
+internal const val RememberedSourceTtlMs = 12L * 60 * 60 * 1000
 internal fun effectiveRememberedStreamKey(
     explicitKey: String?,
     storedKey: String?,
@@ -3096,7 +3106,98 @@ class StreamDekRepository(
     }
 
     fun forgetRememberedStream(mediaType: String, mediaId: String, episode: EpisodeContext?) {
-        sessionStore.savePreferredStreamKey(mediaType, mediaId, buildEpisodeKey(episode), null)
+        val episodeKey = buildEpisodeKey(episode)
+        sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, null)
+        sessionStore.saveRememberedPlaybackSource(mediaType, mediaId, episodeKey, null)
+    }
+
+    /**
+     * The playable URL this title last actually played from, if it is still worth trying.
+     *
+     * This is what makes a remembered resume instant. The alternative — which is what "remember
+     * last source" used to do on its own — is to ask the owning add-on for its stream list again
+     * and then resolve the remembered row back into a URL, and those two round trips are most of
+     * the wait before a resume starts. Worse, they are the same two round trips whether or not
+     * anything is remembered, so remembering bought the viewer nothing.
+     *
+     * Null once [RememberedSourceTtlMs] has passed. That window is generous on purpose: a stale URL
+     * is not a failure state here, because the player falls back to a full resolve the moment the
+     * engine cannot open it, so the cost of trying is one failed request and the cost of not trying
+     * is the entire wait.
+     */
+    fun rememberedPlaybackSource(
+        mediaType: String,
+        mediaId: String,
+        episode: EpisodeContext?,
+    ): RememberedPlaybackSource? {
+        if (!rememberLastSourceEnabled()) return null
+        val stored = sessionStore.rememberedPlaybackSource(mediaType, mediaId, buildEpisodeKey(episode))
+            ?: return null
+        if (System.currentTimeMillis() - stored.savedAtMs > RememberedSourceTtlMs) {
+            sessionStore.saveRememberedPlaybackSource(mediaType, mediaId, buildEpisodeKey(episode), null)
+            return null
+        }
+        return stored
+    }
+
+    /**
+     * Records the source a title is playing from, once it has proved it plays.
+     *
+     * Called when the engine reports a first frame rather than when the URL resolves: a URL that
+     * resolved and then would not open is exactly what should *not* be remembered, since it would
+     * be tried first every time and fail every time.
+     */
+    fun rememberPlaybackSource(
+        mediaType: String,
+        mediaId: String,
+        episode: EpisodeContext?,
+        candidate: ResolvedPlaybackCandidate,
+    ) {
+        if (!rememberLastSourceEnabled()) return
+        val source = candidate.source ?: return
+        val stream = candidate.stream ?: return
+        val episodeKey = buildEpisodeKey(episode)
+        val streamKey = streamSelectionKey(stream)
+        sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, streamKey)
+        sessionStore.saveRememberedPlaybackSource(
+            mediaType,
+            mediaId,
+            episodeKey,
+            RememberedPlaybackSource(
+                streamKey = streamKey,
+                url = source.url,
+                contentType = source.contentType,
+                label = source.label,
+                filename = source.filename,
+                requestHeaders = source.requestHeaders,
+                addonId = stream.addonId,
+                addonName = stream.addonName,
+                savedAtMs = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    /** Rebuilds a candidate the player can start from without resolving anything. */
+    fun candidateFromRememberedSource(remembered: RememberedPlaybackSource): ResolvedPlaybackCandidate {
+        val stream = AddonStream(
+            addonId = remembered.addonId,
+            addonName = remembered.addonName,
+            name = remembered.addonName,
+            title = remembered.label,
+            url = remembered.url,
+            requestHeaders = remembered.requestHeaders,
+        )
+        return ResolvedPlaybackCandidate(
+            source = ResolvedPlaybackSource(
+                url = remembered.url,
+                contentType = remembered.contentType.ifBlank { guessContentType(remembered.url) },
+                label = remembered.label,
+                filename = remembered.filename,
+                requestHeaders = remembered.requestHeaders,
+            ),
+            stream = stream,
+            streams = listOf(stream),
+        )
     }
 
     suspend fun fetchWatchedKeys(forceRefresh: Boolean = false): Set<String> {

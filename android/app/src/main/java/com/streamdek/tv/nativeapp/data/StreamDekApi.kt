@@ -29,6 +29,7 @@ class AuthSessionStore(
     private val activeProfileIdKey = "streamdek_tv_active_profile_id"
     private val rememberLastProfileAtStartupKey = "streamdek_tv_remember_last_profile_at_startup"
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
+    private val rememberedSourceKeyPrefix = "streamdek_tv_remembered_source_v1"
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
     private val handoffPublicKeyKey = "streamdek_tv_handoff_public_key_v1"
     private val subtitleFontSizeKey = "streamdek_tv_subtitle_font_size_v1"
@@ -157,6 +158,39 @@ class AuthSessionStore(
         }.apply()
     }
 
+    /**
+     * The resolved source a title last played from. See [RememberedPlaybackSource].
+     *
+     * Stored beside the preferred stream key rather than replacing it: the key still does useful
+     * work when a full resolve does have to run, because it is what pushes the viewer's choice to
+     * the top of the ranking.
+     */
+    fun rememberedPlaybackSource(mediaType: String, mediaId: String, episodeKey: String?): RememberedPlaybackSource? {
+        val raw = preferences.getString(rememberedSourceStorageKey(mediaType, mediaId, episodeKey), null) ?: return null
+        return runCatching { gson.fromJson(raw, RememberedPlaybackSource::class.java) }.getOrNull()
+            ?.takeIf { it.url.isNotBlank() }
+            // Gson writes fields by reflection and so walks straight past Kotlin's default values.
+            // An entry stored before a field existed comes back with a literal null in a
+            // non-nullable slot, which then blows up somewhere far away from here.
+            ?.let { source ->
+                @Suppress("USELESS_CAST")
+                val safeHeaders = (source.requestHeaders as Map<String, String>?) ?: emptyMap()
+                if (safeHeaders === source.requestHeaders) source else source.copy(requestHeaders = safeHeaders)
+            }
+    }
+
+    fun saveRememberedPlaybackSource(
+        mediaType: String,
+        mediaId: String,
+        episodeKey: String?,
+        source: RememberedPlaybackSource?,
+    ) {
+        val storageKey = rememberedSourceStorageKey(mediaType, mediaId, episodeKey)
+        preferences.edit().apply {
+            if (source == null) remove(storageKey) else putString(storageKey, gson.toJson(source))
+        }.apply()
+    }
+
     private fun loadSession(): AuthSession? {
         val raw = preferences.getString(authKey, null) ?: return null
         return runCatching { gson.fromJson(raw, AuthSession::class.java) }.getOrNull()
@@ -166,6 +200,11 @@ class AuthSessionStore(
     private fun streamPreferenceStorageKey(mediaType: String, mediaId: String, episodeKey: String?): String {
         val profile = activeProfileId() ?: "default"
         return listOf(preferredStreamKeyPrefix, profile, mediaType, mediaId, episodeKey.orEmpty()).joinToString(":")
+    }
+
+    private fun rememberedSourceStorageKey(mediaType: String, mediaId: String, episodeKey: String?): String {
+        val profile = activeProfileId() ?: "default"
+        return listOf(rememberedSourceKeyPrefix, profile, mediaType, mediaId, episodeKey.orEmpty()).joinToString(":")
     }
 }
 
