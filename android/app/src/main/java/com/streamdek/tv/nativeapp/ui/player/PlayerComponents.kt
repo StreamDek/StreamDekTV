@@ -239,7 +239,8 @@ internal fun PlayerBottomBar(
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onMarkWatched: () -> Unit,
-    onSeekRelative: (Double) -> Unit,
+    focusRegion: PlayerControlsFocusRegion,
+    onFocusRegionChanged: (PlayerControlsFocusRegion) -> Unit,
     onOpenPanel: (OverlayPanel) -> Unit,
     modifier: Modifier = Modifier,
     isLive: Boolean = false,
@@ -254,28 +255,28 @@ internal fun PlayerBottomBar(
     // by a LIVE indicator, so focus targets that pointed at it move to Play.
     val hasSeekableTimeline = !isLive || (showLiveProgress && durationSec > 0.0)
     val timelineUpRequester = if (hasSeekableTimeline) progressRequester else playRequester
+    val onControlsFocused = {
+        onFocusRegionChanged(PlayerControlsFocusRegion.Controls)
+        onInteract()
+    }
+    LaunchedEffect(focusRegion, hasSeekableTimeline) {
+        // Visibility and focus ownership change together. This is the only automatic handoff
+        // between the two rows; horizontal movement never participates in focus search.
+        kotlinx.coroutines.delay(16L)
+        when {
+            focusRegion == PlayerControlsFocusRegion.Seek && hasSeekableTimeline ->
+                runCatching { progressRequester.requestFocus() }
+            focusRegion == PlayerControlsFocusRegion.Controls ->
+                runCatching { playRequester.requestFocus() }
+        }
+    }
     // Read the state object directly in the key handler. Capturing the delegated Boolean leaves
     // the first key press after focus with the previous composition's value; left appeared to
     // "arm" scrubbing only because it gave recomposition time to catch up before right was used.
     val timelineFocused = remember { mutableStateOf(false) }
-    val timelineSeekStep = tvSeekStepSeconds(durationSec)
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .onPreviewKeyEvent { event ->
-                if (!timelineFocused.value) return@onPreviewKeyEvent false
-                when (event.key) {
-                    Key.DirectionLeft -> {
-                        if (event.type == KeyEventType.KeyDown) onSeekRelative(-timelineSeekStep)
-                        true
-                    }
-                    Key.DirectionRight -> {
-                        if (event.type == KeyEventType.KeyDown) onSeekRelative(timelineSeekStep)
-                        true
-                    }
-                    else -> false
-                }
-            }
             .background(
                 Brush.verticalGradient(
                     colors = listOf(Color.Transparent, Color(0xBB000000), Color(0xF2000000)),
@@ -355,16 +356,21 @@ internal fun PlayerBottomBar(
                     )
                 }
             } else if (hasSeekableTimeline) {
-                PlayerTimeline(
-                    positionSec = positionSec,
-                    durationSec = durationSec,
-                    requester = progressRequester,
-                    downRequester = playRequester,
-                    onInteract = onInteract,
-                    onSeekRelative = onSeekRelative,
-                    onFocusedChanged = { timelineFocused.value = it },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                // The timeline owns one focus island. Horizontal D-pad input is consumed by the
+                // timeline itself; only an explicit Down crosses into the controls island below.
+                Box(Modifier.fillMaxWidth().focusGroup()) {
+                    PlayerTimeline(
+                        positionSec = positionSec,
+                        durationSec = durationSec,
+                        requester = progressRequester,
+                        onInteract = onInteract,
+                        onFocusedChanged = {
+                            timelineFocused.value = it
+                            if (it) onFocusRegionChanged(PlayerControlsFocusRegion.Seek)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             } else if (isLive) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -389,7 +395,9 @@ internal fun PlayerBottomBar(
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                // Controls deliberately form a separate focus island. Every control has an
+                // explicit Up target back to the timeline, while horizontal traversal stays here.
+                modifier = Modifier.fillMaxWidth().focusGroup(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
@@ -400,7 +408,7 @@ internal fun PlayerBottomBar(
                     requester = playRequester,
                     upRequester = timelineUpRequester,
                     rightRequester = if (isLive) liveProgressRequester else subtitlesRequester,
-                    onFocused = onInteract,
+                    onFocused = onControlsFocused,
                     onClick = onPlayPause,
                 )
                 Spacer(Modifier.width(8.dp))
@@ -413,7 +421,7 @@ internal fun PlayerBottomBar(
                         upRequester = timelineUpRequester,
                         leftRequester = playRequester,
                         rightRequester = sourcesRequester,
-                        onFocused = onInteract,
+                        onFocused = onControlsFocused,
                         onClick = onToggleLiveProgress,
                     )
                 } else {
@@ -425,7 +433,7 @@ internal fun PlayerBottomBar(
                         upRequester = timelineUpRequester,
                         leftRequester = playRequester,
                         rightRequester = audioRequester,
-                        onFocused = onInteract,
+                        onFocused = onControlsFocused,
                         onClick = { onOpenPanel(OverlayPanel.Subtitles) },
                     )
                     PlayerControlIconButton(
@@ -436,7 +444,7 @@ internal fun PlayerBottomBar(
                         upRequester = timelineUpRequester,
                         leftRequester = subtitlesRequester,
                         rightRequester = sourcesRequester,
-                        onFocused = onInteract,
+                        onFocused = onControlsFocused,
                         onClick = { onOpenPanel(OverlayPanel.Audio) },
                     )
                 }
@@ -448,7 +456,7 @@ internal fun PlayerBottomBar(
                     upRequester = timelineUpRequester,
                     leftRequester = if (isLive) liveProgressRequester else audioRequester,
                     rightRequester = engineRequester,
-                    onFocused = onInteract,
+                    onFocused = onControlsFocused,
                     onClick = { onOpenPanel(OverlayPanel.Streams) },
                 )
                 PlayerControlIconButton(
@@ -459,7 +467,7 @@ internal fun PlayerBottomBar(
                     upRequester = timelineUpRequester,
                     leftRequester = sourcesRequester,
                     rightRequester = if (isLive) favouriteRequester else if (hasNext) nextRequester else watchedRequester,
-                    onFocused = onInteract,
+                    onFocused = onControlsFocused,
                     onClick = { onOpenPanel(OverlayPanel.Engine) },
                 )
                 if (isLive) {
@@ -473,7 +481,7 @@ internal fun PlayerBottomBar(
                         upRequester = timelineUpRequester,
                         leftRequester = engineRequester,
                         rightRequester = infoRequester,
-                        onFocused = onInteract,
+                        onFocused = onControlsFocused,
                         onClick = onToggleFavourite,
                     )
                 }
@@ -486,7 +494,7 @@ internal fun PlayerBottomBar(
                             upRequester = timelineUpRequester,
                             leftRequester = engineRequester,
                             rightRequester = watchedRequester,
-                            onFocused = onInteract,
+                            onFocused = onControlsFocused,
                             onClick = onNext,
                         )
                     }
@@ -497,7 +505,7 @@ internal fun PlayerBottomBar(
                         upRequester = timelineUpRequester,
                         leftRequester = if (hasNext) nextRequester else engineRequester,
                         rightRequester = speedRequester,
-                        onFocused = onInteract,
+                        onFocused = onControlsFocused,
                         onClick = onMarkWatched,
                     )
                     PlayerControlIconButton(
@@ -508,7 +516,7 @@ internal fun PlayerBottomBar(
                         upRequester = timelineUpRequester,
                         leftRequester = watchedRequester,
                         rightRequester = infoRequester,
-                        onFocused = onInteract,
+                        onFocused = onControlsFocused,
                         onClick = { onOpenPanel(OverlayPanel.Speed) },
                     )
                 }
@@ -520,7 +528,7 @@ internal fun PlayerBottomBar(
                     requester = infoRequester,
                     upRequester = timelineUpRequester,
                     leftRequester = if (isLive) favouriteRequester else speedRequester,
-                    onFocused = onInteract,
+                    onFocused = onControlsFocused,
                     onClick = { onOpenPanel(OverlayPanel.Info) },
                 )
 
@@ -603,47 +611,14 @@ internal fun PlayerTimeline(
     positionSec: Double,
     durationSec: Double,
     requester: FocusRequester,
-    downRequester: FocusRequester,
     onInteract: () -> Unit,
-    onSeekRelative: (Double) -> Unit,
     onFocusedChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
     val progress = if (durationSec > 0.0) (positionSec / durationSec).coerceIn(0.0, 1.0).toFloat() else 0f
-    val seekStepSeconds = when {
-        durationSec >= 7200.0 -> 20.0
-        durationSec >= 3600.0 -> 12.0
-        else -> 8.0
-    }
-
-    Column(
+    Row(
         modifier = modifier
-            .focusProperties { down = downRequester }
-            .onPreviewKeyEvent { event ->
-                when (event.key) {
-                    // Both edges are consumed so a held button keeps repeating into
-                    // the scrubber instead of leaking to focus traversal, which
-                    // previously moved focus off the bar mid-scrub.
-                    Key.DirectionLeft -> {
-                        if (event.type == KeyEventType.KeyDown) onSeekRelative(-seekStepSeconds)
-                        true
-                    }
-                    Key.DirectionRight -> {
-                        if (event.type == KeyEventType.KeyDown) onSeekRelative(seekStepSeconds)
-                        true
-                    }
-                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                        if (event.type == KeyEventType.KeyUp) {
-                            onInteract()
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    else -> false
-                }
-            }
             .focusRequester(requester)
             .onFocusChanged {
                 focused = it.isFocused
@@ -651,11 +626,13 @@ internal fun PlayerTimeline(
                 if (it.isFocused) onInteract()
             }
             .focusable(),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        TimePill(formatPlaybackClock(positionSec))
         BoxWithConstraints(
             modifier = Modifier
-                .fillMaxWidth()
+                .weight(1f)
                 .height(36.dp)
                 .clip(RoundedCornerShape(999.dp))
                 .background(if (focused) Color(0x14000000) else Color.Transparent),
@@ -691,14 +668,7 @@ internal fun PlayerTimeline(
             )
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TimePill(formatPlaybackClock(positionSec))
-            TimePill(formatPlaybackClock(durationSec))
-        }
+        TimePill(formatPlaybackClock(durationSec))
     }
 }
 
@@ -977,7 +947,12 @@ internal fun PlayerOptionPanel(
                         )
                     }
                     if (visibleEmbeddedTracks.isNotEmpty()) item {
-                        Text("Embedded in video", color = Color.White.copy(alpha = 0.62f), fontWeight = FontWeight.Bold)
+                        Text(
+                            "Embedded in video",
+                            color = Color.White.copy(alpha = 0.62f),
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(start = 30.dp, end = 14.dp, top = 10.dp, bottom = 4.dp),
+                        )
                     }
                     itemsIndexed(visibleEmbeddedTracks) { index, track ->
                         val language = trackLanguageName(track.language)
@@ -1015,6 +990,7 @@ internal fun PlayerOptionPanel(
                             },
                             color = Color.White.copy(alpha = 0.62f),
                             fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(start = 30.dp, end = 14.dp, top = 10.dp, bottom = 4.dp),
                         )
                     }
                     itemsIndexed(visibleExternalSubtitles) { index, subtitle ->

@@ -1199,6 +1199,9 @@ fun SettingsScreen(
                             "Use the provider's official RFC 8484 HTTPS endpoint",
                             dohProviderId,
                             StreamDekDoHProviders.map { it.id to it.label },
+                            optionDescriptions = StreamDekDoHProviders.associate { provider ->
+                                provider.id to (provider.endpoint ?: dohSettings.customEndpoint.ifBlank { "Not configured" })
+                            },
                         ) { value ->
                             if (value == "custom") {
                                 customDohEntry = true
@@ -1206,14 +1209,6 @@ fun SettingsScreen(
                                 dohSettings.providerId = value
                                 dohProviderId = value
                                 status = "DNS provider changed to ${StreamDekDoHProviders.first { it.id == value }.label}."
-                            }
-                        }
-                        SettingsPanel("Provider addresses") {
-                            StreamDekDoHProviders.forEach { provider ->
-                                InfoLine(
-                                    provider.label,
-                                    provider.endpoint ?: dohSettings.customEndpoint.ifBlank { "Not configured" },
-                                )
                             }
                         }
                         if (dohProviderId == "custom") {
@@ -1545,6 +1540,7 @@ private fun SettingsDropdownRow(
     value: String,
     options: List<Pair<String, String>>,
     optionColors: Map<String, Color> = emptyMap(),
+    optionDescriptions: Map<String, String> = emptyMap(),
     onSelect: (String) -> Unit,
 ) {
     val leftRequester = LocalSettingsLeftRequester.current
@@ -1598,7 +1594,12 @@ private fun SettingsDropdownRow(
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             optionColors[optionValue]?.let { color -> ThemeColorSwatch(color) }
-                            androidx.compose.material3.Text(label, color = if (optionFocused) Color.White else Color.White.copy(alpha = 0.86f), fontWeight = if (optionValue.equals(value, true)) FontWeight.Bold else FontWeight.Medium)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                androidx.compose.material3.Text(label, color = if (optionFocused) Color.White else Color.White.copy(alpha = 0.86f), fontWeight = if (optionValue.equals(value, true)) FontWeight.Bold else FontWeight.Medium)
+                                optionDescriptions[optionValue]?.let { endpoint ->
+                                    androidx.compose.material3.Text(endpoint, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
                         }
                     },
                     trailingIcon = {

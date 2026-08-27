@@ -117,6 +117,7 @@ fun HomeScreen(
     /** Bumped after profile selection to discard all remembered shelf/card position. */
     resetToTopToken: Int = 0,
     onPositionChanged: (rowId: String, itemKey: String) -> Unit = { _, _ -> },
+    onOpenNavigation: () -> Unit = {},
 ) {
     val homeViewModel: HomeViewModel = viewModel(factory = remember(repository) { HomeViewModelFactory(repository) })
     val screenState by homeViewModel.uiState.collectAsState()
@@ -507,6 +508,7 @@ fun HomeScreen(
                                         )
                                     }
                                 },
+                                onOpenNavigation = onOpenNavigation,
                             )
                         }
 
@@ -553,6 +555,9 @@ fun HomeScreen(
                         runCatching { restoreRequester.requestFocus() }
                     }
                 },
+                // A removed Continue Watching card cannot safely receive focus again. Home's
+                // refreshed canonical rail will choose the surviving card during recomposition.
+                onDismissAfterRemoval = { actionState = null },
                 onOpenDetail = { onOpenDetail(state.item.type, state.item.detailLookupId()) },
                 onChanged = { homeViewModel.forceRefresh(loadKey) },
             )

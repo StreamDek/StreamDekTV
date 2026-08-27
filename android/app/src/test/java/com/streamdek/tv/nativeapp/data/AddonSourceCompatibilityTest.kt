@@ -105,6 +105,27 @@ class AddonSourceCompatibilityTest {
     }
 
     @Test
+    fun `Eclipsia catalogue metadata accepts overview and tmdb id aliases`() {
+        val parsed = Gson().fromJson(
+            """{"id":"tmdb:12345","name":"Example","overview":"A real provider synopsis.","tmdb_id":12345}""",
+            AddonCatalogMetaItem::class.java,
+        )
+
+        assertEquals("A real provider synopsis.", parsed.overview)
+        assertEquals(12345, parsed.movieDbId)
+    }
+
+    @Test
+    fun `Eclipsia meta metadata accepts synopsis fallback`() {
+        val parsed = Gson().fromJson(
+            """{"id":"tmdb:12345","name":"Example","synopsis":"Another real provider synopsis."}""",
+            AddonMetaItem::class.java,
+        )
+
+        assertEquals("Another real provider synopsis.", parsed.synopsis)
+    }
+
+    @Test
     fun `AIOStreams usenet aliases survive direct addon parsing`() {
         val response = Gson().fromJson(
             """{"streams":[{"name":"Usenet","nzb_url":"https://example/nzb/1","nntp_servers":["nntps://reader@example:563"]}]}""",

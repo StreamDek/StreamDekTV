@@ -808,9 +808,12 @@ data class AddonCatalogMetaItem(
     val background: String? = null,
     val logo: String? = null,
     val description: String? = null,
+    /** Some providers, including Eclipsia variants, publish synopsis text under these names. */
+    val overview: String? = null,
+    val synopsis: String? = null,
     val imdbRating: String? = null,
     val releaseInfo: String? = null,
-    @SerializedName("moviedb_id") val movieDbId: Int? = null,
+    @SerializedName(value = "moviedb_id", alternate = ["tmdb_id", "tmdbId"]) val movieDbId: Int? = null,
     val url: Any? = null,
     val externalUrl: Any? = null,
     val headers: Map<String, Any?> = emptyMap(),
@@ -831,6 +834,8 @@ data class AddonMetaItem(
     val type: String? = null,
     val name: String? = null,
     val description: String? = null,
+    val overview: String? = null,
+    val synopsis: String? = null,
     val poster: String? = null,
     val background: String? = null,
     val logo: String? = null,
@@ -1187,11 +1192,6 @@ data class DebridKeyEntry(
     val priority: Int? = null,
     val enabled: Boolean? = null,
     val username: String? = null,
-)
-
-data class TorrentResolveResponse(
-    val streamUrl: String? = null,
-    val filename: String? = null,
 )
 
 data class ResolvedPlaybackSource(

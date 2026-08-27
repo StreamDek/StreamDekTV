@@ -10,6 +10,7 @@ import com.streamdek.tv.nativeapp.debrid.RealDebridClient
 import com.streamdek.tv.nativeapp.debrid.RealDebridDeviceAuth
 import com.streamdek.tv.nativeapp.debrid.SUPPORTED_DEBRID_PROVIDERS
 import com.streamdek.tv.nativeapp.usenet.UsenetPlayback
+import com.streamdek.tv.nativeapp.peer.LocalTorrentPlayback
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,6 +61,7 @@ private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
 private const val ADDON_CACHE_SECONDS = 90
 private const val ADDON_CACHE_BYTES = 12L * 1024L * 1024L
 private const val WATCHLIST_MUTATION_GRACE_MS = 60_000L
+private const val CONTINUE_DISMISSAL_GRACE_MS = 60_000L
 
 internal fun sameWatchlistTitle(left: MediaItem, right: MediaItem): Boolean {
     fun normalizedType(item: MediaItem): String = when (item.type.trim().lowercase(Locale.US)) {
@@ -86,6 +88,30 @@ internal fun mutateWatchlistSnapshot(
 } else {
     listOf(item) + current
 }
+
+internal fun sameContinueWatchingItem(entry: ContinueWatchingItem, item: MediaItem): Boolean {
+    fun normalizedType(value: String): String = when (value.trim().lowercase(Locale.US)) {
+        "series", "show" -> "tv"
+        else -> value.trim().lowercase(Locale.US)
+    }
+    fun canonicalId(rawId: String, tmdbId: Int): String {
+        if (tmdbId > 0) return "tmdb:$tmdbId"
+        val normalized = rawId.trim().lowercase(Locale.US)
+        val parsedTmdb = Regex("^(?:tmdb:)?(\\d+)$").matchEntire(normalized)?.groupValues?.getOrNull(1)
+        return parsedTmdb?.let { "tmdb:$it" } ?: normalized
+    }
+    val entryEpisode = entry.exactEpisode()
+    val itemEpisode = item.episode
+    return normalizedType(entry.type) == normalizedType(item.type) &&
+        canonicalId(entry.id, entry.tmdbId) == canonicalId(item.id, item.tmdbId) &&
+        entryEpisode?.seasonNumber == itemEpisode?.seasonNumber &&
+        entryEpisode?.episodeNumber == itemEpisode?.episodeNumber
+}
+
+internal fun removeContinueWatchingSnapshot(
+    current: List<ContinueWatchingItem>,
+    item: MediaItem,
+): List<ContinueWatchingItem> = current.filterNot { sameContinueWatchingItem(it, item) }
 
 internal fun orderedConnectedSyncServices(primary: String, connected: Set<String>): List<String> =
     (listOf(SyncServiceId.normalize(primary)) + SyncServiceId.all)
@@ -598,6 +624,9 @@ class StreamDekRepository(
     private data class PendingWatchlistMutation(val item: MediaItem, val remove: Boolean, val recordedAt: Long)
     private val pendingWatchlistMutations = mutableMapOf<String, MutableList<PendingWatchlistMutation>>()
     private val pendingWatchlistLock = Any()
+    private data class PendingContinueDismissal(val item: MediaItem, val recordedAt: Long)
+    private val pendingContinueDismissals = mutableMapOf<String, MutableList<PendingContinueDismissal>>()
+    private val pendingContinueLock = Any()
     private val searchCache = lruCache<String, List<MediaItem>>(16)
     private val addonSearchCache = lruCache<String, List<MediaItem>>(16)
     private val playlistCache = lruCache<String, List<RemotePlaylist>>(4)
@@ -1539,7 +1568,10 @@ class StreamDekRepository(
         catalogName: String?,
     ): MediaItem? {
         val rawId = meta.id?.trim().orEmpty()
-        val tmdbId = meta.movieDbId ?: 0
+        val tmdbId = meta.movieDbId
+            ?: rawId.takeIf { it.startsWith("tmdb:", ignoreCase = true) }
+                ?.substringAfter(':')?.toIntOrNull()
+            ?: 0
         val resolvedId = if (tmdbId > 0) tmdbId.toString() else rawId
         if (resolvedId.isBlank()) return null
         if (isPlaceholderCatalogMeta(rawId, meta.name)) return null
@@ -1554,7 +1586,9 @@ class StreamDekRepository(
             type = type,
             poster = meta.poster,
             backdrop = meta.background ?: meta.poster,
-            description = meta.description,
+            description = sequenceOf(meta.description, meta.overview, meta.synopsis)
+                .mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }
+                .firstOrNull(),
             rating = meta.imdbRating?.toDoubleOrNull(),
             year = meta.releaseInfo?.take(4)?.takeIf { it.toIntOrNull() != null },
             titleLogo = meta.logo,
@@ -2103,7 +2137,9 @@ class StreamDekRepository(
             type = if (meta.videos.isNotEmpty() || addonType == "series") "tv" else "movie",
             poster = meta.poster,
             backdrop = meta.background ?: meta.poster,
-            description = meta.description,
+            description = sequenceOf(meta.description, meta.overview, meta.synopsis)
+                .mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }
+                .firstOrNull(),
             rating = meta.imdbRating?.toDoubleOrNull(),
             year = meta.releaseInfo?.let { Regex("(19|20)\\d{2}").find(it)?.value },
             imdbId = meta.imdbId?.takeIf { it.startsWith("tt") } ?: id.takeIf { it.startsWith("tt") },
@@ -2182,7 +2218,10 @@ class StreamDekRepository(
             fetchServiceWatchlist() ?: library.watchlist
         }
         val merged = library.copy(
-            continueWatching = mergedContinueWatching,
+            // Removing one progress row is an optimistic, targeted edit. A tracking provider may
+            // still return its pre-dismissal snapshot for a short time, so keep the local removal
+            // over that response instead of replacing the whole Library grid with stale state.
+            continueWatching = applyPendingContinueDismissals(cacheKey, mergedContinueWatching),
             // A provider can briefly return its pre-write snapshot. Keep confirmed edits over
             // that answer long enough for Trakt/SIMKL/MDBList to converge, including when the
             // viewer leaves Library and comes straight back.
@@ -2844,6 +2883,66 @@ class StreamDekRepository(
         }.getOrDefault(false)
     }
 
+    /**
+     * Hides one Continue Watching row without claiming the viewer completed it.
+     *
+     * A deletion alone is not durable when Trakt or another provider still reports the playback
+     * row. A dismissed progress tombstone travels through SyncDek and suppresses that stale provider
+     * result on every device until genuinely new playback replaces it.
+     */
+    suspend fun dismissContinueWatching(item: MediaItem): Boolean {
+        val episode = item.episode
+        val entityType = if (item.type.equals("movie", true)) "movie" else "tv"
+        val cacheKey = buildSessionProfileCacheKey()
+        val previous = libraryCache[cacheKey]
+        rememberPendingContinueDismissal(cacheKey, item)
+        previous?.let { current ->
+            libraryCache[cacheKey] = current.copy(
+                continueWatching = removeContinueWatchingSnapshot(current.continueWatching, item),
+            )
+        }
+        // Home and Library both rebuild from the same profile-scoped library snapshot. Publish the
+        // targeted change immediately while the network mutation completes; do not clear Library.
+        homeCache.clear()
+        libraryRevisionState.value = libraryRevisionState.value + 1L
+        return runCatching {
+            check(api.request<Any>(
+                method = "PUT",
+                path = "/sync/progress",
+                body = com.google.gson.Gson().toJson(
+                    mapOf(
+                        "entityType" to entityType,
+                        "entityId" to item.id,
+                        "episodeKey" to buildEpisodeKey(episode),
+                        "positionSec" to 0,
+                        "durationSec" to 0,
+                        "completed" to false,
+                        "dismissed" to true,
+                        "updatedAt" to Instant.now().toString(),
+                        "lastDevice" to "StreamDek TV",
+                        "lastPlatform" to "tv",
+                        "metadata" to mapOf(
+                            "title" to item.title,
+                            "posterUrl" to item.poster,
+                            "backdropUrl" to item.backdrop,
+                            "year" to item.year,
+                            "seasonNumber" to episode?.seasonNumber,
+                            "episodeNumber" to episode?.episodeNumber,
+                            "episodeTitle" to episode?.title,
+                        ),
+                    ),
+                ),
+            ) != null) { "Continue Watching dismissal was not accepted." }
+            true
+        }.onFailure {
+            forgetPendingContinueDismissal(cacheKey, item)
+            if (previous != null) libraryCache[cacheKey] = previous else libraryCache.remove(cacheKey)
+            homeCache.clear()
+            libraryRevisionState.value = libraryRevisionState.value + 1L
+            TvDebugLogger.w("Playback", "dismissContinueWatching failed mediaType=${item.type} mediaId=${item.id}")
+        }.getOrDefault(false)
+    }
+
     suspend fun clearSeasonProgress(
         mediaId: String,
         seasonNumber: Int,
@@ -3245,7 +3344,11 @@ class StreamDekRepository(
         // Decorated before ranking rather than after: a source the service already holds starts
         // instantly, and that is worth more than anything else the ranking weighs.
         for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {
-            val resolvedUrl = resolveStreamToUrl(stream, streamLookupType, videoId)
+            val resolvedUrl = resolveStreamToUrl(
+                stream, streamLookupType, videoId,
+                seasonNumber = episode?.seasonNumber,
+                episodeNumber = episode?.episodeNumber,
+            )
             if (!resolvedUrl.isNullOrBlank()) {
                 val resolvedStreamKey = streamSelectionKey(stream)
                 val candidate = ResolvedPlaybackCandidate(
@@ -3492,6 +3595,48 @@ class StreamDekRepository(
         }
     }
 
+    private fun rememberPendingContinueDismissal(cacheKey: String, item: MediaItem) {
+        synchronized(pendingContinueLock) {
+            val dismissals = pendingContinueDismissals.getOrPut(cacheKey) { mutableListOf() }
+            dismissals.removeAll { pending ->
+                pending.item.type.equals(item.type, ignoreCase = true) &&
+                    pending.item.id == item.id &&
+                    pending.item.episode?.seasonNumber == item.episode?.seasonNumber &&
+                    pending.item.episode?.episodeNumber == item.episode?.episodeNumber
+            }
+            dismissals += PendingContinueDismissal(item, System.currentTimeMillis())
+        }
+    }
+
+    private fun forgetPendingContinueDismissal(cacheKey: String, item: MediaItem) {
+        synchronized(pendingContinueLock) {
+            pendingContinueDismissals[cacheKey]?.removeAll { pending ->
+                pending.item.type.equals(item.type, ignoreCase = true) &&
+                    pending.item.id == item.id &&
+                    pending.item.episode?.seasonNumber == item.episode?.seasonNumber &&
+                    pending.item.episode?.episodeNumber == item.episode?.episodeNumber
+            }
+            if (pendingContinueDismissals[cacheKey].isNullOrEmpty()) pendingContinueDismissals.remove(cacheKey)
+        }
+    }
+
+    private fun applyPendingContinueDismissals(
+        cacheKey: String,
+        remote: List<ContinueWatchingItem>,
+    ): List<ContinueWatchingItem> {
+        val active = synchronized(pendingContinueLock) {
+            val now = System.currentTimeMillis()
+            val dismissals = pendingContinueDismissals[cacheKey].orEmpty()
+                .filter { now - it.recordedAt < CONTINUE_DISMISSAL_GRACE_MS }
+            if (dismissals.isEmpty()) pendingContinueDismissals.remove(cacheKey)
+            else pendingContinueDismissals[cacheKey] = dismissals.toMutableList()
+            dismissals
+        }
+        return active.fold(remote) { current, pending ->
+            removeContinueWatchingSnapshot(current, pending.item)
+        }
+    }
+
     private fun AddonStream.withAddonIdentity(addon: AddonManifest): AddonStream = copy(
         addonId = addonId.ifBlank { addon.id },
         addonName = addonName.ifBlank { addon.manifest.name },
@@ -3571,6 +3716,8 @@ class StreamDekRepository(
         imdbId: String?,
         episode: EpisodeContext? = null,
         preferredStreamKey: String? = null,
+        preferredAddonName: String? = null,
+        preferredQualityGroup: String? = null,
         streamType: String? = null,
         directStreamUrl: String? = null,
         requestHeaders: Map<String, String> = emptyMap(),
@@ -3671,7 +3818,7 @@ class StreamDekRepository(
                 val snapshot = mutex.withLock { order.mapNotNull { merged[it] } }
                 send(
                     StreamCandidatesProgress(
-                        streams = rankStreams(snapshot, effectivePreferredStreamKey),
+                        streams = rankStreams(snapshot, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup),
                         pendingSources = remaining.get().coerceAtLeast(0),
                         done = done,
                     ),
@@ -4069,7 +4216,12 @@ class StreamDekRepository(
         } else {
             stream
         }
-        val resolvedUrl = resolveStreamToUrl(playbackStream)
+        val resolvedUrl = resolveStreamToUrl(
+            playbackStream,
+            mediaTitle = request.title,
+            seasonNumber = request.episode?.seasonNumber,
+            episodeNumber = request.episode?.episodeNumber,
+        )
         val allStreams = streams.ifEmpty { listOf(stream) }
         val candidate = if (resolvedUrl.isNullOrBlank()) {
             ResolvedPlaybackCandidate(null, null, allStreams)
@@ -4269,6 +4421,9 @@ class StreamDekRepository(
         stream: AddonStream,
         lookupType: String? = null,
         videoId: String? = null,
+        mediaTitle: String? = null,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null,
     ): String? {
         // Expired direct links (short-lived addon URLs) are refreshed straight from the
         // source addon before playback, mirroring the mobile app's refresh behavior.
@@ -4310,9 +4465,8 @@ class StreamDekRepository(
         return runCatching {
             // Resolved on this device with its own keys wherever they are held here, so the
             // provider sees this household rather than one StreamDek server address standing in
-            // for every account on the platform. The backend route remains the fallback for a
-            // device that has not been given keys — a fresh sign-in, or an account that keeps
-            // them in the cloud and streams through the servers.
+            // for every account on the platform. Backend debrid is used only for an account that
+            // explicitly enabled Server-Side Streaming; it is never a P2P fallback.
             deviceDebrid()?.let { manager ->
                 val resolution = manager.resolve(infoHash, magnetLink, filename)
                 resolution.stream?.link?.url?.takeIf { it.isNotBlank() }?.let { return@runCatching it }
@@ -4320,10 +4474,25 @@ class StreamDekRepository(
                     TvDebugLogger.w("Playback", "device debrid could not resolve $infoHash: ${it.message}")
                 }
             }
-            val debrid = api.post<DebridResolveResponse>("/debrid/resolve", payload)
-            if (!debrid?.url.isNullOrBlank()) return@runCatching debrid.url
-            val torrent = api.post<TorrentResolveResponse>("/stream/torrent/add", payload)
-            torrent?.streamUrl
+            if (usesServerSideStreams()) {
+                val debrid = api.post<DebridResolveResponse>("/debrid/resolve", payload)
+                if (!debrid?.url.isNullOrBlank()) return@runCatching debrid.url
+            }
+            val context = appContext ?: return@runCatching null
+            val episodeParts = videoId?.split(':').orEmpty()
+            val parsedSeason = episodeParts.takeIf { it.size >= 3 }?.getOrNull(episodeParts.size - 2)?.toIntOrNull()
+            val parsedEpisode = episodeParts.takeIf { it.size >= 3 }?.lastOrNull()?.toIntOrNull()
+            withContext(Dispatchers.IO) {
+                LocalTorrentPlayback.open(
+                    context = context,
+                    infoHash = infoHash,
+                    magnetLink = magnetLink,
+                    preferredFilename = filename,
+                    title = mediaTitle ?: playbackStream.title ?: playbackStream.name,
+                    season = seasonNumber ?: parsedSeason,
+                    episode = episodeNumber ?: parsedEpisode,
+                )
+            }
         }.onFailure {
             TvDebugLogger.e("Playback", "resolveStreamToUrl failed infoHash=$infoHash", it)
         }.getOrNull()
@@ -4350,8 +4519,7 @@ class StreamDekRepository(
      *
      * Quiet on failure by design: the keys are how playback avoids the round trip through
      * StreamDek's servers, not a prerequisite for it, and [resolveStreamToUrl] still has the
-     * backend route to fall back on. An account that keeps its keys on a phone rather than in the
-     * cloud simply returns nothing here, and this device goes on using the server path.
+     * backend debrid route only when Server-Side Streaming is enabled. Native P2P never uses it.
      */
     suspend fun syncDebridKeys() {
         val context = appContext ?: return
@@ -4649,7 +4817,7 @@ class StreamDekRepository(
         }.toMap()
         val cached = runCatching {
             deviceDebrid()?.checkCacheAll(hashes, names)
-                ?: currentSession()?.let {
+                ?: currentSession()?.takeIf { usesServerSideStreams() }?.let {
                     api.post<DebridCacheCheckResponse>(
                         "/debrid/cache-check",
                         buildMap<String, Any> {
@@ -5124,8 +5292,9 @@ class StreamDekRepository(
         progressRecords: List<PlaybackProgressRecord> = emptyList(),
     ): List<ContinueWatchingItem> {
         val dismissals = progressRecords.filter { it.status.equals("dismissed", ignoreCase = true) }
+        fun canonicalType(value: String?): String = if (value.equals("movie", true)) "movie" else "tv"
         fun isDismissed(item: ContinueWatchingItem): Boolean = dismissals.any { record ->
-            record.entityType.equals(item.type, ignoreCase = true) &&
+            canonicalType(record.entityType) == canonicalType(item.type) &&
                 record.entityId == item.id &&
                 (record.episodeKey.isNullOrBlank() || record.episodeKey.equals(item.episodeKey, ignoreCase = true))
         }

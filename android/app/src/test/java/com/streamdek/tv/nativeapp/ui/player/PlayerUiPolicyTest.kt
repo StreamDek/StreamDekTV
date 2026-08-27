@@ -40,4 +40,12 @@ class PlayerUiPolicyTest {
             playerInteractionLayer(dialogVisible = false, drawerVisible = true, seeking = true, controlsVisible = true),
         )
     }
+
+    @Test
+    fun `next episode handoff rejects the same or an earlier episode`() {
+        assertFalse(isForwardEpisodeTransition(3, 2, 3, 2))
+        assertFalse(isForwardEpisodeTransition(3, 2, 3, 1))
+        assertTrue(isForwardEpisodeTransition(3, 2, 3, 3))
+        assertTrue(isForwardEpisodeTransition(3, 8, 4, 1))
+    }
 }

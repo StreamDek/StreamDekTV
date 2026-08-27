@@ -148,6 +148,8 @@ private data class LiveBrowseSelection(
 )
 private const val ExitBackPressWindowMs = 2500L
 
+private enum class NavigationFocusRegion { Content, SideNav }
+
 /**
  * How far the expanded navigation rail is allowed to let the backdrop through.
  *
@@ -156,16 +158,6 @@ private const val ExitBackPressWindowMs = 2500L
  * all — see [TvSideNav].
  */
 private const val NavRailTransparentAlpha = 0.85f
-
-/** Presses that mean a viewer is using the menu rather than passing through it. */
-private val RailInteractionKeys = setOf(
-    Key.DirectionUp,
-    Key.DirectionDown,
-    Key.DirectionLeft,
-    Key.DirectionCenter,
-    Key.Enter,
-    Key.NumPadEnter,
-)
 
 /** The navigation route the title page is registered under, kept in one place. */
 private const val DetailRoutePattern = "detail/{type}/{id}"
@@ -205,6 +197,8 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     val detailContentRequester = remember { FocusRequester() }
     val personContentRequester = remember { FocusRequester() }
     val navRailRequester = remember { FocusRequester() }
+    val navigationFocusScope = rememberCoroutineScope()
+    var navigationFocusRegion by remember { mutableStateOf(NavigationFocusRegion.Content) }
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
     var liveBrowseSelection by remember { mutableStateOf(LiveBrowseSelection()) }
@@ -328,21 +322,6 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     var homeFocusRestoreToken by remember { mutableStateOf(0) }
     var homeResetToTopToken by remember { mutableStateOf(0) }
     var pendingDestinationFocus by remember { mutableStateOf<String?>(null) }
-    // The rail is always composed on browse routes. During a pop the returning screen may not
-    // have a focus target until its content is ready, so Android's spatial fallback briefly
-    // focuses (and opens) the persistent rail. Suppress only that transition-time expansion;
-    // never remove the rail as a valid focus target for normal remote navigation.
-    var railFocusHandoffPending by remember { mutableStateOf(false) }
-    // The route whose own content last held focus.
-    //
-    // The window above is bounded, and it has to be — but a screen that takes longer than it to
-    // produce something focusable left the rail holding focus, and holding focus is what opens the
-    // rail. So every Back press onto a slow screen played the whole expansion and then closed it
-    // again the moment the content arrived. Expansion now waits on the arriving screen having had
-    // focus rather than on a timer: pressing left out of a page into the rail is deliberate, being
-    // handed focus because there was nowhere else to put it is not, and the two are only
-    // distinguishable by whether the page ever had it.
-    var contentFocusedRoute by remember { mutableStateOf<String?>(null) }
     var detailNavigationInProgress by remember { mutableStateOf(false) }
     val openDetail: (String, String) -> Unit = { mediaType, mediaId ->
         detailNavigationInProgress = true
@@ -456,6 +435,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     }
 
     LaunchedEffect(currentRoute) {
+        // A destination change always starts in content. The rail can only become authoritative
+        // again after a deliberate Left transition from the newly visible page.
+        navigationFocusRegion = NavigationFocusRegion.Content
         if (currentRoute == TopLevelDestination.Live.route && previousRoute == "player") {
             liveFocusRestoreToken += 1
         }
@@ -490,16 +472,13 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     LaunchedEffect(currentRoute, pendingDestinationFocus, showStartupProfilePicker) {
         val route = currentRoute
         if (route == null || showStartupProfilePicker) {
-            railFocusHandoffPending = false
             return@LaunchedEffect
         }
         if (pendingDestinationFocus != null && pendingDestinationFocus != route) {
-            railFocusHandoffPending = true
             return@LaunchedEffect
         }
         val requester = destinationContentRequesters[route]
         if (requester == null) {
-            railFocusHandoffPending = false
             return@LaunchedEffect
         }
 
@@ -508,21 +487,16 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         // while the returning destination is being attached. It must remain bounded: some entry
         // requesters legitimately reject programmatic focus (or the content is already focused),
         // and that must never leave the navigation rail permanently disabled.
-        railFocusHandoffPending = true
-        try {
-            repeat(7) { attempt ->
-                delay(if (attempt == 0) 32L else 80L)
-                val accepted = runCatching { requester.requestFocus() }.getOrDefault(false) == true
-                if (accepted) {
-                    pendingDestinationFocus = null
-                    return@LaunchedEffect
-                }
+        repeat(7) { attempt ->
+            delay(if (attempt == 0) 32L else 80L)
+            val accepted = runCatching { requester.requestFocus() }.getOrDefault(false) == true
+            if (accepted) {
+                navigationFocusRegion = NavigationFocusRegion.Content
+                pendingDestinationFocus = null
+                return@LaunchedEffect
             }
-            pendingDestinationFocus = null
-        } finally {
-            // Focusability is never gated, and expansion suppression always has a bounded exit.
-            railFocusHandoffPending = false
         }
+        pendingDestinationFocus = null
     }
 
     LaunchedEffect(exitHintVisible) {
@@ -698,9 +672,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 // One observer for every destination there will ever be: whatever a screen does to
                 // place its own first focus, the shell only needs to know that the focus landed
                 // inside the page rather than on the furniture around it.
-                modifier = Modifier
-                    .fillMaxSize()
-                    .onFocusChanged { if (it.hasFocus) contentFocusedRoute = currentRoute },
+                modifier = Modifier.fillMaxSize(),
                 enterTransition = { screenEnter },
                 exitTransition = { screenExit },
                 popEnterTransition = { screenPopEnter },
@@ -728,6 +700,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         onPositionChanged = { rowId, itemKey ->
                             lastHomeRowId = rowId
                             lastHomeItemKey = itemKey
+                        },
+                        onOpenNavigation = {
+                            navigationFocusRegion = NavigationFocusRegion.SideNav
+                            navigationFocusScope.launch {
+                                // State changes first so the rail is visibly open before focus is
+                                // transferred; this removes the collapsed/invisible intermediate.
+                                delay(16L)
+                                runCatching { navRailRequester.requestFocus() }
+                            }
                         },
                     )
                 }
@@ -943,11 +924,12 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     contentRequesters = destinationContentRequesters,
                     transparent = appPrefs?.transparentNavigation != false,
                     railRequester = navRailRequester,
-                    suppressExpansion = railFocusHandoffPending || contentFocusedRoute != currentRoute,
+                    open = navigationFocusRegion == NavigationFocusRegion.SideNav,
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .graphicsLayer { alpha = chromeAlpha },
                     onNavigate = { route ->
+                        navigationFocusRegion = NavigationFocusRegion.Content
                         pendingDestinationFocus = route
                         if (route != currentRoute) {
                             navController.navigate(route) {
@@ -956,6 +938,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                             }
                         }
                     },
+                    onFocusRegionChanged = { navigationFocusRegion = it },
                 )
             }
 
@@ -1642,20 +1625,13 @@ private fun TvSideNav(
     transparent: Boolean,
     /** Attached to the rail itself, so a screen can send focus here without naming a destination. */
     railRequester: FocusRequester,
-    /** True until the route on screen has held focus on its own content at least once. */
-    suppressExpansion: Boolean,
+    /** Visibility is owned by the shell, independently from which destination item is focused. */
+    open: Boolean,
     modifier: Modifier = Modifier,
     onNavigate: (String) -> Unit,
+    onFocusRegionChanged: (NavigationFocusRegion) -> Unit,
 ) {
     var highlightedRoute by remember { mutableStateOf(currentRoute) }
-    var navHasFocus by remember { mutableStateOf(false) }
-    // The viewer pressed something while the rail had focus, which no transition does.
-    //
-    // A screen with nothing focusable on it — an empty library, a search with no results yet, a
-    // page that failed to load — would otherwise leave the rail suppressed for as long as the
-    // viewer stayed there, which is exactly when the menu is the thing they want. A key arriving
-    // here is the viewer, so it releases the suppression for this visit.
-    var railInteracted by remember { mutableStateOf(false) }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val itemRequesters = remember(destinations, profileFocusRequester) {
         destinations.associateWith { destination ->
@@ -1669,9 +1645,8 @@ private fun TvSideNav(
     // materialising over the artwork rather than coming from anywhere. Driving everything from one
     // 0-to-1 figure means opening and closing are the same movement played each way, and lets the
     // surface be slid in from behind the icons instead of switched on.
-    val railExpanded = navHasFocus && (!suppressExpansion || railInteracted)
     val railOpen by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (railExpanded) 1f else 0f,
+        targetValue = if (open) 1f else 0f,
         animationSpec = TvScroll.spec(TvMotion.duration(TvMotion.Expand)),
         label = "side-nav-open",
     )
@@ -1686,8 +1661,8 @@ private fun TvSideNav(
         // Navigation can complete while the select/back key release is still owned by the rail.
         // Collapse immediately, then hand focus to the destination if it is already composed.
         // Its own restore effect will take over when content finishes loading.
-        if (navHasFocus) {
-            navHasFocus = false
+        if (open) {
+            onFocusRegionChanged(NavigationFocusRegion.Content)
             delay(32L)
             val accepted = contentRequesters[currentRoute]?.let { requester ->
                 runCatching { requester.requestFocus() }.getOrDefault(false)
@@ -1696,7 +1671,7 @@ private fun TvSideNav(
         }
     }
 
-    val displayedRoute = if (railExpanded) highlightedRoute else currentRoute
+    val displayedRoute = if (open) highlightedRoute else currentRoute
     // The highlight stays solid while the rail around it does not. It used to be a 22% primary tint
     // relying on opaque black underneath it; with the rail translucent that tint would sit on
     // artwork and the marker for where you are would change colour with whatever is behind it.
@@ -1716,10 +1691,11 @@ private fun TvSideNav(
     // Only while the menu is actually open, though. Focus can be parked here by a transition with
     // the rail still shut, and a viewer pressing Back through that means to leave the screen; the
     // press was being eaten to close a menu that was never on screen.
-    BackHandler(enabled = railExpanded) {
+    BackHandler(enabled = open) {
         val returned = contentRequesters[currentRoute]?.let { requester ->
             runCatching { requester.requestFocus() }.getOrDefault(false)
         } == true
+        onFocusRegionChanged(NavigationFocusRegion.Content)
         // Nothing to hand focus back to on this screen: at least let the rail collapse rather than
         // swallowing the press entirely.
         if (!returned) focusManager.clearFocus()
@@ -1765,31 +1741,6 @@ private fun TvSideNav(
             // container, so returning to it used plain spatial navigation and landed on whichever
             // item was nearest — in practice always Home — instead of the page you are on.
             .focusGroup()
-            .onFocusChanged {
-                navHasFocus = it.hasFocus
-                if (!it.hasFocus) {
-                    // Each visit to the rail earns its own release. Leaving it puts the suppression
-                    // back, so the next arrival is judged on where the focus came from again.
-                    railInteracted = false
-                    // And every visit starts from where the viewer actually is.
-                    //
-                    // The highlight is where the last visit left off, which is right while the rail
-                    // is open and wrong the moment it is re-entered: if something took focus away
-                    // mid-press, the rail would re-open showing an item the viewer never chose, one
-                    // step down from the one before. Reset on the way out, so opening the menu
-                    // always points at the page behind it.
-                    highlightedRoute = currentRoute
-                }
-            }
-            // Never consumes: this only notes that the press happened, and the item handlers and
-            // the focus system below still see it. Back is deliberately not on the list — through
-            // a transition that is a viewer leaving the screen, not opening the menu.
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && event.key in RailInteractionKeys) {
-                    railInteracted = true
-                }
-                false
-            }
             .padding(horizontal = 8.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.Center,
     ) {
@@ -1837,17 +1788,23 @@ private fun TvSideNav(
                                 // names somewhere else, so this looked up a requester belonging to a
                                 // screen that was not composed, failed, and left the viewer in the menu
                                 // with no way out.
-                                (contentRequesters[currentRoute] ?: contentRequesters[destination.route])
+                                val transferred = (contentRequesters[currentRoute] ?: contentRequesters[destination.route])
                                     ?.let { requester -> runCatching { requester.requestFocus(); true }.getOrDefault(false) }
                                     ?: false
+                                onFocusRegionChanged(NavigationFocusRegion.Content)
+                                transferred
                             }
                             else -> false
                         }
                     }
                     .onFocusChanged {
-                        if (it.isFocused) highlightedRoute = destination.route
+                        if (it.isFocused) {
+                            highlightedRoute = destination.route
+                            if (!open) onFocusRegionChanged(NavigationFocusRegion.SideNav)
+                        }
                     }
                     .clickable {
+                        onFocusRegionChanged(NavigationFocusRegion.Content)
                         onNavigate(destination.route)
                     }
                     .padding(horizontal = 12.dp),

@@ -44,6 +44,7 @@ import androidx.tv.material3.Text
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.LibraryResponse
+import com.streamdek.tv.nativeapp.data.ContinueWatchingItem
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
@@ -94,6 +95,22 @@ private fun libraryItemKey(item: MediaItem): String {
     val episode = item.episode?.let { ":s${it.seasonNumber}:e${it.episodeNumber}" }.orEmpty()
     return "${item.type}:${item.id}$episode"
 }
+
+private fun ContinueWatchingItem.asLibraryMediaItem(): MediaItem = MediaItem(
+    id = id,
+    tmdbId = tmdbId,
+    title = title,
+    type = type,
+    poster = poster,
+    backdrop = backdrop,
+    description = description,
+    rating = rating,
+    year = year,
+    progress = progress,
+    positionSec = positionSec ?: resumeAt,
+    durationSec = durationSec,
+    episode = exactEpisode(),
+)
 
 /**
  * Library.
@@ -163,15 +180,7 @@ fun LibraryScreen(
 
     val continueItems = remember(library, typeFilter) {
         library?.continueWatching.orEmpty()
-            .map { entry ->
-                MediaItem(
-                    id = entry.id, tmdbId = entry.tmdbId, title = entry.title, type = entry.type,
-                    poster = entry.poster, backdrop = entry.backdrop, description = entry.description,
-                    rating = entry.rating, year = entry.year, progress = entry.progress,
-                    positionSec = entry.positionSec ?: entry.resumeAt, durationSec = entry.durationSec,
-                    episode = entry.episode,
-                )
-            }
+            .map(ContinueWatchingItem::asLibraryMediaItem)
             .filter { typeFilter == "all" || it.type == typeFilter }
             .distinctBy(::libraryItemKey)
     }
@@ -342,25 +351,43 @@ fun LibraryScreen(
                         runCatching { restoreRequester.requestFocus() }
                     }
                 },
+                onDismissAfterRemoval = { actionState = null },
                 onOpenDetail = { onOpenDetail(state.item.type, state.item.detailLookupId()) },
                 onChanged = {
+                    val removedIndex = items.indexOfFirst {
+                        libraryItemKey(it) == libraryItemKey(state.item)
+                    }.coerceAtLeast(0)
                     // The repository has already applied the confirmed mutation to its cache.
                     // Do not immediately ask an eventually-consistent provider for the old list.
                     val refreshed = repository.fetchLibrary()
                     library = refreshed
-                    if (section == LibrarySection.Watchlist &&
-                        refreshed.watchlist.none { libraryItemKey(it) == libraryItemKey(state.item) }
-                    ) {
+                    val removedFromCurrentSection = when (section) {
+                        LibrarySection.Continue -> refreshed.continueWatching
+                            .map(ContinueWatchingItem::asLibraryMediaItem)
+                            .none { libraryItemKey(it) == libraryItemKey(state.item) }
+                        LibrarySection.Watchlist -> refreshed.watchlist
+                            .none { libraryItemKey(it) == libraryItemKey(state.item) }
+                    }
+                    if (removedFromCurrentSection) {
                         // The old requester belongs to the card just removed. Land on a target that
-                        // survives the mutation so Down from the filters cannot enter a disposed
-                        // lazy-grid item and crash Compose's focus search.
+                        // survives the mutation: next at the same index, or previous when the old
+                        // card was last. This also prevents focus pointing at a disposed lazy item.
                         kotlinx.coroutines.delay(80)
-                        val remaining = refreshed.watchlist
-                            .filter { typeFilter == "all" || it.type == typeFilter }
+                        val remaining = when (section) {
+                            LibrarySection.Continue -> refreshed.continueWatching
+                                .map(ContinueWatchingItem::asLibraryMediaItem)
+                            LibrarySection.Watchlist -> refreshed.watchlist
+                        }.filter { typeFilter == "all" || it.type == typeFilter }
                             .distinctBy(::libraryItemKey)
                         runCatching {
-                            if (remaining.isEmpty()) firstChipRequester.requestFocus()
-                            else firstCardRequester.requestFocus()
+                            if (remaining.isEmpty()) {
+                                firstChipRequester.requestFocus()
+                            } else {
+                                val targetIndex = removedIndex.coerceAtMost(remaining.lastIndex)
+                                if (targetIndex == 0) firstCardRequester.requestFocus()
+                                else cardRequesters.getOrPut(libraryItemKey(remaining[targetIndex])) { FocusRequester() }
+                                    .requestFocus()
+                            }
                         }
                     }
                 },

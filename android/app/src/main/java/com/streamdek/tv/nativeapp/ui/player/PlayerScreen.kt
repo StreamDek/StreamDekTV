@@ -85,6 +85,7 @@ import com.streamdek.tv.mpv.MPVView
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.EpisodeContext
+import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleOrigin
 import com.streamdek.tv.nativeapp.data.subtitleSourceAllowsOrigin
@@ -110,6 +111,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** How many copies of the same language to try before telling the viewer none of them loaded. */
 private const val SUBTITLE_ATTEMPT_LIMIT = 4
@@ -120,6 +122,8 @@ private const val LiveChannelInfoHideDelayMs = 5000L
 private const val LiveHintVisibleMs = 3_000L
 private const val LiveHintCycleMs = 15_000L
 private const val AutoPlayNextEpisodeCountdownSeconds = 5
+private const val NextEpisodeDiscoveryTimeoutMs = 8_000L
+private const val NextEpisodeSourceResolveTimeoutMs = 12_000L
 
 /**
  * Live feeds drop out routinely (upstream restarts, ad breaks, CDN switches). Mobile retries
@@ -136,6 +140,12 @@ private data class SegmentAction(
     val targetTimeSec: Double? = null,
 )
 
+private data class PendingEpisodeSelection(
+    val episode: EpisodeContext,
+    val stream: AddonStream,
+    val streams: List<AddonStream>,
+)
+
 private enum class SegmentActionKind {
     Skip,
     NextEpisode,
@@ -146,6 +156,7 @@ internal enum class ActivePlaybackEngine { Media3, MPV }
 internal enum class LiveRetryAction { Reload, Refetch, GiveUp }
 
 internal enum class PlayerInteractionLayer { Playback, Controls, Seeking, Drawer, Dialog }
+internal enum class PlayerControlsFocusRegion { Seek, Controls }
 
 internal fun playerInteractionLayer(
     dialogVisible: Boolean,
@@ -309,6 +320,7 @@ fun PlayerScreen(
     var playbackOutcomeReported by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
 
     var controlsVisible by remember { mutableStateOf(false) }
+    var controlsFocusRegion by remember { mutableStateOf(PlayerControlsFocusRegion.Controls) }
     var showLiveProgress by remember(playbackRequest.mediaId, playbackPreferences.liveProgressBarEnabled) {
         mutableStateOf(playbackPreferences.liveProgressBarEnabled)
     }
@@ -367,6 +379,9 @@ fun PlayerScreen(
     var nextEpisodeCandidate by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<ResolvedPlaybackCandidate?>(null) }
     var nextEpisodeLoading by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var nextEpisodeCountdown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<Int?>(null) }
+    var pendingEpisodeSelection by remember(request.mediaId, request.mediaType) { mutableStateOf<PendingEpisodeSelection?>(null) }
+    var nextEpisodeTransitionInProgress by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
+    var episodeLoadGeneration by remember(request.mediaId, request.mediaType) { mutableIntStateOf(0) }
     var streamKeyOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamKey) }
     var streamLabelOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamLabel) }
     // Subtitle appearance, seeded from what this device last settled on and applied to whichever
@@ -435,6 +450,9 @@ fun PlayerScreen(
             // Closes the news server connections and drops the partially assembled file. A no-op
             // unless what was playing came from a usenet source.
             com.streamdek.tv.nativeapp.usenet.UsenetPlayback.release()
+            // Stops the local libtorrent session and loopback server. Cached pieces remain under
+            // the bounded device cache; no torrent state is sent to StreamDek Backend.
+            com.streamdek.tv.nativeapp.peer.LocalTorrentPlayback.release()
         }
     }
 
@@ -673,12 +691,16 @@ fun PlayerScreen(
         pauseInfoVisible = false
         controlsVisible = true
         scheduleControlsHide()
-        if (focusPlay) requestPlaybackFocus()
+        if (focusPlay) {
+            controlsFocusRegion = PlayerControlsFocusRegion.Controls
+            requestPlaybackFocus()
+        }
     }
 
     fun restoreControlsAfterPanel(closedPanel: OverlayPanel) {
         pauseInfoVisible = false
         controlsVisible = true
+        controlsFocusRegion = PlayerControlsFocusRegion.Controls
         scheduleControlsHide()
         val requester = when (closedPanel) {
             OverlayPanel.Streams -> sourcesRequester
@@ -800,22 +822,26 @@ fun PlayerScreen(
         repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
     }
 
-    suspend fun markWatchedAndClearProgressIfNeeded() {
+    suspend fun markWatchedAndClearProgressIfNeeded(
+        episodeToMark: EpisodeContext? = currentEpisode,
+        completedPositionSec: Double = positionSec,
+        completedDurationSec: Double = durationSec,
+    ) {
         if (watchedMarked) return
         val syncCompleted = repository.completeProgress(
             request.mediaType,
             request.mediaId,
-            currentEpisode,
+            episodeToMark,
             detail,
-            positionSec,
-            durationSec,
+            completedPositionSec,
+            completedDurationSec,
         )
         val marked = repository.markWatched(
             mediaType = request.mediaType,
             mediaId = request.mediaId,
             title = detail?.title ?: request.title ?: "",
             year = detail?.year,
-            episode = currentEpisode,
+            episode = episodeToMark,
             imdbId = request.imdbId ?: detail?.imdbId,
         )
         watchedMarked = syncCompleted || marked
@@ -828,6 +854,7 @@ fun PlayerScreen(
     }
 
     suspend fun openNextEpisodeDialog() {
+        if (nextEpisodeTransitionInProgress) return
         val targetEpisode = nextEpisode ?: return
         val currentStream = candidate?.stream
         val effectiveImdbId = request.imdbId ?: detail?.imdbId
@@ -840,28 +867,75 @@ fun PlayerScreen(
         nextEpisodeDialogVisible = true
         nextEpisodeLoading = true
         nextEpisodeCountdown = null
-        nextEpisodeCandidate = repository.resolvePlayback(
-            mediaType = request.mediaType,
-            mediaId = request.mediaId,
-            imdbId = effectiveImdbId,
-            episode = targetEpisode,
-            preferredAddonName = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.addonName else null,
-            preferredQualityGroup = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.quality else null,
-            forceRefresh = false,
-        )
-        nextEpisodeLoading = false
-        if (nextEpisodeCandidate?.source != null && !nextEpisodeCandidate?.streams.isNullOrEmpty()) {
-            nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
+        nextEpisodeCandidate = null
+        // Discovery must never resolve every torrent before the dialog can render. The canonical
+        // progressive pipeline publishes provider results as they arrive; keep collecting briefly
+        // so late sources can join, but expose the first ranked batch immediately and put a hard
+        // ceiling on the otherwise unbounded provider fan-out.
+        withTimeoutOrNull(NextEpisodeDiscoveryTimeoutMs) {
+            repository.streamCandidates(
+                mediaType = request.mediaType,
+                mediaId = request.mediaId,
+                imdbId = effectiveImdbId,
+                episode = targetEpisode,
+                preferredAddonName = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.addonName else null,
+                preferredQualityGroup = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.quality else null,
+                forceRefresh = false,
+            ).collect { progress ->
+                if (!nextEpisodeDialogVisible || nextEpisode != targetEpisode) return@collect
+                if (progress.streams.isNotEmpty()) {
+                    val ranked = progress.streams
+                    nextEpisodeCandidate = ResolvedPlaybackCandidate(
+                        source = null,
+                        stream = ranked.firstOrNull(),
+                        streams = ranked,
+                    )
+                    if (nextEpisodeCountdown == null) {
+                        nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
+                    }
+                }
+            }
         }
+        nextEpisodeLoading = false
     }
 
     fun beginNextEpisode(streamIndex: Int? = null) {
+        if (nextEpisodeTransitionInProgress) return
         val targetEpisode = nextEpisode ?: return
         val fromEpisode = currentEpisode
+        val completedPositionSec = positionSec
+        val completedDurationSec = durationSec
+        val completedTraktProgress = traktProgressPercent()
+        val targetIsLater = isForwardEpisodeTransition(
+            fromSeason = fromEpisode?.seasonNumber,
+            fromEpisode = fromEpisode?.episodeNumber,
+            targetSeason = targetEpisode.seasonNumber,
+            targetEpisode = targetEpisode.episodeNumber,
+        )
+        if (!targetIsLater) {
+            nextEpisodeDialogVisible = false
+            nextEpisodeLoading = false
+            nextEpisodeCountdown = null
+            error = "The next episode could not be identified safely. Return to the series and choose an episode."
+            controlsVisible = true
+            TvDebugLogger.w(
+                "EpisodeTransition",
+                "rejected non-forward transition from=S${fromEpisode?.seasonNumber}E${fromEpisode?.episodeNumber} to=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber}",
+            )
+            return
+        }
         val selectedStream = when {
             streamIndex != null -> nextEpisodeCandidate?.streams?.getOrNull(streamIndex)
             else -> nextEpisodeCandidate?.stream ?: nextEpisodeCandidate?.streams?.firstOrNull()
         } ?: return
+        val shouldStopCompletedEpisodeScrobble = traktScrobbledStart
+        traktScrobbledStart = false
+        pendingEpisodeSelection = PendingEpisodeSelection(
+            episode = targetEpisode,
+            stream = selectedStream,
+            streams = nextEpisodeCandidate?.streams.orEmpty(),
+        )
+        nextEpisodeTransitionInProgress = true
         nextEpisodeDialogVisible = false
         nextEpisodeCountdown = null
         // Retire the completed episode visually before any watched/sync write is allowed to wait.
@@ -882,28 +956,38 @@ fun PlayerScreen(
         positionSec = 0.0
         durationSec = 0.0
         scope.launch {
-            markWatchedAndClearProgressIfNeeded()
-            if (traktScrobbledStart) {
-                traktScrobbledStart = false
+            markWatchedAndClearProgressIfNeeded(
+                episodeToMark = fromEpisode,
+                completedPositionSec = completedPositionSec,
+                completedDurationSec = completedDurationSec,
+            )
+            if (shouldStopCompletedEpisodeScrobble) {
                 repository.traktScrobble(
                     action = "stop",
                     mediaType = request.mediaType,
                     mediaId = request.mediaId,
                     title = detail?.title ?: request.title,
                     year = detail?.year,
-                    progress = traktProgressPercent(),
+                    progress = completedTraktProgress,
                 )
             }
-            streamKeyOverride = repository.streamSelectionKey(selectedStream)
-            streamLabelOverride = repository.describeStreamOption(selectedStream)
-            nextEpisodeCandidate = null
-            paused = false
-            currentEpisode = targetEpisode
             TvDebugLogger.i(
                 "EpisodeTransition",
                 "from=S${fromEpisode?.seasonNumber}E${fromEpisode?.episodeNumber} to=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} previousEpisodeCompleted=$watchedMarked",
             )
         }
+        // Playback preparation must not wait for SyncDek/Trakt writes. They carry the captured
+        // completed-episode identity above and can finish independently while the selected next
+        // source starts resolving now.
+        streamKeyOverride = repository.streamSelectionKey(selectedStream)
+        streamLabelOverride = repository.describeStreamOption(selectedStream)
+        nextEpisodeCandidate = null
+        paused = false
+        currentEpisode = targetEpisode
+        // A generation guarantees a fresh load even if a stale callback races with Compose's
+        // episode-key update. The in-progress guard prevents the repeated onEnd/click path
+        // observed on .15 from queueing the same episode twice.
+        episodeLoadGeneration += 1
     }
 
     fun completePlaybackAndExit() {
@@ -971,17 +1055,37 @@ fun PlayerScreen(
         val loadStartedAt = android.os.SystemClock.elapsedRealtime()
         val activeRequest = playbackRequest
         val loadResult = runCatching {
-        val selectedStream = activeRequest.selectedStream?.takeIf {
+        val queuedEpisodeSelection = pendingEpisodeSelection?.takeIf { selection ->
+            selection.episode.seasonNumber == currentEpisode?.seasonNumber &&
+                selection.episode.episodeNumber == currentEpisode?.episodeNumber
+        }
+        val selectedStream = queuedEpisodeSelection?.stream ?: activeRequest.selectedStream?.takeIf {
             currentEpisode == activeRequest.episode && streamKeyOverride == activeRequest.selectedStreamKey
         }
         var resolvedCandidate = selectedStream?.let {
-            repository.resolveSelectedPlayback(
-                request = activeRequest.copy(episode = currentEpisode),
-                stream = it,
-                streams = activeRequest.availableStreams,
-                forceRefresh = forceRefresh,
-            )
+            val availableStreams = queuedEpisodeSelection?.streams.orEmpty().ifEmpty { activeRequest.availableStreams }
+            if (queuedEpisodeSelection != null) {
+                // The selection already came from the next-episode dialog. Resolve only that row
+                // and fail back to the visible alternatives promptly; never walk every torrent in
+                // the list while the viewer is trapped on "Searching for next episode".
+                withTimeoutOrNull(NextEpisodeSourceResolveTimeoutMs) {
+                    repository.resolveSelectedPlayback(
+                        request = activeRequest.copy(episode = currentEpisode),
+                        stream = it,
+                        streams = availableStreams,
+                        forceRefresh = forceRefresh,
+                    )
+                } ?: ResolvedPlaybackCandidate(null, it, availableStreams)
+            } else {
+                repository.resolveSelectedPlayback(
+                    request = activeRequest.copy(episode = currentEpisode),
+                    stream = it,
+                    streams = availableStreams,
+                    forceRefresh = forceRefresh,
+                )
+            }
         }
+        if (queuedEpisodeSelection != null) pendingEpisodeSelection = null
         // Start the player as soon as the chosen source resolves. Detail, library, resume,
         // IntroDB, and watched metadata can continue loading without blocking decoder startup.
         resolvedCandidate?.source?.let { source ->
@@ -1130,7 +1234,7 @@ fun PlayerScreen(
         // Nothing opened on the first try. The list is already ranked, so work down it rather than
         // sending the viewer back to the picker to guess which of the same entries is alive — this
         // is where a usenet post packed into archives lands, and it fails before a frame is drawn.
-        if (resolved.source == null && !isLive) {
+        if (resolved.source == null && !isLive && queuedEpisodeSelection == null) {
             // The one that just failed goes on the list before the walk starts, or it would be
             // tried again as the first alternative to itself.
             var failureText: String? = (selectedStream ?: resolved.stream)?.let { failed ->
@@ -1196,9 +1300,10 @@ fun PlayerScreen(
             loading = false
             controlsVisible = true
         }
+        nextEpisodeTransitionInProgress = false
     }
 
-    LaunchedEffect(playbackRequest.mediaId, playbackRequest.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, liveRefetchGeneration) {
+    LaunchedEffect(playbackRequest.mediaId, playbackRequest.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, episodeLoadGeneration, liveRefetchGeneration) {
         val reconnectRefetch = isLive && liveRefetchGeneration > 0
         loadPlayback(forceRefresh = reconnectRefetch, resetReconnectBudget = !reconnectRefetch)
     }
@@ -1740,8 +1845,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .focusRequester(playerRootRequester)
-            .focusable()
             .onPreviewKeyEvent { event ->
                 // While a skip prompt is up the D-pad is swallowed whole — both edges, since focus
                 // moves on key-down — so the only ways out are OK on the chip and Back. OK and Back
@@ -1750,6 +1853,35 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     return@onPreviewKeyEvent when (event.key) {
                         Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight -> true
                         else -> false
+                    }
+                }
+                // SEEK is an authoritative interaction region, not merely whichever child happens
+                // to hold focus this frame. The root sees D-pad input before Compose spatial focus
+                // search, so horizontal presses cannot escape even during rapid key repeats or a
+                // recomposition of the timeline. Down is the sole transition into controls.
+                if (!loading && controlsVisible && controlsFocusRegion == PlayerControlsFocusRegion.Seek &&
+                    panel == null && !nextEpisodeDialogVisible && smartSwitchCandidate == null
+                ) {
+                    when (event.key) {
+                        Key.DirectionLeft, Key.DirectionRight -> {
+                            if (event.type == KeyEventType.KeyDown) {
+                                scheduleRelativeSeek(
+                                    if (event.key == Key.DirectionRight) tvSeekStepSeconds(durationSec)
+                                    else -tvSeekStepSeconds(durationSec),
+                                )
+                                scheduleControlsHide()
+                            }
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.DirectionDown -> {
+                            if (event.type == KeyEventType.KeyDown) {
+                                controlsFocusRegion = PlayerControlsFocusRegion.Controls
+                                runCatching { playRequester.requestFocus() }
+                            }
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.DirectionUp -> return@onPreviewKeyEvent true
+                        else -> Unit
                     }
                 }
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
@@ -1781,6 +1913,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 if (!loading && interactionLayer == PlayerInteractionLayer.Playback) {
                     when (event.key) {
                         Key.DirectionLeft, Key.DirectionRight -> {
+                            controlsFocusRegion = PlayerControlsFocusRegion.Seek
                             controlsVisible = true
                             scheduleRelativeSeek(
                                 if (event.key == Key.DirectionRight) tvSeekStepSeconds(durationSec) else -tvSeekStepSeconds(durationSec),
@@ -1801,7 +1934,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     }
                 }
                 false
-            },
+            }
+            // The dispatcher sits outside this focus target in the modifier chain, making it an
+            // ancestor of both focus rows instead of a sibling modifier that child focus can skip.
+            .focusRequester(playerRootRequester)
+            .focusable(),
     ) {
         key(resolvedRenderSurface, activePlaybackEngine) {
             AndroidView(
@@ -2460,10 +2597,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             onExitToStreams()
                         }
                     },
-                    onSeekRelative = { delta ->
-                        scheduleRelativeSeek(delta)
-                        registerInteraction()
-                    },
+                    focusRegion = controlsFocusRegion,
+                    onFocusRegionChanged = { controlsFocusRegion = it },
                     onOpenPanel = {
                         panel = it
                         controlsHideJob?.cancel()
@@ -2560,6 +2695,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 val resumeAt = positionSec.coerceAtLeast(0.0)
                                 smartSwitchCandidate = null
                                 recentPlaybackStalls = emptyList()
+                                smartSwitchCooldownUntil = android.os.SystemClock.elapsedRealtime() + 60_000L
                                 scope.launch {
                                     val resolved = repository.resolveSelectedPlayback(
                                         request = playbackRequest.copy(episode = currentEpisode),
@@ -3388,6 +3524,15 @@ private suspend fun resolveNextEpisode(
         tmdbEpisodeId = first.id,
     )
 }
+
+internal fun isForwardEpisodeTransition(
+    fromSeason: Int?,
+    fromEpisode: Int?,
+    targetSeason: Int,
+    targetEpisode: Int,
+): Boolean = fromSeason == null || fromEpisode == null ||
+    targetSeason > fromSeason ||
+    (targetSeason == fromSeason && targetEpisode > fromEpisode)
 
 private fun segmentPriority(segmentType: String): Int {
     return when (segmentType) {

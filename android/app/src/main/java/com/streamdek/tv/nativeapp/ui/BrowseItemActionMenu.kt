@@ -42,6 +42,7 @@ fun BrowseItemActionMenu(
     item: MediaItem,
     showRemoveFromContinueWatching: Boolean = false,
     onDismiss: () -> Unit,
+    onDismissAfterRemoval: () -> Unit = onDismiss,
     onOpenDetail: () -> Unit,
     onChanged: suspend () -> Unit,
 ) {
@@ -170,12 +171,16 @@ fun BrowseItemActionMenu(
                             onClick = {
                                 scope.launch {
                                     val result = runCatching {
-                                        // This is intentionally only a progress deletion. It neither
-                                        // writes a completion marker nor adds the title to watched history.
-                                        check(repository.clearProgress(item.type, item.id, item.episode)) {
+                                        // This is intentionally a dismissed progress tombstone. It
+                                        // neither writes a completion marker nor adds watched history,
+                                        // but it does stop stale provider progress returning after sync.
+                                        check(repository.dismissContinueWatching(item)) {
                                             "Could not remove this title from Continue Watching."
                                         }
-                                        onDismiss()
+                                        // The focused card no longer exists after this mutation.
+                                        // Let the owning grid dismiss without restoring that stale
+                                        // requester, then choose a surviving neighbour itself.
+                                        onDismissAfterRemoval()
                                         onChanged()
                                     }
                                     result.onFailure {

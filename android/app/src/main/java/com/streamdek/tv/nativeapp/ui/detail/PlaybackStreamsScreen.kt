@@ -369,10 +369,14 @@ fun PlaybackStreamsScreen(
     LaunchedEffect(request, refreshGeneration) {
         cachedCandidate?.takeIf { refreshGeneration == 0 }?.let { candidate ->
             uiState = PlaybackStreamsUiState.Ready(detail, candidate)
-            return@LaunchedEffect
         }
-        uiState = PlaybackStreamsUiState.Loading()
-        var accumulatedStreams = emptyList<AddonStream>()
+        if (cachedCandidate == null || refreshGeneration > 0) {
+            uiState = PlaybackStreamsUiState.Loading()
+        }
+        // A request/player snapshot makes the picker instant, but is not proof that every enabled
+        // provider has finished. Keep it visible while the same canonical progressive pipeline
+        // completes, merging late plugin results instead of returning early with a partial list.
+        var accumulatedStreams = cachedCandidate?.takeIf { refreshGeneration == 0 }?.streams.orEmpty()
         TvDebugLogger.i(
             "Streams",
             "lookup start title=${request.title.orEmpty()} media=${request.mediaType}:${request.mediaId} generation=$refreshGeneration",

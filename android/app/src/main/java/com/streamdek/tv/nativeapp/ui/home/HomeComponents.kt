@@ -36,6 +36,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
@@ -328,6 +333,7 @@ internal fun HomeShelf(
     onItemFocused: (Int, MediaItem) -> Unit,
     onItemPressed: (MediaItem) -> Unit,
     onItemMenu: (MediaItem, FocusRequester) -> Unit,
+    onOpenNavigation: () -> Unit,
 ) {
     val requesters = remember(row.id) { mutableMapOf<String, FocusRequester>() }
     val dense = LocalTvExperienceSettings.current.denseCards
@@ -412,6 +418,7 @@ internal fun HomeShelf(
                         item = item,
                         modifier = Modifier
                             .focusRequester(effective)
+                            .openNavigationFromFirstCard(index, onOpenNavigation)
                             .width(size)
                             .height(cardHeight)
                             .graphicsLayer {
@@ -443,6 +450,7 @@ internal fun HomeShelf(
                         metaOnTop = hideCardTitles && variant == TvMediaCardVariant.Poster,
                         modifier = Modifier
                             .focusRequester(effective)
+                            .openNavigationFromFirstCard(index, onOpenNavigation)
                             .width(size)
                             .height(cardHeight)
                             .graphicsLayer {
@@ -462,6 +470,19 @@ internal fun HomeShelf(
                 }
             }
         }
+    }
+}
+
+/**
+ * The leading card is the content/rail boundary. Consume both key edges here so Compose never
+ * parks focus on the collapsed rail container before the shell has made the rail authoritative.
+ */
+private fun Modifier.openNavigationFromFirstCard(index: Int, onOpenNavigation: () -> Unit): Modifier {
+    if (index != 0) return this
+    return onPreviewKeyEvent { event ->
+        if (event.key != Key.DirectionLeft) return@onPreviewKeyEvent false
+        if (event.type == KeyEventType.KeyDown) onOpenNavigation()
+        true
     }
 }
 
