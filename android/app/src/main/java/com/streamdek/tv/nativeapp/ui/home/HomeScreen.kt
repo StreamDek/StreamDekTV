@@ -55,6 +55,7 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.ApiReachability
 import com.streamdek.tv.nativeapp.data.MediaItem
+import com.streamdek.tv.nativeapp.data.HomeRail
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
@@ -72,6 +73,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+
+/** The single policy used by launch, login, reset-to-top and side-nav entry into Home. */
+internal fun firstFocusableHomeRowIndex(rows: List<HomeRail>): Int =
+    rows.indexOfFirst { row -> row.items.isNotEmpty() }
 
 private data class BrowseActionState(
     val item: MediaItem,
@@ -337,6 +342,12 @@ fun HomeScreen(
 
             content != null -> {
                 val rows = content.rails
+                val firstFocusableRowIndex = remember(rows) { firstFocusableHomeRowIndex(rows) }
+                val firstFocusableRow = rows.getOrNull(firstFocusableRowIndex)
+                // Complete is the normal readiness signal. A partial load that has stopped after
+                // an error is also ready enough to navigate; waiting forever for vanished pending
+                // rows would leave an otherwise useful Home screen with no focus owner.
+                val homeEntryReady = content.isComplete || !screenState.isLoading
                 val localFirstCard = remember { FocusRequester() }
                 val firstCardRequester = entryFocusRequester ?: localFirstCard
 
@@ -389,10 +400,10 @@ fun HomeScreen(
                 var restoreHandledToken by remember { mutableIntStateOf(0) }
                 var restoreApplied by remember { mutableStateOf(false) }
 
-                LaunchedEffect(resetToTopToken, rows) {
-                    if (resetToTopToken <= 0 || rows.isEmpty()) return@LaunchedEffect
-                    val firstRow = rows.first()
-                    val firstItem = firstRow.items.firstOrNull() ?: return@LaunchedEffect
+                LaunchedEffect(resetToTopToken, homeEntryReady, firstFocusableRow?.id) {
+                    if (resetToTopToken <= 0 || !homeEntryReady) return@LaunchedEffect
+                    val firstRow = firstFocusableRow ?: return@LaunchedEffect
+                    val firstItem = firstRow.items.first()
                     activeRowId = firstRow.id
                     focusedItem = firstItem
                     rowFocusIndices.clear()
@@ -446,10 +457,10 @@ fun HomeScreen(
                 // and because re-entering restores the last focused item, the highlight sat one
                 // step further down each time. Down, collapse, re-open one lower, over and over.
                 var openingFocusApplied by remember { mutableStateOf(false) }
-                LaunchedEffect(rows.isNotEmpty(), canRestore) {
+                LaunchedEffect(homeEntryReady, firstFocusableRow?.id, canRestore) {
                     if (openingFocusApplied) return@LaunchedEffect
                     if (canRestore || restoreApplied || pendingRestoreKey != null) return@LaunchedEffect
-                    if (rows.isEmpty()) return@LaunchedEffect
+                    if (!homeEntryReady || firstFocusableRow == null) return@LaunchedEffect
                     delay(150)
                     if (contentFocusSuspended) return@LaunchedEffect
                     // Marked only once the request was actually made, so a first attempt against a
@@ -466,8 +477,10 @@ fun HomeScreen(
                 // the remote did nothing, which is what returning quickly from the player used to
                 // produce. Nothing here competes with the placements above; it only notices that
                 // the page has ended up with no highlight and puts one back.
-                LaunchedEffect(homeHasFocus, rows.isEmpty(), contentFocusSuspended) {
-                    if (homeHasFocus || rows.isEmpty() || contentFocusSuspended) return@LaunchedEffect
+                LaunchedEffect(homeHasFocus, homeEntryReady, firstFocusableRow?.id, contentFocusSuspended) {
+                    if (homeHasFocus || !homeEntryReady || firstFocusableRow == null || contentFocusSuspended) {
+                        return@LaunchedEffect
+                    }
                     repeat(12) {
                         delay(140)
                         if (homeHasFocus || contentFocusSuspended) return@LaunchedEffect
@@ -527,7 +540,7 @@ fun HomeScreen(
                                 compact = activeRowId != null && activeRowId != row.id,
                                 portraitCards = portraitCards,
                                 hideCardTitles = hideCardTitles,
-                                firstCardRequester = if (rowIndex == 0) firstCardRequester else null,
+                                firstCardRequester = if (rowIndex == firstFocusableRowIndex) firstCardRequester else null,
                                 focusItemKey = pendingRestoreKey?.takeIf { it.startsWith("${row.id}:") },
                                 onFocusItemHandled = { pendingRestoreKey = null },
                                 onItemFocused = { index, item ->

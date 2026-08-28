@@ -123,6 +123,7 @@ fun SearchScreen(
     onOpenDetail: (String, String) -> Unit,
     onPlayLive: (MediaItem) -> Unit,
     entryFocusRequester: FocusRequester? = null,
+    onOpenNavigation: () -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
@@ -380,6 +381,12 @@ fun SearchScreen(
                             if (!it.isFocused) editing = false
                         }
                         .onPreviewKeyEvent { event ->
+                            if (!editing && event.key == Key.DirectionLeft) {
+                                if (event.type == KeyEventType.KeyDown) onOpenNavigation()
+                                // Consume both edges so the read-only field cannot start cursor
+                                // navigation or leave focus on an invisible boundary target.
+                                return@onPreviewKeyEvent true
+                            }
                             val select = event.key == Key.DirectionCenter || event.key == Key.Enter ||
                                 event.key == Key.NumPadEnter
                             if (!editing && event.type == KeyEventType.KeyUp && select) {

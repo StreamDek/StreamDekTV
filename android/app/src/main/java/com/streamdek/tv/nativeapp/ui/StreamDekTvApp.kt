@@ -132,7 +132,7 @@ private enum class TopLevelDestination(
     Search("search", "Search", 98.dp, Icons.Outlined.Search),
     Live("live", "Live", 82.dp, Icons.Outlined.LiveTv),
     Library("library", "Library", 104.dp, Icons.Outlined.VideoLibrary),
-    Profile("profile", "Profile", 42.dp, null),
+    Profile("profile", "Settings", 42.dp, null),
 }
 
 private data class LiveNavigationState(
@@ -375,16 +375,18 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         navController.navigate(detailRoute(mediaType, mediaId))
     }
 
-    fun prepareHomeAfterProfileSelection() {
+    fun prepareFreshHomeEntry() {
         lastHomeRowId = null
         lastHomeItemKey = null
         homeResetToTopToken += 1
         startScreenApplied = true
-        pendingDestinationFocus = TopLevelDestination.Home.route
+        // Home owns this placement because it alone knows which optional rows actually resolved.
+        // The shell must not request its entry requester before that row has been composed.
+        pendingDestinationFocus = null
     }
 
     fun returnHomeAfterProfileSelection() {
-        prepareHomeAfterProfileSelection()
+        prepareFreshHomeEntry()
         navController.navigate(TopLevelDestination.Home.route) {
             popUpTo(TopLevelDestination.Home.route) { inclusive = false }
             launchSingleTop = true
@@ -473,7 +475,6 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             !liveNavigationState.loading &&
             currentRoute == TopLevelDestination.Live.route
         ) {
-            pendingDestinationFocus = TopLevelDestination.Home.route
             navController.navigate(TopLevelDestination.Home.route) {
                 popUpTo(TopLevelDestination.Home.route) { inclusive = false }
                 launchSingleTop = true
@@ -522,6 +523,13 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             return@LaunchedEffect
         }
         if (pendingDestinationFocus != null && pendingDestinationFocus != route) {
+            return@LaunchedEffect
+        }
+        // Home has a dynamic entry target: its first non-empty row is only knowable after the
+        // progressive row load settles. It places ordinary route-entry focus itself. The one
+        // exception is an explicit transfer from the open rail, which must be completed here so
+        // the rail can hand ownership back to the page.
+        if (route == TopLevelDestination.Home.route && pendingDestinationFocus != route) {
             return@LaunchedEffect
         }
         val requester = destinationContentRequesters[route]
@@ -578,6 +586,10 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
      */
     LaunchedEffect(appHasFocus, currentRoute, showStartupProfilePicker) {
         if (appHasFocus || showStartupProfilePicker) return@LaunchedEffect
+        // Home has its own focus floor, tied to the first available row after its initial row set
+        // is ready. A shell-level request here can attach to a lower row while an earlier optional
+        // row (Continue Watching or New Episodes) is still resolving.
+        if (currentRoute == TopLevelDestination.Home.route) return@LaunchedEffect
         val requester = destinationContentRequesters[currentRoute] ?: return@LaunchedEffect
         repeat(10) { attempt ->
             delay(if (attempt == 0) 420L else 160L)
@@ -645,7 +657,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         // Prepare Home before dismissing the startup destination. Do not navigate
                         // here: NavHost is intentionally not composed behind this picker, and its
                         // controller therefore has no graph until the next composition.
-                        prepareHomeAfterProfileSelection()
+                        prepareFreshHomeEntry()
                         startupProfileHandled = true
                         startupProfileSwitching = false
                     }
@@ -697,7 +709,6 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         val isTopLevelRoute = currentRoute in topLevelDestinations.map { it.route }
         when {
             isTopLevelRoute && currentRoute != TopLevelDestination.Home.route -> {
-                pendingDestinationFocus = TopLevelDestination.Home.route
                 navController.navigate(TopLevelDestination.Home.route) {
                     popUpTo(TopLevelDestination.Home.route) { inclusive = false }
                     launchSingleTop = true
@@ -859,6 +870,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         entryFocusRequester = searchContentRequester,
                         onOpenDetail = openDetail,
                         onPlayLive = playLiveItem,
+                        onOpenNavigation = ::openSideNavigation,
                     )
                     }
                 }
@@ -943,7 +955,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         repository = repository,
                         onBack = { navController.popBackStack() },
                         onSignedIn = {
-                            navController.popBackStack()
+                            prepareFreshHomeEntry()
+                            navController.navigate(TopLevelDestination.Home.route) {
+                                popUpTo(TopLevelDestination.Home.route) { inclusive = false }
+                                launchSingleTop = true
+                            }
                         },
                     )
                 }
@@ -1072,6 +1088,11 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     // and no open state can leak into the page being opened.
                     onNavigate = { route ->
                         pendingDestinationFocus = route
+                        if (route == TopLevelDestination.Home.route && route != currentRoute) {
+                            lastHomeRowId = null
+                            lastHomeItemKey = null
+                            homeResetToTopToken += 1
+                        }
                         if (route != currentRoute) {
                             navController.navigate(route) {
                                 popUpTo(TopLevelDestination.Home.route) { inclusive = false }
