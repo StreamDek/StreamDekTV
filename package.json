@@ -1,6 +1,6 @@
 {
   "name": "streamdek-tv",
-  "version": "0.2.9b",
+  "version": "0.2.9c",
   "private": true,
   "scripts": {
     "android": "cd android && gradlew.bat installDebug",
