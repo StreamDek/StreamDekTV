@@ -489,6 +489,9 @@ data class PlaybackPreferences(
     val skipIntroEnabled: Boolean? = null,
     val skipRecapEnabled: Boolean? = null,
     val skipEndingEnabled: Boolean? = null,
+    val autoSkipIntroEnabled: Boolean = false,
+    val autoSkipRecapEnabled: Boolean = false,
+    val autoSkipEndingEnabled: Boolean = false,
     val introContributionEnabled: Boolean = false,
     val introDbApiKey: String = "",
     val preferBingeGroupNextEpisode: Boolean = true,
@@ -525,6 +528,13 @@ data class PlaybackPreferences(
             "outro" -> skipEndingEnabled ?: true
             else -> false
         }
+    }
+
+    fun isAutoSkipEnabled(segmentType: String): Boolean = when (segmentType) {
+        "intro" -> autoSkipIntroEnabled
+        "recap" -> autoSkipRecapEnabled
+        "outro" -> autoSkipEndingEnabled
+        else -> false
     }
 
     fun isNextEpisodeThresholdReached(positionSec: Double, durationSec: Double, segmentStartSec: Double? = null): Boolean {
@@ -625,6 +635,11 @@ data class DetailPreferences(
     val ratingsEnabled: Boolean = true,
     val externalRatingsEnabled: Boolean = true,
     val enabledRatingProviders: List<String> = emptyList(),
+    /**
+     * Retired. The backend empties this during migration and no client writes it any more -- the
+     * MDBList key lives in the encrypted credential store, reachable through Content Services.
+     * The field is kept so an older stored document still deserializes.
+     */
     val mdblistApiKey: String? = null,
 )
 
@@ -946,7 +961,37 @@ data class ProfileCloudStreamProvider(
     val enabled: Boolean = false,
 )
 
+/**
+ * One content-service credential, as the account reports it.
+ *
+ * Only ever the masked form and the connection state -- the backend has no route that hands back
+ * a stored key, this one included. `storage` is always "account" when it appears here; a key kept
+ * on a device is known only to that device, which is what the choice means.
+ */
+data class ContentServiceCredential(
+    val service: String = "",
+    val configured: Boolean = false,
+    val storage: String? = null,
+    val maskedKey: String? = null,
+    val label: String? = null,
+    val status: String? = null,
+    val lastValidatedAt: String? = null,
+)
+
+/**
+ * What the account holds for TMDB and MDBList.
+ *
+ * Arrives on the ordinary bootstrap, which is what lets a television that has only just been
+ * signed into discover that its keys are already there -- with nothing typed on the remote.
+ */
+data class ContentServicesIntegration(
+    val services: List<ContentServiceCredential> = emptyList(),
+    /** Whether StreamDek's shared TMDB key still answers for a viewer who has supplied none. */
+    val sharedFallbackAvailable: Boolean = true,
+)
+
 data class IntegrationsEnvelope(
+    val contentServices: ContentServicesIntegration = ContentServicesIntegration(),
     val trakt: TraktIntegration = TraktIntegration(),
     val simkl: SyncServiceIntegration = SyncServiceIntegration(),
     val mdblist: SyncServiceIntegration = SyncServiceIntegration(),

@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.outlined.Visibility
@@ -84,6 +85,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.streamdek.tv.BuildConfig
 import com.streamdek.tv.nativeapp.data.AccountBootstrap
+import com.streamdek.tv.nativeapp.data.APP_IDLE_CHOICES_MINUTES
 import com.streamdek.tv.nativeapp.data.AddonManifest
 import com.streamdek.tv.nativeapp.data.DefaultTrailerCacheClearHours
 import com.streamdek.tv.nativeapp.data.DoHSettings
@@ -95,13 +97,16 @@ import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.RemotePlaylist
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
+import com.streamdek.tv.nativeapp.data.PAUSED_SLEEP_CHOICES_MINUTES
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamDekDoHProviders
 import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.TrailerCache
 import com.streamdek.tv.nativeapp.data.TrailerCacheClearChoices
+import com.streamdek.tv.nativeapp.data.TvIdlePreferences
 import com.streamdek.tv.nativeapp.data.clearTrailerState
 import com.streamdek.tv.nativeapp.data.trailerCacheClearLabel
+import com.streamdek.tv.nativeapp.data.idleTimeoutLabel
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import com.streamdek.tv.nativeapp.ui.TvChromeSurface
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
@@ -150,6 +155,7 @@ private enum class SettingsDestination(val label: String, val description: Strin
     Appearance("Appearance", "Theme, motion and presentation", "accent colour theme animation blur transparent navigation", Icons.Outlined.Palette),
     Accessibility("Accessibility", "Contrast, text and reduced motion", "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
     Sources("Sources", "Add-ons, plugins and premium services", "providers addon plugin cloudstream debrid premium install", Icons.Outlined.Extension),
+    ContentServices("Content Services", "Your own TMDB and MDBList keys", "content services tmdb mdblist api key keys metadata artwork posters ratings enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
     Connections("Connections", "Tracking services, devices and sessions", "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
     Network("Network", "DNS privacy and connection behaviour", "network dns doh dns over https privacy resolver", Icons.Outlined.Dns),
     About("About", "Version, updates and health", "release update version diagnostics health cache network runtime", Icons.Outlined.Info),
@@ -167,10 +173,16 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val session by repository.session.collectAsState()
+    // Account-saved keys arrive on the bootstrap, so this is already right by the time the
+    // page is opened -- including on a television signed in a moment ago that has never been
+    // told a key on its own.
+    val contentServices by repository.contentServices.collectAsState()
     val reachability by repository.reachability.collectAsState()
     val updateState by appUpdateManager.uiState.collectAsState()
     var bootstrap by remember { mutableStateOf<AccountBootstrap?>(repository.bootstrap.value) }
     var addons by remember { mutableStateOf<List<AddonManifest>>(emptyList()) }
+    /** The registry's row definitions, for the Home rows editor. Cached in the repository. */
+    var catalogDefinitions by remember { mutableStateOf<List<com.streamdek.tv.nativeapp.data.CatalogDefinition>>(emptyList()) }
     var playlists by remember { mutableStateOf<List<RemotePlaylist>>(emptyList()) }
     var selected by remember { mutableStateOf(SettingsDestination.Account) }
     var query by remember { mutableStateOf("") }
@@ -198,9 +210,12 @@ fun SettingsScreen(
         mutableStateOf(repository.rememberLastProfileAtStartup())
     }
     val dohSettings = remember(context) { DoHSettings(context) }
+    val idlePreferences = remember(context) { TvIdlePreferences(context) }
     var dohEnabled by remember { mutableStateOf(dohSettings.enabled) }
     var dohProviderId by remember { mutableStateOf(dohSettings.providerId) }
     var customDohEntry by remember { mutableStateOf(false) }
+    var pausedTimeoutMinutes by remember { mutableIntStateOf(idlePreferences.pausedTimeoutMinutes) }
+    var appIdleTimeoutMinutes by remember { mutableIntStateOf(idlePreferences.appIdleTimeoutMinutes) }
     val contentEntryRequester = remember { FocusRequester() }
     val destinationRequesters = remember(entryFocusRequester) {
         SettingsDestination.entries.associateWith { if (it == SettingsDestination.Account) entryFocusRequester else FocusRequester() }
@@ -209,7 +224,9 @@ fun SettingsScreen(
 
     LaunchedEffect(Unit) {
         bootstrap = repository.refreshBootstrap()
+        repository.applyContentServices(bootstrap)
         addons = repository.fetchAddonManifests()
+        catalogDefinitions = runCatching { repository.fetchCatalogManifest() }.getOrDefault(emptyList())
         playlists = repository.fetchPlaylists()
         delay(120)
         runCatching { destinationRequesters.getValue(SettingsDestination.Account).requestFocus() }
@@ -306,7 +323,14 @@ fun SettingsScreen(
         }
         Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0x18FFFFFF)))
         Column(
-            Modifier.weight(1f).fillMaxHeight().verticalScroll(contentScroll),
+            // Trailing room inside the scroll, not around it.
+            //
+            // A panel that ends in something the D-pad cannot land on -- an instruction line, a
+            // closing note -- ended flush against the bottom edge. Focus stops at the last row it
+            // can reach, the scroll stops with it, and whatever sits below is permanently half off
+            // the screen with no way to bring it up. The padding is scrollable space, so the last
+            // focusable row can travel clear of the edge and take the text under it into view.
+            Modifier.weight(1f).fillMaxHeight().verticalScroll(contentScroll).padding(bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SettingsOverviewCard(
@@ -413,6 +437,29 @@ fun SettingsScreen(
                     ) { value ->
                         savePreference("Preferred subtitle source") { repository.updatePlaybackPreferences(mapOf("subtitleDefaultSource" to value)) }
                     }
+                    SettingsPanel("Sleep & Idle") {
+                        InfoLine("Scope", "Stored on this TV. Active video playback never counts as app inactivity.")
+                    }
+                    SettingsDropdownRow(
+                        "Sleep when paused",
+                        "Release the player and return to the title after it remains paused",
+                        pausedTimeoutMinutes.toString(),
+                        PAUSED_SLEEP_CHOICES_MINUTES.map { it.toString() to idleTimeoutLabel(it) },
+                    ) { value ->
+                        pausedTimeoutMinutes = value.toInt()
+                        idlePreferences.pausedTimeoutMinutes = pausedTimeoutMinutes
+                        status = "Paused sleep set to ${idleTimeoutLabel(pausedTimeoutMinutes)}."
+                    }
+                    SettingsDropdownRow(
+                        "App idle timeout",
+                        "Let Android TV's normal screen saver or power saving take over after remote inactivity",
+                        appIdleTimeoutMinutes.toString(),
+                        APP_IDLE_CHOICES_MINUTES.map { it.toString() to idleTimeoutLabel(it) },
+                    ) { value ->
+                        appIdleTimeoutMinutes = value.toInt()
+                        idlePreferences.appIdleTimeoutMinutes = appIdleTimeoutMinutes
+                        status = "App idle timeout set to ${idleTimeoutLabel(appIdleTimeoutMinutes)}."
+                    }
                     // Last on the page: only worth opening when something will not play.
                     SettingsPanel("If a video will not play") {
                         InfoLine("When these apply", "Used when MPV is selected, or Auto falls back to it")
@@ -425,14 +472,40 @@ fun SettingsScreen(
                     }
                 }
                 SettingsDestination.SkipAndAutoplay -> {
+                    SettingsPanel("Auto Skip") {
+                        InfoLine("Detection", "Only reliable IntroDB segments are skipped; each segment runs once per playback session")
+                    }
+                    // Each segment's own pair, together: the switch that offers the control, then
+                    // the one that acts on it without being asked. They were in two separate blocks
+                    // -- all three automatic ones, then all three manual ones -- so the setting that
+                    // governs a row and the row it governs were six apart, and turning off "Skip
+                    // intro" left an "Auto Skip Intro" switch further up still reading as on.
                     SettingsToggleRow("Skip intro", "Show the skip control when an intro is detected", playbackPrefs?.isSegmentEnabled("intro") != false, selectedRequester) { next, complete ->
                         savePreference("Skip intro", complete) { repository.updatePlaybackPreferences(mapOf("skipIntroEnabled" to next)) }
+                    }
+                    // Only while the control it automates is switched on. An automatic skip of a
+                    // segment the viewer has asked not to be offered is a setting that cannot do
+                    // anything, and a switch that cannot do anything is worse than no switch.
+                    if (playbackPrefs?.isSegmentEnabled("intro") != false) {
+                        SettingsToggleRow("Auto Skip Intro", "Skip a detected intro without waiting to be asked", playbackPrefs?.autoSkipIntroEnabled == true, selectedRequester) { next, complete ->
+                            savePreference("Auto Skip Intro", complete) { repository.updatePlaybackPreferences(mapOf("autoSkipIntroEnabled" to next)) }
+                        }
                     }
                     SettingsToggleRow("Skip recap", "Show the skip control when a recap is detected", playbackPrefs?.isSegmentEnabled("recap") != false, selectedRequester) { next, complete ->
                         savePreference("Skip recap", complete) { repository.updatePlaybackPreferences(mapOf("skipRecapEnabled" to next)) }
                     }
+                    if (playbackPrefs?.isSegmentEnabled("recap") != false) {
+                        SettingsToggleRow("Auto Skip Recap", "Skip a detected recap without waiting to be asked", playbackPrefs?.autoSkipRecapEnabled == true, selectedRequester) { next, complete ->
+                            savePreference("Auto Skip Recap", complete) { repository.updatePlaybackPreferences(mapOf("autoSkipRecapEnabled" to next)) }
+                        }
+                    }
                     SettingsToggleRow("Skip ending", "Show the skip control when an ending is detected", playbackPrefs?.isSegmentEnabled("outro") != false, selectedRequester) { next, complete ->
                         savePreference("Skip ending", complete) { repository.updatePlaybackPreferences(mapOf("skipEndingEnabled" to next)) }
+                    }
+                    if (playbackPrefs?.isSegmentEnabled("outro") != false) {
+                        SettingsToggleRow("Auto Skip Ending", "Skip a detected ending without waiting to be asked, when next-episode autoplay is not taking over", playbackPrefs?.autoSkipEndingEnabled == true, selectedRequester) { next, complete ->
+                            savePreference("Auto Skip Ending", complete) { repository.updatePlaybackPreferences(mapOf("autoSkipEndingEnabled" to next)) }
+                        }
                     }
                     SettingsToggleRow("Auto-play next episode", "Start the next episode near the configured threshold", playbackPrefs?.isAutoPlayNextEpisodeEnabled() != false, selectedRequester) { next, complete ->
                         savePreference("Auto-play next episode", complete) { repository.updatePlaybackPreferences(mapOf("autoPlayNextEpisodeEnabled" to next)) }
@@ -511,6 +584,18 @@ fun SettingsScreen(
                 SettingsDestination.Library -> {
                     SettingsToggleRow("Built-in catalogs", "Show StreamDek's default movie and series rows alongside add-ons", homePrefs?.defaultAppCatalogsEnabled != false, selectedRequester) { next, complete ->
                         savePreference("Built-in catalogs", complete) { repository.updateHomePreferences(mapOf("defaultAppCatalogsEnabled" to next)) }
+                    }
+                    // Under the built-in switch it qualifies, and above the presentation settings:
+                    // which rows exist is a bigger decision than how their cards are drawn.
+                    HomeRowsSettings(
+                        definitions = catalogDefinitions,
+                        addons = addons,
+                        layout = homePrefs?.homeCatalogRows.orEmpty(),
+                        leftRequester = selectedRequester,
+                    ) { rows, complete ->
+                        savePreference("Home rows", complete) {
+                            repository.updateHomePreferences(mapOf("homeCatalogRows" to rows))
+                        }
                     }
                     SettingsToggleRow("Hide home synopsis", "Drop the description from the Home spotlight and centre the title and its details", appPrefs?.hideHomeSynopsis != false, selectedRequester) { next, complete ->
                         savePreference("Hide home synopsis", complete) { repository.updateAppPreferences(mapOf("hideHomeSynopsis" to next)) }
@@ -1155,8 +1240,26 @@ fun SettingsScreen(
                     }
                     SettingsPanel("TV navigation") { InfoLine("Focus indicator", "Always visible"); InfoLine("Screen reader labels", "Enabled"); InfoLine("Colour-only status", "Never used") }
                 }
+                SettingsDestination.ContentServices -> {
+                    ContentServicesPanel(
+                        state = contentServices,
+                        repository = repository,
+                        signedIn = session != null,
+                        leftRequester = selectedRequester,
+                        onStatus = { message -> status = message },
+                    )
+                }
                 SettingsDestination.Connections -> {
                     val integrations = bootstrap?.integrations
+                    // A pointer rather than a second copy of the page: the keys are enrichment
+                    // credentials, not a tracking connection, but this is where someone looking for
+                    // "the MDBList thing" will start.
+                    SettingsActionRow(
+                        "Content Services",
+                        "Your own TMDB and MDBList keys, and where each one is kept.",
+                        contentServicesSummary(contentServices),
+                        selectedRequester,
+                    ) { selected = SettingsDestination.ContentServices }
                     SettingsDropdownRow(
                         "Where your sync lives",
                         "One source supplies Continue Watching and your watchlist. Everything else you connect still receives your watchlist changes.",
@@ -1611,7 +1714,14 @@ private fun InfoLine(label: String, value: String) {
         verticalAlignment = Alignment.Top,
     ) {
         Text(label, color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(0.45f))
-        Text(value, color = if (focused) Color.White else Color.White.copy(alpha = 0.88f), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), modifier = Modifier.weight(0.55f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        // Wraps rather than truncates.
+        //
+        // This is a label/value line, but several panels use it to carry a sentence of explanation
+        // -- and two lines at just over half the width is not enough for one. The instruction under
+        // "Auto Skip" ended mid-word at "each segment runs once per playback ses...", which is the
+        // half of it that mattered. Short values are unaffected; long ones simply take the lines
+        // they need, inside a panel that already scrolls.
+        Text(value, color = if (focused) Color.White else Color.White.copy(alpha = 0.88f), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), modifier = Modifier.weight(0.55f))
     }
 }
 

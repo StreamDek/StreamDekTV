@@ -2,6 +2,9 @@ package com.streamdek.tv.nativeapp.ui.player
 
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -94,6 +98,8 @@ import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
+import com.streamdek.tv.nativeapp.data.TvIdlePreferences
+import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
 import com.streamdek.tv.nativeapp.data.Telemetry
@@ -185,6 +191,21 @@ internal fun continueWatchingCameFromAnotherPlatform(lastPlatform: String?, dest
         "mobile" -> origin !in setOf("mobile", "android", "android-mobile")
         else -> origin != destination.trim().lowercase()
     }
+}
+
+internal fun crossDeviceContinueNotice(
+    mediaType: String,
+    seasonNumber: Int? = null,
+    episodeNumber: Int? = null,
+): String {
+    val isSeries = mediaType.trim().lowercase() in setOf("tv", "series", "show")
+    val kind = if (isSeries) "series" else "movie"
+    val sourceTarget = if (isSeries && seasonNumber != null && episodeNumber != null) {
+        " for Season $seasonNumber, Episode $episodeNumber"
+    } else {
+        ""
+    }
+    return "You started this $kind on another device. Choose a source$sourceTarget to continue watching from where you left off."
 }
 
 internal fun normalizePlayerEngineSetting(raw: String?): String = when (raw?.trim()?.lowercase()) {
@@ -414,6 +435,12 @@ fun PlayerScreen(
      * up with two things on screen competing for the next press.
      */
     var segmentPromptActive by remember { mutableStateOf(false) }
+    var autoSkipNotice by remember(request.mediaId, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<String?>(null) }
+    var playerActivityVersion by remember { mutableIntStateOf(0) }
+    var pausedSleepTriggered by remember(request.mediaId, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    val pausedIdleTimeoutMillis = remember(context) {
+        idleTimeoutMillis(TvIdlePreferences(context).pausedTimeoutMinutes)
+    }
 
     val resolvedRenderSurface = remember(playbackPreferences.renderSurface) {
         normalizeRenderSurfacePreference(playbackPreferences.renderSurface)
@@ -779,6 +806,7 @@ fun PlayerScreen(
     }
 
     fun registerInteraction() {
+        playerActivityVersion += 1
         if (segmentPromptActive) return
         pauseInfoVisible = false
         if (!controlsVisible) controlsVisible = true
@@ -1283,7 +1311,11 @@ fun PlayerScreen(
         ) {
             continueSourceNotice = null
             continueSourceChoiceRequired = true
-            error = "This was started on another device. Choose a source to continue from where you left off."
+            error = crossDeviceContinueNotice(
+                mediaType = activeRequest.mediaType,
+                seasonNumber = currentEpisode?.seasonNumber,
+                episodeNumber = currentEpisode?.episodeNumber,
+            )
             loading = false
             controlsVisible = false
             return@runCatching
@@ -1754,6 +1786,51 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }
     }
 
+    LaunchedEffect(
+        positionSec,
+        loading,
+        error,
+        playbackPreferences.autoSkipIntroEnabled,
+        playbackPreferences.autoSkipRecapEnabled,
+        playbackPreferences.autoSkipEndingEnabled,
+    ) {
+        if (isLive || loading || error != null || nextEpisodeDialogVisible || watchlistPromptVisible) return@LaunchedEffect
+        val segment = segments
+            .filter {
+                playbackPreferences.isAutoSkipEnabled(it.segmentType) &&
+                    it.segmentType !in handledSegmentTypes &&
+                    positionSec >= it.startSec && positionSec < it.endSec
+            }
+            .minWithOrNull(compareBy<PlaybackSegment>({ segmentPriority(it.segmentType) }, { it.startSec }))
+            ?: return@LaunchedEffect
+        // The next-episode dialog owns ending transitions, completion writes and source selection.
+        if (segment.segmentType == "outro" && nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled()) return@LaunchedEffect
+        markSegmentHandled(segment.segmentType)
+        scheduleSeek(maxOf(segment.endSec, positionSec))
+        autoSkipNotice = when (segment.segmentType) {
+            "recap" -> "Recap skipped"
+            "outro" -> "Ending skipped"
+            else -> "Intro skipped"
+        }
+    }
+
+    LaunchedEffect(autoSkipNotice) {
+        if (autoSkipNotice == null) return@LaunchedEffect
+        delay(2_200)
+        autoSkipNotice = null
+    }
+
+    LaunchedEffect(paused, loading, playerActivityVersion, pausedIdleTimeoutMillis) {
+        val timeout = pausedIdleTimeoutMillis ?: return@LaunchedEffect
+        if (!paused || loading || pausedSleepTriggered) return@LaunchedEffect
+        delay(timeout)
+        if (!paused || loading || pausedSleepTriggered) return@LaunchedEffect
+        pausedSleepTriggered = true
+        queueTraktStop()
+        syncProgressIfEligible()
+        onExitToDetail()
+    }
+
     LaunchedEffect(nextEpisodeDialogVisible, nextEpisodeCountdown) {
         val countdown = nextEpisodeCountdown
         if (!nextEpisodeDialogVisible || countdown == null || countdown <= 0) return@LaunchedEffect
@@ -1995,6 +2072,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             .fillMaxSize()
             .background(Color.Black)
             .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown) playerActivityVersion += 1
                 // While a skip prompt is up the D-pad is swallowed whole — both edges, since focus
                 // moves on key-down — so the only ways out are OK on the chip and Back. OK and Back
                 // pass through untouched to the chip and the back handler.
@@ -2853,6 +2931,22 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 },
                 modifier = Modifier.align(Alignment.BottomEnd),
             )
+        }
+
+
+        AnimatedVisibility(
+            visible = autoSkipNotice != null,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 92.dp),
+            enter = fadeIn(animationSpec = tween(160)),
+            exit = fadeOut(animationSpec = tween(180)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(Color(0xDD151820), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+            ) {
+                Text(autoSkipNotice.orEmpty(), color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
         }
 
         if (nextEpisodeDialogVisible && nextEpisode != null) {

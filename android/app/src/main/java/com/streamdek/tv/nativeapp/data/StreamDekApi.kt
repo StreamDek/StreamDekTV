@@ -277,6 +277,15 @@ class StreamDekApi(
 ) {
     @PublishedApi internal val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    /**
+     * The viewer's own content-service keys, for the ones they chose to keep on this television.
+     *
+     * Held on the client rather than passed per call because attaching them is [buildRequest]'s
+     * job: TMDB requests are issued from a dozen places in the repository, and a key that has to
+     * be threaded through each of them is a key half of them will forget.
+     */
+    val serviceCredentials: ServiceCredentialManager = ServiceCredentialManager(sessionStore.appContext)
+
     private val _reachability = MutableStateFlow(ApiReachability.Online)
 
     /** Drives the "showing saved content" notice; never blocks a screen on its own. */
@@ -491,6 +500,20 @@ class StreamDekApi(
             .header("x-app-version", BuildConfig.VERSION_NAME)
         sessionStore.handoffPublicKey()?.let { builder.header("x-handoff-public-key", it) }
         sessionStore.previousDeviceId()?.let { builder.header("x-previous-device-id", it) }
+
+        // A key the viewer chose to keep on this television still has to reach the backend, since
+        // the backend is what talks to TMDB. It travels with the request that needs it, over TLS,
+        // and is never stored server-side -- which is precisely what "this TV only" means, and is
+        // said in those words on the screen where the choice is made.
+        //
+        // Scoped to the paths that actually spend the credential: no add-on, plugin or artwork
+        // request has any business carrying one.
+        if (path.startsWith("/tmdb/") || path.startsWith("/addons/resolve-id/")) {
+            serviceCredentials.requestKey(ContentService.Tmdb)?.let { builder.header("x-tmdb-api-key", it) }
+        }
+        if (path.startsWith("/mdblist/") || path.startsWith("/sync/")) {
+            serviceCredentials.requestKey(ContentService.Mdblist)?.let { builder.header("x-mdblist-api-key", it) }
+        }
 
         if (session != null) {
             builder.header("Authorization", "Bearer ${session.user.accessToken}")

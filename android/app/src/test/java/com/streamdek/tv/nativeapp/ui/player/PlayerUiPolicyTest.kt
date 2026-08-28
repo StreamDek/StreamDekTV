@@ -30,6 +30,18 @@ class PlayerUiPolicyTest {
     }
 
     @Test
+    fun `cross device notice matches mobile wording`() {
+        assertEquals(
+            "You started this movie on another device. Choose a source to continue watching from where you left off.",
+            crossDeviceContinueNotice("movie"),
+        )
+        assertEquals(
+            "You started this series on another device. Choose a source for Season 2, Episode 3 to continue watching from where you left off.",
+            crossDeviceContinueNotice("tv", seasonNumber = 2, episodeNumber = 3),
+        )
+    }
+
+    @Test
     fun `modal layers outrank drawers seeking and controls`() {
         assertEquals(
             PlayerInteractionLayer.Dialog,

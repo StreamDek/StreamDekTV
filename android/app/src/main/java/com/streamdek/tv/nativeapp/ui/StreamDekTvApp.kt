@@ -47,6 +47,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
@@ -105,6 +106,8 @@ import com.streamdek.tv.nativeapp.data.PlaybackHandoff
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.TvIdlePreferences
+import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
 import com.streamdek.tv.nativeapp.data.StreamProfile
 import com.streamdek.tv.nativeapp.ui.account.SettingsScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
@@ -247,6 +250,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
      * floor under them, and it is deliberately the last thing to act.
      */
     var appHasFocus by remember { mutableStateOf(false) }
+    var appUserActivityVersion by remember { mutableIntStateOf(0) }
     val appView = androidx.compose.ui.platform.LocalView.current
     var liveNavigationState by remember { mutableStateOf(LiveNavigationState()) }
     var loadedLiveCatalogKey by remember { mutableStateOf<String?>(null) }
@@ -763,6 +767,16 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         }
     }
 
+    LaunchedEffect(currentRoute, appUserActivityVersion, showUpdatePrompt) {
+        // A playing or paused video has its own lifecycle timer in PlayerScreen. Excluding the
+        // route here means a two-hour film is never mistaken for two hours without interaction.
+        if (currentRoute == "player" || showUpdatePrompt) return@LaunchedEffect
+        val timeout = idleTimeoutMillis(TvIdlePreferences(context).appIdleTimeoutMinutes)
+            ?: return@LaunchedEffect
+        delay(timeout)
+        activity?.moveTaskToBack(true)
+    }
+
     StreamDekTvTheme(appPreferences = appPrefs) {
         // Screen transitions, stated once for the whole graph. Navigation's defaults slide a full
         // screen of artwork sideways, which on a stick is a lot of pixels to push and reads as a
@@ -819,6 +833,10 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                 // Covers the pages, the rail and everything drawn over them, so `hasFocus` here is
                 // the honest answer to "does the remote currently address anything".
                 .onFocusChanged { appHasFocus = it.hasFocus }
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown) appUserActivityVersion += 1
+                    false
+                }
                 // The content/menu boundary, in one place, for every screen.
                 //
                 // This is the bubble phase, so it only ever sees a Left press that the focused

@@ -312,6 +312,21 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setLoadControl(loadControl)
       .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
       .setBandwidthMeter(bandwidthMeter)
+      // Takes the television's audio away from whatever else was using it.
+      //
+      // Nothing here ever asked the system for audio focus, so starting a film left the music app
+      // or the radio app playing straight through it -- two sounds at once, and no way to stop the
+      // other one without leaving StreamDek. Declaring the attributes and handing focus to Media3
+      // makes it request focus on play and give it back on stop, which is what pauses everyone
+      // else; it also brings the other half of the bargain, pausing this playback for a call or a
+      // system alert rather than talking over it, and resuming afterwards.
+      .setAudioAttributes(
+        androidx.media3.common.AudioAttributes.Builder()
+          .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+          .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+          .build(),
+        /* handleAudioFocus = */ true,
+      )
       .build()
     exoPlayer = active
     player = active

@@ -892,6 +892,10 @@ class StreamDekRepository(
     fun signOut() {
         sessionStore.clearSession()
         clearDebridKeys()
+        // The content-service keys belonged to the account that just left -- including one kept on
+        // this television, which was still that viewer's key and not the box's.
+        serviceCredentials.clearAll()
+        contentServicesState.value = ContentServicesState()
         bootstrapState.value = null
         addonEntitlementsUserId = null
         serverSideStreamsEnabled = false
@@ -944,6 +948,11 @@ class StreamDekRepository(
             TvDebugLogger.w("Bootstrap", "refreshBootstrap returned null")
         }
         bootstrapState.value = bootstrap
+        // Account-saved TMDB and MDBList keys ride along on the bootstrap, which is what lets a
+        // television that has only just been signed into find them already there -- and what makes
+        // a key changed or removed elsewhere take effect here on the next refresh rather than
+        // living on in a cached copy.
+        applyContentServices(bootstrap)
         // The synced snapshot carries plugin configuration but not the scrapers themselves, so
         // fetch those in the background rather than on the first stream lookup.
         pluginEngine?.selectProfile(sessionStore.activeProfileId())
@@ -1002,6 +1011,9 @@ class StreamDekRepository(
                     "skipIntroEnabled" to (partial["skipIntroEnabled"] ?: existing.isSegmentEnabled("intro")),
                     "skipRecapEnabled" to (partial["skipRecapEnabled"] ?: existing.isSegmentEnabled("recap")),
                     "skipEndingEnabled" to (partial["skipEndingEnabled"] ?: existing.isSegmentEnabled("outro")),
+                    "autoSkipIntroEnabled" to (partial["autoSkipIntroEnabled"] ?: existing.autoSkipIntroEnabled),
+                    "autoSkipRecapEnabled" to (partial["autoSkipRecapEnabled"] ?: existing.autoSkipRecapEnabled),
+                    "autoSkipEndingEnabled" to (partial["autoSkipEndingEnabled"] ?: existing.autoSkipEndingEnabled),
                     "autoPlayNextEpisodeEnabled" to (partial["autoPlayNextEpisodeEnabled"]
                         ?: partial["autoplayNextEpisode"]
                         ?: existing.isAutoPlayNextEpisodeEnabled()),
@@ -1090,9 +1102,11 @@ class StreamDekRepository(
                     "ratingsEnabled" to (partial["ratingsEnabled"] ?: existing.ratingsEnabled),
                     "externalRatingsEnabled" to (partial["externalRatingsEnabled"] ?: existing.externalRatingsEnabled),
                     "enabledRatingProviders" to (partial["enabledRatingProviders"] ?: existing.enabledRatingProviders),
-                    // Carried through rather than defaulted: it is an account-wide key the other
-                    // clients own, and writing a trailer setting from the TV must not blank it.
-                    "mdblistApiKey" to (partial["mdblistApiKey"] ?: existing.mdblistApiKey),
+                    // Deliberately not carried through any more. The MDBList key was a secret
+                    // travelling on an ordinary settings document; it lives in the encrypted
+                    // credential store now and is managed under Content Services. The field is left
+                    // out entirely rather than echoed back, so a trailer setting saved from the
+                    // television cannot resurrect a plaintext copy the migration has just cleared.
                 ),
             ),
         )) return null
@@ -1959,7 +1973,8 @@ class StreamDekRepository(
      * load would otherwise re-ask for it. An empty list means this backend predates the registry,
      * which is what sends Home down the pre-registry path rather than leaving it blank.
      */
-    private suspend fun fetchCatalogManifest(): List<CatalogDefinition> {
+    /** The registry's row definitions. Read by the settings screen as well as by Home. */
+    internal suspend fun fetchCatalogManifest(): List<CatalogDefinition> {
         catalogManifest?.takeIf { System.currentTimeMillis() - it.second < CATALOG_MANIFEST_TTL_MS }
             ?.let { return it.first }
         val response = runCatching { api.get<CatalogManifestResponse>("/tmdb/catalogs?region=$catalogRegion") }.getOrNull()
@@ -2067,6 +2082,19 @@ class StreamDekRepository(
      * Matches the mobile app's ordering: live add-on rows sit directly below Streaming Services,
      * everything else from add-ons goes to the end.
      */
+    /**
+     * The finished row order, with the viewer's layout applied to every row rather than only the
+     * built-in ones.
+     *
+     * Add-on rows used to bypass the layout entirely: [catalogRowOrder] applies it to the registry
+     * catalogues, and nothing applied it here, so a row switched off on the phone still arrived on
+     * the television. Since add-on rows are most of them for anyone running a catalogue add-on, the
+     * setting looked broken rather than partial.
+     *
+     * The grouping below still decides where add-on rows sit relative to the built-in ones when the
+     * viewer has expressed no preference; [applyHomeRowLayout] then has the final say, and does
+     * nothing at all when there is no layout to apply.
+     */
     private fun orderHomeRails(rails: List<HomeRail>): List<HomeRail> {
         val (addonRails, baseRails) = rails.partition { it.id.startsWith(ADDON_RAIL_PREFIX) }
         val (liveAddonRails, otherAddonRails) = addonRails.partition { it.isLive }
@@ -2076,7 +2104,7 @@ class StreamDekRepository(
             if (networksIndex >= 0) ordered.addAll(networksIndex + 1, liveAddonRails) else ordered.addAll(liveAddonRails)
         }
         ordered.addAll(otherAddonRails)
-        return ordered
+        return applyHomeRowLayout(ordered, bootstrapState.value?.preferences?.home?.homeCatalogRows.orEmpty())
     }
 
     /** The finished screen. Callers that cannot render progressively still get one value. */
@@ -4738,6 +4766,185 @@ class StreamDekRepository(
      * and silently serves nothing. Returns the name the provider reports, or null if the key was
      * refused.
      */
+    // ── Content services (TMDB, MDBList) ─────────────────────────────────────────────────────
+    //
+    // Everything a television needs to do with the viewer's own enrichment keys. The precedence
+    // between a key kept here and one saved to the account lives in ServiceCredentialManager,
+    // shared verbatim with the phone; this only moves keys around and reports what happened.
+
+    val serviceCredentials: ServiceCredentialManager get() = api.serviceCredentials
+
+    private val contentServicesState = MutableStateFlow(ContentServicesState())
+
+    /** What the settings screen renders. Updated from the bootstrap and after any change here. */
+    val contentServices: StateFlow<ContentServicesState> = contentServicesState
+
+    /**
+     * Folds the account's answer into this television's own.
+     *
+     * Reads the state off the ordinary bootstrap rather than a call of its own, which is what
+     * makes a key added on the phone or the web portal simply be there the next time the
+     * television refreshes -- no restart, and no long-lived cached copy of anyone's secret.
+     */
+    fun applyContentServices(bootstrap: AccountBootstrap?) {
+        val reported = bootstrap?.integrations?.contentServices
+        val account = reported?.let { envelope ->
+            fun stateFor(service: ContentService): AccountCredentialState? =
+                envelope.services.firstOrNull { it.service.equals(service.id, ignoreCase = true) }
+                    ?.let { entry ->
+                        AccountCredentialState(
+                            service = service,
+                            configured = entry.configured,
+                            maskedKey = entry.maskedKey,
+                            label = entry.label,
+                            needsAttention = entry.status == "needs_attention",
+                        )
+                    }
+            AccountCredentials(
+                tmdb = stateFor(ContentService.Tmdb),
+                mdblist = stateFor(ContentService.Mdblist),
+                sharedFallbackAvailable = envelope.sharedFallbackAvailable,
+            )
+        }
+        contentServicesState.value = serviceCredentials.mergeAll(account, contentServicesState.value)
+    }
+
+    /** Re-reads the account state on its own, for the settings screen's Refresh action. */
+    suspend fun refreshContentServices() {
+        val session = currentSession()
+        if (session == null) {
+            contentServicesState.value = serviceCredentials.mergeAll(null, contentServicesState.value)
+            return
+        }
+        applyContentServices(refreshBootstrap())
+    }
+
+    /**
+     * Checks a key against the service without saving it anywhere.
+     *
+     * Used before a key is kept on this television, so "This TV only" earns the same confirmation
+     * as saving to the account -- and StreamDek still stores nothing.
+     */
+    private suspend fun validateContentServiceKey(
+        service: ContentService,
+        apiKey: String,
+    ): Result<String?> {
+        val response = api.post<JsonObject>(
+            "/services/credentials/${service.id}/validate",
+            mapOf("apiKey" to apiKey),
+        ) ?: return Result.failure(IllegalStateException(CredentialFailure.ServiceUnavailable.message))
+
+        if (response.get("valid")?.asBoolean == true) {
+            return Result.success(response.get("label")?.takeIf { !it.isJsonNull }?.asString)
+        }
+        val failure = CredentialFailure.fromId(
+            response.get("failure")?.takeIf { !it.isJsonNull }?.asString,
+        )
+        return Result.failure(IllegalStateException(failure.message))
+    }
+
+    /**
+     * Puts a key where the viewer asked for it.
+     *
+     * The account route validates server-side before storing, so a key that has never worked is
+     * never saved for every device to inherit. The device route checks first and then writes to
+     * the keystore-backed vault, and nothing leaves this television.
+     */
+    suspend fun submitContentServiceKey(
+        service: ContentService,
+        apiKey: String,
+        choice: StorageChoice,
+    ): Result<String> {
+        val trimmed = apiKey.trim()
+        if (trimmed.length < 8) return Result.failure(IllegalStateException(CredentialFailure.Malformed.message))
+
+        if (choice == StorageChoice.SaveToStreamDek) {
+            if (currentSession() == null) {
+                return Result.failure(IllegalStateException(CredentialFailure.NotSignedIn.message))
+            }
+            val response = api.put<JsonObject>(
+                "/services/credentials/${service.id}",
+                mapOf("apiKey" to trimmed),
+            ) ?: return Result.failure(IllegalStateException(CredentialFailure.ServiceUnavailable.message))
+            response.get("error")?.takeIf { !it.isJsonNull }?.let {
+                return Result.failure(IllegalStateException(it.asString))
+            }
+            // Saved to the account, so this television keeps no copy of its own: one key in one
+            // place, and removing it from the account removes it everywhere at once.
+            serviceCredentials.clearDeviceKey(service)
+            refreshContentServices()
+            return Result.success(
+                "${service.label} connected and saved to your StreamDek account. Your other devices will use it too.",
+            )
+        }
+
+        // Device-only. Checked first where there is an account to check through; stored unverified
+        // otherwise, because it is the viewer's own key and it gets checked the moment it is used.
+        if (currentSession() != null) {
+            validateContentServiceKey(service, trimmed).getOrElse { return Result.failure(it) }
+        }
+        if (!serviceCredentials.saveDeviceKey(service, trimmed)) {
+            return Result.failure(
+                IllegalStateException(
+                    "This television could not store the key securely, so it has not been saved. " +
+                        "Saving it to your StreamDek account instead will work.",
+                ),
+            )
+        }
+        refreshContentServices()
+        return Result.success("${service.label} connected, and kept on this TV only.")
+    }
+
+    /**
+     * Copies a key held here up to the account, at the viewer's request.
+     *
+     * The only path by which a device-only key ever reaches StreamDek. The local copy is dropped
+     * once the account has it, so there is one key in one place afterwards.
+     */
+    suspend fun copyContentServiceKeyToAccount(service: ContentService): Result<String> {
+        if (currentSession() == null) {
+            return Result.failure(IllegalStateException(CredentialFailure.NotSignedIn.message))
+        }
+        val key = serviceCredentials.deviceKey(service)
+            ?: return Result.failure(IllegalStateException("There is no ${service.label} key on this TV to save."))
+        val response = api.put<JsonObject>(
+            "/services/credentials/${service.id}",
+            mapOf("apiKey" to key),
+        ) ?: return Result.failure(IllegalStateException(CredentialFailure.ServiceUnavailable.message))
+        response.get("error")?.takeIf { !it.isJsonNull }?.let {
+            return Result.failure(IllegalStateException(it.asString))
+        }
+        serviceCredentials.clearDeviceKey(service)
+        refreshContentServices()
+        return Result.success("${service.label} is now saved to your StreamDek account.")
+    }
+
+    /**
+     * Removes a key, from wherever the viewer said.
+     *
+     * The two scopes are never collapsed into one destructive action: removing the account copy
+     * takes it from every signed-in device, and the screen says so before this is reached.
+     */
+    suspend fun removeContentServiceKey(
+        service: ContentService,
+        scope: CredentialRemoval,
+    ): Result<String> {
+        if (scope == CredentialRemoval.Device) {
+            serviceCredentials.clearDeviceKey(service)
+            refreshContentServices()
+            return Result.success("${service.label} key removed from this TV.")
+        }
+        if (currentSession() == null) {
+            return Result.failure(IllegalStateException(CredentialFailure.NotSignedIn.message))
+        }
+        api.delete<JsonObject>("/services/credentials/${service.id}")
+            ?: return Result.failure(IllegalStateException(CredentialFailure.ServiceUnavailable.message))
+        refreshContentServices()
+        return Result.success(
+            "${service.label} key removed from your StreamDek account. Your other devices will stop using it.",
+        )
+    }
+
     suspend fun connectDebridApiKey(provider: String, apiKey: String): String? {
         val context = appContext ?: return null
         val key = apiKey.trim().takeIf { it.isNotEmpty() } ?: return null

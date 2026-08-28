@@ -132,6 +132,9 @@ class MPVTextureView @JvmOverloads constructor(
             "onSurfaceTextureDestroyed initialized=$initialized active=${summarizeNullableSource(activeSource)} pending=${summarizeNullableSource(pendingSource)} switching=$isSwitchingSource destroyed=$isDestroyed",
         )
         isDestroyed = true
+        // Handed back before anything else, so whatever was playing before this film can resume
+        // even if tearing the player down goes wrong further down.
+        audioFocus.release()
         val wasInitialized = initialized
         initialized = false
         pendingLoadRunnable?.let {
@@ -279,6 +282,9 @@ class MPVTextureView @JvmOverloads constructor(
         // Any END_FILE that fires for the outgoing source will be suppressed
         // until FILE_LOADED confirms the new source has started.
         isSwitchingSource = true
+        // Asked for at the moment playback actually starts rather than when the view is built, so
+        // a screen that never plays anything does not silence the room.
+        audioFocus.acquire()
         MPVLib.command(arrayOf("loadfile", url, "replace"))
     }
 
@@ -382,9 +388,24 @@ class MPVTextureView @JvmOverloads constructor(
         if (initialized) applyHeaders()
     }
 
+    /**
+     * The television's audio, held for as long as this view is playing.
+     *
+     * mpv knows nothing about audio focus, so the request is made here. Without it a film started
+     * on this engine played over whatever else the television already had running.
+     */
+    private val audioFocus = PlaybackAudioFocus(
+        context = context,
+        onPause = { setPaused(true) },
+        onResume = { setPaused(false) },
+    )
+
     override fun setPaused(nextPaused: Boolean) {
         if (isDestroyed) return
         paused = nextPaused
+        // A viewer pressing play after an interruption wants the sound back now, and one pressing
+        // pause has retired our claim to resume it for them later.
+        audioFocus.onUserPlaybackChanged(nextPaused)
         if (!initialized) return
         MPVLib.setPropertyBoolean("pause", nextPaused)
     }
