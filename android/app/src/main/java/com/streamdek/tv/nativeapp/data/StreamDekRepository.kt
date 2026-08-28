@@ -2899,6 +2899,13 @@ class StreamDekRepository(
      * A deletion alone is not durable when Trakt or another provider still reports the playback
      * row. A dismissed progress tombstone travels through SyncDek and suppresses that stale provider
      * result on every device until genuinely new playback replaces it.
+     *
+     * This is the television's only removal path -- the card menu on Home and in Library both reach
+     * it -- and it now calls SyncDek's canonical removal rather than assembling the tombstone here.
+     * The server owns the whole lifecycle: recording the intent under an identity every source can
+     * be matched against, dropping the provider caches that would otherwise replay the title for
+     * the next few minutes, and suppressing the provider row on every device from then on. The
+     * phone calls the same endpoint, so a removal means the same thing on both.
      */
     suspend fun dismissContinueWatching(item: MediaItem): Boolean {
         val episode = item.episode
@@ -2915,34 +2922,42 @@ class StreamDekRepository(
         // targeted change immediately while the network mutation completes; do not clear Library.
         homeCache.clear()
         libraryRevisionState.value = libraryRevisionState.value + 1L
+        val identity = mediaIdentityOf(item.type, item.id, item.tmdbId, item.imdbId)
+        val removedAt = Instant.now().toString()
         return runCatching {
-            check(api.request<Any>(
-                method = "PUT",
-                path = "/sync/progress",
+            val accepted = api.request<Any>(
+                method = "POST",
+                path = "/sync/continue-watching/remove",
                 body = com.google.gson.Gson().toJson(
                     mapOf(
                         "entityType" to entityType,
                         "entityId" to item.id,
                         "episodeKey" to buildEpisodeKey(episode),
-                        "positionSec" to 0,
-                        "durationSec" to 0,
-                        "completed" to false,
-                        "dismissed" to true,
-                        "updatedAt" to Instant.now().toString(),
+                        "seasonNumber" to episode?.seasonNumber,
+                        "episodeNumber" to episode?.episodeNumber,
+                        // Sent so the removal can be recognised later against a provider row that
+                        // spells this title a different way. Without them the tombstone is only
+                        // findable by the one id this card happened to carry.
+                        "tmdbId" to identity.tmdbId,
+                        "imdbId" to identity.imdbId,
+                        "title" to item.title,
+                        "posterUrl" to item.poster,
+                        "backdropUrl" to item.backdrop,
+                        "year" to item.year,
+                        "removedAt" to removedAt,
                         "lastDevice" to "StreamDek TV",
                         "lastPlatform" to "tv",
-                        "metadata" to mapOf(
-                            "title" to item.title,
-                            "posterUrl" to item.poster,
-                            "backdropUrl" to item.backdrop,
-                            "year" to item.year,
-                            "seasonNumber" to episode?.seasonNumber,
-                            "episodeNumber" to episode?.episodeNumber,
-                            "episodeTitle" to episode?.title,
-                        ),
                     ),
                 ),
-            ) != null) { "Continue Watching dismissal was not accepted." }
+            ) != null
+            // An account still on a SyncDek without the canonical route gets the tombstone written
+            // the long way, which is what this app did before the route existed. The removal is
+            // weaker that way -- the server cannot suppress the provider row on the other devices --
+            // but it is far better than a television that cannot remove anything at all until the
+            // backend is deployed.
+            check(accepted || writeLegacyContinueDismissal(item, entityType, episode, removedAt)) {
+                "Continue Watching removal was not accepted."
+            }
             true
         }.onFailure {
             forgetPendingContinueDismissal(cacheKey, item)
@@ -2952,6 +2967,46 @@ class StreamDekRepository(
             TvDebugLogger.w("Playback", "dismissContinueWatching failed mediaType=${item.type} mediaId=${item.id}")
         }.getOrDefault(false)
     }
+
+    /**
+     * The pre-canonical removal write, used only when SyncDek does not offer the canonical route.
+     *
+     * Deliberately identical to what this app sent before, so an older backend behaves exactly as
+     * it did rather than in some third way. Nothing else should call this: the canonical operation
+     * above is the one every surface goes through.
+     */
+    private suspend fun writeLegacyContinueDismissal(
+        item: MediaItem,
+        entityType: String,
+        episode: EpisodeContext?,
+        removedAt: String,
+    ): Boolean = api.request<Any>(
+        method = "PUT",
+        path = "/sync/progress",
+        body = com.google.gson.Gson().toJson(
+            mapOf(
+                "entityType" to entityType,
+                "entityId" to item.id,
+                "episodeKey" to buildEpisodeKey(episode),
+                "positionSec" to 0,
+                "durationSec" to 0,
+                "completed" to false,
+                "dismissed" to true,
+                "updatedAt" to removedAt,
+                "lastDevice" to "StreamDek TV",
+                "lastPlatform" to "tv",
+                "metadata" to mapOf(
+                    "title" to item.title,
+                    "posterUrl" to item.poster,
+                    "backdropUrl" to item.backdrop,
+                    "year" to item.year,
+                    "seasonNumber" to episode?.seasonNumber,
+                    "episodeNumber" to episode?.episodeNumber,
+                    "episodeTitle" to episode?.title,
+                ),
+            ),
+        ),
+    ) != null
 
     suspend fun clearSeasonProgress(
         mediaId: String,
@@ -5393,11 +5448,28 @@ class StreamDekRepository(
         progressRecords: List<PlaybackProgressRecord> = emptyList(),
     ): List<ContinueWatchingItem> {
         val dismissals = progressRecords.filter { it.status.equals("dismissed", ignoreCase = true) }
-        fun canonicalType(value: String?): String = if (value.equals("movie", true)) "movie" else "tv"
-        fun isDismissed(item: ContinueWatchingItem): Boolean = dismissals.any { record ->
-            canonicalType(record.entityType) == canonicalType(item.type) &&
-                record.entityId == item.id &&
-                (record.episodeKey.isNullOrBlank() || record.episodeKey.equals(item.episodeKey, ignoreCase = true))
+        // Identity, not string equality.
+        //
+        // This compared `record.entityId` with `item.id` directly. Those are the same title spelled
+        // by two different sources -- SyncDek stores whatever the removing device held, a provider
+        // returns its own -- so a removal recorded as `tt1160419` did not suppress the row that came
+        // back as `438631`, and the title reappeared on the next refresh. The server now applies the
+        // same rule before it answers, and this keeps the local view agreeing with it in the moment
+        // between an optimistic removal and the next fetch.
+        fun isDismissed(item: ContinueWatchingItem): Boolean {
+            val itemIdentity = mediaIdentityOf(item.type, item.id, item.tmdbId)
+            val itemEpisode = item.exactEpisode()
+            return dismissals.any { record ->
+                sameMediaIdentity(
+                    mediaIdentityOf(record.entityType, record.entityId, record.tmdbId, record.imdbId),
+                    itemIdentity,
+                ) && removalCoversEpisode(
+                    record.seasonNumber,
+                    record.episodeNumber,
+                    itemEpisode?.seasonNumber,
+                    itemEpisode?.episodeNumber,
+                )
+            }
         }
         val eligibleSecondary = secondary.filterNot(::isDismissed)
         if (eligibleSecondary.isEmpty()) return primary.filterNot(::isDismissed)

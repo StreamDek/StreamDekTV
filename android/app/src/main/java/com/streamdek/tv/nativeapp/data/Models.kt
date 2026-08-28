@@ -46,6 +46,15 @@ data class TvPollResult(
 data class MediaItem(
     val id: String,
     val tmdbId: Int = 0,
+    /**
+     * The IMDb id, when the source supplied one separately.
+     *
+     * Add-ons frequently put an IMDb id in [id] instead -- see [detailLookupId] -- so this is not
+     * the only place one can be found. Both are read by `mediaIdentityOf`, which is what lets a
+     * Continue Watching removal recorded against one spelling suppress the same title arriving
+     * under another.
+     */
+    val imdbId: String? = null,
     val title: String,
     @SerializedName(value = "type", alternate = ["mediaType"])
     val type: String,
@@ -1089,6 +1098,15 @@ data class PlaybackProgressRecord(
     val status: String = "in-progress",
     val entityType: String? = null,
     val entityId: String? = null,
+    /**
+     * The ids this row can also be recognised by, when SyncDek recorded them.
+     *
+     * `entityId` alone is whatever spelling the device that wrote the row was holding, so matching
+     * on it is what let a removal made on one device fail to suppress the same title arriving from
+     * a provider under a different id. See [mediaIdentityOf].
+     */
+    val tmdbId: Int? = null,
+    val imdbId: String? = null,
 )
 
 data class PlaybackProgressResponse(
