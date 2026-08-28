@@ -78,6 +78,47 @@ import kotlinx.coroutines.withTimeoutOrNull
 internal fun firstFocusableHomeRowIndex(rows: List<HomeRail>): Int =
     rows.indexOfFirst { row -> row.items.isNotEmpty() }
 
+/**
+ * The row nearest [preferred] that can actually take the highlight.
+ *
+ * Only reached when the shelves changed under an open menu and the row the viewer left is gone or
+ * has emptied. Searching outward from where they were keeps them roughly where they were looking;
+ * forward first, because a row that vanished is usually replaced by the one that moved up into its
+ * place. Falls back to the ordinary entry row when nothing near it survived.
+ */
+internal fun nearestFocusableHomeRowIndex(rows: List<HomeRail>, preferred: Int): Int {
+    fun focusable(index: Int) = rows.getOrNull(index)?.items?.isNotEmpty() == true
+    if (focusable(preferred)) return preferred
+    var offset = 1
+    while (preferred - offset >= 0 || preferred + offset <= rows.lastIndex) {
+        if (focusable(preferred + offset)) return preferred + offset
+        if (focusable(preferred - offset)) return preferred - offset
+        offset++
+    }
+    return firstFocusableHomeRowIndex(rows)
+}
+
+/** Why the shell is asking Home to take the highlight. The two answers are not the same. */
+enum class HomeEntryMode {
+    /** Launch, login, or choosing Home from the menu: the leading card of the first row. */
+    Fresh,
+
+    /**
+     * Coming straight back out of a menu opened from Home: where the viewer already was.
+     *
+     * Opening the menu is not leaving the page. Home stays composed underneath it with its shelf
+     * and card positions intact, so this is a request to hand the highlight back to the card it
+     * came off, not to re-enter the screen.
+     */
+    Resume,
+}
+
+/** One request from the shell for Home to take the highlight. [token] is bumped per request. */
+data class HomeEntryRequest(
+    val token: Int = 0,
+    val mode: HomeEntryMode = HomeEntryMode.Fresh,
+)
+
 private data class BrowseActionState(
     val item: MediaItem,
     val restoreFocusRequester: FocusRequester,
@@ -125,6 +166,16 @@ fun HomeScreen(
     restoreToken: Int = 0,
     /** Bumped after profile selection to discard all remembered shelf/card position. */
     resetToTopToken: Int = 0,
+    /**
+     * The shell asking Home to take the highlight, and what kind of entry it is.
+     *
+     * Home cannot be entered by aiming a requester at it from outside. Its entry card belongs to
+     * whichever row first has items, and the shelf list only keeps that row composed while it is
+     * near the viewport — so for a viewer who had scrolled down before opening the menu, the entry
+     * requester is attached to nothing and a single press at it does nothing. Home answers the
+     * transfer itself instead: see the effect this request drives.
+     */
+    navEntry: HomeEntryRequest = HomeEntryRequest(),
     onPositionChanged: (rowId: String, itemKey: String) -> Unit = { _, _ -> },
     onOpenNavigation: () -> Unit = {},
 ) {
@@ -165,7 +216,17 @@ fun HomeScreen(
      * focused row drawing compact while the row above it, no longer focused, stayed full size.
      */
     var activeRowId by remember { mutableStateOf<String?>(null) }
+    /**
+     * Where the active shelf sat when it was last focused.
+     *
+     * The id above is authoritative while the row exists; this is only the starting point for
+     * [nearestFocusableHomeRowIndex] when it does not, so that a row removed while the menu was
+     * open sends the viewer to its neighbour rather than back to the top of the page.
+     */
+    var activeRowIndex by remember { mutableIntStateOf(-1) }
     var focusedItem by remember { mutableStateOf<MediaItem?>(null) }
+    /** Full "rowId:itemKey" of the card that should take focus once the shelves compose. */
+    var pendingRestoreKey by remember { mutableStateOf<String?>(null) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
 
     val homeContentConfiguration = remember(bootstrap) {
@@ -265,6 +326,104 @@ fun HomeScreen(
 
     // Whether anything on this page holds the highlight. See the focus floor further down.
     var homeHasFocus by remember { mutableStateOf(false) }
+
+    // Home's one entry point, for the shell and for the rail. It sits on the leading card of the
+    // first row that has items — or, when there are no rows to show, on the message state's own
+    // button, so there is always somewhere for the menu to hand the highlight back to.
+    val localFirstCard = remember { FocusRequester() }
+    val firstCardRequester = entryFocusRequester ?: localFirstCard
+
+    /**
+     * The menu handing the D-pad back to Home.
+     *
+     * This is not a plain focus request, because Home has no fixed node to aim at. Its entry card
+     * belongs to whichever row first has items, and the shelf list only keeps that row attached
+     * while it is near the viewport — so a viewer who had travelled down to a lower shelf before
+     * opening the menu left it detached, a single request at it did nothing, and the menu stayed
+     * open. That read as Right working only while the top row happened to be on screen, and since
+     * Continue Watching is usually the top row, as Right depending on Continue Watching existing.
+     *
+     * The two entry modes land in different places, which is the whole reason Home is asked rather
+     * than aimed at:
+     *
+     * - [HomeEntryMode.Fresh] — launch, login, choosing Home from the menu — takes the leading
+     *   card of the first row that has items, whichever row that is.
+     * - [HomeEntryMode.Resume] — the menu the viewer opened *from* Home, closed again — hands the
+     *   highlight back to the card it came off. Opening the menu is not leaving Home: nothing was
+     *   disposed and nothing scrolled, so there is a real position to return to, and sending them
+     *   to the top of the page instead throws away where they were.
+     *
+     * Seeded with the incoming token, so a request from an earlier visit cannot fire on re-entry
+     * and pull the highlight off a position the shell is restoring.
+     */
+    var handledNavEntryToken by remember { mutableIntStateOf(navEntry.token) }
+    // Keyed on the answer rather than on the content, so the fifteen-second refresh — which hands
+    // back an equal but new row set — cannot cancel a transfer that is still placing focus.
+    val firstEntryRowIndex = remember(content?.rails) {
+        firstFocusableHomeRowIndex(content?.rails.orEmpty())
+    }
+    LaunchedEffect(navEntry, firstEntryRowIndex, content?.isComplete, screenState.isLoading) {
+        if (navEntry.token == handledNavEntryToken) return@LaunchedEffect
+        val rows = content?.rails.orEmpty()
+        // Where the viewer was, if this is a return and that place still exists. The row is looked
+        // up by id rather than by index because rows stream in and reorder; the remembered index is
+        // only the starting point for finding a neighbour when the row itself has gone.
+        val resumeRowIndex = rows.indexOfFirst { it.id == activeRowId }
+            .takeIf { it >= 0 && rows[it].items.isNotEmpty() }
+        val targetIndex = when {
+            navEntry.mode == HomeEntryMode.Fresh -> firstEntryRowIndex
+            resumeRowIndex != null -> resumeRowIndex
+            activeRowIndex >= 0 -> nearestFocusableHomeRowIndex(rows, activeRowIndex)
+            else -> firstEntryRowIndex
+        }
+        val targetRow = rows.getOrNull(targetIndex)
+        // Nothing can take the highlight yet. While rows are still arriving, leave the press
+        // outstanding and answer it with the first row that lands rather than spending it on a
+        // screen that is still a skeleton; the menu stays open in the meantime, which is honest.
+        if (targetRow == null && content?.isComplete != true && screenState.isLoading) {
+            return@LaunchedEffect
+        }
+        handledNavEntryToken = navEntry.token
+        if (targetRow != null) {
+            val resumingInPlace = navEntry.mode == HomeEntryMode.Resume && resumeRowIndex == targetIndex
+            // Only the row the viewer actually left keeps its card. A fallback row is one they have
+            // not been on, so it opens at its start rather than at a position borrowed from a
+            // different row — and the coerce covers the card itself having gone while they were in
+            // the menu, which lands on the nearest surviving one.
+            val itemIndex = if (resumingInPlace) {
+                (rowFocusIndices[targetRow.id] ?: 0).coerceIn(0, targetRow.items.lastIndex)
+            } else {
+                0
+            }
+            activeRowId = targetRow.id
+            activeRowIndex = targetIndex
+            focusedItem = targetRow.items[itemIndex]
+            rowFocusIndices[targetRow.id] = itemIndex
+            // A resume that lands where it started is already laid out: the shelves did not move
+            // while the menu was open, and scrolling them again is precisely the jump being fixed.
+            if (!resumingInPlace) {
+                rowStates[targetRow.id]?.scrollToItem(itemIndex)
+                shelfListState.scrollToItem(targetIndex)
+            }
+            if (itemIndex > 0 || targetIndex != firstEntryRowIndex) {
+                // Any card other than the one the shell's entry requester is attached to is reached
+                // through the shelf's own registry, which retries while the card composes.
+                pendingRestoreKey = "${targetRow.id}:${homeItemKey(targetRow.items[itemIndex])}"
+                repeat(24) {
+                    delay(40)
+                    if (homeHasFocus) return@LaunchedEffect
+                }
+                pendingRestoreKey = null
+            }
+        }
+        // The leading card of the entry row, and the floor under a restore that found nothing:
+        // retried while the shelves settle, since a row only just scrolled back into the viewport
+        // attaches its cards a frame or two later.
+        repeat(20) {
+            if (homeHasFocus || firstCardRequester.requestFocusOrFalse()) return@LaunchedEffect
+            delay(40)
+        }
+    }
     Box(
         Modifier
             .fillMaxSize()
@@ -327,6 +486,7 @@ fun HomeScreen(
                 primaryLabel = if (screenState.isLoading) "Retrying…" else "Try Again",
                 primaryEnabled = !screenState.isLoading,
                 onPrimary = { homeViewModel.forceRefresh(loadKey) },
+                entryRequester = firstCardRequester,
             )
 
             content != null && content.rails.isEmpty() && content.isComplete -> HomeMessage(
@@ -338,6 +498,7 @@ fun HomeScreen(
                 onPrimary = { homeViewModel.forceRefresh(loadKey) },
                 secondaryLabel = "Open Settings",
                 onSecondary = onOpenAccount,
+                entryRequester = firstCardRequester,
             )
 
             content != null -> {
@@ -348,8 +509,6 @@ fun HomeScreen(
                 // an error is also ready enough to navigate; waiting forever for vanished pending
                 // rows would leave an otherwise useful Home screen with no focus owner.
                 val homeEntryReady = content.isComplete || !screenState.isLoading
-                val localFirstCard = remember { FocusRequester() }
-                val firstCardRequester = entryFocusRequester ?: localFirstCard
 
                 LaunchedEffect(content.rails.size, screenState.prefetchedTitleLogos) {
                     // Only the first few images of the visible rows; a stick has little memory to
@@ -395,8 +554,6 @@ fun HomeScreen(
                     )
                 }
 
-                // Full "rowId:itemKey" of the card that should take focus once the shelves compose.
-                var pendingRestoreKey by remember { mutableStateOf<String?>(null) }
                 var restoreHandledToken by remember { mutableIntStateOf(0) }
                 var restoreApplied by remember { mutableStateOf(false) }
 
@@ -547,6 +704,7 @@ fun HomeScreen(
                                     rowFocusIndices[row.id] = index
                                     focusedItem = item
                                     activeRowId = row.id
+                                    activeRowIndex = rowIndex
                                     onPositionChanged(row.id, homeItemKey(item))
                                 },
                                 onItemPressed = { item ->
@@ -669,8 +827,11 @@ private fun HomeMessage(
     onPrimary: () -> Unit,
     secondaryLabel: String? = null,
     onSecondary: (() -> Unit)? = null,
+    /** Home's shared entry target, so the side navigation has somewhere to hand focus back to. */
+    entryRequester: FocusRequester? = null,
 ) {
-    val primaryRequester = remember { FocusRequester() }
+    val localPrimary = remember { FocusRequester() }
+    val primaryRequester = entryRequester ?: localPrimary
 
     LaunchedEffect(title) {
         delay(120)

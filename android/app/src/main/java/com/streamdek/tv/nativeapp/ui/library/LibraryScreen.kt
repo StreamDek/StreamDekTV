@@ -71,6 +71,11 @@ private enum class LibrarySection(val label: String) {
     Continue("Continue Watching"), Watchlist("Watchlist")
 }
 
+/** The stored tab, or Continue Watching when nothing valid is stored. */
+private fun readStoredSection(store: android.content.SharedPreferences): LibrarySection =
+    runCatching { LibrarySection.valueOf(store.getString("section", null) ?: "") }
+        .getOrDefault(LibrarySection.Continue)
+
 private val LibraryInset = TvSpacing.ScreenHorizontal
 private val LibraryCardWidth = 132.dp
 private val LibraryCardHeight = 198.dp
@@ -146,14 +151,43 @@ fun LibraryScreen(
     val viewStore = remember {
         context.getSharedPreferences("streamdek_tv_library", android.content.Context.MODE_PRIVATE)
     }
-    var section by remember {
-        mutableStateOf(
-            runCatching { LibrarySection.valueOf(viewStore.getString("section", null) ?: "") }
-                .getOrDefault(LibrarySection.Continue),
-        )
-    }
+    /**
+     * The one authoritative answer to "which tab is Library on".
+     *
+     * Everything the viewer can see about the tab is derived from this value and nothing else: the
+     * chip drawn as selected, the grid contents, the count beside the title, the empty-state copy,
+     * and which chip the page hands its entry focus to. There is deliberately no second piece of
+     * state for a "current" or "last" tab, because the bug this replaces was exactly that kind of
+     * split — the page restored the stored tab's *content* while placing entry focus on the first
+     * chip, and since a focused chip was drawn more strongly than a selected one, Library opened
+     * showing Watchlist titles under what looked like a selected Continue Watching.
+     *
+     * Library remembers the tab the viewer last chose, so restoring it restores both halves at
+     * once. To make it always open on Continue Watching instead, drop the stored read here; the
+     * highlight follows the value either way and cannot disagree with the grid.
+     */
+    var section by remember { mutableStateOf(readStoredSection(viewStore)) }
     var typeFilter by remember { mutableStateOf(viewStore.getString("type", "all") ?: "all") }
 
+    /** The single writer. Selection and its persistence move together or not at all. */
+    fun selectSection(option: LibrarySection) {
+        section = option
+        viewStore.edit().putString("section", option.name).apply()
+    }
+
+    fun selectTypeFilter(value: String) {
+        typeFilter = value
+        viewStore.edit().putString("type", value).apply()
+    }
+
+    /**
+     * Where the page puts the highlight when it opens, and where Up out of the grid returns to.
+     *
+     * Attached to the chip for the active section rather than to the first chip, so entering
+     * Library lands on the tab whose content is on screen. Chips are chosen with Center, not by
+     * being focused, so a highlight that started on a different chip than the selected one was a
+     * standing contradiction rather than a preview of anything.
+     */
     val localFirstChip = remember { FocusRequester() }
     val firstChipRequester = entryFocusRequester ?: localFirstChip
     val firstCardRequester = remember { FocusRequester() }
@@ -252,18 +286,16 @@ fun LibraryScreen(
                     .padding(horizontal = LibraryInset, vertical = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                LibrarySection.entries.forEachIndexed { index, option ->
+                LibrarySection.entries.forEach { option ->
+                    val active = section == option
                     val count = if (option == LibrarySection.Continue) continueItems.size else watchlistItems.size
                     SearchChip(
                         label = option.label,
-                        selected = section == option,
+                        selected = active,
                         leading = count.toString(),
-                        modifier = (if (index == 0) Modifier.focusRequester(firstChipRequester) else Modifier)
+                        modifier = (if (active) Modifier.focusRequester(firstChipRequester) else Modifier)
                             .dpadDownInto(firstCardRequester),
-                        onClick = {
-                            section = option
-                            viewStore.edit().putString("section", option.name).apply()
-                        },
+                        onClick = { selectSection(option) },
                     )
                 }
                 Box(Modifier.width(16.dp))
@@ -272,10 +304,7 @@ fun LibraryScreen(
                         label = label,
                         selected = typeFilter == value,
                         modifier = Modifier.dpadDownInto(firstCardRequester),
-                        onClick = {
-                            typeFilter = value
-                            viewStore.edit().putString("type", value).apply()
-                        },
+                        onClick = { selectTypeFilter(value) },
                     )
                 }
             }

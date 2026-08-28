@@ -36,6 +36,8 @@ import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -349,7 +351,13 @@ fun SettingsScreen(
                                 }
                             }
                         }
-                        InfoLine("Email", session?.user?.email ?: "Not signed in")
+                        session?.user?.email.let { email ->
+                            if (email.isNullOrBlank()) {
+                                InfoLine("Email", "Not signed in")
+                            } else {
+                                RevealableInfoLine("Email", email)
+                            }
+                        }
                         InfoLine("Subscription", session?.user?.subscriptionStatus ?: "Free")
                     }
                     if (session == null) {
@@ -1516,6 +1524,78 @@ private fun SettingsPanel(title: String, content: @Composable ColumnScope.() -> 
         content()
     }
 }
+/**
+ * An address with everything but its first character taken out.
+ *
+ * A television is the one screen someone else is always looking at, and the account email sits on a
+ * settings page that gets opened in front of a room. The domain stays — it is what tells the viewer
+ * *which* account this is, which is the only reason the line is here — and the local part goes.
+ *
+ * The run of dots is a fixed-ish length rather than the real one, so the mask does not quietly
+ * publish how long the address is. Anything without an `@` is treated as a secret of unknown shape
+ * and masked whole; that covers a malformed or partially synced value rather than leaking it.
+ */
+internal fun maskEmail(email: String): String {
+    val trimmed = email.trim()
+    val at = trimmed.lastIndexOf('@')
+    if (at <= 0) return trimmed.take(1) + "•".repeat(6)
+    val local = trimmed.substring(0, at)
+    val domain = trimmed.substring(at)
+    return local.take(1) + "•".repeat((local.length - 1).coerceIn(4, 8)) + domain
+}
+
+/**
+ * An info line whose value is hidden until the viewer asks for it.
+ *
+ * Same shape as [InfoLine] — it sits directly under one — with the eye the mobile app uses, and OK
+ * on the row toggles it. The row was already focusable so that Left could get back to the sidebar,
+ * so this costs no new stop on the way down the page: the affordance is on the thing the highlight
+ * already lands on, rather than being a separate control to travel to.
+ */
+@Composable
+private fun RevealableInfoLine(label: String, value: String) {
+    val leftRequester = LocalSettingsLeftRequester.current
+    var focused by remember { mutableStateOf(false) }
+    // Keyed on the value, so switching account never carries a reveal over to a different address.
+    var revealed by remember(value) { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth()
+            .background(if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent { event -> event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft && leftRequester?.let { runCatching { it.requestFocus() }.isSuccess } == true }
+            .clickable { revealed = !revealed }
+            .padding(horizontal = 7.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(label, color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(0.45f))
+        Row(
+            modifier = Modifier.weight(0.55f),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = if (revealed) value else maskEmail(value),
+                color = if (focused) Color.White else Color.White.copy(alpha = 0.88f),
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                modifier = Modifier.weight(1f, fill = false),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Icon(
+                imageVector = if (revealed) {
+                    Icons.Outlined.VisibilityOff
+                } else {
+                    Icons.Outlined.Visibility
+                },
+                contentDescription = if (revealed) "Hide $label" else "Show $label",
+                tint = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.55f),
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun InfoLine(label: String, value: String) {
     val leftRequester = LocalSettingsLeftRequester.current

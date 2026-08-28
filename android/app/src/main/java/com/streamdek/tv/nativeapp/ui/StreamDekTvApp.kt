@@ -110,6 +110,8 @@ import com.streamdek.tv.nativeapp.ui.account.SettingsScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
 import com.streamdek.tv.nativeapp.ui.detail.DetailScreen
 import com.streamdek.tv.nativeapp.ui.detail.PlaybackStreamsScreen
+import com.streamdek.tv.nativeapp.ui.home.HomeEntryMode
+import com.streamdek.tv.nativeapp.ui.home.HomeEntryRequest
 import com.streamdek.tv.nativeapp.ui.home.HomeScreen
 import com.streamdek.tv.nativeapp.ui.library.LibraryScreen
 import com.streamdek.tv.nativeapp.ui.live.LiveScreen
@@ -368,6 +370,17 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
     var lastHomeItemKey by remember { mutableStateOf<String?>(null) }
     var homeFocusRestoreToken by remember { mutableStateOf(0) }
     var homeResetToTopToken by remember { mutableStateOf(0) }
+    /**
+     * Asks Home to take the highlight back off the navigation rail, and says which entry it is.
+     *
+     * Every other destination has one attached requester the shell can aim at. Home's entry card
+     * is the leading card of whichever row first has items, which is only attached while the shelf
+     * list keeps that row composed — so aiming a requester at it worked only while the viewer
+     * happened to be near the top of the page. Home answers this instead, and it is also the only
+     * thing that knows where the viewer was: a menu opened from Home and closed again returns them
+     * to the card they left, while arriving at Home as a destination starts at the first row.
+     */
+    var homeEntryRequest by remember { mutableStateOf(HomeEntryRequest()) }
     var pendingDestinationFocus by remember { mutableStateOf<String?>(null) }
     var detailNavigationInProgress by remember { mutableStateOf(false) }
     val openDetail: (String, String) -> Unit = { mediaType, mediaId ->
@@ -517,6 +530,24 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             "network/{id}/{name}" to networkContentRequester,
         )
     }
+    /**
+     * Hand the D-pad back from the navigation rail to a page. True when something will take it.
+     *
+     * Home is asked rather than aimed at, for the reason on [homeEntryRequest]; every other
+     * destination is one requester, and a false result means this route has nothing attached to
+     * receive the highlight — in which case the caller leaves the menu where it is.
+     *
+     * [mode] only reaches Home, and only Home has anywhere to put it: the other destinations have
+     * a single entry target either way.
+     */
+    fun enterContent(route: String, mode: HomeEntryMode): Boolean =
+        if (route == TopLevelDestination.Home.route) {
+            homeEntryRequest = HomeEntryRequest(homeEntryRequest.token + 1, mode)
+            true
+        } else {
+            destinationContentRequesters[route]?.requestFocusOrFalse() == true
+        }
+
     LaunchedEffect(currentRoute, pendingDestinationFocus, showStartupProfilePicker) {
         val route = currentRoute
         if (route == null || showStartupProfilePicker) {
@@ -529,8 +560,13 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         // progressive row load settles. It places ordinary route-entry focus itself. The one
         // exception is an explicit transfer from the open rail, which must be completed here so
         // the rail can hand ownership back to the page.
-        if (route == TopLevelDestination.Home.route && pendingDestinationFocus != route) {
-            return@LaunchedEffect
+        if (route == TopLevelDestination.Home.route) {
+            if (pendingDestinationFocus != route) return@LaunchedEffect
+            // Arriving at Home as a destination, so the first row rather than wherever the viewer
+            // last was — that distinction belongs to Home and is why this is a request rather than
+            // a focus grab. The retry below stays behind it for the case where Home is only now
+            // being composed and so has not seen this request at all.
+            enterContent(route, HomeEntryMode.Fresh)
         }
         val requester = destinationContentRequesters[route]
         if (requester == null) {
@@ -847,6 +883,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         restoreItemKey = lastHomeItemKey,
                         restoreToken = homeFocusRestoreToken,
                         resetToTopToken = homeResetToTopToken,
+                        navEntry = homeEntryRequest,
                         onPositionChanged = { rowId, itemKey ->
                             lastHomeRowId = rowId
                             lastHomeItemKey = itemKey
@@ -1076,7 +1113,9 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                     avatarLabel = activeProfile?.name ?: "P",
                     profileFocusRequester = profileNavRequester,
                     currentRoute = currentRoute.orEmpty(),
-                    contentRequesters = destinationContentRequesters,
+                    // Right and Back out of the menu are a return, not an arrival: the viewer never
+                    // left the page underneath, so they go back to the card they opened it from.
+                    onEnterContent = { route -> enterContent(route, HomeEntryMode.Resume) },
                     transparent = appPrefs?.transparentNavigation != false,
                     open = sideNavOwnsFocus,
                     modifier = Modifier
@@ -1813,7 +1852,11 @@ private fun TvSideNav(
     avatarLabel: String,
     profileFocusRequester: FocusRequester,
     currentRoute: String,
-    contentRequesters: Map<String, FocusRequester>,
+    /**
+     * Hands the D-pad back to a page. False means that route has nothing able to take it, and the
+     * menu stays where it is rather than collapsing with the highlight still inside it.
+     */
+    onEnterContent: (String) -> Boolean,
     transparent: Boolean,
     /**
      * Whether the rail is drawn as a menu. Mirrors the shell's navigation region, which in turn
@@ -1925,7 +1968,7 @@ private fun TvSideNav(
         // drawer and the highlight from ever disagreeing about where the viewer is. If the page has
         // nothing to take it, close explicitly rather than force-clearing focus and leaving the
         // screen with no focus owner at all.
-        if (contentRequesters[currentRoute]?.requestFocusOrFalse() != true) {
+        if (!onEnterContent(currentRoute)) {
             onOpenChanged(false)
         }
     }
@@ -2051,8 +2094,7 @@ private fun TvSideNav(
                                 // Closing follows the focus leaving, never the press itself. If the
                                 // page has nothing to take it the menu simply stays — a drawer that
                                 // collapsed here would leave the highlight inside a hidden rail.
-                                (contentRequesters[currentRoute] ?: contentRequesters[destination.route])
-                                    ?.requestFocusOrFalse()
+                                if (!onEnterContent(currentRoute)) onEnterContent(destination.route)
                                 true
                             }
                             else -> false

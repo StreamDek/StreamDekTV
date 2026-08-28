@@ -48,6 +48,20 @@ internal val SearchCardHeight = 198.dp
  * The screen this replaces put these in a left column that erased its own contents whenever focus
  * moved to the grid, and behind modal dialogs for genre and year. Both meant the viewer could not
  * see what was currently applied while looking at the results it produced.
+ *
+ * Focus and selection are two different things and are drawn as two different things.
+ *
+ * They were not. An unselected chip under the highlight was filled with primary at 30% while the
+ * selected one was filled at 20%, so merely landing on a chip made it the loudest thing in the row
+ * and the chip whose content was actually on screen the quieter one. On Library, which restores the
+ * viewer's last tab but placed its entry focus on the first chip, that produced a page reading
+ * "Continue Watching" over a grid of Watchlist titles — the highlight and the content disagreeing
+ * because the highlight was never what selection meant.
+ *
+ * So selection owns the fill and the label colour, and keeps a soft outline whether or not it holds
+ * the highlight; focus owns the bright ring and the scale. A chip that is merely focused is a
+ * neutral pill with a ring around it, which is what "you are here, this is not applied" should look
+ * like.
  */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -60,23 +74,28 @@ internal fun SearchChip(
     onClick: () -> Unit,
 ) {
     val highContrast = LocalTvExperienceSettings.current.highContrast
+    val primary = MaterialTheme.colorScheme.primary
     Card(
         onClick = onClick,
         modifier = modifier.height(40.dp).onFocusChanged { if (it.isFocused) onFocused() },
         shape = CardDefaults.shape(AppPillShape),
         colors = CardDefaults.colors(
-            containerColor = if (selected) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
-            } else {
-                Color.White.copy(alpha = 0.07f)
-            },
-            focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
-            pressedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
+            containerColor = if (selected) primary.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.07f),
+            // Focus brightens whatever the chip already is. It does not turn an unapplied filter
+            // into something that looks applied, which is what a flat primary tint here did.
+            focusedContainerColor = if (selected) primary.copy(alpha = 0.34f) else Color.White.copy(alpha = 0.16f),
+            pressedContainerColor = if (selected) primary.copy(alpha = 0.34f) else Color.White.copy(alpha = 0.22f),
         ),
         border = CardDefaults.border(
-            border = Border.None,
+            // The selected chip keeps a quiet outline while the highlight is elsewhere, so which
+            // filter is applied can still be read from across a room with focus down in the grid.
+            border = if (selected) {
+                Border(BorderStroke(1.dp, primary.copy(alpha = 0.55f)), shape = AppPillShape)
+            } else {
+                Border.None
+            },
             focusedBorder = Border(
-                BorderStroke(if (highContrast) 3.dp else 2.dp, MaterialTheme.colorScheme.primary),
+                BorderStroke(if (highContrast) 3.dp else 2.dp, primary),
                 shape = AppPillShape,
             ),
         ),
@@ -99,7 +118,7 @@ internal fun SearchChip(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                color = if (selected) primary else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
