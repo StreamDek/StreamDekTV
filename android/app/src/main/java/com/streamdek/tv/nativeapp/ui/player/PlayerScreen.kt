@@ -129,7 +129,7 @@ private const val LiveHintVisibleMs = 3_000L
 private const val LiveHintCycleMs = 15_000L
 private const val AutoPlayNextEpisodeCountdownSeconds = 5
 private const val NextEpisodeDiscoveryTimeoutMs = 8_000L
-private const val NextEpisodeSourceResolveTimeoutMs = 12_000L
+internal const val NextEpisodeSourceResolveTimeoutMs = 12_000L
 
 /**
  * Live feeds drop out routinely (upstream restarts, ad breaks, CDN switches). Mobile retries
@@ -151,6 +151,34 @@ private data class PendingEpisodeSelection(
     val stream: AddonStream,
     val streams: List<AddonStream>,
 )
+
+private class PlayerFocusRequesters {
+    val errorBack = FocusRequester()
+    val errorSources = FocusRequester()
+    val watchlistKeep = FocusRequester()
+    val watchlistRemove = FocusRequester()
+    val play = FocusRequester()
+    val subtitles = FocusRequester()
+    val audio = FocusRequester()
+    val sources = FocusRequester()
+    val engine = FocusRequester()
+    val next = FocusRequester()
+    val watched = FocusRequester()
+    val speed = FocusRequester()
+    val info = FocusRequester()
+    val segmentChip = FocusRequester()
+    val nextEpisodePlay = FocusRequester()
+    val nextEpisodeCancel = FocusRequester()
+    val smartSwitch = FocusRequester()
+    val progress = FocusRequester()
+    val liveProgress = FocusRequester()
+    val panelClose = FocusRequester()
+    val panelFirstItem = FocusRequester()
+    val playerRoot = FocusRequester()
+    val liveChannelFirst = FocusRequester()
+    val liveFavouriteFirst = FocusRequester()
+    val favourite = FocusRequester()
+}
 
 private enum class SegmentActionKind {
     Skip,
@@ -446,27 +474,28 @@ fun PlayerScreen(
         normalizeRenderSurfacePreference(playbackPreferences.renderSurface)
     }
 
-    val errorBackRequester = remember { FocusRequester() }
-    val errorSourcesRequester = remember { FocusRequester() }
-    val watchlistPromptKeepRequester = remember { FocusRequester() }
-    val watchlistPromptRemoveRequester = remember { FocusRequester() }
-    val playRequester = remember { FocusRequester() }
-    val subtitlesRequester = remember { FocusRequester() }
-    val audioRequester = remember { FocusRequester() }
-    val sourcesRequester = remember { FocusRequester() }
-    val engineRequester = remember { FocusRequester() }
-    val nextRequester = remember { FocusRequester() }
-    val watchedRequester = remember { FocusRequester() }
-    val speedRequester = remember { FocusRequester() }
-    val infoRequester = remember { FocusRequester() }
-    val segmentChipRequester = remember { FocusRequester() }
-    val nextEpisodePlayRequester = remember { FocusRequester() }
-    val nextEpisodeCancelRequester = remember { FocusRequester() }
-    val smartSwitchRequester = remember { FocusRequester() }
-    val progressRequester = remember { FocusRequester() }
-    val liveProgressRequester = remember { FocusRequester() }
-    val panelCloseRequester = remember { FocusRequester() }
-    val panelFirstItemRequester = remember { FocusRequester() }
+    val focusRequesters = remember { PlayerFocusRequesters() }
+    val errorBackRequester = focusRequesters.errorBack
+    val errorSourcesRequester = focusRequesters.errorSources
+    val watchlistPromptKeepRequester = focusRequesters.watchlistKeep
+    val watchlistPromptRemoveRequester = focusRequesters.watchlistRemove
+    val playRequester = focusRequesters.play
+    val subtitlesRequester = focusRequesters.subtitles
+    val audioRequester = focusRequesters.audio
+    val sourcesRequester = focusRequesters.sources
+    val engineRequester = focusRequesters.engine
+    val nextRequester = focusRequesters.next
+    val watchedRequester = focusRequesters.watched
+    val speedRequester = focusRequesters.speed
+    val infoRequester = focusRequesters.info
+    val segmentChipRequester = focusRequesters.segmentChip
+    val nextEpisodePlayRequester = focusRequesters.nextEpisodePlay
+    val nextEpisodeCancelRequester = focusRequesters.nextEpisodeCancel
+    val smartSwitchRequester = focusRequesters.smartSwitch
+    val progressRequester = focusRequesters.progress
+    val liveProgressRequester = focusRequesters.liveProgress
+    val panelCloseRequester = focusRequesters.panelClose
+    val panelFirstItemRequester = focusRequesters.panelFirstItem
     val interactionLayer = playerInteractionLayer(
         dialogVisible = segmentPromptActive || nextEpisodeDialogVisible || watchlistPromptVisible ||
             smartSwitchCandidate != null || (error != null && !loading),
@@ -486,14 +515,16 @@ fun PlayerScreen(
             interactionLayer == PlayerInteractionLayer.Seeking)
     /** Mirrors PlayerBottomBar: a live channel only has a seek row once its progress bar is on. */
     val hasSeekableTimeline = !isLive || (showLiveProgress && durationSec > 0.0)
-    val playerRootRequester = remember { FocusRequester() }
-    val liveChannelFirstRequester = remember { FocusRequester() }
+    val playerRootRequester = focusRequesters.playerRoot
+    val liveChannelFirstRequester = focusRequesters.liveChannelFirst
     val liveChannelListState = rememberLazyListState()
-    val liveFavouriteFirstRequester = remember { FocusRequester() }
+    val liveFavouriteFirstRequester = focusRequesters.liveFavouriteFirst
     val liveFavouriteListState = rememberLazyListState()
-    val favouriteRequester = remember { FocusRequester() }
+    val favouriteRequester = focusRequesters.favourite
 
     // Keep screen on while the player is active
+    @Composable
+    fun KeepScreenOnEffect() {
     DisposableEffect(Unit) {
         view.keepScreenOn = true
         onDispose {
@@ -506,6 +537,8 @@ fun PlayerScreen(
             com.streamdek.tv.nativeapp.peer.LocalTorrentPlayback.release()
         }
     }
+    }
+    KeepScreenOnEffect()
 
     fun hideControlsNow() {
         controlsHideJob?.cancel()
@@ -1144,303 +1177,107 @@ fun PlayerScreen(
         val loadStartedAt = android.os.SystemClock.elapsedRealtime()
         val activeRequest = playbackRequest
         val loadResult = runCatching {
-        val queuedEpisodeSelection = pendingEpisodeSelection?.takeIf { selection ->
-            selection.episode.seasonNumber == currentEpisode?.seasonNumber &&
-                selection.episode.episodeNumber == currentEpisode?.episodeNumber
-        }
-        val selectedStream = queuedEpisodeSelection?.stream ?: activeRequest.selectedStream?.takeIf {
-            currentEpisode == activeRequest.episode && streamKeyOverride == activeRequest.selectedStreamKey
-        }
-        // Did the viewer pick this source, or is the app picking one for them? Everything that
-        // follows narrates one of those two stories, and the fast path below belongs only to the
-        // second one — a source the viewer just chose is not a source to second-guess.
-        val chosenStream = queuedEpisodeSelection?.stream ?: activeRequest.selectedStream
-        val viewerChoseSource = queuedEpisodeSelection != null ||
-            streamKeyOverride != null ||
-            activeRequest.selectedStreamKey != null
-
-        // The remembered source, started immediately.
-        //
-        // This is what "remember last source" was always supposed to buy. The URL that played last
-        // time is on disk, so there is nothing to look up: the engine can be handed it now, and
-        // detail, progress, segments and the stream list all carry on loading around a picture that
-        // is already up. Previously the setting only remembered *which row* had been chosen, and
-        // resuming still had to re-ask the add-on for its streams and re-resolve that row into a
-        // URL — the same two round trips it would have made anyway, which is why a remembered
-        // resume was never faster and routinely timed out waiting for them.
-        //
-        // Only where the content is already identified. A series entered without an episode has to
-        // find out which one it is first, and that answer is what the stored source is keyed by.
-        val rememberedSource = if (
-            !isLive &&
-            !forceRefresh &&
-            !viewerChoseSource &&
-            (activeRequest.mediaType != "tv" || currentEpisode != null)
-        ) {
-            repository.rememberedPlaybackSource(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
-        } else {
-            null
-        }
-        var resolvedCandidate = rememberedSource?.let(repository::candidateFromRememberedSource)
-            ?: selectedStream?.let {
-            val availableStreams = queuedEpisodeSelection?.streams.orEmpty().ifEmpty { activeRequest.availableStreams }
-            if (queuedEpisodeSelection != null) {
-                // The selection already came from the next-episode dialog. Resolve only that row
-                // and fail back to the visible alternatives promptly; never walk every torrent in
-                // the list while the viewer is trapped on "Searching for next episode".
-                withTimeoutOrNull(NextEpisodeSourceResolveTimeoutMs) {
-                    repository.resolveSelectedPlayback(
-                        request = activeRequest.copy(episode = currentEpisode),
-                        stream = it,
-                        streams = availableStreams,
-                        forceRefresh = forceRefresh,
-                    )
-                } ?: ResolvedPlaybackCandidate(null, it, availableStreams)
-            } else {
-                repository.resolveSelectedPlayback(
-                    request = activeRequest.copy(episode = currentEpisode),
-                    stream = it,
-                    streams = availableStreams,
-                    forceRefresh = forceRefresh,
-                )
+            val queuedEpisodeSelection = pendingEpisodeSelection?.takeIf { selection ->
+                selection.episode.seasonNumber == currentEpisode?.seasonNumber &&
+                    selection.episode.episodeNumber == currentEpisode?.episodeNumber
             }
-        }
-        if (queuedEpisodeSelection != null) pendingEpisodeSelection = null
-        startedFromRememberedSource = rememberedSource != null
-        if (rememberedSource != null) {
-            continueSourceNotice = "Resuming your remembered source…"
-        }
-        // Start the player as soon as the chosen source resolves. Detail, library, resume,
-        // IntroDB, and watched metadata can continue loading without blocking decoder startup.
-        resolvedCandidate?.source?.let { source ->
-            candidate = resolvedCandidate
-            currentRequestHeaders = defaultPlaybackHeaders + source.requestHeaders
-            currentSourceUrl = source.url
-            currentLabel = streamLabelOverride ?: source.label
-            resetPlaybackEngineForNewSource()
-            TvDebugLogger.i(
-                "Player",
-                "source ready addon=${resolvedCandidate?.stream?.addonName} remembered=${rememberedSource != null} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}",
+            if (queuedEpisodeSelection != null) pendingEpisodeSelection = null
+            val perf = com.streamdek.tv.nativeapp.data.Perf.beginPlayback(
+                "${activeRequest.mediaType}:${activeRequest.mediaId}",
             )
-        }
-        detail = if (isLive) null else repository.fetchDetail(activeRequest.mediaId, activeRequest.mediaType)
-        val effectiveImdbId = activeRequest.imdbId ?: detail?.imdbId
-        inWatchlist = if (isLive) false else runCatching {
-            repository.fetchLibrary().watchlist.any { it.id == activeRequest.mediaId && it.type == activeRequest.mediaType }
-        }.getOrDefault(false)
-        val continueWatchingItem = if (activeRequest.mediaType == "tv") {
-            repository.fetchContinueWatchingItem(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
-        } else {
-            null
-        }
-        if (activeRequest.mediaType == "tv" && currentEpisode == null) {
-            val firstSeason = detail?.seasons?.firstOrNull()?.seasonNumber
-            val season = firstSeason?.let { repository.fetchSeason(activeRequest.mediaId, it) }
-            currentEpisode = continueWatchingItem?.exactEpisode() ?: season?.episodes?.firstOrNull()?.let {
-                EpisodeContext(
-                    seasonNumber = season.seasonNumber,
-                    episodeNumber = it.episodeNumber,
-                    title = it.name,
-                    overview = it.overview,
-                    still = it.still,
-                    runtime = it.runtime,
-                    airDate = it.airDate,
-                    tmdbEpisodeId = it.id,
-                )
-            }
-        }
-        val progress = if (isLive) null else repository.fetchProgress(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
-        val contentKey = listOf(
-            activeRequest.mediaType,
-            activeRequest.mediaId,
-            currentEpisode?.seasonNumber ?: -1,
-            currentEpisode?.episodeNumber ?: -1,
-        ).joinToString(":")
-        pendingResumePositionSec = if (isLive) null else contentScopedResumePosition(
-            mediaType = activeRequest.mediaType,
-            explicitPosition = activeRequest.startPositionSec,
-            exactProgressPosition = progress?.positionSec,
-            continuePosition = continueWatchingItem?.positionSec ?: continueWatchingItem?.resumeAt,
-            continueSeason = continueWatchingItem?.episode?.seasonNumber ?: continueWatchingItem?.seasonNumber,
-            continueEpisode = continueWatchingItem?.episode?.episodeNumber ?: continueWatchingItem?.episodeNumber,
-            targetSeason = currentEpisode?.seasonNumber,
-            targetEpisode = currentEpisode?.episodeNumber,
-        )
-        pendingResumeContentKey = contentKey
-        TvDebugLogger.i(
-            "ContinueWatching",
-            "contentId=${activeRequest.mediaId} contentType=${activeRequest.mediaType} season=${currentEpisode?.seasonNumber} episode=${currentEpisode?.episodeNumber} originDevice=${continueWatchingItem?.lastPlatform ?: "this-tv"} destinationDevice=tv resumePosition=${pendingResumePositionSec ?: 0.0}",
-        )
-        // Continue Watching resuming on its own, which is the only case remembered-source wording
-        // describes. A selection travels here as `selectedStreamKey` — from the stream picker, from
-        // the in-player source list, from the next-episode dialog — and it survives into
-        // `streamKeyOverride`, so `viewerChoseSource` above being set means the choice was theirs
-        // and none of this wording applies.
-        val autoContinueResume = activeRequest.fromContinueWatching && !viewerChoseSource
-        val rememberedKey = if (autoContinueResume) {
-            repository.rememberedStreamKey(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
-        } else {
-            null
-        }
-        if (rememberedSource != null) {
-            // Already said, and already true — the picture is starting from it while this runs.
-            // Nothing below is allowed to narrate a lookup that is not happening.
-        } else if (viewerChoseSource) {
-            val chosenLabel = streamLabelOverride
-                ?: activeRequest.selectedStreamLabel
-                ?: chosenStream?.addonName?.takeIf { it.isNotBlank() }
-            continueSourceNotice = if (chosenLabel.isNullOrBlank()) {
-                "Opening the source you chose…"
-            } else {
-                "Opening $chosenLabel…"
-            }
-        } else if (autoContinueResume) {
-            continueSourceNotice = if (rememberedKey == null) {
-                "No remembered source for this episode. Finding a new source…"
-            } else {
-                "Checking your remembered source…"
-            }
-        }
-        val rememberedAttempt = autoContinueResume && rememberedKey != null
-        val continueOriginPlatform = continueWatchingItem?.lastPlatform ?: progress?.lastPlatform
-        if (
-            autoContinueResume &&
-            rememberedSource == null &&
-            rememberedKey == null &&
-            continueWatchingCameFromAnotherPlatform(continueOriginPlatform, destination = "tv")
-        ) {
-            continueSourceNotice = null
-            continueSourceChoiceRequired = true
-            error = crossDeviceContinueNotice(
-                mediaType = activeRequest.mediaType,
-                seasonNumber = currentEpisode?.seasonNumber,
-                episodeNumber = currentEpisode?.episodeNumber,
-            )
-            loading = false
-            controlsVisible = false
-            return@runCatching
-        }
-        val resolved = resolvedCandidate ?: withTimeout(if (rememberedAttempt) 16_000L else 60_000L) {
-            repository.resolvePlayback(
-                activeRequest.mediaType,
-                activeRequest.mediaId,
-                effectiveImdbId,
-                currentEpisode,
-                preferredStreamKey = streamKeyOverride,
+            val prepared = preparePlayback(
+                repository = repository,
+                request = activeRequest,
+                initialEpisode = currentEpisode,
+                queuedStream = queuedEpisodeSelection?.stream,
+                queuedStreams = queuedEpisodeSelection?.streams.orEmpty(),
+                streamKeyOverride = streamKeyOverride,
+                streamLabelOverride = streamLabelOverride,
                 forceRefresh = forceRefresh,
-                streamType = activeRequest.streamType,
-                directStreamUrl = activeRequest.directStreamUrl,
-                requestHeaders = activeRequest.requestHeaders,
-                sourceAddonId = activeRequest.sourceAddonId,
-                sourceAddonName = activeRequest.sourceAddonName,
+                isLive = isLive,
+                failedStreamKeys = failedStreamKeys,
+                perf = perf,
+                onInitialSource = { initial ->
+                    startedFromRememberedSource = initial.rememberedSource
+                    if (initial.rememberedSource) continueSourceNotice = "Resuming your remembered source…"
+                    initial.candidate?.source?.let { source ->
+                        candidate = initial.candidate
+                        currentRequestHeaders = defaultPlaybackHeaders + source.requestHeaders
+                        currentSourceUrl = source.url
+                        currentLabel = streamLabelOverride ?: source.label
+                        perf.mark("urlReady", "fastPath=true")
+                        resetPlaybackEngineForNewSource()
+                        TvDebugLogger.i(
+                            "Player",
+                            "source ready addon=${initial.candidate.stream?.addonName} remembered=${initial.rememberedSource} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}",
+                        )
+                    }
+                },
+                onPreflight = { preflight ->
+                    detail = preflight.detail
+                    inWatchlist = preflight.inWatchlist
+                    currentEpisode = preflight.episode
+                    pendingResumePositionSec = preflight.resumePositionSec
+                    pendingResumeContentKey = preflight.resumeContentKey
+                    TvDebugLogger.i(
+                        "ContinueWatching",
+                        "contentId=${activeRequest.mediaId} contentType=${activeRequest.mediaType} season=${preflight.episode?.seasonNumber} episode=${preflight.episode?.episodeNumber} originDevice=${preflight.continueWatchingItem?.lastPlatform ?: "this-tv"} destinationDevice=tv resumePosition=${preflight.resumePositionSec ?: 0.0}",
+                    )
+                },
+                onResolved = { resolved ->
+                    candidate = resolved
+                    TvDebugLogger.i(
+                        "Player",
+                        "playback load complete addon=${resolved.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}",
+                    )
+                    currentRequestHeaders = defaultPlaybackHeaders + resolved.source?.requestHeaders.orEmpty()
+                    if (resolved.source != null && currentSourceUrl != resolved.source.url) {
+                        perf.mark("urlReady", "fastPath=false")
+                    }
+                    currentSourceUrl = resolved.source?.url
+                    currentLabel = streamLabelOverride ?: resolved.source?.label ?: "No playable stream found"
+                    resetPlaybackEngineForNewSource()
+                    positionSec = pendingResumePositionSec ?: 0.0
+                },
+                onFallbackNotice = { sourceFallbackNotice = it },
             )
-        }.also { resolvedCandidate = it }
-        if (rememberedSource != null) {
-            // No lookup ran, so there is nothing to report about one.
-        } else if (autoContinueResume) {
-            val selectedKey = resolved.stream?.let(repository::streamSelectionKey)
-            continueSourceNotice = when {
-                rememberedKey != null && selectedKey == rememberedKey -> "Resuming with your remembered source…"
-                rememberedKey != null && selectedKey != null -> {
-                    repository.forgetRememberedStream(activeRequest.mediaType, activeRequest.mediaId, currentEpisode)
-                    "Remembered source expired or is unavailable. Trying ${resolved.stream?.addonName?.ifBlank { "a new source" }}…"
+            continueSourceNotice = prepared.continueSourceNotice
+            if (prepared.sourceChoiceError != null) {
+                continueSourceChoiceRequired = true
+                error = prepared.sourceChoiceError
+                loading = false
+                controlsVisible = false
+                return@runCatching
+            }
+            durationSec = prepared.preflight.progress?.durationSec ?: 0.0
+            nextEpisode = prepared.nextEpisode
+            segments = prepared.segments
+            watchedMarked = prepared.watched
+            failedStreamKeys = prepared.failedStreamKeys
+            streamLabelOverride = null
+            prepared.resolved?.let { resolved ->
+                if (resolved.source != null && candidate?.source?.url != resolved.source.url) {
+                    candidate = resolved
+                    currentRequestHeaders = defaultPlaybackHeaders + resolved.source.requestHeaders
+                    currentSourceUrl = resolved.source.url
+                    currentLabel = resolved.source.label
+                    resetPlaybackEngineForNewSource()
+                } else {
+                    candidate = resolved
                 }
-                rememberedKey == null && selectedKey != null -> "Found a new source. Starting playback…"
-                else -> null
             }
-        } else if (viewerChoseSource) {
-            // The chosen row did not resolve and the walk below picked something else. Say so,
-            // rather than leaving the viewer reading the name of a source that is not playing.
-            val selectedKey = resolved.stream?.let(repository::streamSelectionKey)
-            val chosenKey = chosenStream?.let(repository::streamSelectionKey) ?: streamKeyOverride
-            if (chosenKey != null && selectedKey != null && selectedKey != chosenKey) {
-                continueSourceNotice =
-                    "That source could not be opened. Trying ${resolved.stream?.addonName?.ifBlank { "another source" }}…"
-            }
-        }
-        candidate = resolved
-        TvDebugLogger.i("Player", "playback load complete addon=${resolved.stream?.addonName} elapsedMs=${android.os.SystemClock.elapsedRealtime() - loadStartedAt}")
-        currentRequestHeaders = defaultPlaybackHeaders + resolved.source?.requestHeaders.orEmpty()
-        currentSourceUrl = resolved.source?.url
-        currentLabel = streamLabelOverride ?: resolved.source?.label ?: "No playable stream found"
-        resetPlaybackEngineForNewSource()
-        positionSec = pendingResumePositionSec ?: 0.0
-        durationSec = progress?.durationSec ?: 0.0
-        nextEpisode = resolveNextEpisode(repository, activeRequest, detail, currentEpisode)
-        if (activeRequest.mediaType == "tv" && currentEpisode != null && !effectiveImdbId.isNullOrBlank()) {
-            segments = repository.fetchEpisodeSegments(
-                imdbId = effectiveImdbId,
-                season = currentEpisode!!.seasonNumber,
-                episode = currentEpisode!!.episodeNumber,
-            )
-            TvDebugLogger.i(
-                "Player",
-                "segments loaded mediaId=${activeRequest.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId=$effectiveImdbId count=${segments.size}",
-            )
-        } else if (activeRequest.mediaType == "tv" && currentEpisode != null) {
-            TvDebugLogger.w(
-                "Player",
-                "segments skipped mediaId=${activeRequest.mediaId} episode=s${currentEpisode!!.seasonNumber}e${currentEpisode!!.episodeNumber} imdbId missing",
-            )
-        }
-        // Live items never participate in watched tracking; marking them watched
-        // here keeps markWatchedAndClearProgressIfNeeded() a no-op for live.
-        watchedMarked = isLive || repository.isWatched(
-            mediaType = activeRequest.mediaType,
-            mediaId = activeRequest.mediaId,
-            episode = currentEpisode,
-            forceRefresh = true,
-        )
-        streamLabelOverride = null
-        // Nothing opened on the first try. The list is already ranked, so work down it rather than
-        // sending the viewer back to the picker to guess which of the same entries is alive — this
-        // is where a usenet post packed into archives lands, and it fails before a frame is drawn.
-        if (resolved.source == null && !isLive && queuedEpisodeSelection == null) {
-            // The one that just failed goes on the list before the walk starts, or it would be
-            // tried again as the first alternative to itself.
-            var failureText: String? = (selectedStream ?: resolved.stream)?.let { failed ->
-                failedStreamKeys = failedStreamKeys + repository.streamSelectionKey(failed)
-                "${repository.streamDeliveryLabel(failed)} resolver failure"
-            }
-            val recovered = repository.resolveFirstPlayableSource(
-                request = activeRequest.copy(episode = currentEpisode),
-                streams = resolved.streams,
-                skipKeys = failedStreamKeys,
-                // What failed and what is being tried instead, on one line and held for the whole
-                // attempt. Announcing them separately would flash the reason for a frame and then
-                // replace it, which is the half a viewer actually wants to read.
-                onAttempt = { next ->
-                    val target = next.addonName.ifBlank { "the next source" }
-                    sourceFallbackNotice = listOfNotNull(failureText, "Trying $target…").joinToString(". ")
-                },
-                onAttemptFailed = { failed, key ->
-                    failedStreamKeys = failedStreamKeys + key
-                    failureText = "${repository.streamDeliveryLabel(failed)} resolver failure"
-                },
-            )
-            if (recovered?.source != null) {
-                candidate = recovered
-                currentRequestHeaders = defaultPlaybackHeaders + recovered.source.requestHeaders
-                currentSourceUrl = recovered.source.url
-                currentLabel = recovered.source.label
-                resetPlaybackEngineForNewSource()
-            }
-        }
-        sourceFallbackNotice = null
-        val playable = candidate?.source
-        if (playable == null) {
-            error = repository.lastUsenetFailureMessage ?: when {
-                viewerChoseSource ->
+            sourceFallbackNotice = null
+            if (candidate?.source == null) {
+                error = repository.lastUsenetFailureMessage ?: when {
+                    prepared.initialSource.viewerChoseSource ->
                     "The source you chose could not be opened, and no alternative worked. Choose another source."
-                autoContinueResume ->
+                    prepared.autoContinueResume ->
                     "No saved source could be resumed, and no new playable source was found. Choose a source to continue."
-                else -> "No playable stream could be resolved"
-            }
-            loading = false
-            controlsVisible = true
-        } else {
-            error = null
-        }
+                    else -> "No playable stream could be resolved"
+                }
+                loading = false
+                controlsVisible = true
+            } else error = null
         }
         loadResult.onFailure { throwable ->
             // Changing from an unresolved series request to its exact episode restarts the keyed
@@ -1470,6 +1307,8 @@ fun PlayerScreen(
         nextEpisodeTransitionInProgress = false
     }
 
+    @Composable
+    fun PlaybackLoadEffects() {
     LaunchedEffect(playbackRequest.mediaId, playbackRequest.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, episodeLoadGeneration, liveRefetchGeneration) {
         val reconnectRefetch = isLive && liveRefetchGeneration > 0
         loadPlayback(forceRefresh = reconnectRefetch, resetReconnectBudget = !reconnectRefetch)
@@ -1512,9 +1351,21 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         subtitlePreferenceAppliedForSource = null
         seekTargetSec = null
         val source = currentSourceUrl
-        // External subtitles are downloaded and validated before being attached as local
-        // sidecars. Keep source preparation independent so a bad subtitle cannot block video.
+        // Media3 cannot add a sidecar to an active MediaItem. Doing so releases ExoPlayer and
+        // starts a second prepare/first-frame sequence, so its automatically selected subtitle is
+        // downloaded and validated before the one initial prepare. MPV can still attach live.
+        if (
+            activePlaybackEngine == ActivePlaybackEngine.Media3 &&
+            !isLive &&
+            !source.isNullOrBlank() &&
+            externalSubtitlesPreparedForSource != source
+        ) return@LaunchedEffect
         playerView?.setHeaders(currentRequestHeaders)
+        if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
+            playerView?.setExternalSubtitleTracks(
+                externalSubtitles.filter { it.id == selectedExternalSubtitleId },
+            )
+        }
         if (!source.isNullOrBlank()) playerView?.setSource(source)
         // Re-asserted per source: both engines reset caption styling when they reconfigure their
         // subtitle chain, so a size chosen on the last episode would otherwise be lost on this one.
@@ -1567,17 +1418,39 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         externalSubtitles = if (playbackPreferences.showOnlyPreferredSubtitleLanguages) {
             results.filter { Languages.normalize(it.language) in allowedLanguages }
         } else results
-        externalSubtitlesPreparedForSource = source
-        subtitlesLoading = false
         if (playbackPreferences.autoLoadSubtitles && selectedSubtitleId < 0 && selectedExternalSubtitleId == null) {
             val preferredLanguage = playbackPreferences.defaultSubtitleLanguage
             val preferred = externalSubtitles.firstOrNull { Languages.matches(it.language, preferredLanguage) }
                 ?: externalSubtitles.firstOrNull { Languages.matches(it.language, playbackPreferences.secondarySubtitleLanguage) }
             if (preferred != null) {
-                selectedExternalSubtitleId = preferred.id
+                if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
+                    // A local, validated sidecar keeps the robust subtitle fallback without
+                    // rebuilding ExoPlayer after video has already reached READY.
+                    val candidates = listOf(preferred) + externalSubtitles.filter {
+                        it.id != preferred.id && Languages.matches(it.language, preferred.language)
+                    }
+                    val prepared = candidates.take(SUBTITLE_ATTEMPT_LIMIT).firstNotNullOfOrNull { candidate ->
+                        repository.downloadSubtitleToCache(candidate.url, context.cacheDir)?.let { localPath ->
+                            preferred.copy(url = localPath)
+                        }
+                    }
+                    if (prepared != null) {
+                        externalSubtitles = externalSubtitles.map { track ->
+                            if (track.id == preferred.id) prepared else track
+                        }
+                        selectedExternalSubtitleId = preferred.id
+                    }
+                } else {
+                    selectedExternalSubtitleId = preferred.id
+                }
             }
         }
+        externalSubtitlesPreparedForSource = source
+        subtitlesLoading = false
     }
+
+    }
+    PlaybackLoadEffects()
 
     fun switchPlaybackEngine(target: ActivePlaybackEngine) {
         panel = null
@@ -1602,6 +1475,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     // Changing the engine in Settings while something is playing still takes hold, which the
     // preference key used to do. A no-op on first composition: it writes the values the state was
     // just built with.
+
+    @Composable
+    fun EngineAndStallEffects() {
     LaunchedEffect(playbackPreferences.playerEngine) { resetPlaybackEngineForNewSource() }
 
     LaunchedEffect(activePlaybackEngine, loading, selectedExternalSubtitleId, currentSourceUrl, subtitleTracks) {
@@ -1609,6 +1485,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         val source = currentSourceUrl ?: return@LaunchedEffect
         val key = "${activePlaybackEngine.name}:$source:${selected.id}"
         if (externalSubtitleAppliedKey == key) return@LaunchedEffect
+        if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
+            if (playerView?.selectExternalSubtitleTrack(selected.id) == true) {
+                selectedSubtitleId = -1
+                externalSubtitleAppliedKey = key
+                TvDebugLogger.i("Subtitle", "source=${selected.id.substringBefore(':')} language=${selected.language} load=success trackAttached=true")
+            }
+            return@LaunchedEffect
+        }
         if (loading) return@LaunchedEffect
         val localPath = repository.downloadSubtitleToCache(selected.url, context.cacheDir) ?: return@LaunchedEffect
         if (currentSourceUrl == source && selectedExternalSubtitleId == selected.id) {
@@ -1721,6 +1605,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }
     }
 
+    }
+    EngineAndStallEffects()
+
+    @Composable
+    fun ProgressAndDialogEffects() {
     LaunchedEffect(currentSourceUrl, paused, loading) {
         if (isLive) return@LaunchedEffect
         val activeSource = currentSourceUrl
@@ -1885,6 +1774,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             delay((LiveHintCycleMs - LiveHintVisibleMs).coerceAtLeast(0L))
         }
     }
+    }
+    ProgressAndDialogEffects()
+
+    @Composable
+    fun RemoteLifecycleEffects() {
     DisposableEffect(
         isLive,
         liveChannelRowVisible,
@@ -1941,6 +1835,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             }
         }
     }
+    }
+    RemoteLifecycleEffects()
 
     // The prompt currently owed a decision — skip intro, skip recap, skip ending, or next episode.
     // Computed here, before the handlers that have to respect it, so there is exactly one answer
@@ -1951,6 +1847,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         null
     }
 
+    @Composable
+    fun PromptAndBackEffects() {
     LaunchedEffect(segmentAction?.kind, segmentAction?.segmentType) {
         segmentPromptActive = segmentAction != null
         if (segmentAction == null) return@LaunchedEffect
@@ -2034,7 +1932,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             backExitPlayback()
         }
     }
+    }
+    PromptAndBackEffects()
 
+    @Composable
+    fun RenderPlayerRoot() {
     val breathing = rememberInfiniteTransition(label = "player-loading")
     val logoScale by breathing.animateFloat(
         initialValue = 0.97f,
@@ -2170,6 +2072,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             .focusRequester(playerRootRequester)
             .focusable(),
     ) {
+        @Composable
+        fun RenderPlayerSurface() {
         key(resolvedRenderSurface, activePlaybackEngine) {
             AndroidView(
             factory = { context ->
@@ -2535,7 +2439,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             modifier = Modifier.fillMaxSize(),
         )
         }
+        }
+        RenderPlayerSurface()
 
+        @Composable
+        fun RenderLoadingAndErrors() {
         // Loading screen — backdrop + breathing logo only, no controls
         if (loading) {
             val loadingBackdrop = detail?.backdrop ?: detail?.poster
@@ -2747,7 +2655,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 }
             }
         }
+        }
+        RenderLoadingAndErrors()
 
+        @Composable
+        fun RenderLiveChrome() {
         // Playback controls — bottom bar
         if (isLive && !loading && error == null) {
             LiveStatusBadge(
@@ -2819,7 +2731,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
+        }
+        RenderLiveChrome()
 
+        @Composable
+        fun RenderControlsAndDialogs() {
         if (!loading && error == null && !nextEpisodeDialogVisible) {
             PlayerOverlayVisibility(
                 visible = interactionLayer == PlayerInteractionLayer.Controls || interactionLayer == PlayerInteractionLayer.Seeking,
@@ -3111,7 +3027,10 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 }
             }
         }
+        RenderControlsAndDialogs()
 
+        @Composable
+        fun RenderOptionPanel() {
         // The scrim used to snap to full strength the instant a panel was asked for, and vanish the
         // instant it closed, while the panel itself slid. Driving it from `panel != null` outside
         // the panel's own composition means it fades both ways on the same curve the panel moves
@@ -3254,6 +3173,18 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 val source = currentSourceUrl ?: return@launch
                                 selectedExternalSubtitleId = subtitle.id
                                 subtitlePreferenceAppliedForSource = source
+                                if (
+                                    activePlaybackEngine == ActivePlaybackEngine.Media3 &&
+                                    playerView?.selectExternalSubtitleTrack(subtitle.id) == true
+                                ) {
+                                    selectedSubtitleId = -1
+                                    externalSubtitleAppliedKey = "${activePlaybackEngine.name}:$source:${subtitle.id}"
+                                    panel = null
+                                    panelClosedAtMs = System.currentTimeMillis()
+                                    playerView?.setPaused(paused)
+                                    restoreControlsAfterPanel(OverlayPanel.Subtitles)
+                                    return@launch
+                                }
                                 // These files sit on hosts that expire links and refuse requests,
                                 // so one failing is ordinary rather than exceptional. The next copy
                                 // in the same language is tried before the viewer is told anything,
@@ -3332,7 +3263,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 }
             }
         }
+        }
+        RenderOptionPanel()
     }
+    }
+    RenderPlayerRoot()
+}
 
 @Composable
 private fun LiveStatusBadge(
@@ -3783,7 +3719,7 @@ private fun LivePlayerChannelCard(
         }
     }
 }
-private suspend fun resolveNextEpisode(
+internal suspend fun resolveNextEpisode(
     repository: StreamDekRepository,
     request: PlaybackRequest,
     detail: MediaDetail?,

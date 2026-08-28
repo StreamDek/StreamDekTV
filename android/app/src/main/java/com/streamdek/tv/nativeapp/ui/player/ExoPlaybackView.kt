@@ -347,6 +347,7 @@ class ExoPlaybackView @JvmOverloads constructor(
       active.playWhenReady = !pendingPaused
       active.prepare()
     }.onSuccess {
+      com.streamdek.tv.nativeapp.data.Perf.playback?.mark("player.prepare")
       Log.i(TAG, "Preparing source with Media3: ${url.substringBefore('?')}")
     }.onFailure { failure ->
       Log.e(TAG, "Media3 could not prepare this protocol", failure)
@@ -362,11 +363,20 @@ class ExoPlaybackView @JvmOverloads constructor(
           val active = exoPlayer ?: return
           val duration = active.duration.takeIf { it > 0 && it != C.TIME_UNSET }?.div(1000.0) ?: 0.0
           val videoSize = active.videoSize
+          com.streamdek.tv.nativeapp.data.Perf.playback?.mark(
+            "player.ready",
+            "video=${videoSize.width}x${videoSize.height} duration=${duration}",
+          )
           Log.i(TAG, "Ready duration=${duration}s video=${videoSize.width}x${videoSize.height}")
           onLoadCallback?.invoke(duration, videoSize.width, videoSize.height)
         }
         Player.STATE_ENDED -> onEndCallback?.invoke()
       }
+    }
+
+    /** The moment a picture actually exists on screen — the number "time to first frame" means. */
+    override fun onRenderedFirstFrame() {
+      com.streamdek.tv.nativeapp.data.Perf.playback?.mark("player.firstFrame")
     }
 
     override fun onPlayerError(error: PlaybackException) {

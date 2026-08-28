@@ -150,6 +150,24 @@ internal fun applyHomeRowLayout(
     return visible.sortedBy { rail -> saved[homeCatalogRowMatchKey(rail.id)]?.position ?: Int.MAX_VALUE }
 }
 
+/**
+ * Keeps account-derived rows above the customisable catalogue layout.
+ *
+ * The saved layout only contains catalogue ids. Passing Continue Watching and New Episodes into
+ * [applyHomeRowLayout] therefore classified them as unknown and moved them after every one of the
+ * 28 known catalogue rows, making both look as though they had disappeared. They are not catalogue
+ * preferences and must retain their fixed Home positions.
+ */
+internal fun applyHomeRowLayoutKeepingPersonalRows(
+    rails: List<HomeRail>,
+    layout: List<HomeCatalogRowPreference>,
+): List<HomeRail> {
+    val personalIds = listOf("continue-watching", "new-episodes")
+    val personal = personalIds.mapNotNull { id -> rails.firstOrNull { it.id == id } }
+    val catalogues = rails.filterNot { it.id in personalIds }
+    return personal + applyHomeRowLayout(catalogues, layout)
+}
+
 /** The layout to store for [options], numbered from their current order on screen. */
 internal fun homeRowLayoutOf(options: List<HomeRowOption>): List<HomeCatalogRowPreference> =
     options.mapIndexed { index, option ->

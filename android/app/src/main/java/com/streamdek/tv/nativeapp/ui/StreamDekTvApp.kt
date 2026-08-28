@@ -1064,8 +1064,15 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                         PlaybackStreamsScreen(
                             repository = repository,
                             request = request,
-                            onBack = { navController.popBackStack() },
+                            onBack = {
+                                repository.cancelStreamDiscovery("left picker")
+                                navController.popBackStack()
+                            },
                             onPlayRequest = { selectedRequest ->
+                                // The viewer has chosen. Whatever the remaining providers were
+                                // still scraping for cannot change that choice, and on a stick the
+                                // decoder needs the CPU and the network more than the picker does.
+                                repository.cancelStreamDiscovery("source selected")
                                 repository.savePlaybackRequest(selectedRequest)
                                 navController.navigate("player")
                             },

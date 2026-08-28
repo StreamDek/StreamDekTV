@@ -31,11 +31,19 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
- * Number of plugin providers allowed to run at once. TV boxes have far less headroom than a
- * phone, and each provider spins up its own QuickJS context plus network calls.
+ * Number of plugin providers allowed to run at once.
+ *
+ * Five was chosen to protect TV hardware, but it was costing far more than it saved. A measured
+ * lookup on a Fire TV Stick had 49 eligible providers: at five at a time that is ten sequential
+ * waves, and the fan-out took 113 s to finish while the picker's header still read "Searching…".
+ * The providers are network-bound — they are parked on the IO pool waiting on sockets, not
+ * computing — so the width of the fan-out is governed by how many sockets and QuickJS contexts the
+ * device can hold open, not by its core count.
+ *
+ * Twelve was measured on the constrained device rather than assumed; see the note on
+ * [pluginDispatcher] for why the pool underneath it matters as much as this number.
  */
-// Match mobile's fan-out. Five keeps first-result latency low without overwhelming TV hardware.
-private const val MAX_CONCURRENT_PLUGIN_PROVIDERS = 5
+private const val MAX_CONCURRENT_PLUGIN_PROVIDERS = 12
 
 /** Matches the mobile app's per-provider budget for a stream lookup. */
 private const val PLUGIN_PROVIDER_TIMEOUT_MS = 60_000L
@@ -568,6 +576,21 @@ class PluginSourceEngine(context: Context) {
         episode: Int?,
         settingsOnly: Boolean = false,
     ): String = withTimeout(if (settingsOnly) PLUGIN_SETTINGS_TIMEOUT_MS else PLUGIN_PROVIDER_TIMEOUT_MS) {
+        // The budget as a wall-clock instant the sandbox itself can see.
+        //
+        // [withTimeout] alone does not bound this. A provider's `fetch` is a synchronous bridge
+        // into OkHttp, so while it is blocked in a call there is no suspension point for
+        // cancellation to land on, and the JS event loop simply issues the next request when it
+        // returns. A provider making a long chain of individually-legal requests therefore ran
+        // well past its budget: one measured on a stick took 106.9 s against a 60 s limit, and it
+        // alone set how long the whole fan-out appeared to take -- 48 of the other 49 providers
+        // had finished by 59.8 s.
+        //
+        // Checking the deadline here, at the one place a provider can reach the network, is what
+        // actually stops it: the next fetch after the budget expires fails immediately, the JS
+        // rejects, and the coroutine unwinds.
+        val budgetMs = if (settingsOnly) PLUGIN_SETTINGS_TIMEOUT_MS else PLUGIN_PROVIDER_TIMEOUT_MS
+        val deadlineUptimeMs = android.os.SystemClock.uptimeMillis() + budgetMs
         val deferred = CompletableDeferred<String>()
         val domNodes = mutableMapOf<Int, Element>()
         var nextDomNodeId = 1
@@ -639,6 +662,8 @@ class PluginSourceEngine(context: Context) {
                 null
             }
             function("__sd_fetch") { args: Array<Any?> ->
+                val remainingMs = deadlineUptimeMs - android.os.SystemClock.uptimeMillis()
+                check(remainingMs > 0) { "Provider exceeded its ${budgetMs}ms budget" }
                 val url = args.getOrNull(0)?.toString().orEmpty()
                 val method = args.getOrNull(1)?.toString()?.uppercase(Locale.US) ?: "GET"
                 val headerJson = runCatching { JSONObject(args.getOrNull(2)?.toString() ?: "{}") }.getOrDefault(JSONObject())
@@ -655,7 +680,12 @@ class PluginSourceEngine(context: Context) {
                 val requestBody = if (method == "GET" || method == "HEAD") null else body.toRequestBody(headerJson.optString("Content-Type").toMediaTypeOrNull())
                 // `redirect: "manual"` is how a source reads the Location of a 302 rather than following
                 // it, which is the usual way these hosts hand back a signed download URL.
-                val client = if (followRedirects) http else http.newBuilder().followRedirects(false).followSslRedirects(false).build()
+                // No single call may outlive the budget either, so a provider cannot spend all of
+                // it inside one request that OkHttp's own read timeout would let run on.
+                val client = http.newBuilder()
+                    .apply { if (!followRedirects) followRedirects(false).followSslRedirects(false) }
+                    .callTimeout(remainingMs, TimeUnit.MILLISECONDS)
+                    .build()
                 runBlocking(Dispatchers.IO) {
                     client.newCall(request.method(method, requestBody).build()).execute().use {
                         TvDebugLogger.d(

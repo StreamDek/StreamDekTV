@@ -93,6 +93,24 @@ class HomeRowLayoutTest {
     }
 
     @Test
+    fun `personal rows stay above a saved catalogue layout`() {
+        val rails = listOf(
+            rail("continue-watching"),
+            rail("new-episodes"),
+            rail("trending_movies"),
+            rail("popular_series"),
+        )
+        val layout = listOf(saved("popular_series", 0), saved("trending_movies", 1))
+
+        val visible = applyHomeRowLayoutKeepingPersonalRows(rails, layout)
+
+        assertEquals(
+            listOf("continue-watching", "new-episodes", "popular_series", "trending_movies"),
+            visible.map { it.id },
+        )
+    }
+
+    @Test
     fun `an empty layout leaves the rows exactly as they were`() {
         val rails = listOf(rail("a"), rail("b"))
 

@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -795,6 +796,41 @@ class StreamDekRepository(
         }
     }
     fun currentSession(): AuthSession? = sessionStore.currentSession()
+
+    /**
+     * The source search currently on screen, so it can be retired when it stops being the one the
+     * viewer is waiting for.
+     *
+     * A discovery fans out to every enabled add-on and plugin provider, and the plugin half is by
+     * far the longest: one measured lookup ran 49 providers for 113 s. Leaving the picker or
+     * choosing a source used to leave all of that running -- on a stick it was still scraping a
+     * minute and a half after the film had started, competing for the same CPU and network the
+     * decoder needed. Cancelling is therefore not only about wasted work; it is part of how
+     * quickly the picture appears.
+     *
+     * Held as the Job of the in-flight fan-out rather than a generation counter, because the point
+     * is to stop the work, not merely to ignore its result.
+     */
+    @Volatile
+    private var activeDiscovery: Job? = null
+
+    /**
+     * Retires the in-flight source search.
+     *
+     * Safe to call when there is none. Called when the viewer picks a source, leaves the picker,
+     * or starts a different search -- anything that makes the current results no longer the ones
+     * being waited on.
+     */
+    fun cancelStreamDiscovery(reason: String) {
+        activeDiscovery?.let { job ->
+            if (job.isActive) {
+                TvDebugLogger.i("Streams", "discovery cancelled reason=$reason")
+                Perf.playback?.mark("discoveryCancelled", reason)
+                job.cancel(kotlinx.coroutines.CancellationException("discovery superseded: $reason"))
+            }
+        }
+        activeDiscovery = null
+    }
 
     fun savePlaybackRequest(request: PlaybackRequest) {
         lastPlaybackRequest = request
@@ -1694,6 +1730,7 @@ class StreamDekRepository(
      * The last value emitted is the complete screen, which is what gets cached.
      */
     fun homeContentStream(forceRefresh: Boolean = false): Flow<HomeContent> = channelFlow {
+        val perf = Perf.span("home", if (forceRefresh) "forced" else "normal")
         val homePreferences = bootstrapState.value?.preferences?.home
         val addonConfiguration = bootstrapState.value?.integrations?.addons?.items.orEmpty()
             .joinToString("|") { "${it.id}:${it.enabled}:${it.position}" }
@@ -1707,6 +1744,8 @@ class StreamDekRepository(
         if (!forceRefresh) {
             homeCache[cacheKey]?.let {
                 send(it)
+                perf.end("cacheHit", "rails=${it.rails.size}")
+                Perf.startupMark("home.firstContent", "cached")
                 return@channelFlow
             }
         }
@@ -1718,7 +1757,10 @@ class StreamDekRepository(
         // Which rows exist is the registry's decision, and the skeleton has to name them before
         // anything is fetched, so the manifest is read first. It is held for hours after the first
         // read, so this costs one small request per session rather than one per home load.
-        val catalogRows = if (builtInCatalogsEnabled) catalogRowOrder(fetchCatalogManifest()) else emptyList()
+        val catalogRows = if (builtInCatalogsEnabled) {
+            Perf.timed(perf, "catalogManifest") { catalogRowOrder(fetchCatalogManifest()) }
+        } else emptyList()
+        perf.mark("skeletonReady", "rows=${catalogRows.size}")
 
         // Slots are declared up front, in final display order, so a row that resolves late lands
         // where its skeleton already was.
@@ -1772,6 +1814,9 @@ class StreamDekRepository(
                     pendingRails = ordered.mapNotNull { pending[it] },
                 )
             }
+            perf.mark("publish:$slot", "rails=${rails.size} items=${rails.sumOf { it.items.size }} pending=${snapshot.pendingRails.size}")
+            if (snapshot.rails.isNotEmpty()) Perf.startupMark("home.firstContent", "slot=$slot")
+            if (snapshot.featured != null) Perf.startupMark("home.hero")
             send(snapshot)
         }
 
@@ -1832,6 +1877,8 @@ class StreamDekRepository(
         }
 
         homeCache[cacheKey] = complete
+        perf.end("complete", "rails=${complete.rails.size} items=${complete.rails.sumOf { it.items.size }}")
+        Perf.startupMark("home.allContent")
         send(complete)
     }
 
@@ -2104,7 +2151,10 @@ class StreamDekRepository(
             if (networksIndex >= 0) ordered.addAll(networksIndex + 1, liveAddonRails) else ordered.addAll(liveAddonRails)
         }
         ordered.addAll(otherAddonRails)
-        return applyHomeRowLayout(ordered, bootstrapState.value?.preferences?.home?.homeCatalogRows.orEmpty())
+        return applyHomeRowLayoutKeepingPersonalRows(
+            ordered,
+            bootstrapState.value?.preferences?.home?.homeCatalogRows.orEmpty(),
+        )
     }
 
     /** The finished screen. Callers that cannot render progressively still get one value. */
@@ -2113,6 +2163,8 @@ class StreamDekRepository(
 
 
     suspend fun fetchDetail(id: String, type: String, forceRefresh: Boolean = false): MediaDetail? {
+        val perf = Perf.span("detail", "$type:$id")
+        try {
         val canonicalType = if (type == "series") "tv" else type
         val imdbId = Regex("tt\\d+", RegexOption.IGNORE_CASE).find(id)?.value
         val resolved = if (imdbId != null) {
@@ -2149,6 +2201,7 @@ class StreamDekRepository(
             Telemetry.contentOpened(mediaId = detail.id, mediaType = detail.type, title = detail.title)
         }
         return detail
+        } finally { perf.end() }
     }
 
     /**
@@ -2281,6 +2334,8 @@ class StreamDekRepository(
     }
 
     suspend fun searchMedia(query: String, forceRefresh: Boolean = false): List<MediaItem> {
+        val perf = Perf.span("search")
+        try {
         val normalized = query.trim()
         if (normalized.isBlank()) return emptyList()
         val cacheKey = buildSessionProfileCacheKey() + ":" + normalized.lowercase(Locale.US)
@@ -2315,6 +2370,7 @@ class StreamDekRepository(
         // counting it again would report a search that never reached anything.
         Telemetry.searchPerformed(results.size)
         return results
+        } finally { perf.end() }
     }
     /**
      * Asks every enabled add-on catalog that advertises search to answer the same query.
@@ -3477,6 +3533,7 @@ class StreamDekRepository(
                 streams = listOf(directStream),
             )
         }
+        val perf = Perf.span("resolve", "$mediaType:$mediaId")
         val episodeKey = buildEpisodeKey(episode)
         val effectivePreferredStreamKey = effectiveRememberedStreamKey(
             explicitKey = preferredStreamKey,
@@ -3494,7 +3551,7 @@ class StreamDekRepository(
             streamType = streamType,
         )
         if (!forceRefresh) {
-            readResolvedPlaybackCache(cacheKey)?.let { return it }
+            readResolvedPlaybackCache(cacheKey)?.let { perf.end("cacheHit"); return it }
         }
         // Mirrors the mobile app's live type fallbacks: addons publish live channels
         // under a wide range of Stremio-native type names.
@@ -3505,6 +3562,7 @@ class StreamDekRepository(
             ?.takeIf { it.isNotBlank() }
         val targetedAddonId = sourceAddonId?.takeIf { it.isNotBlank() } ?: rememberedAddonId
         val targetedStreams = targetedAddonId?.let { addonId ->
+            perf.mark("rememberedPath", "addon=$addonId")
             fetchStreamsFromOwningAddon(
                 addonId = addonId,
                 lookupTypes = lookupTypes,
@@ -3514,25 +3572,33 @@ class StreamDekRepository(
             )
         }
         val (streamLookupType, addonStreams) = targetedStreams
-            ?: fetchStreamsForPlayback(lookupTypes, videoId, isLive = mediaType == "live")
+            ?: Perf.timed(perf, "addonDiscovery") { fetchStreamsForPlayback(lookupTypes, videoId, isLive = mediaType == "live") }
+        perf.mark("addonStreams", "count=${addonStreams.size}")
         // Plugin sources join the pool the same way they do on mobile — except when a specific
         // add-on already answered, which only happens for a live channel or a remembered source
         // the viewer explicitly picked, and where waiting on scrapers would just delay playback.
-        val streams = markCachedStreams(
-            if (targetedStreams != null) {
-                addonStreams
-            } else {
-                dedupeStreams(addonStreams + pluginStreams(mediaType, mediaId, imdbId, episode))
-            },
-        )
+        val streams = Perf.timed(perf, "streamPool") {
+            markCachedStreams(
+                if (targetedStreams != null) {
+                    addonStreams
+                } else {
+                    dedupeStreams(addonStreams + Perf.timed(perf, "pluginDiscovery") { pluginStreams(mediaType, mediaId, imdbId, episode) })
+                },
+            )
+        }
+        perf.mark("poolReady", "count=${streams.size}")
         // Decorated before ranking rather than after: a source the service already holds starts
         // instantly, and that is worth more than anything else the ranking weighs.
+        var resolveAttempts = 0
         for (stream in rankStreams(streams, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)) {
+            resolveAttempts++
+            val attemptBegan = android.os.SystemClock.uptimeMillis()
             val resolvedUrl = resolveStreamToUrl(
                 stream, streamLookupType, videoId,
                 seasonNumber = episode?.seasonNumber,
                 episodeNumber = episode?.episodeNumber,
             )
+            perf.mark("resolveAttempt$resolveAttempts", "took=${android.os.SystemClock.uptimeMillis() - attemptBegan} ok=${!resolvedUrl.isNullOrBlank()}")
             if (!resolvedUrl.isNullOrBlank()) {
                 val resolvedStreamKey = streamSelectionKey(stream)
                 val candidate = ResolvedPlaybackCandidate(
@@ -3550,9 +3616,11 @@ class StreamDekRepository(
                     sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, resolvedStreamKey)
                 }
                 writeResolvedPlaybackCache(cacheKey, candidate)
+                perf.end("resolved", "attempts=$resolveAttempts")
                 return candidate
             }
         }
+        perf.end("noPlayableSource", "attempts=$resolveAttempts pool=${streams.size}")
         return ResolvedPlaybackCandidate(null, null, streams).also {
             writeResolvedPlaybackCache(cacheKey, it)
         }
@@ -3923,6 +3991,8 @@ class StreamDekRepository(
             return@channelFlow
         }
 
+        val perf = Perf.span("streams", "$mediaType:$mediaId")
+        val firstResultLogged = java.util.concurrent.atomic.AtomicBoolean(false)
         val episodeKey = buildEpisodeKey(episode)
         val effectivePreferredStreamKey = effectiveRememberedStreamKey(
             explicitKey = preferredStreamKey,
@@ -3959,7 +4029,9 @@ class StreamDekRepository(
         // CloudStream extensions search by title, so they need one and are skipped for live.
         val cloudStreamTitle = if (isLive) null else {
             peekCachedDetail(mediaId, mediaType)?.title?.takeIf { it.isNotBlank() }
-                ?: runCatching { fetchDetail(mediaId, mediaType)?.title }.getOrNull()?.takeIf { it.isNotBlank() }
+                ?: Perf.timed(perf, "cloudStreamTitleLookup") {
+                    runCatching { fetchDetail(mediaId, mediaType)?.title }.getOrNull()?.takeIf { it.isNotBlank() }
+                }
         }
         val cloudStreamSources = if (cloudStreamTitle == null) emptyList() else cloudStreamProviders()
         // Counted as one source rather than one per extension: the bridge fans out internally and
@@ -4000,6 +4072,9 @@ class StreamDekRepository(
         suspend fun publish(done: Boolean) {
             publishMutex.withLock {
                 val snapshot = mutex.withLock { order.mapNotNull { merged[it] } }
+                if (snapshot.isNotEmpty() && firstResultLogged.compareAndSet(false, true)) {
+                    perf.mark("firstResult", "count=${snapshot.size}")
+                }
                 send(
                     StreamCandidatesProgress(
                         streams = rankStreams(snapshot, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup),
@@ -4010,9 +4085,15 @@ class StreamDekRepository(
             }
         }
 
+        perf.mark("discoveryStart", "addons=${supportingAddons.size} plugins=$pluginProviderCount cloudstream=$cloudStreamPending")
         send(StreamCandidatesProgress(emptyList(), pendingSources = remaining.get(), done = false))
 
+        // A new search supersedes the one before it. Without this, opening a second title while
+        // the first was still scraping left both fan-outs running against each other.
+        cancelStreamDiscovery("new discovery")
+
         supervisorScope {
+            activeDiscovery = coroutineContext[Job]
             if (cloudStreamPending > 0 && cloudStreamTitle != null) {
                 launch {
                     runCatching {
@@ -4029,6 +4110,7 @@ class StreamDekRepository(
                             ),
                             onProviderResults = { providerStreams ->
                                 mergeStreams(providerStreams)
+                                perf.mark("cloudstream:batch", "results=${providerStreams.size}")
                                 publish(done = false)
                             },
                         )
@@ -4041,12 +4123,15 @@ class StreamDekRepository(
             if (pluginProviderCount > 0) {
                 launch {
                     val reported = java.util.concurrent.atomic.AtomicInteger(0)
+                    val pluginBegan = android.os.SystemClock.uptimeMillis()
                     val streams = pluginStreams(mediaType, mediaId, imdbId, episode) { providerStreams ->
                         mergeStreams(providerStreams)
-                        reported.incrementAndGet()
+                        val n = reported.incrementAndGet()
+                        perf.mark("plugin:batch$n", "took=${android.os.SystemClock.uptimeMillis() - pluginBegan} results=${providerStreams.size}")
                         remaining.decrementAndGet()
                         publish(done = false)
                     }
+                    perf.mark("plugin:all", "took=${android.os.SystemClock.uptimeMillis() - pluginBegan} batches=${reported.get()}")
                     mergeStreams(streams)
                     // A lookup that never reached the fan-out — an id that would not resolve, or the
                     // whole call throwing — reports nothing, so its providers are retired here
@@ -4058,9 +4143,11 @@ class StreamDekRepository(
             if (primaryType != null) {
                 supportingAddons.forEach { addon ->
                     launch {
+                        val began = android.os.SystemClock.uptimeMillis()
                         val streams = runCatching {
                             gate.withPermit { fetchStreamsFromSingleAddon(addon, primaryType, videoId, baseId, isLive, forceRefresh) }
                         }.getOrDefault(emptyList())
+                        perf.mark("addon:${addon.id}", "took=${android.os.SystemClock.uptimeMillis() - began} results=${streams.size}")
                         mergeStreams(streams)
                         remaining.decrementAndGet()
                         publish(done = false)
@@ -4081,8 +4168,11 @@ class StreamDekRepository(
         // and ensures the final picker order and Cached column reflect this account, not merely
         // whatever cache marker an add-on happened to include.
         val completeSnapshot = mutex.withLock { order.mapNotNull { merged[it] } }
-        if (completeSnapshot.isNotEmpty()) replaceStreams(markCachedStreams(completeSnapshot))
+        if (completeSnapshot.isNotEmpty()) {
+            Perf.timed(perf, "markCachedStreams") { replaceStreams(markCachedStreams(completeSnapshot)) }
+        }
         publish(done = true)
+        perf.end("done", "total=${completeSnapshot.size}")
     }
 
     private fun streamMergeKey(stream: AddonStream): String = streamAggregationKey(stream)
@@ -4116,7 +4206,26 @@ class StreamDekRepository(
     }
 
     /** Searches OpenSubtitles, installed subtitle addons, and mobile-managed cloud sources. */
-    suspend fun fetchExternalSubtitles(request: PlaybackRequest): List<ExternalSubtitleTrack> = withContext(Dispatchers.IO) {
+    /**
+     * Shares one subtitle fan-out between the player's repeated asks for the same content.
+     *
+     * The effect that drives it is keyed on the source URL and on the detail record's IMDb id, so
+     * it legitimately re-runs when the detail lands — which meant every provider was queried twice
+     * during the few hundred milliseconds the decoder was starting.
+     */
+    private val subtitleRequests = RequestCoalescer<String, List<ExternalSubtitleTrack>>()
+
+    suspend fun fetchExternalSubtitles(request: PlaybackRequest): List<ExternalSubtitleTrack> {
+        val key = listOf(
+            request.mediaType,
+            request.imdbId ?: request.mediaId,
+            request.episode?.seasonNumber ?: -1,
+            request.episode?.episodeNumber ?: -1,
+        ).joinToString(":")
+        return subtitleRequests.run(key) { fetchExternalSubtitlesUncoalesced(request) }
+    }
+
+    private suspend fun fetchExternalSubtitlesUncoalesced(request: PlaybackRequest): List<ExternalSubtitleTrack> = withContext(Dispatchers.IO) {
         val imdbId = request.imdbId?.takeIf { it.startsWith("tt") } ?: return@withContext emptyList()
         val isSeries = request.mediaType == "tv" || request.mediaType == "series"
         val videoId = if (isSeries) {
@@ -4316,6 +4425,19 @@ class StreamDekRepository(
 
     suspend fun downloadSubtitleToCache(url: String, cacheDir: File): String? = withContext(Dispatchers.IO) {
         runCatching {
+            // Media3's pre-prepare path has already downloaded and validated this sidecar. If an
+            // automatic codec fallback switches to MPV, reuse that file instead of treating its
+            // absolute path as an HTTP URL (which also avoids a second main-thread stall).
+            val subtitleDirectory = File(cacheDir, "subtitles")
+            val local = File(url)
+            val localPath = runCatching { local.canonicalFile }.getOrNull()
+            val subtitleRoot = runCatching { subtitleDirectory.canonicalFile }.getOrNull()
+            if (
+                localPath?.isFile == true &&
+                subtitleRoot != null &&
+                localPath.path.startsWith(subtitleRoot.path + File.separator) &&
+                subtitleTextHasTimedCues(localPath.readText(), localPath.extension.lowercase())
+            ) return@runCatching localPath.absolutePath
             // Presented as a browser: several of these hosts answer anything else with a refusal
             // rather than a file, and a refusal arrives as a subtitle that never appears.
             val request = okhttp3.Request.Builder()
@@ -4328,7 +4450,7 @@ class StreamDekRepository(
                         ?.let { header("Referer", it) }
                 }
                 .build()
-            val directory = File(cacheDir, "subtitles").apply { mkdirs() }
+            val directory = subtitleDirectory.apply { mkdirs() }
             val stem = "${url.hashCode().toUInt()}"
             // Whatever extension was written for this URL before; the content decided it then.
             directory.listFiles { file -> file.name.startsWith("$stem.") }

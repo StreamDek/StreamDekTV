@@ -5,6 +5,7 @@ import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.streamdek.tv.nativeapp.AppGraph
+import com.streamdek.tv.nativeapp.data.Perf
 import com.streamdek.tv.nativeapp.ui.StreamDekTvApp
 
 internal object TvRemoteKeyRouter {
@@ -21,8 +22,10 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     setTheme(R.style.AppTheme)
     super.onCreate(savedInstanceState)
+    Perf.startupMark("activity.onCreate")
     AppGraph.initialize(applicationContext)
     setContent {
+      Perf.startupMark("activity.firstComposition")
       StreamDekTvApp()
     }
   }
