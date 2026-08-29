@@ -591,6 +591,7 @@ fun SettingsScreen(
                         definitions = catalogDefinitions,
                         addons = addons,
                         layout = homePrefs?.homeCatalogRows.orEmpty(),
+                        streamDekRowsEnabled = homePrefs?.defaultAppCatalogsEnabled != false,
                         leftRequester = selectedRequester,
                     ) { rows, complete ->
                         savePreference("Home rows", complete) {

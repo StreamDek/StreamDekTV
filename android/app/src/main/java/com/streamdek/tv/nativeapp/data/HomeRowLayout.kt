@@ -81,8 +81,12 @@ internal fun homeRowOptions(
             builtin = true,
         )
     }
+    // Every installed add-on, not only the switched-on ones. A switched-off add-on's rows are
+    // still part of this profile's arrangement, and dropping them here would both hide the fact
+    // that they are kept and renumber everything below them the next time the layout was saved.
+    // The settings screen greys them; Home never sees them, because a switched-off add-on produces
+    // no rails to apply the layout to.
     val addonRows = addons
-        .filter { it.enabled }
         .sortedBy { it.position }
         .flatMap { addon ->
             addon.manifest.catalogs.mapIndexedNotNull { index, catalog ->
@@ -178,3 +182,51 @@ internal fun homeRowLayoutOf(options: List<HomeRowOption>): List<HomeCatalogRowP
             title = option.title,
         )
     }
+
+/** The key StreamDek's own rows group under; no add-on id can collide with it. */
+internal const val STREAMDEK_ROW_GROUP_KEY = "__streamdek__"
+
+/** One source's worth of rows in the settings list. */
+internal data class HomeRowGroup(
+    val key: String,
+    val title: String,
+    /** Why this group's rows cannot reach Home, or null when they can. */
+    val gatedNote: String?,
+    val rows: List<HomeRowOption>,
+)
+
+/**
+ * Splits the row list into one group per source, in the order the sources first appear in it.
+ *
+ * The same shape the phone shows, so a viewer moving between the two sees one arrangement rather
+ * than two. Two things can switch a whole group off from elsewhere -- the built-in catalogue
+ * setting for StreamDek's own rows, and an add-on's own switch for its rows -- and in both cases
+ * the group is listed greyed rather than removed, so the rows are visibly kept.
+ */
+internal fun buildHomeRowGroups(
+    options: List<HomeRowOption>,
+    addons: List<AddonManifest>,
+    streamDekRowsEnabled: Boolean,
+): List<HomeRowGroup> {
+    val addonsById = addons.associateBy { it.id }
+    return options
+        .groupBy { option ->
+            if (option.builtin) STREAMDEK_ROW_GROUP_KEY else homeCatalogRowAddonId(option.id) ?: STREAMDEK_ROW_GROUP_KEY
+        }
+        .map { (key, rows) ->
+            val addon = addonsById[key]
+            val title = if (key == STREAMDEK_ROW_GROUP_KEY) {
+                "StreamDek"
+            } else {
+                addon?.manifest?.name?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: rows.firstNotNullOfOrNull { row -> row.subtitle.removePrefix("From ").trim().takeIf { it.isNotEmpty() } }
+                    ?: "Add-on"
+            }
+            val gatedNote = when {
+                key == STREAMDEK_ROW_GROUP_KEY && !streamDekRowsEnabled -> "hidden by Built-in catalogs"
+                addon != null && !addon.enabled -> "hidden while this add-on is off"
+                else -> null
+            }
+            HomeRowGroup(key = key, title = title, gatedNote = gatedNote, rows = rows)
+        }
+}

@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -200,14 +201,19 @@ class HomeRowLayoutTest {
     }
 
     @Test
-    fun `a switched-off add-on contributes no rows to the editor`() {
+    fun `a switched-off add-on keeps its rows in the editor so they can be shown greyed`() {
+        // This used to assert the opposite. Dropping the rows hid the fact that the viewer's
+        // arrangement was kept, and renumbered every row below them the next time the layout was
+        // saved. They are listed instead, and the group they sit in is greyed -- see
+        // `a switched-off add-on keeps its rows, named, and greyed`. Home is unaffected either
+        // way, because a switched-off add-on is never fetched.
         val options = homeRowOptions(
             emptyList(),
             listOf(addon("xperience", listOf("trending"), enabled = false)),
             emptyList(),
         )
 
-        assertTrue(options.isEmpty())
+        assertEquals(listOf("addon:xperience:movie:trending:0"), options.map { it.id })
     }
 
     @Test
@@ -258,5 +264,54 @@ class HomeRowLayoutTest {
 
         assertEquals(flipped.map { it.id }, reloaded.map { it.id })
         assertEquals(flipped.map { it.enabled }, reloaded.map { it.enabled })
+    }
+
+    @Test
+    fun `rows are grouped by the source they came from`() {
+        val options = homeRowOptions(
+            definitions = listOf(definition("trending_movies")),
+            addons = listOf(addon("alpha", listOf("one", "two")), addon("beta", listOf("one"))),
+            layout = emptyList(),
+        )
+
+        val groups = buildHomeRowGroups(options, listOf(addon("alpha", listOf("one", "two")), addon("beta", listOf("one"))), streamDekRowsEnabled = true)
+
+        assertEquals(listOf(STREAMDEK_ROW_GROUP_KEY, "alpha", "beta"), groups.map { it.key })
+        assertEquals(2, groups.first { it.key == "alpha" }.rows.size)
+        assertEquals("StreamDek", groups.first().title)
+    }
+
+    @Test
+    fun `the built-in catalogue setting gates StreamDek's group and nothing else`() {
+        val addons = listOf(addon("alpha", listOf("one")))
+        val options = homeRowOptions(listOf(definition("trending_movies")), addons, emptyList())
+
+        val groups = buildHomeRowGroups(options, addons, streamDekRowsEnabled = false)
+
+        assertEquals("hidden by Built-in catalogs", groups.first { it.key == STREAMDEK_ROW_GROUP_KEY }.gatedNote)
+        assertNull(groups.first { it.key == "alpha" }.gatedNote)
+    }
+
+    @Test
+    fun `a switched-off add-on keeps its rows, named, and greyed`() {
+        val addons = listOf(addon("alpha", listOf("one", "two"), enabled = false))
+        val options = homeRowOptions(emptyList(), addons, emptyList())
+
+        val group = buildHomeRowGroups(options, addons, streamDekRowsEnabled = true).single()
+
+        // Kept rather than dropped: the arrangement outlives the add-on being switched off.
+        assertEquals(2, group.rows.size)
+        assertEquals("alpha", group.title)
+        assertEquals("hidden while this add-on is off", group.gatedNote)
+    }
+
+    @Test
+    fun `a switched-off add-on contributes no rails to Home`() {
+        // The settings list shows its rows; Home does not, because a switched-off add-on is never
+        // fetched and so produces no rail for the layout to order.
+        val rails = listOf(HomeRail("addon:alpha:movie:one:0", "One", emptyList()))
+        val layout = homeRowLayoutOf(homeRowOptions(emptyList(), listOf(addon("alpha", listOf("one"), enabled = false)), emptyList()))
+
+        assertEquals(1, applyHomeRowLayout(rails, layout).size)
     }
 }

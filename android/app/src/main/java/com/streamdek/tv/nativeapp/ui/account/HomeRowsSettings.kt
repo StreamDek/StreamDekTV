@@ -44,6 +44,7 @@ import com.streamdek.tv.nativeapp.data.CatalogDefinition
 import com.streamdek.tv.nativeapp.data.HomeCatalogRowPreference
 import com.streamdek.tv.nativeapp.data.HomeRowOption
 import com.streamdek.tv.nativeapp.data.homeRowLayoutOf
+import com.streamdek.tv.nativeapp.data.buildHomeRowGroups
 import com.streamdek.tv.nativeapp.data.homeRowOptions
 
 /**
@@ -64,6 +65,7 @@ internal fun HomeRowsSettings(
     definitions: List<CatalogDefinition>,
     addons: List<AddonManifest>,
     layout: List<HomeCatalogRowPreference>,
+    streamDekRowsEnabled: Boolean,
     leftRequester: FocusRequester,
     onSave: (List<HomeCatalogRowPreference>, (Boolean) -> Unit) -> Unit,
 ) {
@@ -113,21 +115,47 @@ internal fun HomeRowsSettings(
             "the web portal use, so a change here reaches every device on this profile.",
     )
 
-    rows.forEachIndexed { index, option ->
-        // Keyed, so a row keeps its identity across a save and the highlight stays on it.
-        key(option.id) {
-        HomeRowToggle(
-            option = option,
-            leftRequester = leftRequester,
-            onToggle = { next, complete ->
-                val previous = rows
-                rows = rows.toMutableList().also { it[index] = option.copy(enabled = next) }
-                onSave(homeRowLayoutOf(rows)) { saved ->
-                    if (!saved) rows = previous
-                    complete(saved)
+    // One fold per source, the shape the phone shows. A viewer running several catalogue add-ons
+    // has one list of seventy rows otherwise, and no way to tell whose row is whose.
+    val groups = remember(rows, addons, streamDekRowsEnabled) { buildHomeRowGroups(rows, addons, streamDekRowsEnabled) }
+    var expandedGroups by remember { mutableStateOf(emptySet<String>()) }
+
+    groups.forEach { group ->
+        key(group.key) {
+            val open = group.gatedNote == null && group.key in expandedGroups
+            HomeRowsDisclosure(
+                title = group.title,
+                summary = if (group.gatedNote != null) "${group.rows.size} kept" else "${group.rows.count { it.enabled }} of ${group.rows.size} on",
+                detail = group.gatedNote
+                    ?: if (open) "Press OK to close this source" else "Press OK to choose its rows",
+                expanded = open,
+                gated = group.gatedNote != null,
+                leftRequester = leftRequester,
+                onToggle = {
+                    expandedGroups = if (group.key in expandedGroups) expandedGroups - group.key else expandedGroups + group.key
+                },
+            )
+            if (open) {
+                group.rows.forEach { option ->
+                    // Keyed, so a row keeps its identity across a save and the highlight stays on it.
+                    key(option.id) {
+                        HomeRowToggle(
+                            option = option,
+                            leftRequester = leftRequester,
+                            onToggle = { next, complete ->
+                                val previous = rows
+                                // By id rather than by index: the groups are a view of this list,
+                                // not a copy of its order.
+                                rows = rows.map { if (it.id == option.id) it.copy(enabled = next) else it }
+                                onSave(homeRowLayoutOf(rows)) { saved ->
+                                    if (!saved) rows = previous
+                                    complete(saved)
+                                }
+                            },
+                        )
+                    }
                 }
-            },
-        )
+            }
         }
     }
 }
@@ -167,8 +195,12 @@ private fun HomeRowsDisclosure(
     expanded: Boolean,
     leftRequester: FocusRequester,
     onToggle: () -> Unit,
+    detail: String? = null,
+    /** Switched off from elsewhere: greyed, and it does not open. */
+    gated: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val alpha = if (gated) 0.4f else 1f
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -181,13 +213,13 @@ private fun HomeRowsDisclosure(
                 if (focused) MaterialTheme.colorScheme.primary else Color(0x10FFFFFF),
                 RoundedCornerShape(16.dp),
             )
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged { focused = it.isFocused && !gated }
             .onPreviewKeyEvent { event ->
                 event.type == KeyEventType.KeyDown &&
                     event.key == Key.DirectionLeft &&
                     runCatching { leftRequester.requestFocus() }.isSuccess
             }
-            .clickable(onClick = onToggle)
+            .clickable(enabled = !gated, onClick = onToggle)
             .padding(horizontal = 18.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -195,24 +227,25 @@ private fun HomeRowsDisclosure(
         Column(Modifier.width(0.dp).weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
                 text = title,
-                color = Color.White,
+                color = Color.White.copy(alpha = alpha),
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
             )
             Text(
-                text = if (expanded) "Press OK to close the list" else "Choose which rows appear on Home",
-                color = Color.White.copy(alpha = 0.55f),
+                text = detail
+                    ?: if (expanded) "Press OK to close the list" else "Choose which rows appear on Home",
+                color = Color.White.copy(alpha = alpha * 0.55f),
                 style = MaterialTheme.typography.bodySmall,
             )
         }
         Text(
             text = summary,
-            color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.8f),
+            color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = alpha * 0.8f),
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
         )
         Icon(
             imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
             contentDescription = null,
-            tint = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f),
+            tint = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = alpha * 0.6f),
             modifier = Modifier.size(20.dp),
         )
     }
