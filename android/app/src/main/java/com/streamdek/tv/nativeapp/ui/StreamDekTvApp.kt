@@ -777,7 +777,7 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         activity?.moveTaskToBack(true)
     }
 
-    StreamDekTvTheme(appPreferences = appPrefs) {
+    StreamDekTvTheme(appPreferences = appPrefs, homePreferences = homePrefs) {
         // Screen transitions, stated once for the whole graph. Navigation's defaults slide a full
         // screen of artwork sideways, which on a stick is a lot of pixels to push and reads as a
         // lurch; and nothing here is laid out side by side, so sideways was never the right

@@ -1110,6 +1110,7 @@ class StreamDekRepository(
                     "primarySyncService" to (partial["primarySyncService"] ?: existing.primarySyncService),
                     "defaultAppCatalogsEnabled" to (partial["defaultAppCatalogsEnabled"] ?: existing.defaultAppCatalogsEnabled),
                     "continueWatchingStyle" to (partial["continueWatchingStyle"] ?: existing.continueWatchingStyle),
+                    "networkCardStyle" to (partial["networkCardStyle"] ?: existing.networkCardStyle),
                     "liveCategoriesEnabled" to (partial["liveCategoriesEnabled"] ?: existing.liveCategoriesEnabled),
                     "liveLandscapeCards" to (partial["liveLandscapeCards"] ?: existing.liveLandscapeCards),
                     "liveFavouriteDrawerCards" to (partial["liveFavouriteDrawerCards"] ?: existing.liveFavouriteDrawerCards),

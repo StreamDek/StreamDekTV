@@ -10,6 +10,7 @@ import androidx.tv.material3.ColorScheme
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.darkColorScheme
 import com.streamdek.tv.nativeapp.data.AppPreferences
+import com.streamdek.tv.nativeapp.data.HomePreferences
 
 data class TvExperienceSettings(
     val reducedMotion: Boolean = false,
@@ -19,6 +20,8 @@ data class TvExperienceSettings(
     val animationScale: Float = 1f,
     val gridColumns: Int = 5,
     val backgroundBlur: Boolean = true,
+    /** Branded service artwork on the Streaming Networks row, rather than logos on white. */
+    val brandedNetworkCards: Boolean = true,
 )
 
 val LocalTvExperienceSettings = staticCompositionLocalOf { TvExperienceSettings() }
@@ -59,7 +62,7 @@ private fun streamDekColorScheme(themeKey: String?, highContrast: Boolean): Colo
 }
 
 @Composable
-fun StreamDekTvTheme(appPreferences: AppPreferences? = null, content: @Composable () -> Unit) {
+fun StreamDekTvTheme(appPreferences: AppPreferences? = null, homePreferences: HomePreferences? = null, content: @Composable () -> Unit) {
     val experience = TvExperienceSettings(
         reducedMotion = appPreferences?.reducedMotion == true,
         highContrast = appPreferences?.highContrast == true,
@@ -68,6 +71,9 @@ fun StreamDekTvTheme(appPreferences: AppPreferences? = null, content: @Composabl
         animationScale = when (appPreferences?.animationSpeed) { "slow" -> 1.35f; "fast" -> 0.72f; else -> 1f },
         gridColumns = (appPreferences?.gridSize ?: 5).coerceIn(4, 7),
         backgroundBlur = appPreferences?.backgroundBlur != false,
+        // Synced with mobile under `home`, so an unset value means branded -- the default on
+        // both -- and only an explicit "Classic" turns the logo tiles back on.
+        brandedNetworkCards = !"Classic".equals(homePreferences?.networkCardStyle, ignoreCase = true),
     )
     val density = LocalDensity.current
     val fontScale = if (experience.largeText) density.fontScale * 1.14f else density.fontScale

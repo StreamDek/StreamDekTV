@@ -514,7 +514,15 @@ private fun Modifier.compactShelfViewport(compact: Boolean): Modifier = layout {
     layout(width, placeable.height) { placeable.placeRelative(0, 0) }
 }
 
-/** Streaming-service tile. Logos are supplied on white, so the surface stays light. */
+/**
+ * Streaming-service tile.
+ *
+ * Two treatments, chosen in settings and shared with mobile. The branded one paints the service's
+ * own artwork edge to edge; the classic one fits the logo the row supplied onto a white surface,
+ * which is the shape it has always had -- those logos are drawn for light backgrounds, so the
+ * surface stays light. A branded row with no bundled tile for a service keeps that service on the
+ * white card rather than dropping a logo meant for white onto a dark one.
+ */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun NetworkCard(
@@ -523,14 +531,19 @@ private fun NetworkCard(
     onFocused: () -> Unit,
     onPressed: () -> Unit,
 ) {
+    val tile = if (LocalTvExperienceSettings.current.brandedNetworkCards) networkTileArt(item) else null
+    // The bundled logo beats the one the row supplied: that one is a provider-list thumbnail from
+    // TMDB, and its softness shows at card size.
+    val logo = networkLogoArt(item)
+    val surface = if (tile != null) Color(0xFF0E0E0E) else Color.White
     Card(
         onClick = onPressed,
         modifier = modifier.androidxOnFocus(onFocused),
         shape = CardDefaults.shape(AppCardShape),
         colors = CardDefaults.colors(
-            containerColor = Color.White,
-            focusedContainerColor = Color.White,
-            pressedContainerColor = Color.White,
+            containerColor = surface,
+            focusedContainerColor = surface,
+            pressedContainerColor = surface,
         ),
         border = CardDefaults.border(
             // No resting outline on any card in the app.
@@ -546,11 +559,26 @@ private fun NetworkCard(
         glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
         scale = CardDefaults.scale(focusedScale = TvMotion.focusScale()),
     ) {
-        Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.fillMaxSize().padding(
+                horizontal = if (tile != null) 0.dp else 16.dp,
+                // Less than the sides: the logos carry no margin of their own any more, and
+                // a wordmark on a landscape tile wants its room across, not above.
+                vertical = if (tile != null) 0.dp else 11.dp,
+            ),
+            contentAlignment = Alignment.Center,
+        ) {
             val art = item.poster ?: item.backdrop
-            if (!art.isNullOrBlank()) {
+            if (tile != null) {
                 AsyncImage(
-                    model = art,
+                    model = tile,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            } else if (logo != null || !art.isNullOrBlank()) {
+                AsyncImage(
+                    model = logo ?: art,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,

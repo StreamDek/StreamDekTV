@@ -1,6 +1,8 @@
 package com.streamdek.tv.nativeapp.ui.account
 
 import androidx.compose.foundation.background
+import coil.compose.AsyncImage
+import com.streamdek.tv.R
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -59,6 +61,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
@@ -611,6 +614,19 @@ fun SettingsScreen(
                         SettingsToggleRow("Hide card titles", "Most posters already carry the title, so drop the overlay and leave the year and rating", appPrefs?.hideHomeCardTitles == true, selectedRequester) { next, complete ->
                             savePreference("Hide card titles", complete) { repository.updateAppPreferences(mapOf("hideHomeCardTitles" to next)) }
                         }
+                    }
+                    SettingsDropdownRow(
+                        "Streaming network cards",
+                        "Draw the Streaming Networks row with each service's own artwork, or with its logo on a white tile.",
+                        if ("Classic".equals(homePrefs?.networkCardStyle, ignoreCase = true)) "Classic" else "Branded",
+                        listOf("Branded" to "Branded artwork", "Classic" to "Logo tile"),
+                        optionDescriptions = mapOf(
+                            "Branded" to "The service's own artwork, edge to edge.",
+                            "Classic" to "Each service's logo on a white tile and named",
+                        ),
+                        optionPreview = { option -> NetworkCardStylePreview(branded = option != "Classic") },
+                    ) { value ->
+                        savePreference("Streaming network cards") { repository.updateHomePreferences(mapOf("networkCardStyle" to value)) }
                     }
                     SettingsDropdownRow("Card density", "Comfortable or compact browsing", appPrefs?.cardDensity ?: "comfortable", listOf("comfortable" to "Comfortable", "compact" to "Compact")) { value ->
                         savePreference("Card density") { repository.updateAppPreferences(mapOf("cardDensity" to value)) }
@@ -1734,6 +1750,13 @@ private fun SettingsDropdownRow(
     options: List<Pair<String, String>>,
     optionColors: Map<String, Color> = emptyMap(),
     optionDescriptions: Map<String, String> = emptyMap(),
+    /**
+     * A thumbnail of what an option looks like, drawn beside its label.
+     *
+     * For settings whose whole subject is an appearance: a sentence describing artwork is a poor
+     * substitute for the artwork. Optional, and every existing row leaves it out.
+     */
+    optionPreview: (@Composable (String) -> Unit)? = null,
     onSelect: (String) -> Unit,
 ) {
     val leftRequester = LocalSettingsLeftRequester.current
@@ -1766,6 +1789,7 @@ private fun SettingsDropdownRow(
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 optionColors[value]?.let { color -> ThemeColorSwatch(color) }
+                optionPreview?.invoke(value)
                 Text(displayValue, color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
                 Icon(Icons.Outlined.ArrowDropDown, null, tint = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.72f), modifier = Modifier.size(22.dp))
             }
@@ -1787,6 +1811,7 @@ private fun SettingsDropdownRow(
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             optionColors[optionValue]?.let { color -> ThemeColorSwatch(color) }
+                            optionPreview?.invoke(optionValue)
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 androidx.compose.material3.Text(label, color = if (optionFocused) Color.White else Color.White.copy(alpha = 0.86f), fontWeight = if (optionValue.equals(value, true)) FontWeight.Bold else FontWeight.Medium)
                                 optionDescriptions[optionValue]?.let { endpoint ->
@@ -1857,6 +1882,35 @@ private fun SettingsToggleRow(
                 uncheckedTrackColor = Color.White.copy(alpha = 0.16f),
                 uncheckedBorderColor = Color.White.copy(alpha = 0.22f),
             ),
+        )
+    }
+}
+
+/**
+ * A thumbnail of one Streaming Networks card style, for the settings dropdown.
+ *
+ * Both options show real bundled artwork for the same service, so what differs between the two
+ * thumbnails is only the treatment -- which is the thing being chosen.
+ */
+@Composable
+private fun NetworkCardStylePreview(branded: Boolean) {
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(5.dp)
+    Box(
+        Modifier.width(40.dp).height(22.dp)
+            .clip(shape)
+            .background(if (branded) Color(0xFF0E0E0E) else Color.White)
+            .border(1.dp, Color.White.copy(alpha = 0.24f), shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        AsyncImage(
+            model = if (branded) R.drawable.network_tile_netflix else R.drawable.network_logo_netflix,
+            contentDescription = null,
+            modifier = if (branded) Modifier.fillMaxSize() else Modifier.fillMaxSize().padding(horizontal = 5.dp, vertical = 2.dp),
+            contentScale = if (branded) {
+                androidx.compose.ui.layout.ContentScale.Crop
+            } else {
+                androidx.compose.ui.layout.ContentScale.Fit
+            },
         )
     }
 }

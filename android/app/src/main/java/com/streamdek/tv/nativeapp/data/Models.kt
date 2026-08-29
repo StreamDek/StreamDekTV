@@ -574,6 +574,14 @@ data class HomePreferences(
     val primarySyncService: String = SyncServiceId.TRAKT,
     val defaultAppCatalogsEnabled: Boolean = true,
     val continueWatchingStyle: String? = null,
+    /**
+     * "Classic" or "Branded": which artwork the Streaming Networks row draws.
+     *
+     * Lives under `home` rather than `app` because it is one choice for the account, not one
+     * per screen size -- the phone and the television draw the same services from the same row,
+     * and picking the branded tiles on one is a statement about both.
+     */
+    val networkCardStyle: String? = null,
     val liveCategoriesEnabled: Boolean = true,
     val liveLandscapeCards: Boolean = true,
     val liveFavouriteDrawerCards: Boolean = false,
