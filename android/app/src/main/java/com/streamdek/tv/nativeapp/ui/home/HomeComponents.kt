@@ -34,8 +34,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -160,7 +162,14 @@ internal fun HomeSpotlight(
     }
 
     val synopsis = detail?.description?.takeIf { it.isNotBlank() } ?: item.description?.takeIf { it.isNotBlank() }
-    val logo = detail?.titleLogo ?: item.titleLogo
+    // A streaming service brings its own wordmark, and it is preferred here for the same reason the
+    // card prefers it: what `/tmdb/networks` supplies is a provider-list thumbnail, and at hero size
+    // it is a blur. It is drawn white so that it reads against the service's own colour behind it
+    // (see [networkHeroWash]) instead of against the white tile the row draws it on. A service with
+    // no bundled wordmark falls through to its name in text rather than to the fetched logo — that
+    // one is dark ink meant for a light tile, and on the hero it is a smudge.
+    val networkLogo = if (item.type == "network") networkLogoArt(item) else null
+    val logo = if (item.type == "network") null else detail?.titleLogo ?: item.titleLogo
     val context = LocalContext.current
     val logoRequest = remember(logo) {
         logo?.let {
@@ -215,7 +224,16 @@ internal fun HomeSpotlight(
         // the fallback text and the 68dp logo measured at different heights and the hero copy
         // visibly jumped as users moved quickly across cards.
         Box(modifier = Modifier.height(68.dp).fillMaxWidth()) {
-            if (logoRequest != null) {
+            if (networkLogo != null) {
+                AsyncImage(
+                    model = networkLogo,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                    alignment = Alignment.CenterStart,
+                    colorFilter = ColorFilter.tint(Color.White),
+                )
+            } else if (logoRequest != null) {
                 SubcomposeAsyncImage(
                     model = logoRequest,
                     contentDescription = item.title,
@@ -655,3 +673,27 @@ internal fun homeScrim(backgroundColor: Color): Pair<Brush, Brush> {
     )
     return readingScrim to baseFade
 }
+
+/**
+ * The hero's backdrop while a streaming-service card is highlighted.
+ *
+ * A network card has no artwork to show — the row's items carry a provider logo where a title
+ * carries a backdrop, and stretching that across the screen is why the hero was left empty. Empty
+ * meant the flat app background, which is the one colour a service's wordmark cannot be seen
+ * against, so the hero read as a broken frame with a smudge in it. This paints the service's own
+ * colour instead: [networkBrandColor] top, lifted slightly so the band has the same depth the card
+ * has, and clear by roughly three quarters down so the shelves keep sitting on the app background
+ * and nothing below the hero changes.
+ *
+ * One gradient, no scrim over it. The scrim exists to hold copy off busy artwork; a flat brand
+ * colour is not busy, and every colour in that table is dark enough for white copy on its own —
+ * laying [homeScrim] over this would only put the app background back where the brand should be.
+ */
+internal fun networkHeroWash(brand: Color): Brush = Brush.verticalGradient(
+    colorStops = arrayOf(
+        0f to lerp(brand, Color.White, 0.10f),
+        0.30f to brand,
+        0.72f to brand.copy(alpha = 0.28f),
+        1f to Color.Transparent,
+    ),
+)

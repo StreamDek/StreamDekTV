@@ -125,6 +125,20 @@ private data class BrowseActionState(
     val fromContinueWatching: Boolean = false,
 )
 
+/**
+ * What paints behind the hero.
+ *
+ * A title brings a backdrop; a streaming service brings a colour instead, because the only image
+ * its card carries is a wordmark and a wordmark stretched across the screen is not a backdrop. Both
+ * are one [AnimatedContent] target so that travelling between a title card and a service card
+ * crossfades once, rather than one layer cutting out while another fades in.
+ */
+private sealed interface HomeHeroBackdrop {
+    data class Artwork(val url: String) : HomeHeroBackdrop
+    data class Brand(val color: Color) : HomeHeroBackdrop
+    data object None : HomeHeroBackdrop
+}
+
 /** Stable, null-safe AnimatedContent key for addon items whose decoded fields may be absent. */
 private class HomeHeroPresentation(val item: MediaItem?) {
     private val itemKey = "${item?.type.orEmpty()}:${item?.id.orEmpty()}"
@@ -431,21 +445,30 @@ fun HomeScreen(
             .onFocusChanged { homeHasFocus = it.hasFocus }
             .focusGroup(),
     ) {
-        val art = (spotlightItem?.backdrop ?: spotlightItem?.poster)
-            ?.takeIf { initialArtworkReady }
-            ?.takeIf { spotlightItem?.type != "network" }
+        val backdrop: HomeHeroBackdrop = when {
+            !initialArtworkReady || spotlightItem == null -> HomeHeroBackdrop.None
+            // A service wears its own colour. Falling back to None rather than to the provider
+            // logo keeps an unmapped service exactly where it was: on the app background.
+            spotlightItem.type == "network" ->
+                networkBrandColor(spotlightItem)?.let { HomeHeroBackdrop.Brand(it) }
+                    ?: HomeHeroBackdrop.None
+            else -> (spotlightItem.backdrop ?: spotlightItem.poster)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { HomeHeroBackdrop.Artwork(it) }
+                ?: HomeHeroBackdrop.None
+        }
         AnimatedContent(
-            targetState = art,
+            targetState = backdrop,
             modifier = Modifier.fillMaxSize(),
             transitionSpec = { heroFadeIn togetherWith heroFadeOut },
             label = "home-hero-backdrop",
-        ) { imageUrl ->
-            if (!imageUrl.isNullOrBlank()) {
-                AsyncImage(
+        ) { target ->
+            when (target) {
+                is HomeHeroBackdrop.Artwork -> AsyncImage(
                     model = ImageRequest.Builder(context)
-                        .data(imageUrl)
-                        .memoryCacheKey(imageUrl)
-                        .diskCacheKey(imageUrl)
+                        .data(target.url)
+                        .memoryCacheKey(target.url)
+                        .diskCacheKey(target.url)
                         .crossfade(false)
                         .allowHardware(true)
                         .build(),
@@ -453,18 +476,27 @@ fun HomeScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                 )
+                is HomeHeroBackdrop.Brand -> Box(
+                    Modifier.fillMaxSize().background(networkHeroWash(target.color)),
+                )
+                HomeHeroBackdrop.None -> Unit
             }
         }
 
-        Box(
-            Modifier.fillMaxSize().drawWithCache {
-                val (readingScrim, baseFade) = homeScrim(backgroundColor)
-                onDrawBehind {
-                    drawRect(readingScrim)
-                    drawRect(baseFade)
-                }
-            },
-        )
+        // The scrim exists to hold the copy off busy artwork. A brand wash is one flat colour that
+        // already fades to the app background on its own, and drawing this over it would put the
+        // background back on top of the brand — so it is skipped there, not softened.
+        if (backdrop !is HomeHeroBackdrop.Brand) {
+            Box(
+                Modifier.fillMaxSize().drawWithCache {
+                    val (readingScrim, baseFade) = homeScrim(backgroundColor)
+                    onDrawBehind {
+                        drawRect(readingScrim)
+                        drawRect(baseFade)
+                    }
+                },
+            )
+        }
 
         // The artwork above runs to the edge of the screen; everything the viewer can reach starts
         // clear of the navigation rail. Insetting the whole route instead — which is what the shell

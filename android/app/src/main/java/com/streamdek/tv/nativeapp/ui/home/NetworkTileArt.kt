@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.home
 
+import androidx.compose.ui.graphics.Color
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.MediaItem
 
@@ -167,6 +168,127 @@ private val logosByName: Map<String, Int> = mapOf(
   "crunchyroll" to R.drawable.network_logo_crunchyroll,
 )
 
+/**
+ * Brand colours, one per service, for the hero to wear while that service's card is highlighted.
+ *
+ * Each one is read off the bundled tile rather than picked by eye: the tile's own gradient, with
+ * the white wordmark and the vignetted edges discarded, averaged over its more saturated third —
+ * which is where a brand's hue actually lives — then held to a lightness of 0.12..0.22 and a
+ * saturation of at most 0.85. That clamp is the whole reason these are constants and not a
+ * runtime sample of the drawable: it guarantees white copy clears 6:1 against every one of them,
+ * so the hero is legible before it is on-brand, and it costs a stick nothing to look one up.
+ *
+ * HBO and NOW ship a logo but no tile, so their two are chosen by hand to the same rule.
+ */
+private val AcornGreen = Color(0xFF064932)
+private val AmcTeal = Color(0xFF086862)
+private val AppleCrimson = Color(0xFF46061B)
+private val IPlayerMagenta = Color(0xFF680855)
+private val BritboxNavy = Color(0xFF10172D)
+private val Channel4Green = Color(0xFF416808)
+private val Channel5Slate = Color(0xFF1C243C)
+private val CraveBlue = Color(0xFF08425D)
+private val CrunchyrollRust = Color(0xFF681408)
+private val CuriosityInk = Color(0xFF060538)
+private val DiscoveryViolet = Color(0xFF150544)
+private val DisneyTeal = Color(0xFF053844)
+private val HayuMagenta = Color(0xFF68085D)
+private val MaxPurple = Color(0xFF3A064B)
+private val HuluGreen = Color(0xFF064D0F)
+private val ItvSlate = Color(0xFF1D3141)
+private val MgmGold = Color(0xFF685A08)
+private val NetflixRed = Color(0xFF680808)
+private val NetflixKidsTeal = Color(0xFF085768)
+private val ParamountBlue = Color(0xFF071453)
+private val PeacockPlum = Color(0xFF231B25)
+private val PlexCharcoal = Color(0xFF2C2B25)
+private val PlutoOlive = Color(0xFF686608)
+private val PrimeBlue = Color(0xFF052744)
+private val ShudderInk = Color(0xFF15192B)
+private val SkyTeal = Color(0xFF085E68)
+private val SkyshowtimeMagenta = Color(0xFF5C085A)
+private val StarzTeal = Color(0xFF074352)
+private val YouTubeRed = Color(0xFF680808)
+private val HboGraphite = Color(0xFF202127)
+private val NowTeal = Color(0xFF004449)
+
+/** Brand colours by watch-provider id, matched first for the reasons given above [tilesByProviderId]. */
+private val brandByProviderId: Map<String, Color> = mapOf(
+  "8" to NetflixRed,
+  "9" to PrimeBlue,
+  "350" to AppleCrimson,
+  "1899" to MaxPurple,
+  "49" to HboGraphite,
+  "531" to ParamountBlue,
+  "2303" to ParamountBlue,
+  "2616" to ParamountBlue,
+  "15" to HuluGreen,
+  "337" to DisneyTeal,
+  "386" to PeacockPlum,
+  "387" to PeacockPlum,
+  "526" to AmcTeal,
+  "80" to AmcTeal,
+  "528" to AmcTeal,
+  "39" to NowTeal,
+  "591" to NowTeal,
+  "43" to StarzTeal,
+  "2358" to StarzTeal,
+  "151" to BritboxNavy,
+  "197" to BritboxNavy,
+  "283" to CrunchyrollRust,
+)
+
+/** The same colours by flattened service name, for the reasons given above [tilesByName]. */
+private val brandByName: Map<String, Color> = mapOf(
+  "netflix" to NetflixRed,
+  "netflixkids" to NetflixKidsTeal,
+  "primevideo" to PrimeBlue,
+  "amazonprimevideo" to PrimeBlue,
+  "amazonvideo" to PrimeBlue,
+  "appletv" to AppleCrimson,
+  "appletvplus" to AppleCrimson,
+  "hbomax" to MaxPurple,
+  "max" to MaxPurple,
+  "hbo" to HboGraphite,
+  "paramount" to ParamountBlue,
+  "paramountplus" to ParamountBlue,
+  "hulu" to HuluGreen,
+  "disney" to DisneyTeal,
+  "disneyplus" to DisneyTeal,
+  "peacock" to PeacockPlum,
+  "amc" to AmcTeal,
+  "amcplus" to AmcTeal,
+  "now" to NowTeal,
+  "nowtv" to NowTeal,
+  "starz" to StarzTeal,
+  "lionsgateplus" to StarzTeal,
+  "britbox" to BritboxNavy,
+  "crunchyroll" to CrunchyrollRust,
+  "acorntv" to AcornGreen,
+  "bbciplayer" to IPlayerMagenta,
+  "crave" to CraveBlue,
+  "curiosity" to CuriosityInk,
+  "curiositystream" to CuriosityInk,
+  "discovery" to DiscoveryViolet,
+  "discoveryplus" to DiscoveryViolet,
+  "hayu" to HayuMagenta,
+  "mgm" to MgmGold,
+  "mgmplus" to MgmGold,
+  "plex" to PlexCharcoal,
+  "plutotv" to PlutoOlive,
+  "shudder" to ShudderInk,
+  "skyshowtime" to SkyshowtimeMagenta,
+  "skygo" to SkyTeal,
+  "channel4" to Channel4Green,
+  "all4" to Channel4Green,
+  "channel5" to Channel5Slate,
+  "my5" to Channel5Slate,
+  "itvx" to ItvSlate,
+  "itvplayer" to ItvSlate,
+  "youtube" to YouTubeRed,
+  "youtubepremium" to YouTubeRed,
+)
+
 /** Lowercase letters and digits only, so "Apple TV+" and "apple tv plus" are not two services. */
 internal fun networkTileKey(name: String): String =
   name.lowercase().filter { it.isLetterOrDigit() }
@@ -192,3 +314,13 @@ internal fun networkLogoArt(id: String, title: String): Int? =
   logosByProviderId[id.trim()] ?: logosByName[networkTileKey(title)]
 
 internal fun networkLogoArt(item: MediaItem): Int? = networkLogoArt(item.id, item.title)
+
+/**
+ * The colour the hero wears while this network card is highlighted, or null when none ships.
+ *
+ * Null leaves the hero on the app background, which is what every network card had before.
+ */
+internal fun networkBrandColor(id: String, title: String): Color? =
+  brandByProviderId[id.trim()] ?: brandByName[networkTileKey(title)]
+
+internal fun networkBrandColor(item: MediaItem): Color? = networkBrandColor(item.id, item.title)
