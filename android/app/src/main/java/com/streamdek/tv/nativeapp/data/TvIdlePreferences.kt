@@ -4,8 +4,10 @@ import android.content.Context
 
 internal const val IDLE_TIMEOUT_OFF = 0
 
-internal val PAUSED_SLEEP_CHOICES_MINUTES = listOf(0, 15, 30, 60, 90)
-internal val APP_IDLE_CHOICES_MINUTES = listOf(0, 30, 60, 120, 240)
+// 5 and 10 lead both lists so the behaviour can be seen inside a sitting rather than only
+// inferred from a television that eventually went dark on its own.
+internal val PAUSED_SLEEP_CHOICES_MINUTES = listOf(0, 5, 10, 15, 30, 60, 90)
+internal val APP_IDLE_CHOICES_MINUTES = listOf(0, 5, 10, 30, 60, 120, 240)
 
 internal fun idleTimeoutMillis(minutes: Int): Long? =
     minutes.takeIf { it > 0 }?.times(60_000L)

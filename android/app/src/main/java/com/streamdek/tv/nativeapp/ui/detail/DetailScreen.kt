@@ -39,6 +39,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as episodeGridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,6 +85,11 @@ import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.SeasonDetail
 import com.streamdek.tv.nativeapp.data.SeasonEpisode
 import com.streamdek.tv.nativeapp.data.SeriesEpisodeSlot
+import com.streamdek.tv.nativeapp.data.buildEpisodeRanges
+import com.streamdek.tv.nativeapp.data.episodeRangeIndexFor
+import com.streamdek.tv.nativeapp.data.focusEpisodeNumber
+import com.streamdek.tv.nativeapp.data.nextUnwatchedEpisodeNumber
+import com.streamdek.tv.nativeapp.data.resolveJumpTarget
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TraktCommentItem
 import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
@@ -574,6 +584,60 @@ fun DetailScreen(
     }
     val selectedSeasonWatched = activeSeasonNumber in watchedSeasons
 
+    // Blocks of twenty for a season too long to cross with a d-pad. Empty for anything shorter,
+    // which is what keeps an ordinary season exactly as it was.
+    val activeSeasonEpisodeNumbers = remember(episodeEntries, activeSeasonNumber) {
+        episodeEntries.filter { it.seasonNumber == activeSeasonNumber }.map { it.episode.episodeNumber }
+    }
+    val episodeRanges = remember(activeSeasonEpisodeNumbers) { buildEpisodeRanges(activeSeasonEpisodeNumbers) }
+    val activeSeasonWatchedNumbers = remember(activeSeasonEpisodeNumbers, watchedEpisodeKeys, activeSeasonNumber) {
+        activeSeasonEpisodeNumbers
+            .filterTo(mutableSetOf()) { watchedEpisodeKey(activeSeasonNumber, it) in watchedEpisodeKeys }
+    }
+    val nextUnwatchedInSeason = remember(activeSeasonEpisodeNumbers, activeSeasonWatchedNumbers) {
+        nextUnwatchedEpisodeNumber(activeSeasonEpisodeNumbers, activeSeasonWatchedNumbers)
+    }
+    // -1 until a block has been chosen, so the effect below can tell "not decided" from "the
+    // viewer picked the first one".
+    var selectedRangeIndex by rememberSaveable(mediaId, activeSeasonNumber) { mutableIntStateOf(-1) }
+    var showEpisodeJump by remember(mediaId, activeSeasonNumber) { mutableStateOf(false) }
+    /** Position within its block of the episode a jump chose, so the row opens on it. */
+    var jumpFocusPosition by remember(mediaId, activeSeasonNumber) { mutableIntStateOf(0) }
+    /** Bumped by a jump, to ask the episode row to take focus once it has redrawn. */
+    var jumpFocusSignal by remember(mediaId, activeSeasonNumber) { mutableIntStateOf(0) }
+    LaunchedEffect(episodeRanges, activeSeasonEpisodeNumbers, selectedEntry?.episode?.episodeNumber, resumeEpisodeContext) {
+        if (selectedRangeIndex in episodeRanges.indices) return@LaunchedEffect
+        // Open on the block holding whatever the viewer is up to, so carrying on where they left
+        // off in a two-hundred-episode season costs no navigation at all.
+        val resumeNumber = resumeEpisodeContext?.takeIf { it.seasonNumber == activeSeasonNumber }?.episodeNumber
+        val focus = focusEpisodeNumber(
+            episodeNumbers = activeSeasonEpisodeNumbers,
+            selectedEpisodeNumber = selectedEntry?.takeIf { it.seasonNumber == activeSeasonNumber }?.episode?.episodeNumber,
+            inProgressEpisodeNumber = resumeNumber,
+            watchedEpisodeNumbers = activeSeasonWatchedNumbers,
+        )
+        selectedRangeIndex = episodeRangeIndexFor(episodeRanges, focus)
+    }
+    /** Moves the row onto [episodeNumber] of the active season, opening its block on the way. */
+    fun jumpToEpisode(episodeNumber: Int?) {
+        val target = resolveJumpTarget(activeSeasonEpisodeNumbers, episodeNumber) ?: return
+        val rangeIndex = episodeRangeIndexFor(episodeRanges, target)
+        selectedRangeIndex = rangeIndex
+        // Where the episode sits inside its own block, which is what the row counts in.
+        jumpFocusPosition = episodeRanges.getOrNull(rangeIndex)
+            ?.let { range -> activeSeasonEpisodeNumbers.indexOf(target) - range.fromIndex }
+            ?.coerceAtLeast(0)
+            ?: 0
+        val index = episodeEntries.indexOfFirst {
+            it.seasonNumber == activeSeasonNumber && it.episode.episodeNumber == target
+        }
+        if (index >= 0) selectedEpisodeIndex = index
+        showEpisodeJump = false
+        // The dialog is about to close and it has nowhere to hand focus back to, so the row is
+        // asked for it explicitly rather than left to spatial search from a dismissed window.
+        jumpFocusSignal += 1
+    }
+
     // The run restarts whenever the viewer picks a season from the chips; everything after that
     // season is appended as they reach it.
     LaunchedEffect(detail?.id, anchorSeasonNumber) {
@@ -981,11 +1045,30 @@ fun DetailScreen(
                                 rowFocusKey = "${d.id}:$anchorSeasonNumber",
                                 loadingNextSeason = loadingNextSeason,
                                 watchedEpisodeKeys = watchedEpisodeKeys,
+                                nextUnwatchedEpisodeNumber = nextUnwatchedInSeason,
+                                inProgressEpisode = progressFraction
+                                    ?.takeIf { it > 0f && it < 0.95f }
+                                    ?.let { fraction ->
+                                        resumeEpisodeContext
+                                            ?.takeIf { it.seasonNumber == activeSeasonNumber }
+                                            ?.let { it.episodeNumber to fraction }
+                                    },
                                 seasonWatched = selectedSeasonWatched,
                                 watchedSeasonNumbers = watchedSeasons,
                                 markingSeason = markingSeasonWatched,
                                 firstChipRequester = seasonChipRequester,
                                 upRequester = playRequester,
+                                episodeRanges = episodeRanges,
+                                selectedRangeIndex = selectedRangeIndex.coerceAtLeast(0),
+                                onSelectRange = {
+                                    selectedRangeIndex = it
+                                    // A block chosen from the chips opens at its first card; only a
+                                    // jump names an episode within it.
+                                    jumpFocusPosition = 0
+                                },
+                                onJumpToEpisode = { showEpisodeJump = true },
+                                initialFocusPosition = jumpFocusPosition,
+                                focusRowSignal = jumpFocusSignal,
                                 onSelectSeason = {
                                     if (anchorSeasonNumber != it) {
                                         resumeTargetSlot = null
@@ -1143,6 +1226,18 @@ fun DetailScreen(
                 },
                 onBack = { dismissTrailer() },
                 modifier = Modifier.graphicsLayer { alpha = trailerStageAlpha },
+            )
+        }
+
+        if (showEpisodeJump) {
+            EpisodeJumpDialog(
+                episodeNumbers = activeSeasonEpisodeNumbers,
+                watchedNumbers = activeSeasonWatchedNumbers,
+                seasonNumber = activeSeasonNumber,
+                selectedNumber = selectedEntry?.takeIf { it.seasonNumber == activeSeasonNumber }?.episode?.episodeNumber,
+                nextUnwatched = nextUnwatchedInSeason,
+                onJump = ::jumpToEpisode,
+                onDismiss = { showEpisodeJump = false },
             )
         }
 
@@ -1701,6 +1796,116 @@ internal fun DetailError(message: String, onRetry: (() -> Unit)? = null, onBack:
             }
             onBack?.let {
                 OutlinedButton(onClick = it, shape = ButtonDefaults.shape(AppPillShape)) { Text("Go Back") }
+            }
+        }
+    }
+}
+
+/**
+ * Choosing an episode by number, for a season too long to walk through.
+ *
+ * A grid rather than a list, because a grid is what a d-pad is good at: ten to a row means Down
+ * moves ten episodes at a time, so anywhere in a two-hundred-episode season is about twenty presses
+ * from anywhere else, and rather fewer from where the viewer actually is - the grid opens with the
+ * current episode focused rather than at the top.
+ *
+ * The shortcuts above it are the short answers to the two questions people actually have: where was
+ * I, and what is next. Neither needs the viewer to know a number.
+ */
+@Composable
+private fun EpisodeJumpDialog(
+    episodeNumbers: List<Int>,
+    watchedNumbers: Set<Int>,
+    seasonNumber: Int,
+    selectedNumber: Int?,
+    nextUnwatched: Int?,
+    onJump: (Int?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val gridState = rememberLazyGridState()
+    val entryRequester = remember { FocusRequester() }
+    val focusNumber = selectedNumber ?: nextUnwatched ?: episodeNumbers.firstOrNull()
+    LaunchedEffect(focusNumber, episodeNumbers) {
+        // Open on the episode the viewer is on. Scrolled first, then focused: a tile that has not
+        // been composed yet cannot take focus, and asking it to is how a dialog opens with nothing
+        // focused and the remote doing nothing at all.
+        val index = episodeNumbers.indexOf(focusNumber)
+        if (index >= 0) gridState.scrollToItem((index - 5).coerceAtLeast(0))
+        delay(120)
+        runCatching { entryRequester.requestFocus() }
+    }
+    val shortcuts = remember(episodeNumbers, selectedNumber, nextUnwatched) {
+        buildList {
+            episodeNumbers.firstOrNull()?.let { add("First" to it) }
+            nextUnwatched?.let { add("Next Up · E$it" to it) }
+            episodeNumbers.lastOrNull()?.takeIf { it != episodeNumbers.firstOrNull() }?.let { add("Last · E$it" to it) }
+        }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .width(760.dp)
+                .background(MaterialTheme.colorScheme.surface, AppCardShape)
+                .padding(28.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = "Season $seasonNumber · go to episode",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            if (shortcuts.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    shortcuts.forEach { (label, number) ->
+                        DetailFocusCard(
+                            onClick = { onJump(number) },
+                            shape = AppPillShape,
+                            description = label,
+                        ) {
+                            Text(
+                                text = label,
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(10),
+                state = gridState,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                episodeGridItems(episodeNumbers, key = { it }) { number ->
+                    val watched = number in watchedNumbers
+                    val isFocusTarget = number == focusNumber
+                    DetailFocusCard(
+                        onClick = { onJump(number) },
+                        shape = AppPillShape,
+                        modifier = if (isFocusTarget) Modifier.focusRequester(entryRequester) else Modifier,
+                        description = if (watched) "Episode $number, watched" else "Episode $number",
+                    ) {
+                        Text(
+                            text = "$number",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp).fillMaxWidth(),
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+                            // Watched fades; the content description above carries the same thing
+                            // for anyone who cannot see the fade.
+                            color = if (watched) {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                        )
+                    }
+                }
             }
         }
     }

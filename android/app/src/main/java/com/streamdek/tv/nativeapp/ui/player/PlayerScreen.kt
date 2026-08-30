@@ -524,9 +524,14 @@ fun PlayerScreen(
     val liveFavouriteListState = rememberLazyListState()
     val favouriteRequester = focusRequesters.favourite
 
-    // Keep screen on while the player is active
+    // Keep the screen on while something is actually playing - and only then.
     @Composable
     fun KeepScreenOnEffect() {
+    // Paused is the case that matters: a film left paused used to hold the display awake all
+    // night, because the flag went up once and came down only when the player closed.
+    LaunchedEffect(paused, loading) {
+        view.keepScreenOn = !paused || loading
+    }
     DisposableEffect(Unit) {
         view.keepScreenOn = true
         onDispose {
@@ -1728,6 +1733,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         queueTraktStop()
         syncProgressIfEligible()
         onExitToDetail()
+        // Leaving the player was only half of it: the viewer is still on a lit title page, and the
+        // app-idle timer then has to run its own full length before anything else happens. Handing
+        // the foreground back is the furthest an app can go towards "sleep" without holding a
+        // system permission, and it is what lets the set's own screensaver start.
+        (context as? android.app.Activity)?.moveTaskToBack(true)
     }
 
     LaunchedEffect(nextEpisodeDialogVisible, nextEpisodeCountdown) {

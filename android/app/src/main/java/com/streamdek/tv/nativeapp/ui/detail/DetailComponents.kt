@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -60,6 +61,8 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.nativeapp.data.CastMember
+import com.streamdek.tv.nativeapp.data.EpisodeRange
+import kotlinx.coroutines.delay
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.SeasonEpisode
@@ -220,9 +223,14 @@ private val RowFocusMemorySaver = Saver<RowFocusMemory, Int>(
     restore = { RowFocusMemory(it) },
 )
 
+/**
+ * [initialIndex] is only consulted when [key] changes, which is exactly when a row's contents have
+ * been replaced - a different block of a long season, say - and the position it should open on is
+ * therefore something the caller knows and the memory cannot.
+ */
 @Composable
-internal fun rememberRowFocus(key: Any?): RowFocusMemory =
-    rememberSaveable(key, saver = RowFocusMemorySaver) { RowFocusMemory() }
+internal fun rememberRowFocus(key: Any?, initialIndex: Int = 0): RowFocusMemory =
+    rememberSaveable(key, saver = RowFocusMemorySaver) { RowFocusMemory(initialIndex) }
 
 /**
  * Vertical entry uses the first card until the viewer deliberately moves within this row. The
@@ -335,6 +343,10 @@ internal fun EpisodeCard(
     released: Boolean,
     /** Set once the row spans more than one season, so a card says which season it belongs to. */
     showSeason: Boolean = false,
+    /** The first episode not yet watched. Only marked in a season long enough to lose your place in. */
+    nextUp: Boolean = false,
+    /** How far in the viewer got, when they stopped part way. Null otherwise. */
+    progress: Float? = null,
     modifier: Modifier = Modifier,
     onFocused: () -> Unit,
     onClick: () -> Unit,
@@ -347,6 +359,8 @@ internal fun EpisodeCard(
         description = buildString {
             append("Season $seasonNumber episode ${episode.episodeNumber}, ${episode.name}")
             if (watched) append(", watched")
+            if (nextUp) append(", next up")
+            progress?.let { append(", ${(it * 100).toInt()} percent watched") }
             if (!released) append(", not released yet")
         },
     ) {
@@ -368,6 +382,7 @@ internal fun EpisodeCard(
                         else "E${episode.episodeNumber}",
                     )
                     if (!compact && watched) MetaChip("WATCHED", emphasised = true)
+                    if (!compact && nextUp && !watched) MetaChip("NEXT UP", emphasised = true)
                     if (!compact && !released) MetaChip("SOON")
                 }
                 if (!compact) episode.runtime?.takeIf { it > 0 }?.let {
@@ -405,6 +420,25 @@ internal fun EpisodeCard(
                     )
                 }
             }
+            progress?.takeIf { !compact }?.let { fraction ->
+                // Along the bottom edge of the still rather than inside the copy block: it belongs
+                // to the episode as a whole, and putting it in the column would shift the synopsis
+                // about depending on whether somebody had started watching.
+                Box(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .background(Color.Black.copy(alpha = 0.55f)),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(fraction.coerceIn(0.02f, 1f))
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                }
+            }
         }
     }
 }
@@ -426,31 +460,46 @@ internal fun SeasonChipRow(
     rowRequester: FocusRequester? = null,
     /** Where up out of the chips goes, so the whole page is reachable in a few presses. */
     upRequester: FocusRequester? = null,
+    /** Where down out of the chips goes. Null while there is nothing below to land on. */
+    downRequester: FocusRequester? = null,
     onSelect: (Int) -> Unit,
 ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val selectedIndex = seasons.indexOfFirst { it.seasonNumber == selected }.coerceAtLeast(0)
+    // Keyed on the length of the list, so a series whose seasons arrive late rebuilds the memory
+    // rather than holding an index that no longer points at anything.
+    val rowFocus = rememberRowFocus(key = "seasons:${seasons.size}", initialIndex = selectedIndex)
 
     // The selected season changes on its own as the viewer scrolls the episode row past a season
     // boundary, so the chip for it has to be brought into view rather than assumed to be on screen.
     LaunchedEffect(selected, seasons.size) {
-        val index = seasons.indexOfFirst { it.seasonNumber == selected }
-        if (index >= 0) {
-            listState.animateToAnchoredItem(
-                focusedIndex = index,
-                itemCount = seasons.size,
-                leadingItems = 1,
-            )
-        }
+        if (selectedIndex in seasons.indices) rowFocus.remember(selectedIndex)
+    }
+    // ...and the row follows the highlight as it travels, which is what was missing: a season list
+    // wider than the screen could be looked at but never walked along.
+    LaunchedEffect(rowFocus.focusedIndex, seasons.size) {
+        listState.animateToAnchoredItem(
+            focusedIndex = rowFocus.focusedIndex,
+            itemCount = seasons.size,
+            leadingItems = 1,
+        )
     }
 
     LazyRow(
         state = listState,
         modifier = Modifier
             .then(rowRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
-            .focusGroup()
+            // Names the chip focus should land on when it arrives from anywhere, rather than
+            // leaving Compose to pick whichever one happens to be directly above or below the
+            // thing focus came from. That guess is what made "up" work from one spot in the
+            // episode row and nowhere else.
+            .rowFocusEntry(rowFocus)
             // Named rather than left to spatial search: a chip that happens to sit under a gutter
             // in the row above otherwise finds nothing at all.
-            .focusProperties { if (upRequester != null) up = upRequester },
+            .focusProperties {
+                if (upRequester != null) up = upRequester
+                if (downRequester != null) down = downRequester
+            },
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
     ) {
@@ -460,9 +509,11 @@ internal fun SeasonChipRow(
             DetailFocusCard(
                 onClick = { onSelect(season.seasonNumber) },
                 shape = AppPillShape,
-                modifier = Modifier.then(
-                    if (index == 0 && firstChipRequester != null) Modifier.focusRequester(firstChipRequester) else Modifier,
-                ),
+                modifier = Modifier
+                    .then(
+                        if (index == 0 && firstChipRequester != null) Modifier.focusRequester(firstChipRequester) else Modifier,
+                    )
+                    .rowFocusItem(rowFocus, index),
                 description = if (watched) "${season.name}, watched" else season.name,
             ) {
                 Text(
@@ -520,6 +571,95 @@ private fun MarkSeasonWatchedRow(
 }
 
 /**
+ * Blocks of twenty, for a season too long to travel with a d-pad.
+ *
+ * Deliberately the same control as [SeasonChipRow], down to the focus wiring: a viewer who has
+ * learned that the strip of chips above the cards picks the season should not have to learn
+ * anything new to discover that the next strip down picks the part of it. Up and down are named
+ * rather than left to spatial search, for the same reason they are named there - a chip sitting
+ * under a gutter in the row above otherwise finds nothing and the press is simply swallowed.
+ *
+ * The selected block is scrolled into view rather than assumed to be on screen, because it moves on
+ * its own: opening a season lands on whichever block holds the episode the viewer is up to.
+ */
+@Composable
+internal fun EpisodeRangeChipRow(
+    ranges: List<EpisodeRange>,
+    selectedIndex: Int,
+    rowRequester: FocusRequester? = null,
+    upRequester: FocusRequester? = null,
+    /** Where down out of the blocks goes. Null while there is nothing below to land on. */
+    downRequester: FocusRequester? = null,
+    onSelect: (Int) -> Unit,
+    onJump: () -> Unit,
+) {
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    // The jump chip is the last item, so it is part of what the row can be focused on and counts
+    // towards how far the row has to scroll.
+    val itemCount = ranges.size + 1
+    val rowFocus = rememberRowFocus(key = "ranges:${ranges.size}", initialIndex = selectedIndex)
+    LaunchedEffect(selectedIndex, ranges.size) {
+        if (selectedIndex in ranges.indices) rowFocus.remember(selectedIndex)
+    }
+    LaunchedEffect(rowFocus.focusedIndex, itemCount) {
+        listState.animateToAnchoredItem(
+            focusedIndex = rowFocus.focusedIndex,
+            itemCount = itemCount,
+            leadingItems = 1,
+        )
+    }
+    LazyRow(
+        state = listState,
+        modifier = Modifier
+            .then(rowRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
+            .rowFocusEntry(rowFocus)
+            .focusProperties {
+                if (upRequester != null) up = upRequester
+                if (downRequester != null) down = downRequester
+            },
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
+    ) {
+        itemsIndexed(ranges, key = { _, range -> "range-${range.fromIndex}" }) { index, range ->
+            val active = index == selectedIndex
+            DetailFocusCard(
+                onClick = { onSelect(index) },
+                shape = AppPillShape,
+                modifier = Modifier.rowFocusItem(rowFocus, index),
+                description = "Episodes ${range.firstEpisodeNumber} to ${range.lastEpisodeNumber}",
+            ) {
+                Text(
+                    text = range.label,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            }
+        }
+        // Last, so travelling right through the blocks arrives at it rather than having to be
+        // hunted for. It is the answer for "I know the number", where the blocks answer "somewhere
+        // around here".
+        item("jump") {
+            DetailFocusCard(
+                onClick = onJump,
+                shape = AppPillShape,
+                modifier = Modifier.rowFocusItem(rowFocus, ranges.size),
+                description = "Go to a specific episode",
+            ) {
+                Text(
+                    text = "Go to episode…",
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/**
  * Episodes for the season the viewer is on — and the seasons after it.
  *
  * [entries] is a single continuous run of episodes rather than one season's worth: the screen
@@ -539,6 +679,10 @@ internal fun EpisodesBand(
     rowFocusKey: Any?,
     loadingNextSeason: Boolean,
     watchedEpisodeKeys: Set<String>,
+    /** The first unwatched episode of the active season, or null when the season is finished. */
+    nextUnwatchedEpisodeNumber: Int? = null,
+    /** The episode the viewer stopped part way through, and how far in they got. */
+    inProgressEpisode: Pair<Int, Float>? = null,
     seasonWatched: Boolean,
     watchedSeasonNumbers: Set<Int>,
     markingSeason: Boolean,
@@ -550,16 +694,56 @@ internal fun EpisodesBand(
     onEpisodeFocused: (Int, SeasonEpisodeEntry) -> Unit,
     onEpisodePressed: (SeasonEpisodeEntry) -> Unit,
     onEpisodeMenu: (SeasonEpisodeEntry) -> Unit,
+    /** Blocks the active season is cut into. Empty for a season short enough not to need cutting. */
+    episodeRanges: List<EpisodeRange> = emptyList(),
+    selectedRangeIndex: Int = 0,
+    onSelectRange: (Int) -> Unit = {},
+    onJumpToEpisode: () -> Unit = {},
+    /** Where in the current block the highlight should open, after a jump named an episode. */
+    initialFocusPosition: Int = 0,
+    /** Bumped to ask the row to take focus - after a jump, when the dialog has nothing to hand it back to. */
+    focusRowSignal: Int = 0,
 ) {
     val scale = detailBandScale(compact)
     val cardWidth = 268.dp
     val stillHeight = 150.dp
-    val rowFocus = rememberRowFocus(rowFocusKey)
+    val ranged = episodeRanges.isNotEmpty()
+    // The cards on show, carrying the index they hold in the full run: the screen keys its selected
+    // episode off that index, so handing it a position within a slice would select the wrong one.
+    val visible = remember(entries, episodeRanges, selectedRangeIndex, ranged, activeSeasonNumber) {
+        if (!ranged) {
+            entries.withIndex().toList()
+        } else {
+            val range = episodeRanges.getOrNull(selectedRangeIndex) ?: episodeRanges.first()
+            entries.withIndex()
+                .filter { it.value.seasonNumber == activeSeasonNumber }
+                .drop(range.fromIndex)
+                .take(range.size)
+        }
+    }
+    // Focus memory is per block as well as per run, so changing block starts at the first card
+    // rather than restoring a position that belonged to a different set of twenty.
+    val rowFocus = rememberRowFocus(
+        key = if (ranged) rowFocusKey to selectedRangeIndex else rowFocusKey,
+        // A jump names an episode, so the new block opens with the highlight already on it rather
+        // than at the start of the twenty it happens to sit in.
+        initialIndex = if (ranged) initialFocusPosition.coerceIn(0, (visible.size - 1).coerceAtLeast(0)) else 0,
+    )
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     val chipRowRequester = remember { FocusRequester() }
+    val rangeRowRequester = remember { FocusRequester() }
+    val episodeRowRequester = remember { FocusRequester() }
     val markSeasonRequester = remember { FocusRequester() }
-    val spansSeasons = remember(entries) { entries.distinctBy { it.seasonNumber }.size > 1 }
-    AnchorRowToFocus(rowState, rowFocus, entries.size)
+    val spansSeasons = remember(visible) { visible.distinctBy { it.value.seasonNumber }.size > 1 }
+    AnchorRowToFocus(rowState, rowFocus, visible.size)
+    LaunchedEffect(focusRowSignal) {
+        if (focusRowSignal <= 0) return@LaunchedEffect
+        // Long enough for the new block to have composed and the anchored scroll to have run: a
+        // card that is not on screen yet has no requester attached to fail against. Best-effort by
+        // design - if it does not land, focus simply stays where it was rather than disappearing.
+        delay(220)
+        runCatching { episodeRowRequester.requestFocus() }
+    }
     Column(
         modifier = Modifier.onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
@@ -585,10 +769,30 @@ internal fun EpisodesBand(
                 firstChipRequester = firstChipRequester,
                 rowRequester = chipRowRequester,
                 upRequester = markSeasonRequester,
+                // Down is named for the same reason up is. The episode row's requester is only
+                // attached once there are cards to attach it to, so while the season is still
+                // loading its skeleton this stays null and the press falls back to spatial search
+                // rather than being cancelled outright against a requester with nothing behind it.
+                downRequester = when {
+                    ranged -> rangeRowRequester
+                    visible.isNotEmpty() -> episodeRowRequester
+                    else -> null
+                },
                 onSelect = onSelectSeason,
             )
+            if (ranged) {
+                EpisodeRangeChipRow(
+                    ranges = episodeRanges,
+                    selectedIndex = selectedRangeIndex,
+                    rowRequester = rangeRowRequester,
+                    upRequester = chipRowRequester,
+                    downRequester = episodeRowRequester.takeIf { visible.isNotEmpty() },
+                    onSelect = onSelectRange,
+                    onJump = onJumpToEpisode,
+                )
+            }
         }
-        if (entries.isEmpty()) {
+        if (visible.isEmpty()) {
             // The season list arrives before its episodes do; a skeleton here stops the band
             // collapsing to nothing and then shoving the sections below it back down.
             Row(
@@ -606,12 +810,16 @@ internal fun EpisodesBand(
                 // and leaving that to spatial search is what left the viewer stuck down here with
                 // no way back to the hero.
                 modifier = Modifier
+                    .focusRequester(episodeRowRequester)
                     .rowFocusEntry(rowFocus)
                     .focusProperties {
                         // Only while the chips are actually on screen — pointing at a requester
                         // nothing is attached to cancels the move outright, which would be the very
-                        // dead end this exists to prevent.
-                        if (!compact) up = chipRowRequester
+                        // dead end this exists to prevent. Up goes to whichever strip is directly
+                        // above: the blocks when a long season has them, the seasons otherwise.
+                        // Both are drawn only while the band is expanded, which is the same
+                        // condition, so neither can ever be named while it is absent.
+                        if (!compact) up = if (ranged) rangeRowRequester else chipRowRequester
                     }
                     .detailBandScale(scale, compact),
                 state = rowState,
@@ -619,11 +827,12 @@ internal fun EpisodesBand(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = DetailInset),
             ) {
                 itemsIndexed(
-                    entries,
-                    key = { _, entry -> "s${entry.seasonNumber}:${entry.episode.id}" },
-                ) { index, entry ->
+                    visible,
+                    key = { _, indexed -> "s${indexed.value.seasonNumber}:${indexed.value.episode.id}" },
+                ) { position, indexed ->
+                    val entry = indexed.value
                     EpisodeCard(
-                        modifier = Modifier.rowFocusItem(rowFocus, index),
+                        modifier = Modifier.rowFocusItem(rowFocus, position),
                         compact = compact,
                         cardWidth = cardWidth,
                         stillHeight = stillHeight,
@@ -632,12 +841,23 @@ internal fun EpisodesBand(
                         watched = watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber) in watchedEpisodeKeys,
                         released = isEpisodeReleased(entry.episode.airDate),
                         showSeason = spansSeasons,
-                        onFocused = { onEpisodeFocused(index, entry) },
+                        // Only in a season long enough to have lost your place in: a season of ten
+                        // does not need telling you which one is next.
+                        nextUp = ranged &&
+                            entry.seasonNumber == activeSeasonNumber &&
+                            entry.episode.episodeNumber == nextUnwatchedEpisodeNumber,
+                        progress = inProgressEpisode
+                            ?.takeIf { entry.seasonNumber == activeSeasonNumber && entry.episode.episodeNumber == it.first }
+                            ?.second,
+                        // The index into the whole run, not the position in this block.
+                        onFocused = { onEpisodeFocused(indexed.index, entry) },
                         onClick = { onEpisodePressed(entry) },
                         onLongPress = { onEpisodeMenu(entry) },
                     )
                 }
-                if (loadingNextSeason) {
+                // A block of a long season has a definite end, so there is nothing after it to
+                // append; the skeleton belongs to the continuous run only.
+                if (loadingNextSeason && !ranged) {
                     // Deliberately not focusable: it holds the place of the season being fetched
                     // without ever becoming somewhere the D-pad can get stuck.
                     item("next-season") {
