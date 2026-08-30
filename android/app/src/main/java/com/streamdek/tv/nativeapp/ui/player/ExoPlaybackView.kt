@@ -35,6 +35,8 @@ import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 /** Media3 playback path used for CNCVerse Bridge VODs, matching Nuvio's primary engine. */
 @OptIn(UnstableApi::class)
@@ -54,6 +56,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   override var onProgressCallback: ((position: Double, duration: Double) -> Unit)? = null
   override var onEndCallback: (() -> Unit)? = null
   override var onErrorCallback: ((message: String) -> Unit)? = null
+  var onExternalSubtitleErrorCallback: ((message: String) -> Unit)? = null
   override var onTracksChangedCallback: ((List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit)? = null
 
   /**
@@ -78,7 +81,11 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var pendingSpeed = 1.0
   private var preferredAudioLanguage = "en"
   private var subtitlePositionPercent = 92
+  private var subtitleDelaySeconds = 0.0
   private var pendingSubtitles: List<MediaItem.SubtitleConfiguration> = emptyList()
+  private val subtitleExecutor = Executors.newCachedThreadPool()
+  private val subtitleRequestGeneration = AtomicLong()
+  private var externalSubtitleCues: List<androidx.media3.extractor.text.CuesWithTiming>? = null
   private val audioSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
   private val subtitleSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
   private val externalSubtitleSelections = mutableMapOf<String, Pair<Tracks.Group, Int>>()
@@ -89,6 +96,20 @@ class ExoPlaybackView @JvmOverloads constructor(
         onProgressCallback?.invoke(active.currentPosition / 1000.0, durationMs / 1000.0)
       }
       postDelayed(this, 500L)
+    }
+  }
+  private val externalSubtitleTicker = object : Runnable {
+    override fun run() {
+      val timeline = externalSubtitleCues ?: return
+      val positionUs = delayedSubtitlePositionUs(exoPlayer?.currentPosition ?: 0L, subtitleDelaySeconds)
+      val cues = timeline.asSequence()
+        .filter { positionUs >= it.startTimeUs && positionUs < it.endTimeUs }
+        .flatMap { it.cues.asSequence() }
+        .map { it.buildUpon().setLine(Cue.DIMEN_UNSET, Cue.TYPE_UNSET).setPosition(Cue.DIMEN_UNSET).build() }
+        .toList()
+      subtitleView?.setCues(cues)
+      subtitleView?.setBottomPaddingFraction(((100 - subtitlePositionPercent) / 100f).coerceIn(0.02f, 0.50f))
+      postDelayed(this, if (exoPlayer?.isPlaying == true) 100L else 250L)
     }
   }
 
@@ -118,6 +139,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
   override fun onDetachedFromWindow() {
     removeCallbacks(progressTicker)
+    clearExternalSubtitleOverlay()
     releasePlayer()
     clearCallbacks()
     super.onDetachedFromWindow()
@@ -183,6 +205,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   override fun setAudioTrack(trackId: Int) = applyTrackSelection(audioSelections[trackId])
 
   override fun setSubtitleTrack(trackId: Int) {
+    clearExternalSubtitleOverlay()
     val active = exoPlayer ?: return
     active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
       .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
@@ -190,6 +213,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   override fun disableSubtitleTrack() {
+    clearExternalSubtitleOverlay()
     val active = exoPlayer ?: return
     active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
       .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -197,14 +221,35 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   override fun addSubtitleFile(path: String) {
-    val current = source ?: return
-    pendingSubtitles = listOf(MediaItem.SubtitleConfiguration.Builder(Uri.parse(path))
-      .setId("streamdek-external:file")
-      .setMimeType(subtitleMimeType(path))
-      .setLanguage("en")
-      .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-      .build())
-    prepareSource(current, exoPlayer?.currentPosition ?: 0L)
+    val generation = subtitleRequestGeneration.incrementAndGet()
+    subtitleExecutor.execute {
+      val parsed = runCatching { parseExternalSubtitleCues(path) }
+      post {
+        if (subtitleRequestGeneration.get() != generation) return@post
+        parsed.onSuccess { timeline ->
+          externalSubtitleCues = timeline
+          exoPlayer?.let { active ->
+            active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+              .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+              .build()
+          }
+          removeCallbacks(externalSubtitleTicker)
+          externalSubtitleTicker.run()
+          Log.i(TAG, "External subtitle ready: ${timeline.size} timed cue groups")
+        }.onFailure {
+          Log.w(TAG, "External subtitle parse failed", it)
+          onExternalSubtitleErrorCallback?.invoke("That subtitle could not be loaded. Try another subtitle source.")
+        }
+      }
+    }
+  }
+
+  private fun clearExternalSubtitleOverlay() {
+    subtitleRequestGeneration.incrementAndGet()
+    externalSubtitleCues = null
+    removeCallbacks(externalSubtitleTicker)
+    subtitleView?.setCues(emptyList())
   }
 
   override fun setExternalSubtitleTracks(tracks: List<ExternalSubtitleTrack>) {
@@ -221,20 +266,15 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
   }
 
-  override fun selectExternalSubtitleTrack(trackId: String): Boolean {
-    val selection = externalSubtitleSelections[trackId] ?: return false
-    val active = exoPlayer ?: return false
-    active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
-      .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-      .setOverrideForType(TrackSelectionOverride(selection.first.mediaTrackGroup, selection.second))
-      .build()
-    return true
-  }
+  override fun selectExternalSubtitleTrack(trackId: String): Boolean = false
 
-  // Media3 has no subtitle-delay control: the renderer honours the timestamps in the track and
-  // there is nowhere to shift them. Declared so the panel can offer the adjustment on mpv without
-  // having to ask which engine is playing; on this one it does nothing.
-  override fun setSubtitleDelay(seconds: Double) = Unit
+  override fun setSubtitleDelay(seconds: Double) {
+    subtitleDelaySeconds = seconds.coerceIn(-15.0, 15.0)
+    if (externalSubtitleCues != null) {
+      removeCallbacks(externalSubtitleTicker)
+      externalSubtitleTicker.run()
+    }
+  }
 
   override fun setSubtitleFontSize(size: Int) {
     subtitleView?.setApplyEmbeddedStyles(false)
@@ -387,6 +427,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     override fun onTracksChanged(tracks: Tracks) = dispatchTracks(tracks)
 
     override fun onCues(cueGroup: CueGroup) {
+      if (externalSubtitleCues != null) return
       val userPositionedCues = cueGroup.cues.map { cue ->
         cue.buildUpon()
           .setLine(Cue.DIMEN_UNSET, Cue.TYPE_UNSET)

@@ -303,6 +303,8 @@ fun PlayerScreen(
     var subtitlesLoading by remember { mutableStateOf(false) }
     var selectedExternalSubtitleId by remember { mutableStateOf<String?>(null) }
     var externalSubtitleAppliedKey by remember { mutableStateOf<String?>(null) }
+    var subtitleErrorMessage by remember { mutableStateOf<String?>(null) }
+    var subtitleSelectionGeneration by remember { mutableIntStateOf(0) }
     var selectedAudioId by remember { mutableIntStateOf(-1) }
     var selectedSubtitleId by remember { mutableIntStateOf(-1) }
     var speed by remember { mutableDoubleStateOf(1.0) }
@@ -1371,6 +1373,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         // subtitle chain, so a size chosen on the last episode would otherwise be lost on this one.
         playerView?.setSubtitleFontSize(subtitleFontSize)
         playerView?.setSubtitlePosition(subtitlePosition)
+        playerView?.setSubtitleDelay(subtitleDelay)
         // Resume is applied by onLoad after the engine reports this media ready. A timed seek here
         // could outlive an episode switch and land the previous episode's timestamp on the next.
     }
@@ -1485,12 +1488,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         val source = currentSourceUrl ?: return@LaunchedEffect
         val key = "${activePlaybackEngine.name}:$source:${selected.id}"
         if (externalSubtitleAppliedKey == key) return@LaunchedEffect
-        if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
-            if (playerView?.selectExternalSubtitleTrack(selected.id) == true) {
-                selectedSubtitleId = -1
-                externalSubtitleAppliedKey = key
-                TvDebugLogger.i("Subtitle", "source=${selected.id.substringBefore(':')} language=${selected.language} load=success trackAttached=true")
-            }
+        if (
+            activePlaybackEngine == ActivePlaybackEngine.Media3 &&
+            playerView?.selectExternalSubtitleTrack(selected.id) == true
+        ) {
+            selectedSubtitleId = -1
+            externalSubtitleAppliedKey = key
+            TvDebugLogger.i("Subtitle", "source=${selected.id.substringBefore(':')} language=${selected.language} load=success trackAttached=true")
             return@LaunchedEffect
         }
         if (loading) return@LaunchedEffect
@@ -1707,6 +1711,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         if (autoSkipNotice == null) return@LaunchedEffect
         delay(2_200)
         autoSkipNotice = null
+    }
+
+    LaunchedEffect(subtitleErrorMessage) {
+        if (subtitleErrorMessage == null) return@LaunchedEffect
+        delay(3_000)
+        subtitleErrorMessage = null
     }
 
     LaunchedEffect(paused, loading, playerActivityVersion, pausedIdleTimeoutMillis) {
@@ -2326,6 +2336,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             sourceFallbackInProgress = false
                         }
                     }
+                    if (this is ExoPlaybackView) {
+                        onExternalSubtitleErrorCallback = { message -> subtitleErrorMessage = message }
+                    }
                     onErrorCallback = { message ->
                         TvDebugLogger.w(
                             "Player",
@@ -2864,6 +2877,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 Text(autoSkipNotice.orEmpty(), color = Color.White, fontWeight = FontWeight.SemiBold)
             }
         }
+        AnimatedVisibility(
+            visible = subtitleErrorMessage != null,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 144.dp),
+            enter = fadeIn(animationSpec = tween(160)),
+            exit = fadeOut(animationSpec = tween(180)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(Color(0xE62B171A), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+            ) {
+                Text(subtitleErrorMessage.orEmpty(), color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+        }
 
         if (nextEpisodeDialogVisible && nextEpisode != null) {
             NextEpisodeDialog(
@@ -3147,31 +3174,31 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             restoreControlsAfterPanel(OverlayPanel.Audio)
                         },
                         onDisableSubtitles = {
+                            subtitleSelectionGeneration += 1
                             selectedExternalSubtitleId = null
                             externalSubtitleAppliedKey = null
                             subtitlePreferenceAppliedForSource = currentSourceUrl
                             playerView?.disableSubtitleTrack()
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
-                            playerView?.setPaused(paused)
                             restoreControlsAfterPanel(OverlayPanel.Subtitles)
                         },
                         onSelectSubtitle = {
+                            subtitleSelectionGeneration += 1
                             selectedExternalSubtitleId = null
                             externalSubtitleAppliedKey = null
                             subtitlePreferenceAppliedForSource = currentSourceUrl
                             playerView?.setSubtitleTrack(it)
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
-                            // Track switches must never interrupt playback: re-assert the
-                            // intended pause state after mpv reconfigures its track chain.
-                            playerView?.setPaused(paused)
                             restoreControlsAfterPanel(OverlayPanel.Subtitles)
                         },
                         onSelectExternalSubtitle = { subtitle ->
                             scope.launch {
                                 val source = currentSourceUrl ?: return@launch
                                 selectedExternalSubtitleId = subtitle.id
+                                subtitleErrorMessage = null
+                                val requestGeneration = ++subtitleSelectionGeneration
                                 subtitlePreferenceAppliedForSource = source
                                 if (
                                     activePlaybackEngine == ActivePlaybackEngine.Media3 &&
@@ -3181,7 +3208,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     externalSubtitleAppliedKey = "${activePlaybackEngine.name}:$source:${subtitle.id}"
                                     panel = null
                                     panelClosedAtMs = System.currentTimeMillis()
-                                    playerView?.setPaused(paused)
                                     restoreControlsAfterPanel(OverlayPanel.Subtitles)
                                     return@launch
                                 }
@@ -3194,7 +3220,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 }
                                 var localPath: String? = null
                                 for (candidate in candidates.take(SUBTITLE_ATTEMPT_LIMIT)) {
-                                    if (currentSourceUrl != source || selectedExternalSubtitleId != subtitle.id) return@launch
+                                    if (currentSourceUrl != source || selectedExternalSubtitleId != subtitle.id || subtitleSelectionGeneration != requestGeneration) return@launch
                                     localPath = repository.downloadSubtitleToCache(candidate.url, context.cacheDir)
                                     if (localPath != null) {
                                         if (candidate.id != subtitle.id) {
@@ -3204,17 +3230,17 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     }
                                 }
                                 if (localPath == null) {
-                                    error = "That subtitle could not be downloaded, and neither could the others in that language."
+                                    if (subtitleSelectionGeneration != requestGeneration) return@launch
+                                    subtitleErrorMessage = "That subtitle could not be loaded. Try another subtitle source."
                                     selectedExternalSubtitleId = null
                                     return@launch
                                 }
-                                if (currentSourceUrl != source || selectedExternalSubtitleId != subtitle.id) return@launch
+                                if (currentSourceUrl != source || selectedExternalSubtitleId != subtitle.id || subtitleSelectionGeneration != requestGeneration) return@launch
                                 selectedSubtitleId = -1
                                 playerView?.addSubtitleFile(localPath)
                                 externalSubtitleAppliedKey = "${activePlaybackEngine.name}:$source:${subtitle.id}"
                                 panel = null
                                 panelClosedAtMs = System.currentTimeMillis()
-                                playerView?.setPaused(paused)
                                 restoreControlsAfterPanel(OverlayPanel.Subtitles)
                             }
                         },
@@ -3231,7 +3257,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         subtitleFontSize = subtitleFontSize,
                         subtitlePosition = subtitlePosition,
                         subtitleDelay = subtitleDelay,
-                        subtitleDelaySupported = activePlaybackEngine == ActivePlaybackEngine.MPV,
+                        subtitleDelaySupported = true,
                         onSubtitleFontSize = {
                             subtitleFontSize = it
                             playerView?.setSubtitleFontSize(it)

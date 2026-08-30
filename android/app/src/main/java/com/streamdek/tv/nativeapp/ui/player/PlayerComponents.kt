@@ -137,8 +137,8 @@ internal val SubtitleSizeRange = 28..84
 /** Subtitle vertical placement. Higher sits nearer the bottom of the picture. */
 internal val SubtitlePositionRange = 50..110
 
-/** Subtitle timing nudge, in seconds. mpv only — Media3 cannot shift a track's timestamps. */
-internal val SubtitleDelayRange = -5.0..5.0
+/** Subtitle timing nudge in seconds, shared by native mpv and Media3 sidecar rendering. */
+internal val SubtitleDelayRange = -15.0..15.0
 
 internal data class SpeedOption(
     val label: String,
@@ -847,7 +847,7 @@ internal fun PlayerOptionPanel(
     onSubtitleFontSize: (Int) -> Unit = {},
     onSubtitlePosition: (Int) -> Unit = {},
     onSubtitleDelay: (Double) -> Unit = {},
-    /** Subtitle delay is an mpv property; Media3 has nothing to shift. */
+    /** Whether the active subtitle renderer can apply a timing offset. */
     subtitleDelaySupported: Boolean = true,
     onReloadStreams: () -> Unit = {},
     streamsReloading: Boolean = false,

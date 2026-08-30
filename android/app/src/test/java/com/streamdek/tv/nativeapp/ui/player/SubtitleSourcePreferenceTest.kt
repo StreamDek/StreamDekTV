@@ -10,6 +10,14 @@ import org.junit.Test
 
 class SubtitleSourcePreferenceTest {
     @Test
+    fun `subtitle delay shifts only the cue timeline`() {
+        assertEquals(85_000_000L, delayedSubtitlePositionUs(100_000L, 15.0))
+        assertEquals(115_000_000L, delayedSubtitlePositionUs(100_000L, -15.0))
+        assertEquals(100_000_000L, delayedSubtitlePositionUs(100_000L, 0.0))
+        assertEquals(85_000_000L, delayedSubtitlePositionUs(100_000L, 30.0))
+        assertEquals(-15.0..15.0, SubtitleDelayRange)
+    }
+    @Test
     fun `all sources is the safe default for missing or unknown values`() {
         assertEquals("All", normalizeSubtitleDefaultSource(null))
         assertEquals("All", normalizeSubtitleDefaultSource("unexpected"))
