@@ -99,6 +99,7 @@ import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
 import com.streamdek.tv.nativeapp.data.TvIdlePreferences
+import com.streamdek.tv.nativeapp.data.TvPowerActions
 import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
@@ -1733,11 +1734,15 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         queueTraktStop()
         syncProgressIfEligible()
         onExitToDetail()
-        // Leaving the player was only half of it: the viewer is still on a lit title page, and the
-        // app-idle timer then has to run its own full length before anything else happens. Handing
-        // the foreground back is the furthest an app can go towards "sleep" without holding a
-        // system permission, and it is what lets the set's own screensaver start.
-        (context as? android.app.Activity)?.moveTaskToBack(true)
+        // Back to the title page and then the screensaver — not out of the app. Handing the
+        // foreground back, which is what this used to do, was a blunt stand-in for sleep: it took
+        // the viewer out of StreamDek entirely, so coming back from a paused film meant relaunching
+        // rather than pressing play. Leaving the player already releases the keep-screen-on flag,
+        // so the set's own idle timer will start the daydream on its own schedule; this only asks
+        // for it now. Where the platform refuses — which is every retail set, the permission being
+        // a signature one — the viewer is simply left on the title page, which is where they were
+        // going anyway.
+        TvPowerActions.startScreensaver()
     }
 
     LaunchedEffect(nextEpisodeDialogVisible, nextEpisodeCountdown) {

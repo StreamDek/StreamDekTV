@@ -107,6 +107,7 @@ import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvIdlePreferences
+import com.streamdek.tv.nativeapp.data.TvPowerActions
 import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
 import com.streamdek.tv.nativeapp.data.StreamProfile
 import com.streamdek.tv.nativeapp.ui.account.SettingsScreen
@@ -774,7 +775,12 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         val timeout = idleTimeoutMillis(TvIdlePreferences(context).appIdleTimeoutMinutes)
             ?: return@LaunchedEffect
         delay(timeout)
-        activity?.moveTaskToBack(true)
+        // Sleep is what this timer is for: a set left on StreamDek for hours with nobody in the
+        // room should go dark, not merely go to the launcher. Asking for it outright is only
+        // answered where the platform has granted this app DEVICE_POWER, so where it is refused the
+        // app stands down instead and leaves the set to its own idle timer — which is the same
+        // behaviour as before, now as the fallback rather than as the whole of it.
+        if (!TvPowerActions.sleepDevice(context)) activity?.moveTaskToBack(true)
     }
 
     StreamDekTvTheme(appPreferences = appPrefs, homePreferences = homePrefs) {

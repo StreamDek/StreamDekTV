@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +43,11 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
@@ -78,6 +84,7 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvSkeletonBox
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** Shared page inset. Matches the rest of the app rather than the bespoke value this replaced. */
@@ -212,10 +219,38 @@ internal class RowFocusMemory(initialIndex: Int = 0) {
         private set
     private val requesters = mutableMapOf<Int, FocusRequester>()
 
+    /**
+     * Indices whose card is in composition right now, and whose requester therefore has a node
+     * behind it.
+     *
+     * A LazyRow composes a window, not a list, so the remembered index routinely names a card that
+     * has been scrolled out — and handing that requester to a focus search is not a quiet no-op.
+     * `FocusRequester.focus` throws IllegalStateException("FocusRequester is not initialized")
+     * straight out of the key dispatch, which takes the app down. Everything below exists so that
+     * this class can only ever name a card that is actually there.
+     */
+    private val attached = mutableSetOf<Int>()
+
     fun requester(index: Int): FocusRequester = requesters.getOrPut(index) { FocusRequester() }
 
     fun remember(index: Int) { focusedIndex = index }
 
+    fun attach(index: Int) { attached += index }
+
+    fun detach(index: Int) { attached -= index }
+
+    /**
+     * Where focus should land when it enters this row: the remembered card when it is on screen,
+     * the nearest one that is on screen otherwise.
+     *
+     * Null when the row has composed nothing at all — a season still showing its skeleton, a band
+     * collapsed to compact. Null means "let ordinary focus search decide", which is the honest
+     * answer; aiming at a card that does not exist is what crashed.
+     */
+    fun entryRequester(): FocusRequester? = when {
+        focusedIndex in attached -> requester(focusedIndex)
+        else -> attached.minByOrNull { abs(it - focusedIndex) }?.let(::requester)
+    }
 }
 
 private val RowFocusMemorySaver = Saver<RowFocusMemory, Int>(
@@ -238,7 +273,7 @@ internal fun rememberRowFocus(key: Any?, initialIndex: Int = 0): RowFocusMemory 
  */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 internal fun Modifier.rowFocusEntry(memory: RowFocusMemory): Modifier =
-    focusGroup().focusProperties { enter = { memory.requester(memory.focusedIndex) } }
+    focusGroup().focusProperties { enter = { memory.entryRequester() ?: FocusRequester.Default } }
 
 /**
  * Keeps the focused card at the leading edge, so travelling right scrolls the row under a fixed
@@ -255,9 +290,17 @@ internal fun AnchorRowToFocus(state: LazyListState, memory: RowFocusMemory, item
     }
 }
 
-internal fun Modifier.rowFocusItem(memory: RowFocusMemory, index: Int): Modifier =
-    this.focusRequester(memory.requester(index))
+@Composable
+internal fun Modifier.rowFocusItem(memory: RowFocusMemory, index: Int): Modifier {
+    // Registering here rather than leaving the memory to guess is the whole of the fix: the row is
+    // the only thing that knows which of its cards are currently composed, and it knows it exactly.
+    DisposableEffect(memory, index) {
+        memory.attach(index)
+        onDispose { memory.detach(index) }
+    }
+    return this.focusRequester(memory.requester(index))
         .onFocusChanged { if (it.isFocused) memory.remember(index) }
+}
 
 /** Section header shared by every band below the hero. */
 @Composable
@@ -458,6 +501,12 @@ internal fun SeasonChipRow(
     firstChipRequester: FocusRequester?,
     /** Attached to the row itself, so the band above can send focus here without naming a chip. */
     rowRequester: FocusRequester? = null,
+    /**
+     * The row's focus memory, when the caller needs to name the chip focus is actually sitting on.
+     * Hoisted rather than always private because a row below has to be able to aim at a chip that
+     * is certainly composed, and only the memory knows which one that is.
+     */
+    rowFocus: RowFocusMemory? = null,
     /** Where up out of the chips goes, so the whole page is reachable in a few presses. */
     upRequester: FocusRequester? = null,
     /** Where down out of the chips goes. Null while there is nothing below to land on. */
@@ -468,7 +517,8 @@ internal fun SeasonChipRow(
     val selectedIndex = seasons.indexOfFirst { it.seasonNumber == selected }.coerceAtLeast(0)
     // Keyed on the length of the list, so a series whose seasons arrive late rebuilds the memory
     // rather than holding an index that no longer points at anything.
-    val rowFocus = rememberRowFocus(key = "seasons:${seasons.size}", initialIndex = selectedIndex)
+    val ownRowFocus = rememberRowFocus(key = "seasons:${seasons.size}", initialIndex = selectedIndex)
+    val rowFocus = rowFocus ?: ownRowFocus
 
     // The selected season changes on its own as the viewer scrolls the episode row past a season
     // boundary, so the chip for it has to be brought into view rather than assumed to be on screen.
@@ -587,6 +637,12 @@ internal fun EpisodeRangeChipRow(
     ranges: List<EpisodeRange>,
     selectedIndex: Int,
     rowRequester: FocusRequester? = null,
+    /**
+     * The row above, as its focus memory rather than as a requester, so up can name the chip that
+     * row is actually parked on. Read only when a press is being answered, which keeps the season
+     * row's highlight moving from recomposing the whole band.
+     */
+    upRowFocus: RowFocusMemory? = null,
     upRequester: FocusRequester? = null,
     /** Where down out of the blocks goes. Null while there is nothing below to land on. */
     downRequester: FocusRequester? = null,
@@ -598,6 +654,14 @@ internal fun EpisodeRangeChipRow(
     // towards how far the row has to scroll.
     val itemCount = ranges.size + 1
     val rowFocus = rememberRowFocus(key = "ranges:${ranges.size}", initialIndex = selectedIndex)
+    // Resolved at press time, never during composition: the season row's focused index moves as the
+    // viewer walks along it, and depending on it here would rebuild this row and the episode cards
+    // below it on every one of those presses.
+    val upTarget: () -> FocusRequester? = {
+        // Only ever a chip that is on screen. Falling back to the row itself when the season row has
+        // composed nothing means the press becomes an ordinary search rather than a crash.
+        upRowFocus?.entryRequester() ?: upRequester
+    }
     LaunchedEffect(selectedIndex, ranges.size) {
         if (selectedIndex in ranges.indices) rowFocus.remember(selectedIndex)
     }
@@ -613,8 +677,23 @@ internal fun EpisodeRangeChipRow(
         modifier = Modifier
             .then(rowRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
             .rowFocusEntry(rowFocus)
+            // Up is answered here rather than left to the focus search that the row-level property
+            // above sets up. That search resolves against whatever the season row will accept, and
+            // for the blocks nearest the start of the row - the ones sitting under the left-hand
+            // end of a season strip that has been scrolled along - it was resolving against nothing
+            // and swallowing the press: the viewer had to walk right to a later block before up
+            // did anything at all. Naming the chip the season row is actually parked on removes the
+            // search from the question entirely, and it is a chip that is on screen by
+            // construction, because the row anchors its scroll to exactly that index.
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionUp) {
+                    false
+                } else {
+                    upTarget()?.let { target -> runCatching { target.requestFocus() }.isSuccess } ?: false
+                }
+            }
             .focusProperties {
-                if (upRequester != null) up = upRequester
+                upTarget()?.let { up = it }
                 if (downRequester != null) down = downRequester
             },
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -731,6 +810,12 @@ internal fun EpisodesBand(
     )
     val rowState = androidx.compose.foundation.lazy.rememberLazyListState()
     val chipRowRequester = remember { FocusRequester() }
+    // Held here rather than inside the season row so the blocks below can aim at the chip the
+    // season row is parked on, instead of at the row and whatever entry search it settles on.
+    val seasonRowFocus = rememberRowFocus(
+        key = "seasons:${seasons.size}",
+        initialIndex = seasons.indexOfFirst { it.seasonNumber == activeSeasonNumber }.coerceAtLeast(0),
+    )
     val rangeRowRequester = remember { FocusRequester() }
     val episodeRowRequester = remember { FocusRequester() }
     val markSeasonRequester = remember { FocusRequester() }
@@ -768,6 +853,7 @@ internal fun EpisodesBand(
                 watchedSeasonNumbers = watchedSeasonNumbers,
                 firstChipRequester = firstChipRequester,
                 rowRequester = chipRowRequester,
+                rowFocus = seasonRowFocus,
                 upRequester = markSeasonRequester,
                 // Down is named for the same reason up is. The episode row's requester is only
                 // attached once there are cards to attach it to, so while the season is still
@@ -785,6 +871,11 @@ internal fun EpisodesBand(
                     ranges = episodeRanges,
                     selectedIndex = selectedRangeIndex,
                     rowRequester = rangeRowRequester,
+                    // The season chip itself, not the row: the chip that row is parked on is on
+                    // screen by construction, because the row anchors its scroll to exactly that
+                    // index, where the row as a whole resolved against whatever entry search it
+                    // settled on and for the first blocks resolved against nothing.
+                    upRowFocus = seasonRowFocus,
                     upRequester = chipRowRequester,
                     downRequester = episodeRowRequester.takeIf { visible.isNotEmpty() },
                     onSelect = onSelectRange,

@@ -445,7 +445,7 @@ fun SettingsScreen(
                     }
                     SettingsDropdownRow(
                         "Sleep when paused",
-                        "Release the player and return to the title after it remains paused",
+                        "Return to the title page and start the screen saver after it stays paused",
                         pausedTimeoutMinutes.toString(),
                         PAUSED_SLEEP_CHOICES_MINUTES.map { it.toString() to idleTimeoutLabel(it) },
                     ) { value ->
@@ -455,7 +455,7 @@ fun SettingsScreen(
                     }
                     SettingsDropdownRow(
                         "App idle timeout",
-                        "Let Android TV's normal screen saver or power saving take over after remote inactivity",
+                        "Put the TV to sleep after remote inactivity, or stand down so its own power saving takes over",
                         appIdleTimeoutMinutes.toString(),
                         APP_IDLE_CHOICES_MINUTES.map { it.toString() to idleTimeoutLabel(it) },
                     ) { value ->
