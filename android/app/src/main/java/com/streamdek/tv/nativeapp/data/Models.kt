@@ -387,6 +387,13 @@ data class AppPreferences(
     // TV-first presentation preferences. Older payloads omit these fields, so defaults
     // remain conservative and backwards compatible.
     val cardDensity: String = "comfortable",
+    /**
+     * No longer read. Animation speed is a property of the installation rather than the account -
+     * see `ui/AnimationSpeed.kt` - and now lives in this television's own preferences. The field
+     * stays on the model so older payloads still parse and older clients on the same account keep
+     * working; nothing here writes it any more.
+     */
+    @Deprecated("Device-local now; see TvAnimationPreferences.")
     val animationSpeed: String = "normal",
     val navigationStyle: String = "adaptive",
     val gridSize: Int = 5,

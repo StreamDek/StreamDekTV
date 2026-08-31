@@ -110,6 +110,10 @@ import com.streamdek.tv.nativeapp.data.TvIdlePreferences
 import com.streamdek.tv.nativeapp.data.clearTrailerState
 import com.streamdek.tv.nativeapp.data.trailerCacheClearLabel
 import com.streamdek.tv.nativeapp.data.idleTimeoutLabel
+import com.streamdek.tv.nativeapp.ui.AnimationSpeed
+import com.streamdek.tv.nativeapp.ui.LocalTvAnimationPreferences
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
+import com.streamdek.tv.nativeapp.ui.MotionSettings
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import com.streamdek.tv.nativeapp.ui.TvChromeSurface
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
@@ -148,6 +152,20 @@ private fun pluginSourceSection(
  * subtitles and the live progress bar sit in Playback, legacy compact mode in Accessibility, and
  * the old Diagnostics health check in About.
  */
+/**
+ * The Animation speed row's second line.
+ *
+ * When the device or the account has asked for reduced motion it overrules the selection outright,
+ * and a row that carried on describing "Cinematic" while the app animated nothing would be lying.
+ * The selection itself is left alone and still editable - turning reduced motion back off should
+ * restore the choice already made - so the override is stated instead of applied to the value.
+ */
+private fun animationSpeedDescription(motion: MotionSettings): String = when {
+    motion.overriddenBySystem ->
+        "Reduced motion is on, so animations are off regardless of this choice. Your selection is kept."
+    else -> "How long transitions take. Saved on this television only."
+}
+
 private enum class SettingsDestination(val label: String, val description: String, val terms: String, val icon: ImageVector) {
     Account("Account", "Profiles, sign-in and household access", "accounts profile pin sign in switch household", Icons.Outlined.AccountCircle),
     Playback("Playback", "Player, audio, subtitles and compatibility", "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
@@ -188,6 +206,9 @@ fun SettingsScreen(
     var catalogDefinitions by remember { mutableStateOf<List<com.streamdek.tv.nativeapp.data.CatalogDefinition>>(emptyList()) }
     var playlists by remember { mutableStateOf<List<RemotePlaylist>>(emptyList()) }
     var selected by remember { mutableStateOf(SettingsDestination.Account) }
+    // Device-local motion, from the app shell. Null only in a preview that has not provided it.
+    val animationPreferences = LocalTvAnimationPreferences.current
+    val motionSettings = LocalTvExperienceSettings.current.motion
     var query by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     // What the trailer cache holds, refreshed after a clear so the row reports what just happened
@@ -1231,8 +1252,17 @@ fun SettingsScreen(
                     SettingsDropdownRow("Theme", "Change the visual colour system", appPrefs?.theme ?: "cinema-blue", themeOptions, themeColors) { value ->
                         savePreference("Theme") { repository.updateAppPreferences(mapOf("theme" to value)) }
                     }
-                    SettingsDropdownRow("Animation speed", "GPU-friendly transitions for this device", appPrefs?.animationSpeed ?: "normal", listOf("normal" to "Normal", "fast" to "Fast", "slow" to "Slow")) { value ->
-                        savePreference("Animation speed") { repository.updateAppPreferences(mapOf("animationSpeed" to value)) }
+                    // Saved on this television and nowhere else, unlike every other row on this
+                    // page: see AnimationSpeed.kt. There is nothing to save to the account and so
+                    // nothing that can fail, which is why it does not go through savePreference.
+                    SettingsDropdownRow(
+                        title = "Animation speed",
+                        description = animationSpeedDescription(motionSettings),
+                        value = motionSettings.speed.key,
+                        options = AnimationSpeed.entries.map { it.key to it.label },
+                        optionDescriptions = AnimationSpeed.entries.associate { it.key to it.description },
+                    ) { value ->
+                        animationPreferences?.select(AnimationSpeed.fromKey(value))
                     }
                     SettingsToggleRow("Background depth", "Subtle cinematic depth behind content", appPrefs?.backgroundBlur != false, selectedRequester) { next, complete ->
                         savePreference("Background depth", complete) { repository.updateAppPreferences(mapOf("backgroundBlur" to next)) }
@@ -1242,14 +1272,16 @@ fun SettingsScreen(
                     }
                 }
                 SettingsDestination.Accessibility -> {
+                    // Stated here as well as on Appearance: somebody turning this on should be able
+                    // to see, from the row they are turning on, what it does to the rest of the app.
+                    SettingsToggleRow("Reduced motion", "Limit scaling and transitions. Overrides the Animation speed setting while it is on.", appPrefs?.reducedMotion == true, selectedRequester) { next, complete ->
+                        savePreference("Reduced motion", complete) { repository.updateAppPreferences(mapOf("reducedMotion" to next)) }
+                    }
                     SettingsToggleRow("High contrast", "Increase separation between controls", appPrefs?.highContrast == true, selectedRequester) { next, complete ->
                         savePreference("High contrast", complete) { repository.updateAppPreferences(mapOf("highContrast" to next)) }
                     }
                     SettingsToggleRow("Large text", "Increase primary interface text", appPrefs?.largeText == true, selectedRequester) { next, complete ->
                         savePreference("Large text", complete) { repository.updateAppPreferences(mapOf("largeText" to next)) }
-                    }
-                    SettingsToggleRow("Reduced motion", "Limit scaling and transitions", appPrefs?.reducedMotion == true, selectedRequester) { next, complete ->
-                        savePreference("Reduced motion", complete) { repository.updateAppPreferences(mapOf("reducedMotion" to next)) }
                     }
                     // Sat alone under the old Advanced page. It is a comfort setting like the rest here.
                     SettingsToggleRow("Legacy compact mode", "Reduce spacing on older low-memory devices", appPrefs?.compactMode == true, selectedRequester) { next, complete ->

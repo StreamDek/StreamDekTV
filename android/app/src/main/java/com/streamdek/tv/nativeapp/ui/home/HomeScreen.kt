@@ -323,7 +323,7 @@ fun HomeScreen(
     }
     val contentRevealAlpha by animateFloatAsState(
         targetValue = if (initialArtworkReady) 1f else 0f,
-        animationSpec = tween(durationMillis = 260),
+        animationSpec = tween(durationMillis = TvMotion.duration(TvMotion.Standard)),
         label = "home-initial-reveal",
     )
 

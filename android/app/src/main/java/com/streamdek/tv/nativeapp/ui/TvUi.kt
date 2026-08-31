@@ -126,17 +126,22 @@ internal fun FocusRequester.requestFocusOrFalse(): Boolean =
  * speed setting, because they route through [duration].
  */
 object TvMotion {
+    /**
+     * The four names below are aliases of the shared [MotionDuration] tokens rather than numbers of
+     * their own, so the television and the phone cannot drift apart on what "the default duration"
+     * means. The names are kept because eighty-odd call sites already read well with them.
+     */
     /** Focus rings, pill tints — the direct acknowledgement of a press. */
-    const val Instant = 90
+    const val Instant = MotionDuration.instant
 
     /** Small fades and swaps: a badge changing, a label crossfading. */
-    const val Quick = 150
+    const val Quick = MotionDuration.short
 
     /** The default for something arriving: a panel, a row of content, an overlay. */
-    const val Standard = 240
+    const val Standard = MotionDuration.standard
 
     /** A layout changing size — a hero collapsing, a section expanding. */
-    const val Expand = 280
+    const val Expand = MotionDuration.long
 
     /** Deceleration. Arrives quickly and settles rather than stopping dead. */
     val EnterEasing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
@@ -147,11 +152,28 @@ object TvMotion {
     /** In-and-out, for something that moves from one resting place to another and stays. */
     val StandardEasing = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
+    /**
+     * A base duration at the viewer's chosen speed. The single point every animation on the
+     * television passes through, which is what makes one setting govern all of them.
+     */
     @Composable
-    fun duration(baseMillis: Int): Int {
-        val settings = LocalTvExperienceSettings.current
-        return if (settings.reducedMotion) 0 else (baseMillis * settings.animationScale).toInt()
-    }
+    fun duration(baseMillis: Int): Int = LocalTvExperienceSettings.current.motion.scaled(baseMillis)
+
+    /**
+     * One thing replacing another in the same place.
+     *
+     * Never zero-length, even with motion off: an instant swap of a full-screen image is its own
+     * kind of jarring, and a short opacity change is the accessible replacement for movement rather
+     * than an instance of it.
+     */
+    @Composable
+    fun crossfadeDuration(baseMillis: Int = MotionDuration.crossfade): Int =
+        LocalTvExperienceSettings.current.motion.crossfade(baseMillis)
+
+    /** The per-step offset of a staggered sequence, at the viewer's speed. */
+    @Composable
+    fun staggerStep(baseMillis: Int = MotionDuration.stagger): Int =
+        LocalTvExperienceSettings.current.motion.stagger(baseMillis)
 
     /** A decelerating tween for something arriving or settling into a new value. */
     @Composable

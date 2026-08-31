@@ -2881,8 +2881,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         AnimatedVisibility(
             visible = autoSkipNotice != null,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 92.dp),
-            enter = fadeIn(animationSpec = tween(160)),
-            exit = fadeOut(animationSpec = tween(180)),
+            enter = TvMotion.fadeInSpec(TvMotion.Quick),
+            exit = TvMotion.fadeOutSpec(TvMotion.Quick),
         ) {
             Box(
                 modifier = Modifier
@@ -2895,8 +2895,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         AnimatedVisibility(
             visible = subtitleErrorMessage != null,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 144.dp),
-            enter = fadeIn(animationSpec = tween(160)),
-            exit = fadeOut(animationSpec = tween(180)),
+            enter = TvMotion.fadeInSpec(TvMotion.Quick),
+            exit = TvMotion.fadeOutSpec(TvMotion.Quick),
         ) {
             Box(
                 modifier = Modifier

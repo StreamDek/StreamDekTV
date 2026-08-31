@@ -1086,7 +1086,10 @@ class StreamDekRepository(
                     "compactMode" to (partial["compactMode"] ?: existing.compactMode),
                     "syncOverCellular" to (partial["syncOverCellular"] ?: existing.syncOverCellular),
                     "cardDensity" to (partial["cardDensity"] ?: existing.cardDensity),
-                    "animationSpeed" to (partial["animationSpeed"] ?: existing.animationSpeed),
+                    // Carried through untouched rather than dropped: this television no longer
+                    // reads it, but an older client on the same account still might, and a PATCH
+                    // that omitted the key would clear their setting.
+                    "animationSpeed" to (partial["animationSpeed"] ?: @Suppress("DEPRECATION") existing.animationSpeed),
                     "navigationStyle" to (partial["navigationStyle"] ?: existing.navigationStyle),
                     "gridSize" to (partial["gridSize"] ?: existing.gridSize),
                     "backgroundBlur" to (partial["backgroundBlur"] ?: existing.backgroundBlur),

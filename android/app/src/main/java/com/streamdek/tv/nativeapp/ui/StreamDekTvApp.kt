@@ -3,11 +3,7 @@ package com.streamdek.tv.nativeapp.ui
 import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.clipToBounds
 import com.streamdek.tv.nativeapp.ui.TvScroll
 import androidx.compose.foundation.background
@@ -20,9 +16,6 @@ import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Icon
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,7 +42,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -61,7 +53,6 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
@@ -71,14 +62,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.window.Dialog
@@ -109,7 +93,6 @@ import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvIdlePreferences
 import com.streamdek.tv.nativeapp.data.TvPowerActions
 import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
-import com.streamdek.tv.nativeapp.data.StreamProfile
 import com.streamdek.tv.nativeapp.ui.account.SettingsScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
 import com.streamdek.tv.nativeapp.ui.detail.DetailScreen
@@ -122,6 +105,8 @@ import com.streamdek.tv.nativeapp.ui.live.LiveScreen
 import com.streamdek.tv.nativeapp.ui.live.LiveBrowseScreen
 import com.streamdek.tv.nativeapp.ui.network.NetworkBrowseScreen
 import com.streamdek.tv.nativeapp.ui.player.PlayerScreen
+import com.streamdek.tv.nativeapp.ui.profile.StartupBootstrapGate
+import com.streamdek.tv.nativeapp.ui.profile.StartupProfilePicker
 import com.streamdek.tv.nativeapp.ui.search.SearchScreen
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import com.streamdek.tv.nativeapp.update.AppUpdateUiState
@@ -783,7 +768,16 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
         if (!TvPowerActions.sleepDevice(context)) activity?.moveTaskToBack(true)
     }
 
-    StreamDekTvTheme(appPreferences = appPrefs, homePreferences = homePrefs) {
+    // Device-local, and read here so that choosing a speed in Settings recomposes the theme and
+    // every animation under it on the spot. See AnimationSpeed.kt for why this one setting does not
+    // travel with the account.
+    val animationPreferences = remember(context) { TvAnimationPreferences(context) }
+    val motionSettings = rememberTvMotionSettings(
+        preferences = animationPreferences,
+        accountReducedMotion = appPrefs?.reducedMotion == true,
+    )
+    CompositionLocalProvider(LocalTvAnimationPreferences provides animationPreferences) {
+    StreamDekTvTheme(appPreferences = appPrefs, homePreferences = homePrefs, motion = motionSettings) {
         // Screen transitions, stated once for the whole graph. Navigation's defaults slide a full
         // screen of artwork sideways, which on a stick is a lot of pixels to push and reads as a
         // lurch; and nothing here is laid out side by side, so sideways was never the right
@@ -1243,293 +1237,6 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
 
         }
     }
-}
-
-@Composable
-private fun StartupBootstrapGate() {
-    Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            "StreamDek",
-            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
-            color = Color.White,
-        )
-    }
-}
-
-@Composable
-private fun StartupProfilePicker(
-    profiles: List<StreamProfile>,
-    activeProfileId: String?,
-    switching: Boolean,
-    onVerifyPin: suspend (StreamProfile, String) -> Boolean,
-    onChoose: (StreamProfile) -> Unit,
-) {
-    val firstRequester = remember(profiles) { FocusRequester() }
-    val pinRequester = remember { FocusRequester() }
-    val scope = rememberCoroutineScope()
-    var lockedProfile by remember { mutableStateOf<StreamProfile?>(null) }
-    var pin by remember { mutableStateOf("") }
-    var pinError by remember { mutableStateOf<String?>(null) }
-    var checkingPin by remember { mutableStateOf(false) }
-    var selectedProfileId by remember { mutableStateOf<String?>(null) }
-    val avatarBounds = remember { mutableStateMapOf<String, Rect>() }
-    val selectedProfile = profiles.firstOrNull { it.id == selectedProfileId }
-        ?: profiles.firstOrNull { it.id == activeProfileId }
-        ?: profiles.firstOrNull()
-
-    fun choose(profile: StreamProfile) {
-        selectedProfileId = profile.id
-        onChoose(profile)
-    }
-
-    BackHandler(enabled = true) { /* A profile is required before entering the app. */ }
-    LaunchedEffect(profiles, switching) {
-        if (switching) return@LaunchedEffect
-        delay(100)
-        runCatching { firstRequester.requestFocus() }
-    }
-
-    Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
-        contentAlignment = Alignment.Center,
-    ) {
-        Crossfade(
-            targetState = switching,
-            modifier = Modifier.fillMaxSize(),
-            animationSpec = tween(durationMillis = 280),
-            label = "profile-entry-transition",
-        ) { enteringProfile ->
-            if (enteringProfile && selectedProfile != null) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    ProfileEntryTransition(
-                        profile = selectedProfile,
-                        startBounds = avatarBounds[selectedProfile.id],
-                    )
-                }
-            } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 96.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(30.dp),
-                    ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "Who's watching?",
-                            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
-                            color = Color.White,
-                        )
-                        Text(
-                            "Choose a profile for this TV",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White.copy(alpha = 0.64f),
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.focusGroup(),
-                        horizontalArrangement = Arrangement.spacedBy(22.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        profiles.forEachIndexed { index, profile ->
-                            Card(
-                                onClick = {
-                                    if (!switching) {
-                                        if (profile.hasPinSet) {
-                                            lockedProfile = profile
-                                            pin = ""
-                                            pinError = null
-                                        } else {
-                                            choose(profile)
-                                        }
-                                    }
-                                },
-                                modifier = Modifier
-                                    .width(210.dp)
-                                    .height(220.dp)
-                                    .then(if (index == 0) Modifier.focusRequester(firstRequester) else Modifier),
-                                colors = CardDefaults.colors(
-                                    containerColor = Color.White.copy(alpha = 0.07f),
-                                    focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
-                                ),
-                                border = CardDefaults.border(
-                                    focusedBorder = Border(
-                                        androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.primary),
-                                        shape = RoundedCornerShape(18.dp),
-                                    ),
-                                ),
-                                scale = CardDefaults.scale(focusedScale = 1.04f),
-                            ) {
-                                Column(
-                                    modifier = Modifier.fillMaxSize().padding(22.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center,
-                                ) {
-                                    Box(
-                                        modifier = Modifier.onGloballyPositioned { coordinates ->
-                                            avatarBounds[profile.id] = coordinates.boundsInRoot()
-                                        },
-                                    ) {
-                                        ProfileAvatarCircle(profile.avatarIndex, profile.name, 92.dp)
-                                    }
-                                    Spacer(Modifier.height(16.dp))
-                                    Text(
-                                        profile.name,
-                                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                                        color = Color.White,
-                                    )
-                                    Text(
-                                        when {
-                                            profile.hasPinSet -> "PIN required"
-                                            profile.id == activeProfileId -> "Last used"
-                                            profile.isDefault -> "Default"
-                                            else -> "Ready to watch"
-                                        },
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = Color.White.copy(alpha = 0.58f),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    }
-                }
-            }
-        }
-    }
-
-    lockedProfile?.let { profile ->
-        LaunchedEffect(profile.id) {
-            delay(80)
-            runCatching { pinRequester.requestFocus() }
-        }
-        Dialog(
-            onDismissRequest = { if (!checkingPin) lockedProfile = null },
-            properties = DialogProperties(dismissOnClickOutside = false, usePlatformDefaultWidth = false),
-        ) {
-            Box(Modifier.fillMaxSize().background(Color(0xC7000000)), contentAlignment = Alignment.Center) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth(0.42f)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(TvChromePanel)
-                        .padding(28.dp),
-                    verticalArrangement = Arrangement.spacedBy(18.dp),
-                ) {
-                    Text(
-                        "Enter PIN for ${profile.name}",
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    OutlinedTextField(
-                        value = pin,
-                        onValueChange = { value -> pin = value.filter(Char::isDigit).take(4); pinError = null },
-                        singleLine = true,
-                        enabled = !checkingPin,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        label = { androidx.compose.material3.Text("4-digit PIN") },
-                        colors = TextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedContainerColor = Color.White.copy(alpha = 0.08f),
-                            unfocusedContainerColor = Color.White.copy(alpha = 0.05f),
-                        ),
-                        modifier = Modifier.fillMaxWidth().focusRequester(pinRequester),
-                    )
-                    pinError?.let {
-                        Text(it, color = Color(0xFFFFB4AB), style = MaterialTheme.typography.bodyMedium)
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(
-                            enabled = pin.length == 4 && !checkingPin,
-                            onClick = {
-                                checkingPin = true
-                                scope.launch {
-                                    if (onVerifyPin(profile, pin)) {
-                                        lockedProfile = null
-                                        choose(profile)
-                                    } else {
-                                        pinError = "That PIN is incorrect."
-                                        pin = ""
-                                    }
-                                    checkingPin = false
-                                }
-                            },
-                        ) { Text(if (checkingPin) "Checking…" else "Continue") }
-                        OutlinedButton(
-                            enabled = !checkingPin,
-                            onClick = { lockedProfile = null },
-                        ) { Text("Back") }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** Moves the chosen portrait from its card into the centre while the profile bootstrap refreshes. */
-@Composable
-private fun ProfileEntryTransition(profile: StreamProfile, startBounds: Rect?) {
-    val density = LocalDensity.current
-    val configuration = LocalConfiguration.current
-    val progress = remember(profile.id) { Animatable(0f) }
-    val screenCenterX = with(density) { configuration.screenWidthDp.dp.toPx() / 2f }
-    val screenCenterY = with(density) { configuration.screenHeightDp.dp.toPx() / 2f }
-    val startOffsetX = startBounds?.center?.x?.minus(screenCenterX) ?: 0f
-    val startOffsetY = startBounds?.center?.y?.minus(screenCenterY) ?: 0f
-
-    LaunchedEffect(profile.id, startBounds) {
-        progress.snapTo(0f)
-        progress.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(durationMillis = 460, easing = FastOutSlowInEasing),
-        )
-    }
-
-    val amount = progress.value
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(18.dp),
-    ) {
-        val ringSize = lerp(92.dp, 144.dp, amount)
-        val portraitSize = lerp(92.dp, 116.dp, amount)
-        Box(
-            modifier = Modifier
-                .size(ringSize)
-                .graphicsLayer {
-                    translationX = startOffsetX * (1f - amount)
-                    translationY = startOffsetY * (1f - amount)
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            CircularProgressIndicator(
-                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = amount },
-                color = MaterialTheme.colorScheme.primary,
-                strokeWidth = 3.dp,
-            )
-            ProfileAvatarCircle(profile.avatarIndex, profile.name, portraitSize)
-        }
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.graphicsLayer {
-                alpha = amount
-                translationY = 12.dp.toPx() * (1f - amount)
-            },
-        ) {
-            Text(
-                "Welcome back,",
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White.copy(alpha = 0.62f),
-            )
-            Text(
-                profile.name,
-                style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
-                color = Color.White,
-            )
-        }
     }
 }
 

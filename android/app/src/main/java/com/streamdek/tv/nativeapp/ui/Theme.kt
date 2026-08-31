@@ -13,11 +13,19 @@ import com.streamdek.tv.nativeapp.data.AppPreferences
 import com.streamdek.tv.nativeapp.data.HomePreferences
 
 data class TvExperienceSettings(
+    /**
+     * Motion is off, for whatever reason - the viewer chose [AnimationSpeed.Off], the account's
+     * accessibility toggle is on, or the television itself has asked for reduced motion. Derived
+     * from [motion]; kept as its own field so the eighty-odd existing call sites read as before.
+     */
     val reducedMotion: Boolean = false,
     val highContrast: Boolean = false,
     val largeText: Boolean = false,
     val denseCards: Boolean = false,
+    /** Duration multiplier. Derived from [motion]; see [MotionSettings.scale]. */
     val animationScale: Float = 1f,
+    /** The canonical model behind the two fields above, shared verbatim with the mobile app. */
+    val motion: MotionSettings = MotionSettings(),
     val gridColumns: Int = 5,
     val backgroundBlur: Boolean = true,
     /** Branded service artwork on the Streaming Networks row, rather than logos on white. */
@@ -62,13 +70,26 @@ private fun streamDekColorScheme(themeKey: String?, highContrast: Boolean): Colo
 }
 
 @Composable
-fun StreamDekTvTheme(appPreferences: AppPreferences? = null, homePreferences: HomePreferences? = null, content: @Composable () -> Unit) {
+fun StreamDekTvTheme(
+    appPreferences: AppPreferences? = null,
+    homePreferences: HomePreferences? = null,
+    /**
+     * Motion, from this television's own store rather than from [appPreferences].
+     *
+     * `appPreferences.animationSpeed` used to decide this, which meant a speed chosen on one device
+     * arrived on every other one in the household. The default here keeps previews and any caller
+     * that has not been updated working; the app passes the real thing.
+     */
+    motion: MotionSettings = MotionSettings(),
+    content: @Composable () -> Unit,
+) {
     val experience = TvExperienceSettings(
-        reducedMotion = appPreferences?.reducedMotion == true,
+        reducedMotion = motion.motionless,
         highContrast = appPreferences?.highContrast == true,
         largeText = appPreferences?.largeText == true,
         denseCards = appPreferences?.cardDensity == "compact" || appPreferences?.compactMode == true,
-        animationScale = when (appPreferences?.animationSpeed) { "slow" -> 1.35f; "fast" -> 0.72f; else -> 1f },
+        animationScale = motion.scale,
+        motion = motion,
         gridColumns = (appPreferences?.gridSize ?: 5).coerceIn(4, 7),
         backgroundBlur = appPreferences?.backgroundBlur != false,
         // Synced with mobile under `home`, so an unset value means branded -- the default on
