@@ -135,12 +135,12 @@ internal fun normalizePluginType(value: String): String =
 internal fun eligiblePluginProviders(state: ProfilePluginState?, type: String): List<ProfilePluginProvider> {
     if (state == null || !state.enabled) return emptyList()
     val normalized = normalizePluginType(type)
-    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
+    val enabledRepos = state.repos.filter { it.enabled }.associateBy { it.url }
     return state.providers.filter { provider ->
         provider.enabled &&
             provider.repoUrl in enabledRepos &&
             provider.types.any { candidate -> normalizePluginType(candidate) == normalized }
-    }.sortedWith(compareByDescending<ProfilePluginProvider> { it.favourite }.thenBy { it.name.lowercase(Locale.US) })
+    }.sortedWith(compareByDescending<ProfilePluginProvider> { enabledRepos[it.repoUrl]?.favourite == true }.thenBy { it.name.lowercase(Locale.US) })
 }
 
 private val CHEERIO_COMPAT_SHIM = """

@@ -836,6 +836,7 @@ data class AddonManifest(
     val id: String,
     val enabled: Boolean = true,
     val position: Int = 0,
+    val favourite: Boolean = false,
     val transportUrl: String? = null,
     val manifestUrl: String? = null,
     val manifest: AddonManifestMeta = AddonManifestMeta(),
@@ -908,6 +909,7 @@ data class ProfilePluginRepo(
     val version: String = "",
     val description: String? = null,
     val enabled: Boolean = true,
+    val favourite: Boolean = false,
 )
 
 data class ProfilePluginProvider(
@@ -916,8 +918,6 @@ data class ProfilePluginProvider(
     val name: String = "",
     val types: List<String> = emptyList(),
     val enabled: Boolean = true,
-    /** Profile-synced display preference. It never enables or selects this provider. */
-    val favourite: Boolean = false,
     val code: String? = null,
     val hasSettings: Boolean = false,
     /**

@@ -68,12 +68,17 @@ class PluginSourceEngineTest {
     }
 
     @Test
-    fun `favourite providers are queried first without changing eligibility`() {
-        val current = state(
+    fun `providers in favourite collections are queried first without changing eligibility`() {
+        val favouriteRepo = "https://favourite.example/manifest.json"
+        val current = ProfilePluginState(
+            repos = listOf(
+                ProfilePluginRepo(url = repoUrl, name = "Standard", version = "1"),
+                ProfilePluginRepo(url = favouriteRepo, name = "Favourite", version = "1", favourite = true),
+            ),
             providers = listOf(
                 provider("alpha", listOf("movie")),
-                provider("zulu", listOf("movie")).copy(favourite = true),
-                provider("disabled", listOf("movie"), enabled = false).copy(favourite = true),
+                provider("zulu", listOf("movie"), repo = favouriteRepo),
+                provider("disabled", listOf("movie"), enabled = false, repo = favouriteRepo),
             ),
         )
 

@@ -1223,6 +1223,15 @@ class StreamDekRepository(
         return true
     }
 
+    suspend fun setAddonFavourite(id: String, favourite: Boolean): Boolean {
+        val response = api.post<JsonObject>("/addons/favourite", mapOf("id" to id, "favourite" to favourite)) ?: return false
+        val saved = response.get("success")?.asBoolean == true
+        if (!saved) return false
+        homeCache.clear()
+        refreshBootstrap()
+        return true
+    }
+
     /** The fields a plugin source asks for, read by running its own `onSettings` export. */
     suspend fun pluginSettingsSchema(provider: ProfilePluginProvider): Result<List<PluginSettingField>> =
         pluginEngine?.settingsSchema(bootstrapState.value?.profilePlugins, provider)
@@ -1350,7 +1359,7 @@ class StreamDekRepository(
     ): List<AddonCatalogCollection> {
         val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
             .filter { it.enabled && (addonId.isNullOrBlank() || it.id == addonId) }
-            .sortedBy { it.position }
+            .sortedWith(compareByDescending<AddonManifest> { it.favourite }.thenBy { it.position })
         if (addons.isEmpty()) return emptyList()
 
         return supervisorScope {
@@ -2397,7 +2406,7 @@ class StreamDekRepository(
         }
         val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
             .filter { it.enabled }
-            .sortedBy { it.position }
+            .sortedWith(compareByDescending<AddonManifest> { it.favourite }.thenBy { it.position })
         val searchable = addons.flatMap { addon ->
             addon.manifest.catalogs.filter { it.supportsSearch }.map { addon to it }
         }
@@ -3669,7 +3678,7 @@ class StreamDekRepository(
     ): Pair<String?, List<AddonStream>> {
         val addons = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
             .filter { it.enabled }
-            .sortedBy { it.position }
+            .sortedWith(compareByDescending<AddonManifest> { it.favourite }.thenBy { it.position })
         val baseId = videoId.substringBefore(":")
         for (lookupType in lookupTypes) {
             val supportingAddons = addons.filter { addonSupportsStreamType(it, lookupType) }
@@ -4014,7 +4023,7 @@ class StreamDekRepository(
             .takeIf { it.isNotEmpty() }
             ?: runCatching { fetchAddonManifests() }.getOrDefault(emptyList()))
             .filter { it.enabled }
-            .sortedBy { it.position }
+            .sortedWith(compareByDescending<AddonManifest> { it.favourite }.thenBy { it.position })
 
         // Only the first lookup type that any addon claims to support is fanned out;
         // the remaining types stay available as a sequential fallback below.
@@ -5438,6 +5447,12 @@ class StreamDekRepository(
         val normalizedPreferredAddon = preferredAddonName?.trim()?.lowercase(Locale.US)
         val normalizedPreferredQuality = preferredQualityGroup?.trim()?.lowercase(Locale.US)
         val preferredAudioLanguage = preferredAudioLanguageForAutoSelection()
+        val favouriteAddonIds = bootstrapState.value?.integrations?.addons?.items.orEmpty()
+            .filter { it.favourite }.mapTo(hashSetOf()) { it.id }
+        val pluginState = bootstrapState.value?.profilePlugins
+        val favouritePluginRepos = pluginState?.repos.orEmpty().filter { it.favourite }.mapTo(hashSetOf()) { it.url }
+        val favouritePluginProviderIds = pluginState?.providers.orEmpty()
+            .filter { it.repoUrl in favouritePluginRepos }.mapTo(hashSetOf()) { it.id }
         // Every stream list shown is ordered here first, whatever add-on or plugin produced it,
         // so this is the one place the block cannot be routed around by a new caller.
         return streams.filterNot { stream ->
@@ -5450,7 +5465,10 @@ class StreamDekRepository(
                 stream.description,
             )
         }.sortedWith(
-            compareByDescending<AddonStream> { it.cachedBy.isNotEmpty() }
+            compareByDescending<AddonStream> {
+                it.addonId in favouriteAddonIds || it.addonId.removePrefix("plugin:") in favouritePluginProviderIds
+            }
+                .thenByDescending { it.cachedBy.isNotEmpty() }
                 .thenByDescending { preferredQualityScore(inferredStreamQuality(it), preferredQuality) }
                 .thenByDescending { if (preferredStreamKey != null && streamSelectionKey(it) == preferredStreamKey) 10 else 0 }
                 .thenByDescending {
