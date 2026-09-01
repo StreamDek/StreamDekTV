@@ -1170,6 +1170,7 @@ class StreamDekRepository(
                     "blurUnwatchedEpisodes" to (partial["blurUnwatchedEpisodes"] ?: existing.blurUnwatchedEpisodes),
                     "streamDekFormattingEnabled" to (partial["streamDekFormattingEnabled"] ?: existing.streamDekFormattingEnabled),
                     "showAddonTmdbRatings" to (partial["showAddonTmdbRatings"] ?: existing.showAddonTmdbRatings),
+                    "favoriteSourceKeys" to (partial["favoriteSourceKeys"] ?: existing.favoriteSourceKeys),
                 ),
             ),
         )) return null

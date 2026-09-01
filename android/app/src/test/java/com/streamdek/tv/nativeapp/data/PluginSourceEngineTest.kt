@@ -68,6 +68,19 @@ class PluginSourceEngineTest {
     }
 
     @Test
+    fun `favourite providers are queried first without changing eligibility`() {
+        val current = state(
+            providers = listOf(
+                provider("alpha", listOf("movie")),
+                provider("zulu", listOf("movie")).copy(favourite = true),
+                provider("disabled", listOf("movie"), enabled = false).copy(favourite = true),
+            ),
+        )
+
+        assertEquals(listOf("zulu", "alpha"), eligiblePluginProviders(current, "movie").map { it.id })
+    }
+
+    @Test
     fun `scraper filenames resolve against the collection manifest url`() {
         assertEquals(
             "https://plugins.example/sources/movies.js",

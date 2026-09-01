@@ -983,7 +983,9 @@ fun SettingsScreen(
                                 }
                             }
                             val repoGroups = pluginState.repos.map { repo ->
-                                val providers = pluginState.providers.filter { it.repoUrl == repo.url }
+                                val providers = pluginState.providers
+                                    .filter { it.repoUrl == repo.url }
+                                    .sortedWith(compareByDescending<ProfilePluginProvider> { it.favourite }.thenBy { it.name.lowercase() })
                                 Triple(pluginSourceSection(repo, providers), repo, providers)
                             }
                             // Same reasoning as the add-ons above, and it bites harder here: every
@@ -1017,7 +1019,7 @@ fun SettingsScreen(
                                     val knownRepoUrls = pluginState.repos.mapTo(hashSetOf()) { it.url }
                                     val unparentedProviders = pluginState.providers.filter {
                                         it.repoUrl !in knownRepoUrls && pluginSourceSection(ProfilePluginRepo(), listOf(it)) == section
-                                    }
+                                    }.sortedWith(compareByDescending<ProfilePluginProvider> { it.favourite }.thenBy { it.name.lowercase() })
                                     if (groups.isNotEmpty() || unparentedProviders.isNotEmpty()) {
                                         InfoLine(
                                             title,
@@ -1075,6 +1077,23 @@ fun SettingsScreen(
                                                                     complete(updated != null)
                                                                 }
                                                             }
+                                                            SettingsActionRow(
+                                                                "${provider.name.ifBlank { "This source" }} favourite",
+                                                                "Keep this provider near the top without enabling or selecting it",
+                                                                if (provider.favourite) "Unfavourite" else "Favourite",
+                                                                selectedRequester,
+                                                            ) {
+                                                                scope.launch {
+                                                                    val nextState = pluginState.copy(
+                                                                        providers = pluginState.providers.map {
+                                                                            if (it.id == provider.id && it.repoUrl == provider.repoUrl) it.copy(favourite = !provider.favourite) else it
+                                                                        },
+                                                                    )
+                                                                    val updated = repository.updateProfilePlugins(nextState)
+                                                                    if (updated != null) bootstrap = updated
+                                                                    status = if (updated != null) "${provider.name.ifBlank { "Plugin provider" }} favourite updated." else "Plugin provider favourite could not be updated."
+                                                                }
+                                                            }
                                                             if (repository.pluginProviderHasSettings(provider)) {
                                                                 SettingsActionRow(
                                                                     "${provider.name.ifBlank { "This source" }} settings",
@@ -1118,6 +1137,23 @@ fun SettingsScreen(
                                                                 if (updated != null) bootstrap = updated
                                                                 status = if (updated != null) "${provider.name.ifBlank { "Plugin provider" }} updated." else "Plugin provider could not be updated."
                                                                 complete(updated != null)
+                                                            }
+                                                        }
+                                                        SettingsActionRow(
+                                                            "${provider.name.ifBlank { "This source" }} favourite",
+                                                            "Keep this provider near the top without enabling or selecting it",
+                                                            if (provider.favourite) "Unfavourite" else "Favourite",
+                                                            selectedRequester,
+                                                        ) {
+                                                            scope.launch {
+                                                                val nextState = pluginState.copy(
+                                                                    providers = pluginState.providers.map {
+                                                                        if (it.id == provider.id && it.repoUrl == provider.repoUrl) it.copy(favourite = !provider.favourite) else it
+                                                                    },
+                                                                )
+                                                                val updated = repository.updateProfilePlugins(nextState)
+                                                                if (updated != null) bootstrap = updated
+                                                                status = if (updated != null) "${provider.name.ifBlank { "Plugin provider" }} favourite updated." else "Plugin provider favourite could not be updated."
                                                             }
                                                         }
                                                         if (repository.pluginProviderHasSettings(provider)) {

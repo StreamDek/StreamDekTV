@@ -270,6 +270,7 @@ fun PlayerScreen(
     val view = LocalView.current
     val bootstrap by repository.bootstrap.collectAsState()
     val playbackPreferences = bootstrap?.preferences?.playback ?: PlaybackPreferences()
+    val favoriteSourceKeys = bootstrap?.preferences?.streams?.favoriteSourceKeys.orEmpty().toSet()
     // Live broadcasts: no detail/progress/watched bookkeeping, no seeking, and
     // back exits to the previous screen rather than the streams picker.
     val isLive = request.mediaType == "live"
@@ -3300,6 +3301,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         isLive = isLive,
                         pluginState = bootstrap?.profilePlugins ?: ProfilePluginState(),
                         subtitleDefaultSource = playbackPreferences.subtitleDefaultSource,
+                        favoriteSourceKeys = favoriteSourceKeys,
+                        onToggleSourceFavourite = { key ->
+                            scope.launch {
+                                val next = favoriteSourceKeys.toMutableSet().apply { if (!add(key)) remove(key) }.take(250)
+                                repository.updateStreamsPreferences(mapOf("favoriteSourceKeys" to next))
+                            }
+                        },
                     )
                 }
             }

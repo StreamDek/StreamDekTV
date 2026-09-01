@@ -1,11 +1,31 @@
 package com.streamdek.tv.nativeapp.ui.player
 
+import com.streamdek.tv.nativeapp.data.AddonStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlayerUiPolicyTest {
+    @Test
+    fun `source favourite identity ignores expiring playback urls and request headers`() {
+        val first = AddonStream(
+            addonId = "Example.Addon",
+            source = "Provider",
+            name = "Release Name",
+            quality = "1080P",
+            url = "https://cdn.example/first?token=secret-one",
+            requestHeaders = mapOf("Authorization" to "secret-one"),
+        )
+        val refreshed = first.copy(
+            url = "https://cdn.example/second?token=secret-two",
+            requestHeaders = mapOf("Authorization" to "secret-two"),
+        )
+
+        assertEquals(stableSourceFavouriteKey(first), stableSourceFavouriteKey(refreshed))
+        assertFalse(stableSourceFavouriteKey(first).contains("secret", ignoreCase = true))
+    }
+
     @Test
     fun `remote seeking uses a predictable ten second step for episodes`() {
         assertEquals(10.0, tvSeekStepSeconds(2_700.0), 0.0)

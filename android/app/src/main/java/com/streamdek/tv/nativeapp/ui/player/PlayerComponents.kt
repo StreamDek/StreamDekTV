@@ -108,6 +108,7 @@ import com.streamdek.tv.nativeapp.debrid.readyServiceLabel
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import com.streamdek.tv.nativeapp.ui.detail.streamQualityLabel
 import com.streamdek.tv.nativeapp.ui.detail.streamSizeLabel
 import com.streamdek.tv.nativeapp.ui.detail.streamTextFingerprint
@@ -861,6 +862,8 @@ internal fun PlayerOptionPanel(
     /** Resolves a plugin source back to the collection it was installed from. */
     pluginState: ProfilePluginState = ProfilePluginState(),
     subtitleDefaultSource: String = "All",
+    favoriteSourceKeys: Set<String> = emptySet(),
+    onToggleSourceFavourite: (String) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -1000,7 +1003,10 @@ internal fun PlayerOptionPanel(
 
             when (panel) {
                 OverlayPanel.Streams -> {
-                    val streams = candidate?.streams.orEmpty()
+                    val originalStreams = candidate?.streams.orEmpty()
+                    val streams = originalStreams.sortedByDescending {
+                        stableSourceFavouriteKey(it) in favoriteSourceKeys
+                    }
                     if (streams.isEmpty()) {
                         item {
                             PanelNote(if (streamsReloading) "Searching for sources…" else "No sources loaded yet.")
@@ -1014,7 +1020,9 @@ internal fun PlayerOptionPanel(
                             playing = candidate?.stream == stream,
                             requestFocus = if (index == 0) firstItemRequester else null,
                             onInteract = onInteract,
-                            onClick = { onSelectStream(index) },
+                            favourite = stableSourceFavouriteKey(stream) in favoriteSourceKeys,
+                            onToggleFavourite = { onToggleSourceFavourite(stableSourceFavouriteKey(stream)) },
+                            onClick = { onSelectStream(originalStreams.indexOf(stream)) },
                         )
                     }
                 }
@@ -1641,6 +1649,14 @@ private fun OptionButton(
  * service already holds it — that the full picker shows plainly. These are the same three columns
  * that screen uses, in the same order, so a viewer moves between them without relearning the row.
  */
+internal fun stableSourceFavouriteKey(stream: AddonStream): String = listOf(
+    stream.addonId.ifBlank { stream.addonName },
+    stream.source.orEmpty(),
+    stream.name.orEmpty(),
+    stream.title.orEmpty(),
+    stream.quality.orEmpty(),
+).joinToString("|") { it.trim().lowercase(Locale.US).replace(Regex("\\s+"), " ") }.take(512)
+
 @Composable
 private fun StreamOptionButton(
     stream: AddonStream,
@@ -1651,6 +1667,8 @@ private fun StreamOptionButton(
     requestFocus: FocusRequester?,
     onInteract: () -> Unit,
     onClick: () -> Unit,
+    favourite: Boolean = false,
+    onToggleFavourite: () -> Unit = {},
 ) {
     var focused by remember { mutableStateOf(false) }
     val releaseLabel = stream.name?.takeIf { it.isNotBlank() }
@@ -1674,6 +1692,7 @@ private fun StreamOptionButton(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 4.dp)
+            .tvCardLongPress(onToggleFavourite)
             .then(if (requestFocus != null) Modifier.focusRequester(requestFocus) else Modifier)
             .onFocusChanged {
                 focused = it.isFocused
@@ -1712,6 +1731,12 @@ private fun StreamOptionButton(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
+                )
+                Icon(
+                    imageVector = if (favourite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                    contentDescription = if (favourite) "Pinned source; hold OK to unpin" else "Hold OK to pin source",
+                    tint = if (favourite) Color(0xFFF0BA66) else Color.White.copy(alpha = 0.42f),
+                    modifier = Modifier.size(18.dp),
                 )
                 origin?.takeIf { it.isNotBlank() }?.let {
                     Text(

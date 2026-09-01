@@ -567,6 +567,8 @@ data class StreamsPreferences(
     val blurUnwatchedEpisodes: Boolean = true,
     val streamDekFormattingEnabled: Boolean = false,
     val showAddonTmdbRatings: Boolean = false,
+    /** Stable descriptors shared with mobile; resolved playback URLs are never stored. */
+    val favoriteSourceKeys: List<String> = emptyList(),
 )
 
 /**
@@ -914,6 +916,8 @@ data class ProfilePluginProvider(
     val name: String = "",
     val types: List<String> = emptyList(),
     val enabled: Boolean = true,
+    /** Profile-synced display preference. It never enables or selects this provider. */
+    val favourite: Boolean = false,
     val code: String? = null,
     val hasSettings: Boolean = false,
     /**

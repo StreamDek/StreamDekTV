@@ -140,7 +140,7 @@ internal fun eligiblePluginProviders(state: ProfilePluginState?, type: String): 
         provider.enabled &&
             provider.repoUrl in enabledRepos &&
             provider.types.any { candidate -> normalizePluginType(candidate) == normalized }
-    }
+    }.sortedWith(compareByDescending<ProfilePluginProvider> { it.favourite }.thenBy { it.name.lowercase(Locale.US) })
 }
 
 private val CHEERIO_COMPAT_SHIM = """
