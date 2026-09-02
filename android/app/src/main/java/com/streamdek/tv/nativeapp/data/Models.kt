@@ -511,6 +511,9 @@ data class PlaybackPreferences(
     val nextEpisodeThresholdMode: String = "minutes",
     val nextEpisodeThresholdPercent: Int = 95,
     val nextEpisodeThresholdMinutes: Int = 2,
+    val endOfPlaybackRecommendationsEnabled: Boolean = false,
+    val recommendationTiming: String = "standard",
+    val recommendationItemCount: Int = 1,
     val decoderMode: String = "hardware_plus",
     val renderSurface: String = "auto",
     /** Mobile-managed cloud setting: Auto starts Media3 and falls back once to libMPV. */
@@ -545,13 +548,12 @@ data class PlaybackPreferences(
     }
 
     fun isNextEpisodeThresholdReached(positionSec: Double, durationSec: Double, segmentStartSec: Double? = null): Boolean {
-        if (durationSec <= 0.0) return false
-        val configuredStart = if (nextEpisodeThresholdMode.equals("percent", ignoreCase = true)) {
-            durationSec * (nextEpisodeThresholdPercent.coerceIn(50, 99) / 100.0)
-        } else {
-            (durationSec - nextEpisodeThresholdMinutes.coerceIn(1, 15) * 60.0).coerceAtLeast(0.0)
-        }
-        return positionSec >= maxOf(configuredStart, segmentStartSec ?: 0.0)
+        val estimate = AdaptiveEndOfPlaybackTrigger.estimate(
+            durationSec = durationSec,
+            timing = RecommendationTiming.fromKey(recommendationTiming),
+            structuralOutroStartSec = segmentStartSec,
+        )
+        return AdaptiveEndOfPlaybackTrigger.isReached(positionSec, estimate)
     }
 }
 

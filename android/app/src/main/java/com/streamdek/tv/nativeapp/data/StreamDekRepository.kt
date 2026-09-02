@@ -675,6 +675,7 @@ class StreamDekRepository(
         .addNetworkInterceptor(AddonResponseCacheInterceptor)
         .build()
     private val episodeSegmentCache = lruCache<String, List<PlaybackSegment>>(32)
+    private val movieSegmentCache = lruCache<String, List<PlaybackSegment>>(24)
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val libraryRevisionState = MutableStateFlow(0L)
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
@@ -1062,6 +1063,9 @@ class StreamDekRepository(
                     "nextEpisodeThresholdMode" to (partial["nextEpisodeThresholdMode"] ?: existing.nextEpisodeThresholdMode),
                     "nextEpisodeThresholdPercent" to (partial["nextEpisodeThresholdPercent"] ?: existing.nextEpisodeThresholdPercent),
                     "nextEpisodeThresholdMinutes" to (partial["nextEpisodeThresholdMinutes"] ?: existing.nextEpisodeThresholdMinutes),
+                    "endOfPlaybackRecommendationsEnabled" to (partial["endOfPlaybackRecommendationsEnabled"] ?: existing.endOfPlaybackRecommendationsEnabled),
+                    "recommendationTiming" to (partial["recommendationTiming"] ?: existing.recommendationTiming),
+                    "recommendationItemCount" to (partial["recommendationItemCount"] ?: existing.recommendationItemCount),
                     "decoderMode" to (partial["decoderMode"] ?: existing.decoderMode),
                     "renderSurface" to (partial["renderSurface"] ?: existing.renderSurface),
                     "playerEngine" to (partial["playerEngine"] ?: existing.playerEngine),
@@ -4675,6 +4679,30 @@ class StreamDekRepository(
             TvDebugLogger.w("Playback", "fetchEpisodeSegments failed imdbId=$imdbId season=$season episode=$episode")
         }.getOrDefault(emptyList()) }
         episodeSegmentCache[cacheKey] = result
+        return result
+    }
+
+    suspend fun fetchMovieSegments(tmdbId: Int, durationSec: Double? = null): List<PlaybackSegment> {
+        if (tmdbId <= 0) return emptyList()
+        val durationMs = durationSec?.takeIf { it.isFinite() && it > 0.0 }?.times(1000.0)?.toLong()
+        val cacheKey = "$tmdbId:${durationMs ?: 0L}"
+        movieSegmentCache[cacheKey]?.let { return it }
+        val result = withContext(Dispatchers.IO) {
+            TheIntroDbClient(api.client, api.gson)
+                .getMovie(tmdbId, durationMs)
+                .onFailure { TvDebugLogger.w("Playback", "TheIntroDB movie outro lookup failed tmdbId=$tmdbId") }
+                .getOrNull()
+                ?.credits
+                .orEmpty()
+                .mapNotNull { credit ->
+                    val start = credit.startMs / 1000.0
+                    val end = credit.endMs?.div(1000.0) ?: durationSec
+                    end?.takeIf { it > start }?.let { PlaybackSegment("outro", start, it) }
+                }
+                .distinctBy { Triple(it.segmentType, it.startSec, it.endSec) }
+                .sortedBy { it.startSec }
+        }
+        movieSegmentCache[cacheKey] = result
         return result
     }
 

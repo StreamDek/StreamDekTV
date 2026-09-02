@@ -1048,6 +1048,26 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
                                     }
                                 }
                             },
+                            onPlayRecommendation = { item ->
+                                if (item.type.equals("tv", ignoreCase = true)) {
+                                    navController.navigate("detail/${Uri.encode(item.type)}/${Uri.encode(item.id)}") {
+                                        popUpTo("player") { inclusive = true }
+                                    }
+                                } else {
+                                    repository.savePlaybackRequest(
+                                        PlaybackRequest(
+                                            mediaId = item.id,
+                                            mediaType = item.type,
+                                            imdbId = item.imdbId,
+                                            title = item.title,
+                                            returnToDetailOnBack = true,
+                                        ),
+                                    )
+                                    navController.navigate("player") {
+                                        popUpTo("player") { inclusive = true }
+                                    }
+                                }
+                            },
                         )
                     }
                 }

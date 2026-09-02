@@ -265,6 +265,7 @@ fun PlayerScreen(
     onBack: () -> Unit,
     onExitToStreams: () -> Unit,
     onExitToDetail: () -> Unit,
+    onPlayRecommendation: (MediaItem) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -445,6 +446,11 @@ fun PlayerScreen(
     var nextEpisodeCandidate by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<ResolvedPlaybackCandidate?>(null) }
     var nextEpisodeLoading by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var nextEpisodeCountdown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<Int?>(null) }
+    var queuedNextEpisode by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var recommendationDialogVisible by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var recommendationDismissed by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var queuedRecommendation by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<MediaItem?>(null) }
+    var recommendationHasFocus by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var pendingEpisodeSelection by remember(request.mediaId, request.mediaType) { mutableStateOf<PendingEpisodeSelection?>(null) }
     var nextEpisodeTransitionInProgress by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
     var episodeLoadGeneration by remember(request.mediaId, request.mediaType) { mutableIntStateOf(0) }
@@ -502,7 +508,7 @@ fun PlayerScreen(
     val panelCloseRequester = focusRequesters.panelClose
     val panelFirstItemRequester = focusRequesters.panelFirstItem
     val interactionLayer = playerInteractionLayer(
-        dialogVisible = segmentPromptActive || nextEpisodeDialogVisible || watchlistPromptVisible ||
+        dialogVisible = segmentPromptActive || nextEpisodeDialogVisible || recommendationDialogVisible || watchlistPromptVisible ||
             smartSwitchCandidate != null || (error != null && !loading),
         drawerVisible = panel != null || liveFavouritesDrawerVisible || liveChannelRowVisible,
         seeking = controlsVisible && seekTargetSec != null,
@@ -515,7 +521,7 @@ fun PlayerScreen(
     // while paused, and in that state the seek row held focus while the root declined to treat
     // horizontal input as seeking, so the framework's spatial search took the press and carried
     // the highlight into the controls.
-    val bottomBarOnScreen = !loading && error == null && !nextEpisodeDialogVisible &&
+    val bottomBarOnScreen = !loading && error == null && !nextEpisodeDialogVisible && !recommendationDialogVisible &&
         (interactionLayer == PlayerInteractionLayer.Controls ||
             interactionLayer == PlayerInteractionLayer.Seeking)
     /** Mirrors PlayerBottomBar: a live channel only has a seek row once its progress bar is on. */
@@ -991,7 +997,6 @@ fun PlayerScreen(
         val currentStream = candidate?.stream
         val effectiveImdbId = request.imdbId ?: detail?.imdbId
         markSegmentHandled("outro")
-        paused = true
         controlsVisible = false
         // The next-episode card deliberately remains on the left. Only retire the completed
         // episode's delayed synopsis overlay on the right while source discovery is in progress.
@@ -1022,9 +1027,6 @@ fun PlayerScreen(
                         stream = ranked.firstOrNull(),
                         streams = ranked,
                     )
-                    if (nextEpisodeCountdown == null) {
-                        nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
-                    }
                 }
             }
         }
@@ -1122,6 +1124,28 @@ fun PlayerScreen(
         episodeLoadGeneration += 1
     }
 
+    fun completePlaybackWithRecommendation(item: MediaItem) {
+        if (completionExitTriggered) return
+        completionExitTriggered = true
+        if (traktScrobbledStart) {
+            traktScrobbledStart = false
+            scope.launch {
+                repository.traktScrobble(
+                    action = "stop",
+                    mediaType = request.mediaType,
+                    mediaId = request.mediaId,
+                    title = detail?.title ?: request.title,
+                    year = detail?.year,
+                    progress = traktProgressPercent(),
+                )
+            }
+        }
+        scope.launch {
+            markWatchedAndClearProgressIfNeeded()
+            onPlayRecommendation(item)
+        }
+    }
+
     fun completePlaybackAndExit() {
         if (completionExitTriggered) return
         completionExitTriggered = true
@@ -1182,6 +1206,10 @@ fun PlayerScreen(
         nextEpisodeCandidate = null
         nextEpisodeLoading = false
         nextEpisodeCountdown = null
+        queuedNextEpisode = false
+        recommendationDialogVisible = false
+        recommendationDismissed = false
+        queuedRecommendation = null
         handledSegmentTypes = emptySet()
         segments = emptyList()
         val loadStartedAt = android.os.SystemClock.elapsedRealtime()
@@ -1689,6 +1717,35 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
 
     LaunchedEffect(
         positionSec,
+        durationSec,
+        segments,
+        nextEpisode,
+        detail?.similarTitles,
+        playbackPreferences.endOfPlaybackRecommendationsEnabled,
+        playbackPreferences.recommendationTiming,
+    ) {
+        if (!playbackPreferences.endOfPlaybackRecommendationsEnabled || isLive || loading || error != null ||
+            recommendationDismissed || nextEpisodeDialogVisible || recommendationDialogVisible ||
+            queuedNextEpisode || queuedRecommendation != null
+        ) return@LaunchedEffect
+        val outroStart = segments.firstOrNull { it.segmentType == "outro" }?.startSec
+        val estimate = com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.estimate(
+            durationSec = durationSec,
+            timing = com.streamdek.tv.nativeapp.data.RecommendationTiming.fromKey(playbackPreferences.recommendationTiming),
+            structuralOutroStartSec = outroStart,
+        )
+        if (!com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.isReached(positionSec, estimate)) return@LaunchedEffect
+        delay(450)
+        if (nextEpisode != null) {
+            openNextEpisodeDialog()
+        } else if (detail?.similarTitles?.any { it.id != request.mediaId } == true) {
+            controlsVisible = false
+            recommendationDialogVisible = true
+        }
+    }
+
+    LaunchedEffect(
+        positionSec,
         loading,
         error,
         playbackPreferences.autoSkipIntroEnabled,
@@ -1919,10 +1976,17 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         } else if (liveChannelRowVisible) {
             liveChannelRowVisible = false
             scope.launch { runCatching { playerRootRequester.requestFocus() } }
+        } else if (recommendationDialogVisible) {
+            val restorePlayerFocus = recommendationHasFocus
+            recommendationDialogVisible = false
+            recommendationDismissed = true
+            queuedRecommendation = null
+            if (restorePlayerFocus) showControls(focusPlay = true) else scheduleControlsHide()
         } else if (nextEpisodeDialogVisible) {
             nextEpisodeDialogVisible = false
             nextEpisodeCountdown = null
-            paused = false
+            queuedNextEpisode = false
+            recommendationDismissed = true
             scheduleControlsHide()
         } else if (watchlistPromptVisible) {
             watchlistPromptVisible = false
@@ -2017,6 +2081,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight -> true
                         else -> false
                     }
+                }
+                if (recommendationDialogVisible && !recommendationHasFocus &&
+                    event.key in setOf(Key.DirectionDown, Key.DirectionRight)
+                ) {
+                    if (event.type == KeyEventType.KeyDown) {
+                        runCatching { nextEpisodePlayRequester.requestFocus() }
+                    }
+                    return@onPreviewKeyEvent true
                 }
                 // SEEK is an authoritative interaction region, not merely whichever child happens
                 // to hold focus this frame. The seek row cancels horizontal focus search in its own
@@ -2274,8 +2346,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         )
                         if (isLive) {
                             scheduleLiveReconnect("The feed ended")
+                        } else if (queuedNextEpisode && nextEpisode != null) {
+                            beginNextEpisode()
+                        } else if (queuedRecommendation != null) {
+                            completePlaybackWithRecommendation(queuedRecommendation!!)
                         } else if (nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled()) {
-                            scope.launch { openNextEpisodeDialog() }
+                            if (nextEpisodeCandidate?.stream != null) beginNextEpisode() else scope.launch { openNextEpisodeDialog() }
                         } else {
                             completePlaybackAndExit()
                         }
@@ -2925,15 +3001,57 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 countdown = nextEpisodeCountdown,
                 playRequester = nextEpisodePlayRequester,
                 cancelRequester = nextEpisodeCancelRequester,
-                onPlayNow = { beginNextEpisode() },
-                onSelectStream = { index -> beginNextEpisode(index) },
+                onPlayNow = {
+                    queuedNextEpisode = true
+                    nextEpisodeDialogVisible = false
+                    recommendationDismissed = true
+                    scheduleControlsHide()
+                },
+                onSelectStream = { index ->
+                    nextEpisodeCandidate = nextEpisodeCandidate?.copy(
+                        stream = nextEpisodeCandidate?.streams?.getOrNull(index),
+                    )
+                    queuedNextEpisode = true
+                    nextEpisodeDialogVisible = false
+                    recommendationDismissed = true
+                    scheduleControlsHide()
+                },
                 onCancel = {
                     nextEpisodeDialogVisible = false
                     nextEpisodeCountdown = null
-                    paused = false
+                    queuedNextEpisode = false
+                    recommendationDismissed = true
                     scheduleControlsHide()
                 },
             )
+        }
+
+        val recommendedItems = detail?.similarTitles
+            ?.filter { it.id != request.mediaId }
+            ?.take(playbackPreferences.recommendationItemCount.coerceIn(1, 2))
+            .orEmpty()
+        PlayerOverlayVisibility(
+            visible = recommendationDialogVisible && recommendedItems.isNotEmpty(),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            if (recommendedItems.isNotEmpty()) {
+                NextRecommendationDialog(
+                    currentTitle = detail?.title ?: request.title.orEmpty(),
+                    items = recommendedItems,
+                    queuedItemId = queuedRecommendation?.id,
+                    playRequester = nextEpisodePlayRequester,
+                    cancelRequester = nextEpisodeCancelRequester,
+                    onPlayNext = { item -> queuedRecommendation = item },
+                    onDismiss = {
+                        val restorePlayerFocus = recommendationHasFocus
+                        recommendationDialogVisible = false
+                        recommendationDismissed = true
+                        queuedRecommendation = null
+                        if (restorePlayerFocus) showControls(focusPlay = true) else scheduleControlsHide()
+                    },
+                    onFocusChanged = { recommendationHasFocus = it },
+                )
+            }
         }
 
         smartSwitchCandidate?.let { suggested ->

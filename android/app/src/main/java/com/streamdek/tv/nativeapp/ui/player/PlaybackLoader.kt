@@ -373,7 +373,12 @@ internal suspend fun preparePlayback(
     onResolved(resolved)
 
     val nextEpisode = resolveNextEpisode(repository, request, preflight.detail, episode)
-    val segments = if (request.mediaType == "tv" && episode != null && !preflight.effectiveImdbId.isNullOrBlank()) {
+    val segments = if (request.mediaType == "movie") {
+        repository.fetchMovieSegments(
+            tmdbId = preflight.detail?.tmdbId?.takeIf { it > 0 } ?: request.mediaId.toIntOrNull() ?: 0,
+            durationSec = preflight.detail?.runtime?.takeIf { it > 0 }?.times(60.0),
+        )
+    } else if (request.mediaType == "tv" && episode != null && !preflight.effectiveImdbId.isNullOrBlank()) {
         repository.fetchEpisodeSegments(
             imdbId = preflight.effectiveImdbId,
             season = episode.seasonNumber,

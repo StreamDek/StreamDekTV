@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -94,6 +95,7 @@ import com.streamdek.tv.nativeapp.data.subtitleOriginVisible
 import com.streamdek.tv.nativeapp.data.preferredSubtitleLanguageAllowed
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaDetail
+import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
@@ -1381,19 +1383,18 @@ internal fun NextEpisodeDialog(
 ) {
     Box(
         modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xB8000000)),
-        contentAlignment = Alignment.Center,
+            .fillMaxSize(),
+        contentAlignment = Alignment.BottomStart,
     ) {
         PlayerGlassSurface(
-            modifier = Modifier.width(760.dp),
+            modifier = Modifier.width(700.dp).padding(start = 36.dp, bottom = 36.dp),
             contentPadding = PaddingValues(0.dp),
         ) {
             Column {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp),
+                        .height(150.dp),
                 ) {
                     val heroArt = episode.still ?: detail?.backdrop ?: detail?.poster
                     if (!heroArt.isNullOrBlank()) {
@@ -1459,63 +1460,11 @@ internal fun NextEpisodeDialog(
                     }
                 }
 
-                when {
-                    loading && streams.isEmpty() -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(24.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = "Finding streams…",
-                                style = androidx.tv.material3.MaterialTheme.typography.bodyLarge,
-                                color = Color.White.copy(alpha = 0.8f),
-                            )
-                        }
-                    }
-                    streams.isEmpty() -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(24.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = "No streams found for the next episode.",
-                                style = androidx.tv.material3.MaterialTheme.typography.bodyLarge,
-                                color = Color.White.copy(alpha = 0.8f),
-                            )
-                        }
-                    }
-                    else -> {
-                        LazyColumn(
-                            modifier = Modifier.height(320.dp),
-                            verticalArrangement = Arrangement.spacedBy(0.dp),
-                        ) {
-                            itemsIndexed(streams) { index, stream ->
-                                val meta = buildList {
-                                    stream.quality?.takeIf { it.isNotBlank() }?.let(::add)
-                                    stream.size?.takeIf { it.isNotBlank() }?.let(::add)
-                                    stream.addonName.takeIf { it.isNotBlank() }?.let(::add)
-                                }.joinToString(" • ")
-                                OptionButton(
-                                    label = stream.name?.takeIf { it.isNotBlank() }
-                                        ?: stream.title?.takeIf { it.isNotBlank() }
-                                        ?: stream.addonName.takeIf { it.isNotBlank() }
-                                        ?: "Source ${index + 1}",
-                                    subtitle = meta.ifBlank { null },
-                                    active = index == 0,
-                                    activeBadge = if (index == 0) "Auto" else null,
-                                    trailingPill = stream.quality,
-                                    requestFocus = null,
-                                    onInteract = {},
-                                    onClick = { onSelectStream(index) },
-                                )
-                            }
-                        }
-                    }
-                }
+                Text(
+                    text = if (loading && streams.isEmpty()) "Preparing the next episode…" else if (streams.isEmpty()) "No playable source is available yet." else "The current episode will continue to its natural end.",
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                    color = Color.White.copy(alpha = 0.76f),
+                )
 
                 Row(
                     modifier = Modifier
@@ -1535,10 +1484,114 @@ internal fun NextEpisodeDialog(
                         enabled = streams.isNotEmpty(),
                         modifier = Modifier.focusRequester(playRequester),
                     ) {
-                        Text("Play Now")
+                        Text("Play Next")
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun NextRecommendationDialog(
+    currentTitle: String,
+    items: List<MediaItem>,
+    queuedItemId: String?,
+    playRequester: FocusRequester,
+    cancelRequester: FocusRequester,
+    onPlayNext: (MediaItem) -> Unit,
+    onDismiss: () -> Unit,
+    onFocusChanged: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val visibleItems = items.take(2)
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.BottomEnd,
+    ) {
+        PlayerGlassSurface(
+            modifier = Modifier
+                .width(if (visibleItems.size == 2) 860.dp else 500.dp)
+                .padding(end = 36.dp, bottom = 36.dp)
+                .onFocusChanged { onFocusChanged(it.hasFocus) }
+                .focusGroup(),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
+                Text(
+                    "Recommended for you",
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = androidx.tv.material3.MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    visibleItems.forEachIndexed { index, item ->
+                        TvRecommendationChoice(
+                            item = item,
+                            reason = "Because you watched $currentTitle",
+                            queued = queuedItemId == item.id,
+                            focusRequester = playRequester.takeIf { index == 0 },
+                            onClick = { onPlayNext(item) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End).focusRequester(cancelRequester),
+                    colors = ButtonDefaults.colors(containerColor = Color.Transparent, focusedContainerColor = Color(0x22FFFFFF)),
+                ) { Text("Dismiss", color = Color.White.copy(alpha = 0.74f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvRecommendationChoice(
+    item: MediaItem,
+    reason: String?,
+    queued: Boolean,
+    focusRequester: FocusRequester?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .widthIn(min = 380.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .background(Color(0x0AFFFFFF))
+            .border(1.dp, if (queued) Color(0x66F0BA66) else Color(0x12FFFFFF), RoundedCornerShape(13.dp))
+            .padding(11.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val artwork = item.backdrop ?: item.poster
+        Box(
+            modifier = Modifier.width(142.dp).height(82.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xFF272C35)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!artwork.isNullOrBlank()) {
+                AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            } else {
+                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White.copy(alpha = 0.28f))
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(item.title, color = Color.White, fontWeight = FontWeight.Black, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            reason?.takeIf { it.isNotBlank() }?.let {
+                Text(it, color = Color.White.copy(alpha = 0.54f), style = androidx.tv.material3.MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (queued) Text("Queued next", color = Color(0xFFF0BA66), style = androidx.tv.material3.MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            Button(
+                onClick = onClick,
+                modifier = if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier,
+                colors = ButtonDefaults.colors(
+                    containerColor = if (queued) Color(0x18FFFFFF) else Color(0xFFF0BA66),
+                    focusedContainerColor = Color.White,
+                    contentColor = if (queued) Color.White else Color(0xFF171A20),
+                    focusedContentColor = Color.Black,
+                ),
+            ) { Text(if (queued) "Selected" else "Watch after this", fontWeight = FontWeight.Bold) }
         }
     }
 }

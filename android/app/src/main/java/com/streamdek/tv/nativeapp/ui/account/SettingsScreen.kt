@@ -574,16 +574,32 @@ fun SettingsScreen(
                     SettingsToggleRow("Keep the same source", "Prefer the current provider and release group for the next episode", playbackPrefs?.preferBingeGroupNextEpisode != false, selectedRequester) { next, complete ->
                         savePreference("Next-episode source", complete) { repository.updatePlaybackPreferences(mapOf("preferBingeGroupNextEpisode" to next)) }
                     }
-                    SettingsDropdownRow("Next episode trigger", "Choose whether autoplay uses remaining time or watched percentage", playbackPrefs?.nextEpisodeThresholdMode ?: "minutes", listOf("minutes" to "Minutes remaining", "percent" to "Watched percentage")) { value ->
-                        savePreference("Next episode trigger") { repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdMode" to value)) }
-                    }
-                    if (playbackPrefs?.nextEpisodeThresholdMode.equals("percent", true)) {
-                        SettingsDropdownRow("Watched percentage", "Percentage watched before the next episode starts", (playbackPrefs?.nextEpisodeThresholdPercent ?: 95).toString(), listOf(80, 85, 90, 95, 98).map { it.toString() to "$it%" }) { value ->
-                            savePreference("Watched percentage") { repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdPercent" to value.toInt())) }
+                    SettingsToggleRow(
+                        "End-of-Playback Recommendations",
+                        "Show relevant recommendations as you approach the end of something you're watching.",
+                        playbackPrefs?.endOfPlaybackRecommendationsEnabled == true,
+                        selectedRequester,
+                    ) { next, complete ->
+                        savePreference("End-of-Playback Recommendations", complete) {
+                            repository.updatePlaybackPreferences(mapOf("endOfPlaybackRecommendationsEnabled" to next))
                         }
-                    } else {
-                        SettingsDropdownRow("Minutes remaining", "Remaining time before the next episode starts", (playbackPrefs?.nextEpisodeThresholdMinutes ?: 2).toString(), listOf(1, 2, 3, 5, 10, 15).map { it.toString() to "$it minutes" }) { value ->
-                            savePreference("Minutes remaining") { repository.updatePlaybackPreferences(mapOf("nextEpisodeThresholdMinutes" to value.toInt())) }
+                    }
+                    if (playbackPrefs?.endOfPlaybackRecommendationsEnabled == true) {
+                        SettingsDropdownRow(
+                            "Recommendation Timing",
+                            "Choose how early the adaptive end-of-playback invitation appears",
+                            playbackPrefs.recommendationTiming,
+                            listOf("early" to "Early", "standard" to "Standard", "late" to "Late"),
+                        ) { value ->
+                            savePreference("Recommendation Timing") { repository.updatePlaybackPreferences(mapOf("recommendationTiming" to value)) }
+                        }
+                        SettingsDropdownRow(
+                            "Recommendations Shown",
+                            "Choose how many suggestions appear in the player",
+                            playbackPrefs.recommendationItemCount.coerceIn(1, 2).toString(),
+                            listOf("1" to "1 recommendation", "2" to "2 recommendations"),
+                        ) { value ->
+                            savePreference("Recommendations Shown") { repository.updatePlaybackPreferences(mapOf("recommendationItemCount" to value.toInt())) }
                         }
                     }
                 }

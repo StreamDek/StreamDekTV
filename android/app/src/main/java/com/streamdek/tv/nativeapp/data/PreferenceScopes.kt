@@ -46,6 +46,9 @@ internal object PreferenceScopes {
             "nextEpisodeThresholdMode",
             "nextEpisodeThresholdPercent",
             "nextEpisodeThresholdMinutes",
+            "endOfPlaybackRecommendationsEnabled",
+            "recommendationTiming",
+            "recommendationItemCount",
             "liveProgressBarEnabled",
         ),
     )
