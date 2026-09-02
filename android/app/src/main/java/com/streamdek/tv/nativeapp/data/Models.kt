@@ -514,6 +514,8 @@ data class PlaybackPreferences(
     val endOfPlaybackRecommendationsEnabled: Boolean = false,
     val recommendationTiming: String = "standard",
     val recommendationItemCount: Int = 1,
+    val timingProvider: String = "introdb",
+    val timingProviderFallbackEnabled: Boolean = true,
     val decoderMode: String = "hardware_plus",
     val renderSurface: String = "auto",
     /** Mobile-managed cloud setting: Auto starts Media3 and falls back once to libMPV. */

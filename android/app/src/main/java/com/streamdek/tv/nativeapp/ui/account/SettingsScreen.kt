@@ -1,6 +1,7 @@
 package com.streamdek.tv.nativeapp.ui.account
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import coil.compose.AsyncImage
 import com.streamdek.tv.R
 import androidx.compose.foundation.BorderStroke
@@ -68,6 +69,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -573,6 +576,23 @@ fun SettingsScreen(
                     }
                     SettingsToggleRow("Keep the same source", "Prefer the current provider and release group for the next episode", playbackPrefs?.preferBingeGroupNextEpisode != false, selectedRequester) { next, complete ->
                         savePreference("Next-episode source", complete) { repository.updatePlaybackPreferences(mapOf("preferBingeGroupNextEpisode" to next)) }
+                    }
+                    TimingProviderBrandRow()
+                    SettingsDropdownRow(
+                        "Preferred Timing Provider",
+                        "IntroDB supports series. TheIntroDB supports movies and series",
+                        playbackPrefs?.timingProvider?.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb",
+                        listOf("introdb" to "IntroDB", "theintrodb" to "TheIntroDB"),
+                    ) { value ->
+                        savePreference("Timing provider") { repository.updatePlaybackPreferences(mapOf("timingProvider" to value)) }
+                    }
+                    SettingsToggleRow(
+                        "Automatically use the other provider when needed",
+                        "Silently improves coverage when the preferred service has no usable timing data",
+                        playbackPrefs?.timingProviderFallbackEnabled != false,
+                        selectedRequester,
+                    ) { next, complete ->
+                        savePreference("Timing provider fallback", complete) { repository.updatePlaybackPreferences(mapOf("timingProviderFallbackEnabled" to next)) }
                     }
                     SettingsToggleRow(
                         "End-of-Playback Recommendations",
@@ -1523,6 +1543,18 @@ fun SettingsScreen(
             },
             onDismiss = { customDohEntry = false },
         )
+    }
+}
+
+@Composable
+private fun TimingProviderBrandRow() {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(22.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(painterResource(R.drawable.introdb_logo), "IntroDB", Modifier.width(128.dp).height(38.dp), contentScale = ContentScale.Fit)
+        Image(painterResource(R.drawable.theintrodb_logo), "TheIntroDB", Modifier.width(128.dp).height(38.dp), contentScale = ContentScale.Fit)
     }
 }
 

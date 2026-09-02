@@ -49,6 +49,8 @@ internal object PreferenceScopes {
             "endOfPlaybackRecommendationsEnabled",
             "recommendationTiming",
             "recommendationItemCount",
+            "timingProvider",
+            "timingProviderFallbackEnabled",
             "liveProgressBarEnabled",
         ),
     )

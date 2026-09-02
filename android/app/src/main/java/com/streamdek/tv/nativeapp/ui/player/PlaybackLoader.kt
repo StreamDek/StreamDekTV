@@ -6,6 +6,7 @@ import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.Perf
 import com.streamdek.tv.nativeapp.data.PlaybackProgressRecord
+import com.streamdek.tv.nativeapp.data.PlaybackPreferences
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
@@ -290,6 +291,7 @@ internal suspend fun preparePlayback(
     streamLabelOverride: String?,
     forceRefresh: Boolean,
     isLive: Boolean,
+    playbackPreferences: PlaybackPreferences,
     failedStreamKeys: Set<String>,
     perf: Perf.Span,
     onInitialSource: (InitialPlaybackSource) -> Unit,
@@ -373,31 +375,15 @@ internal suspend fun preparePlayback(
     onResolved(resolved)
 
     val nextEpisode = resolveNextEpisode(repository, request, preflight.detail, episode)
-    val segments = if (request.mediaType == "movie") {
-        repository.fetchMovieSegments(
-            tmdbId = preflight.detail?.tmdbId?.takeIf { it > 0 } ?: request.mediaId.toIntOrNull() ?: 0,
-            durationSec = preflight.detail?.runtime?.takeIf { it > 0 }?.times(60.0),
-        )
-    } else if (request.mediaType == "tv" && episode != null && !preflight.effectiveImdbId.isNullOrBlank()) {
-        repository.fetchEpisodeSegments(
-            imdbId = preflight.effectiveImdbId,
-            season = episode.seasonNumber,
-            episode = episode.episodeNumber,
-        ).also {
-            TvDebugLogger.i(
-                "Player",
-                "segments loaded mediaId=${request.mediaId} episode=s${episode.seasonNumber}e${episode.episodeNumber} imdbId=${preflight.effectiveImdbId} count=${it.size}",
-            )
-        }
-    } else {
-        if (request.mediaType == "tv" && episode != null) {
-            TvDebugLogger.w(
-                "Player",
-                "segments skipped mediaId=${request.mediaId} episode=s${episode.seasonNumber}e${episode.episodeNumber} imdbId missing",
-            )
-        }
-        emptyList()
-    }
+    val segments = repository.resolvePlaybackTimingSegments(
+        mediaType = request.mediaType,
+        tmdbId = preflight.detail?.tmdbId?.takeIf { it > 0 } ?: request.mediaId.toIntOrNull() ?: 0,
+        imdbId = preflight.effectiveImdbId,
+        season = episode?.seasonNumber,
+        episode = episode?.episodeNumber,
+        durationSec = preflight.detail?.runtime?.takeIf { it > 0 }?.times(60.0),
+        preferences = playbackPreferences,
+    )
     val watched = isLive || repository.isWatched(
         mediaType = request.mediaType,
         mediaId = request.mediaId,

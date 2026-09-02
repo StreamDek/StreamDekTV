@@ -1066,6 +1066,8 @@ class StreamDekRepository(
                     "endOfPlaybackRecommendationsEnabled" to (partial["endOfPlaybackRecommendationsEnabled"] ?: existing.endOfPlaybackRecommendationsEnabled),
                     "recommendationTiming" to (partial["recommendationTiming"] ?: existing.recommendationTiming),
                     "recommendationItemCount" to (partial["recommendationItemCount"] ?: existing.recommendationItemCount),
+                    "timingProvider" to (partial["timingProvider"] ?: existing.timingProvider),
+                    "timingProviderFallbackEnabled" to (partial["timingProviderFallbackEnabled"] ?: existing.timingProviderFallbackEnabled),
                     "decoderMode" to (partial["decoderMode"] ?: existing.decoderMode),
                     "renderSurface" to (partial["renderSurface"] ?: existing.renderSurface),
                     "playerEngine" to (partial["playerEngine"] ?: existing.playerEngine),
@@ -4682,28 +4684,72 @@ class StreamDekRepository(
         return result
     }
 
-    suspend fun fetchMovieSegments(tmdbId: Int, durationSec: Double? = null): List<PlaybackSegment> {
+    private suspend fun fetchTheIntroDbSegments(
+        tmdbId: Int,
+        mediaType: String,
+        season: Int? = null,
+        episode: Int? = null,
+        durationSec: Double? = null,
+    ): List<PlaybackSegment> {
         if (tmdbId <= 0) return emptyList()
         val durationMs = durationSec?.takeIf { it.isFinite() && it > 0.0 }?.times(1000.0)?.toLong()
-        val cacheKey = "$tmdbId:${durationMs ?: 0L}"
+        val cacheKey = "theintrodb:$mediaType:$tmdbId:${season ?: 0}:${episode ?: 0}:${durationMs ?: 0L}"
         movieSegmentCache[cacheKey]?.let { return it }
         val result = withContext(Dispatchers.IO) {
-            TheIntroDbClient(api.client, api.gson)
-                .getMovie(tmdbId, durationMs)
-                .onFailure { TvDebugLogger.w("Playback", "TheIntroDB movie outro lookup failed tmdbId=$tmdbId") }
-                .getOrNull()
-                ?.credits
-                .orEmpty()
-                .mapNotNull { credit ->
-                    val start = credit.startMs / 1000.0
-                    val end = credit.endMs?.div(1000.0) ?: durationSec
-                    end?.takeIf { it > start }?.let { PlaybackSegment("outro", start, it) }
+            val path = buildString {
+                append("/services/timings/theintrodb?tmdb_id=").append(tmdbId)
+                season?.let { append("&season=").append(it) }
+                episode?.let { append("&episode=").append(it) }
+                durationMs?.let { append("&duration_ms=").append(it) }
+            }
+            api.get<JsonObject>(path)
+                ?.let { TheIntroDbClient.parseMedia(api.gson.toJson(it), api.gson) }
+                ?.takeIf { (it.tmdbId == null || it.tmdbId == tmdbId) && (it.type == null || it.type == mediaType) }
+                ?.let { media ->
+                    fun mapped(type: String, values: List<TheIntroDbTimestamp>) = values.mapNotNull { value ->
+                        val start = value.startMs / 1000.0
+                        val end = value.endMs?.div(1000.0) ?: durationSec
+                        end?.let { PlaybackSegment(type, start, it) }
+                    }
+                    mapped("intro", media.intro) + mapped("recap", media.recap) + mapped("outro", media.credits)
                 }
+                .orEmpty()
+                .filter { it.startSec >= 0.0 && it.endSec > it.startSec && (durationSec == null || (it.startSec < durationSec && it.endSec <= durationSec + 2.0)) }
                 .distinctBy { Triple(it.segmentType, it.startSec, it.endSec) }
                 .sortedBy { it.startSec }
         }
         movieSegmentCache[cacheKey] = result
         return result
+    }
+
+    suspend fun resolvePlaybackTimingSegments(
+        mediaType: String,
+        tmdbId: Int,
+        imdbId: String?,
+        season: Int?,
+        episode: Int?,
+        durationSec: Double?,
+        preferences: PlaybackPreferences,
+    ): List<PlaybackSegment> {
+        val preferred = preferences.timingProvider.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb"
+        suspend fun load(provider: String): List<PlaybackSegment> = when {
+            provider == "theintrodb" -> fetchTheIntroDbSegments(tmdbId, mediaType, season.takeIf { mediaType == "tv" }, episode.takeIf { mediaType == "tv" }, durationSec)
+            mediaType == "tv" && !imdbId.isNullOrBlank() && season != null && episode != null -> fetchEpisodeSegments(imdbId, season, episode)
+            else -> emptyList()
+        }
+        val primary = load(preferred)
+        if (primary.isNotEmpty()) {
+            TvDebugLogger.i("Playback", "timing provider=$preferred fallback=none segments=${primary.size}")
+            return primary
+        }
+        if (!preferences.timingProviderFallbackEnabled) {
+            TvDebugLogger.i("Playback", "timing provider=none preferred=$preferred fallback=disabled")
+            return emptyList()
+        }
+        val alternateProvider = if (preferred == "theintrodb") "introdb" else "theintrodb"
+        val alternate = load(alternateProvider)
+        TvDebugLogger.i("Playback", "timing provider=${if (alternate.isEmpty()) "none" else alternateProvider} preferred=$preferred fallback=no_usable_data segments=${alternate.size}")
+        return alternate
     }
 
     private suspend fun markSeriesWatched(
@@ -4967,6 +5013,7 @@ class StreamDekRepository(
             AccountCredentials(
                 tmdb = stateFor(ContentService.Tmdb),
                 mdblist = stateFor(ContentService.Mdblist),
+                theIntroDb = stateFor(ContentService.TheIntroDb),
                 sharedFallbackAvailable = envelope.sharedFallbackAvailable,
             )
         }

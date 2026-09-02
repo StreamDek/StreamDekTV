@@ -1233,6 +1233,7 @@ fun PlayerScreen(
                 streamLabelOverride = streamLabelOverride,
                 forceRefresh = forceRefresh,
                 isLive = isLive,
+                playbackPreferences = playbackPreferences,
                 failedStreamKeys = failedStreamKeys,
                 perf = perf,
                 onInitialSource = { initial ->

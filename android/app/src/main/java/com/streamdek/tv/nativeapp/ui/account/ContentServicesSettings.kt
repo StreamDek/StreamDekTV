@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,6 +57,7 @@ import com.streamdek.tv.nativeapp.data.CredentialStatus
 import com.streamdek.tv.nativeapp.data.CredentialStorage
 import com.streamdek.tv.nativeapp.data.StorageChoice
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -77,6 +80,7 @@ private val RowFocused = Color(0xFF172131)
 private fun serviceAccent(service: ContentService): Color = when (service) {
     ContentService.Tmdb -> Color(0xFF01B4E4)
     ContentService.Mdblist -> Color(0xFFF5A524)
+    ContentService.TheIntroDb -> Color(0xFF05DF72)
 }
 
 private fun statusColor(status: CredentialStatus): Color = when (status) {

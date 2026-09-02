@@ -514,6 +514,9 @@ class StreamDekApi(
         if (path.startsWith("/mdblist/") || path.startsWith("/sync/")) {
             serviceCredentials.requestKey(ContentService.Mdblist)?.let { builder.header("x-mdblist-api-key", it) }
         }
+        if (path.startsWith("/services/timings/theintrodb")) {
+            serviceCredentials.requestKey(ContentService.TheIntroDb)?.let { builder.header("x-theintrodb-api-key", it) }
+        }
 
         if (session != null) {
             builder.header("Authorization", "Bearer ${session.user.accessToken}")
