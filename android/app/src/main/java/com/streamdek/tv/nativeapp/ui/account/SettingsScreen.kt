@@ -184,7 +184,7 @@ private enum class SettingsDestination(val category: String, val label: String, 
 
     Sources("Sources", "Add-ons and Plugins", "Add-ons, plugin collections, playlists, and premium services.", "providers addon plugin cloudstream debrid premium install playlist", Icons.Outlined.Extension),
 
-    ContentServices("Connections", "Content Services", "Use your own TMDB and MDBList keys.", "content services tmdb mdblist api key keys metadata artwork posters ratings enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
+    ContentServices("Connections", "Content Services", "Manage metadata and timing-service keys.", "content services tmdb mdblist theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
     Connections("Connections", "Sync Services", "Tracking services, linked devices, and active sessions.", "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
     Network("Connections", "Network", "DNS privacy and connection behaviour on this television.", "network dns doh dns over https privacy resolver", Icons.Outlined.Dns),
 
@@ -577,10 +577,12 @@ fun SettingsScreen(
                     SettingsToggleRow("Keep the same source", "Prefer the current provider and release group for the next episode", playbackPrefs?.preferBingeGroupNextEpisode != false, selectedRequester) { next, complete ->
                         savePreference("Next-episode source", complete) { repository.updatePlaybackPreferences(mapOf("preferBingeGroupNextEpisode" to next)) }
                     }
-                    TimingProviderBrandRow()
+                    TimingProviderBrandPanel(
+                        playbackPrefs?.timingProvider?.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb",
+                    )
                     SettingsDropdownRow(
                         "Preferred Timing Provider",
-                        "IntroDB supports series. TheIntroDB supports movies and series",
+                        "Choose which timing service StreamDek asks first",
                         playbackPrefs?.timingProvider?.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb",
                         listOf("introdb" to "IntroDB", "theintrodb" to "TheIntroDB"),
                     ) { value ->
@@ -1547,14 +1549,83 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun TimingProviderBrandRow() {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(22.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun TimingProviderBrandPanel(preferred: String) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Image(painterResource(R.drawable.introdb_logo), "IntroDB", Modifier.width(128.dp).height(38.dp), contentScale = ContentScale.Fit)
-        Image(painterResource(R.drawable.theintrodb_logo), "TheIntroDB", Modifier.width(128.dp).height(38.dp), contentScale = ContentScale.Fit)
+        Text(
+            "Timing services",
+            color = Color.White.copy(alpha = 0.76f),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            TimingProviderBrandTile(
+                modifier = Modifier.weight(1f),
+                logo = R.drawable.introdb_logo,
+                name = "IntroDB",
+                coverage = "Series",
+                selected = preferred != "theintrodb",
+            )
+            TimingProviderBrandTile(
+                modifier = Modifier.weight(1f),
+                logo = R.drawable.theintrodb_logo,
+                name = "TheIntroDB",
+                coverage = "Movies & series",
+                selected = preferred == "theintrodb",
+            )
+        }
+        Text(
+            "When fallback is enabled, the other service is used only if your preferred service has no usable timing.",
+            color = Color.White.copy(alpha = 0.60f),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
+private fun TimingProviderBrandTile(
+    modifier: Modifier,
+    logo: Int,
+    name: String,
+    coverage: String,
+    selected: Boolean,
+) {
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp)
+    Column(
+        modifier = modifier
+            .background(Color.White.copy(alpha = if (selected) 0.09f else 0.045f), shape)
+            .border(
+                1.dp,
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.52f) else Color.White.copy(alpha = 0.10f),
+                shape,
+            )
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth().height(36.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Image(
+                painter = painterResource(logo),
+                contentDescription = name,
+                modifier = Modifier.width(128.dp).height(30.dp),
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.CenterStart,
+            )
+        }
+        Text(name, color = Color.White.copy(alpha = 0.94f), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            if (selected) "$coverage · Preferred" else coverage,
+            color = if (selected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+        )
     }
 }
 
