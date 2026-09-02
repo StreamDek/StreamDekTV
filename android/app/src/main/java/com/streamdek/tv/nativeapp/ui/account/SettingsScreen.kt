@@ -166,20 +166,25 @@ private fun animationSpeedDescription(motion: MotionSettings): String = when {
     else -> "How long transitions take. Saved on this television only."
 }
 
-private enum class SettingsDestination(val label: String, val description: String, val terms: String, val icon: ImageVector) {
-    Account("Account", "Profiles, sign-in and household access", "accounts profile pin sign in switch household", Icons.Outlined.AccountCircle),
-    Playback("Playback", "Player, audio, subtitles and compatibility", "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
-    SkipAndAutoplay("Skip & Autoplay", "Intros, recaps and the next episode", "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
-    Streams("Streams & Quality", "Preferred quality, limits and result labels", "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
-    Library("Home & Layout", "Rows, cards and browsing layout", "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page card titles hide titles overlay label", Icons.Outlined.VideoLibrary),
-    LiveTv("Live TV", "Channel lists, cards and the live player", "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
-    Appearance("Appearance", "Theme, motion and presentation", "accent colour theme animation blur transparent navigation", Icons.Outlined.Palette),
-    Accessibility("Accessibility", "Contrast, text and reduced motion", "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
-    Sources("Sources", "Add-ons, plugins and premium services", "providers addon plugin cloudstream debrid premium install", Icons.Outlined.Extension),
-    ContentServices("Content Services", "Your own TMDB and MDBList keys", "content services tmdb mdblist api key keys metadata artwork posters ratings enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
-    Connections("Connections", "Tracking services, devices and sessions", "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
-    Network("Network", "DNS privacy and connection behaviour", "network dns doh dns over https privacy resolver", Icons.Outlined.Dns),
-    About("About", "Version, updates and health", "release update version diagnostics health cache network runtime", Icons.Outlined.Info),
+private enum class SettingsDestination(val category: String, val label: String, val description: String, val terms: String, val icon: ImageVector) {
+    Account("Account & Profiles", "Account", "Profiles, sign-in, and household access.", "accounts profile pin sign in switch household", Icons.Outlined.AccountCircle),
+
+    Appearance("Appearance", "Appearance", "Theme, motion, and presentation on this television.", "accent colour theme animation blur transparent navigation", Icons.Outlined.Palette),
+    Library("Appearance", "Home Screen", "Home rows, cards, spotlight, and browsing layout.", "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page card titles hide titles overlay label", Icons.Outlined.VideoLibrary),
+    LiveTv("Appearance", "Live TV", "Channel lists, cards, and what the live player shows.", "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
+    Accessibility("Appearance", "Accessibility", "Contrast, text size, and reduced motion for this television.", "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
+
+    Playback("Playback", "Player", "Player engine, audio, subtitles, and compatibility.", "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
+    SkipAndAutoplay("Playback", "Skip and Autoplay", "Intros, recaps, endings, and the next episode.", "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
+    Streams("Playback", "Streams and Quality", "Preferred quality, size limits, and result labels.", "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
+
+    Sources("Sources", "Add-ons and Plugins", "Add-ons, plugin collections, playlists, and premium services.", "providers addon plugin cloudstream debrid premium install playlist", Icons.Outlined.Extension),
+
+    ContentServices("Connections", "Content Services", "Use your own TMDB and MDBList keys.", "content services tmdb mdblist api key keys metadata artwork posters ratings enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
+    Connections("Connections", "Sync Services", "Tracking services, linked devices, and active sessions.", "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
+    Network("Connections", "Network", "DNS privacy and connection behaviour on this television.", "network dns doh dns over https privacy resolver", Icons.Outlined.Dns),
+
+    About("About", "App Updates and About", "Version, updates, diagnostics, and app health.", "release update version diagnostics health cache network runtime", Icons.Outlined.Info),
 }
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -332,7 +337,15 @@ fun SettingsScreen(
                 Modifier.weight(1f).padding(top = 12.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                visible.forEach { destination ->
+                visible.forEachIndexed { index, destination ->
+                    if (index == 0 || visible[index - 1].category != destination.category) {
+                        Text(
+                            destination.category,
+                            color = Color.White.copy(alpha = 0.42f),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            modifier = Modifier.padding(start = 10.dp, top = if (index == 0) 2.dp else 10.dp, bottom = 2.dp),
+                        )
+                    }
                     SettingsDestinationRow(
                         destination = destination,
                         selected = selected == destination,
