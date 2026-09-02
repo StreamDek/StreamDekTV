@@ -103,13 +103,19 @@ internal fun ContentServicesPanel(
     var entry by remember { mutableStateOf<ContentService?>(null) }
     var removing by remember { mutableStateOf<ContentServiceState?>(null) }
     var busy by remember { mutableStateOf<ContentService?>(null) }
+    var keyFeedback by remember { mutableStateOf<Triple<ContentService, String, Boolean>?>(null) }
 
-    fun run(service: ContentService, work: suspend () -> Result<String>) {
+    fun run(
+        service: ContentService,
+        work: suspend () -> Result<String>,
+        onComplete: ((Result<String>) -> Unit)? = null,
+    ) {
         if (busy != null) return
         busy = service
         scope.launch {
             val result = work()
             busy = null
+            onComplete?.invoke(result)
             onStatus(
                 result.getOrElse { it.message ?: "That didn't work. Try again in a moment." },
             )
@@ -125,9 +131,12 @@ internal fun ContentServicesPanel(
                 busy = busy == service,
                 signedIn = signedIn,
                 leftRequester = leftRequester,
-                onEnterKey = { entry = service },
+                onEnterKey = {
+                    keyFeedback = null
+                    entry = service
+                },
                 onSaveToAccount = {
-                    run(service) { repository.copyContentServiceKeyToAccount(service) }
+                    run(service, work = { repository.copyContentServiceKeyToAccount(service) })
                 },
                 onRemove = { removing = state.of(service) },
             )
@@ -137,15 +146,32 @@ internal fun ContentServicesPanel(
     }
 
     entry?.let { service ->
+        val feedback = keyFeedback?.takeIf { it.first == service }
         ContentServiceKeyDialog(
             service = service,
             existing = state.of(service),
             signedIn = signedIn,
+            busy = busy == service,
+            feedback = feedback?.second,
+            feedbackIsError = feedback?.third == true,
             onSubmit = { key, choice ->
-                entry = null
-                run(service) { repository.submitContentServiceKey(service, key, choice) }
+                keyFeedback = null
+                run(
+                    service = service,
+                    work = { repository.submitContentServiceKey(service, key, choice) },
+                    onComplete = { result ->
+                        keyFeedback = Triple(
+                            service,
+                            result.getOrElse { it.message ?: "That didn't work. Try again in a moment." },
+                            result.isFailure,
+                        )
+                    },
+                )
             },
-            onDismiss = { entry = null },
+            onDismiss = {
+                entry = null
+                keyFeedback = null
+            },
         )
     }
 
@@ -154,7 +180,7 @@ internal fun ContentServicesPanel(
             state = target,
             onRemove = { scope_ ->
                 removing = null
-                run(target.service) { repository.removeContentServiceKey(target.service, scope_) }
+                run(target.service, work = { repository.removeContentServiceKey(target.service, scope_) })
             },
             onDismiss = { removing = null },
         )
@@ -413,6 +439,9 @@ private fun ContentServiceKeyDialog(
     service: ContentService,
     existing: ContentServiceState,
     signedIn: Boolean,
+    busy: Boolean,
+    feedback: String?,
+    feedbackIsError: Boolean,
     onSubmit: (String, StorageChoice) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -455,6 +484,8 @@ private fun ContentServiceKeyDialog(
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it.trim() },
+                    enabled = !busy && (feedback == null || feedbackIsError),
+                    isError = feedbackIsError,
                     singleLine = true,
                     placeholder = { Text(service.keyHint) },
                     shape = RoundedCornerShape(12.dp),
@@ -468,6 +499,19 @@ private fun ContentServiceKeyDialog(
                     ),
                     modifier = Modifier.fillMaxWidth().focusRequester(fieldRequester),
                 )
+
+                if (feedback != null) {
+                    val feedbackColor = if (feedbackIsError) Color(0xFFFF6B64) else Color(0xFF22C55E)
+                    Text(
+                        feedback,
+                        color = feedbackColor,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                        modifier = Modifier.fillMaxWidth()
+                            .background(feedbackColor.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                            .border(1.dp, feedbackColor.copy(alpha = 0.38f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                    )
+                }
 
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
@@ -489,14 +533,30 @@ private fun ContentServiceKeyDialog(
                     )
                 }
 
-                StorageChoiceRows(choice = choice, signedIn = signedIn, onChoice = { choice = it })
+                if (feedback == null || feedbackIsError) {
+                    StorageChoiceRows(choice = choice, signedIn = signedIn, onChoice = { choice = it })
+                }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Button(
-                        onClick = { onSubmit(apiKey.trim(), choice) },
-                        enabled = apiKey.trim().length >= 8,
-                    ) { Text("Check & Connect") }
-                    OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                        onClick = {
+                            if (feedback != null && !feedbackIsError) onDismiss()
+                            else onSubmit(apiKey.trim(), choice)
+                        },
+                        enabled = !busy && ((feedback != null && !feedbackIsError) || apiKey.trim().length >= 8),
+                    ) {
+                        Text(
+                            when {
+                                busy -> "Checking…"
+                                feedback != null && !feedbackIsError -> "Done"
+                                existing.configured -> "Check & Update"
+                                else -> "Check & Connect"
+                            },
+                        )
+                    }
+                    if (feedback == null || feedbackIsError) {
+                        OutlinedButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+                    }
                 }
             }
         }
