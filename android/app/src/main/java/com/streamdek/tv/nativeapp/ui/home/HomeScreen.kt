@@ -411,7 +411,9 @@ fun HomeScreen(
             }
             activeRowId = targetRow.id
             activeRowIndex = targetIndex
-            focusedItem = targetRow.items[itemIndex]
+            val targetItem = targetRow.items[itemIndex]
+            homeViewModel.setHeroCandidate(targetItem)
+            focusedItem = targetItem
             rowFocusIndices[targetRow.id] = itemIndex
             // A resume that lands where it started is already laid out: the shelves did not move
             // while the menu was open, and scrolling them again is precisely the jump being fixed.
@@ -594,6 +596,7 @@ fun HomeScreen(
                     val firstRow = firstFocusableRow ?: return@LaunchedEffect
                     val firstItem = firstRow.items.first()
                     activeRowId = firstRow.id
+                    homeViewModel.setHeroCandidate(firstItem)
                     focusedItem = firstItem
                     rowFocusIndices.clear()
                     rowFocusIndices[firstRow.id] = 0
@@ -620,7 +623,9 @@ fun HomeScreen(
                         .takeIf { it >= 0 } ?: 0
                     activeRowId = row.id
                     rowFocusIndices[row.id] = itemIndex
-                    focusedItem = row.items.getOrNull(itemIndex)
+                    val targetItem = row.items.getOrNull(itemIndex)
+                    homeViewModel.setHeroCandidate(targetItem)
+                    focusedItem = targetItem
                     shelfListState.scrollToItem(rowIndex)
                     // Let the navigation transition finish restoring its outgoing focus before
                     // applying Home's saved card. Otherwise the rail can win the final focus pass
@@ -734,6 +739,10 @@ fun HomeScreen(
                                 onFocusItemHandled = { pendingRestoreKey = null },
                                 onItemFocused = { index, item ->
                                     rowFocusIndices[row.id] = index
+                                    // Publish cached detail before the hero target changes. Doing
+                                    // this in the later LaunchedEffect leaves one composed frame in
+                                    // which the new item can only render its text fallback.
+                                    homeViewModel.setHeroCandidate(item)
                                     focusedItem = item
                                     activeRowId = row.id
                                     activeRowIndex = rowIndex

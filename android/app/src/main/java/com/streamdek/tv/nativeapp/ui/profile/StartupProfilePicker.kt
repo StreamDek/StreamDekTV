@@ -212,13 +212,14 @@ private fun tvProfileCardCue(index: Int): Float =
  */
 @Composable
 private fun TvAmbientGlow(modifier: Modifier = Modifier, reduced: Boolean, alpha: () -> Float = { 1f }) {
+    val breathDuration = TvMotion.duration(2200).coerceAtLeast(1)
     val breath = if (reduced) {
         null
     } else {
         rememberInfiniteTransition(label = "tv_picker_glow").animateFloat(
             initialValue = 0.34f,
             targetValue = 0.72f,
-            animationSpec = infiniteRepeatable(tween(2200, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            animationSpec = infiniteRepeatable(tween(breathDuration, easing = TvMotion.StandardEasing), RepeatMode.Reverse),
             label = "tv_picker_breath",
         )
     }

@@ -47,6 +47,8 @@ import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
 import com.streamdek.tv.nativeapp.ui.TvEmptyState
+import com.streamdek.tv.nativeapp.ui.TvContentPhase
+import com.streamdek.tv.nativeapp.ui.TvContentSwap
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
 import com.streamdek.tv.nativeapp.ui.TvSpacing
@@ -306,27 +308,34 @@ fun NetworkBrowseScreen(
                 )
             }
 
-            when {
-                loading && results.isEmpty() -> TvSkeletonGrid(columns = gridColumns, rows = 3)
+            val contentPhase = when {
+                loading && results.isEmpty() -> TvContentPhase.Loading
+                failed -> TvContentPhase.Error
+                visibleResults.isEmpty() -> TvContentPhase.Empty
+                else -> TvContentPhase.Content
+            }
+            TvContentSwap(phase = contentPhase, modifier = Modifier.weight(1f).fillMaxWidth()) { phase ->
+            when (phase) {
+                TvContentPhase.Loading -> TvSkeletonGrid(columns = gridColumns, rows = 3)
 
-                failed -> TvEmptyState(
+                TvContentPhase.Error -> TvEmptyState(
                     title = "Could not load $networkName",
                     message = "The catalogue could not be reached. Check the connection and try again.",
                     actionLabel = "Try Again",
                     onAction = { reloadToken++ },
                 )
 
-                visibleResults.isEmpty() -> TvEmptyState(
+                TvContentPhase.Empty -> TvEmptyState(
                     title = "Nothing matches these filters",
                     message = "Widen the year, genre or rating and try again.",
                     actionLabel = "Clear Filters",
                     onAction = { mediaType = "all"; year = null; genreId = null; minRating = null },
                 )
 
-                else -> LazyVerticalGrid(
+                TvContentPhase.Content -> LazyVerticalGrid(
                     columns = GridCells.Fixed(gridColumns),
                     state = gridState,
-                    modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+                    modifier = Modifier.fillMaxSize().focusGroup(),
                     contentPadding = PaddingValues(
                         start = NetworkInset, end = NetworkInset, top = 2.dp, bottom = 72.dp,
                     ),
@@ -350,6 +359,7 @@ fun NetworkBrowseScreen(
                         )
                     }
                 }
+            }
             }
         }
 

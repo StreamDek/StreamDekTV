@@ -52,6 +52,8 @@ import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
 import com.streamdek.tv.nativeapp.ui.TvEmptyState
+import com.streamdek.tv.nativeapp.ui.TvContentPhase
+import com.streamdek.tv.nativeapp.ui.TvContentSwap
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
 import com.streamdek.tv.nativeapp.ui.TvSpacing
@@ -309,17 +311,24 @@ fun LibraryScreen(
                 }
             }
 
-            when {
-                loading && items.isEmpty() -> TvSkeletonGrid(columns = gridColumns, rows = 3)
+            val contentPhase = when {
+                loading && items.isEmpty() -> TvContentPhase.Loading
+                error != null -> TvContentPhase.Error
+                items.isEmpty() -> TvContentPhase.Empty
+                else -> TvContentPhase.Content
+            }
+            TvContentSwap(phase = contentPhase, modifier = Modifier.weight(1f).fillMaxWidth()) { phase ->
+            when (phase) {
+                TvContentPhase.Loading -> TvSkeletonGrid(columns = gridColumns, rows = 3)
 
-                error != null -> TvEmptyState(
+                TvContentPhase.Error -> TvEmptyState(
                     title = "Library unavailable",
-                    message = error,
+                    message = error.orEmpty(),
                     actionLabel = "Try Again",
                     onAction = { reloadToken++ },
                 )
 
-                items.isEmpty() -> TvEmptyState(
+                TvContentPhase.Empty -> TvEmptyState(
                     title = when {
                         session == null -> "Sign in to see your library"
                         section == LibrarySection.Continue -> "Nothing in progress"
@@ -332,10 +341,10 @@ fun LibraryScreen(
                     },
                 )
 
-                else -> LazyVerticalGrid(
+                TvContentPhase.Content -> LazyVerticalGrid(
                     columns = GridCells.Fixed(gridColumns),
                     state = gridState,
-                    modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+                    modifier = Modifier.fillMaxSize().focusGroup(),
                     contentPadding = PaddingValues(
                         start = LibraryInset, end = LibraryInset, top = 2.dp, bottom = 72.dp,
                     ),
@@ -369,6 +378,7 @@ fun LibraryScreen(
                         )
                     }
                 }
+            }
             }
         }
 

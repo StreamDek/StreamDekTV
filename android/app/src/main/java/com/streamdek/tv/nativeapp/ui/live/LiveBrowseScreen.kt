@@ -50,6 +50,8 @@ import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
 import com.streamdek.tv.nativeapp.ui.TvEmptyState
+import com.streamdek.tv.nativeapp.ui.TvContentPhase
+import com.streamdek.tv.nativeapp.ui.TvContentSwap
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.search.SearchChip
@@ -297,7 +299,9 @@ fun LiveBrowseScreen(
                 )
             }
 
-            if (filteredItems.isEmpty()) {
+            val contentPhase = if (filteredItems.isEmpty()) TvContentPhase.Empty else TvContentPhase.Content
+            TvContentSwap(phase = contentPhase, modifier = Modifier.weight(1f).fillMaxWidth()) { phase ->
+            if (phase == TvContentPhase.Empty) {
                 TvEmptyState(
                     title = if (favouritesOnly) "No favourite channels" else "No channels match",
                     message = if (favouritesOnly) {
@@ -317,7 +321,7 @@ fun LiveBrowseScreen(
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(gridColumns),
                     state = gridState,
-                    modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+                    modifier = Modifier.fillMaxSize().focusGroup(),
                     contentPadding = PaddingValues(
                         start = BrowseInset, end = BrowseInset, top = 4.dp, bottom = 72.dp,
                     ),
@@ -341,6 +345,7 @@ fun LiveBrowseScreen(
                         )
                     }
                 }
+            }
             }
         }
     }

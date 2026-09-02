@@ -60,6 +60,8 @@ import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
 import com.streamdek.tv.nativeapp.ui.TvEmptyState
+import com.streamdek.tv.nativeapp.ui.TvContentPhase
+import com.streamdek.tv.nativeapp.ui.TvContentSwap
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
 import com.streamdek.tv.nativeapp.ui.TvSpacing
@@ -515,10 +517,16 @@ fun SearchScreen(
             )
 
             // ── Grid ─────────────────────────────────────────────────────────────────────────
-            when {
-                loading && items.isEmpty() -> TvSkeletonGrid(columns = gridColumns, rows = 3)
+            val contentPhase = when {
+                loading && items.isEmpty() -> TvContentPhase.Loading
+                items.isEmpty() -> TvContentPhase.Empty
+                else -> TvContentPhase.Content
+            }
+            TvContentSwap(phase = contentPhase, modifier = Modifier.weight(1f).fillMaxWidth()) { phase ->
+            when (phase) {
+                TvContentPhase.Loading -> TvSkeletonGrid(columns = gridColumns, rows = 3)
 
-                items.isEmpty() -> TvEmptyState(
+                TvContentPhase.Empty -> TvEmptyState(
                     title = if (hasQuery) "No matches" else "Nothing to show",
                     message = if (hasQuery) {
                         "Try a shorter title, or part of a channel name."
@@ -527,10 +535,10 @@ fun SearchScreen(
                     },
                 )
 
-                else -> LazyVerticalGrid(
+                TvContentPhase.Content -> LazyVerticalGrid(
                     columns = GridCells.Fixed(gridColumns),
                     state = gridState,
-                    modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+                    modifier = Modifier.fillMaxSize().focusGroup(),
                     contentPadding = PaddingValues(
                         start = SearchInset, end = SearchInset, top = 2.dp, bottom = 72.dp,
                     ),
@@ -567,6 +575,8 @@ fun SearchScreen(
                         )
                     }
                 }
+                TvContentPhase.Error -> Unit
+            }
             }
         }
 

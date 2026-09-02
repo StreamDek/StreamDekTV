@@ -3,6 +3,7 @@ package com.streamdek.tv.nativeapp.ui.account
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -128,7 +129,7 @@ internal fun ContentServicesPanel(
             )
         }
 
-        ContentServicesRoutes()
+        ContentServicesRoutes(leftRequester)
     }
 
     entry?.let { service ->
@@ -325,7 +326,7 @@ private fun ContentServiceRow(
  * at all.
  */
 @Composable
-private fun ContentServicesRoutes() {
+private fun ContentServicesRoutes(leftRequester: FocusRequester) {
     Column(
         Modifier.fillMaxWidth()
             .background(PanelBackground, RoundedCornerShape(18.dp))
@@ -342,29 +343,54 @@ private fun ContentServicesRoutes() {
             "1 - On the StreamDek web portal",
             "Sign in on a computer, open Account, then Content Services, and paste your keys with a " +
                 "real keyboard. They save to your account and this television picks them up on its own.",
+            leftRequester,
         )
         RouteLine(
             "2 - On StreamDek Mobile",
             "Enter a key on your phone and choose Save to StreamDek. This television will already have " +
                 "it the next time it refreshes.",
+            leftRequester,
         )
         RouteLine(
             "3 - On this television",
             "Use Enter Key on TV above if you would rather not use another device, or if you want this " +
                 "television to have a key of its own.",
+            leftRequester,
         )
     }
 }
 
 @Composable
-private fun RouteLine(title: String, detail: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+private fun RouteLine(title: String, detail: String, leftRequester: FocusRequester) {
+    var focused by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (focused) RowFocused else Color.Transparent, RoundedCornerShape(12.dp))
+            .border(
+                if (focused) 2.dp else 0.dp,
+                if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                RoundedCornerShape(12.dp),
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent {
+                it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft &&
+                    runCatching { leftRequester.requestFocus() }.isSuccess
+            }
+            .focusable()
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
         Text(
             title,
-            color = Color.White.copy(alpha = 0.82f),
+            color = if (focused) Color.White else Color.White.copy(alpha = 0.82f),
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
         )
-        Text(detail, color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall)
+        Text(
+            detail,
+            color = Color.White.copy(alpha = if (focused) 0.78f else 0.52f),
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 

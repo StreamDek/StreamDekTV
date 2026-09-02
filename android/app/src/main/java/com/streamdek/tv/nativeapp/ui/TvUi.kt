@@ -1,6 +1,7 @@
 package com.streamdek.tv.nativeapp.ui
 
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
@@ -236,6 +237,43 @@ object TvMotion {
      */
     @Composable
     fun focusScale(): Float = 1f
+}
+
+/**
+ * The stable visual phases used by results surfaces.
+ *
+ * Keeping this vocabulary in the motion layer prevents each screen from inventing a subtly
+ * different loading-to-content transition. Data changes inside [Content] deliberately do not
+ * retrigger a page animation: filters, pagination and local mutations should update the grid that
+ * is already on screen rather than pretending the viewer navigated somewhere else.
+ */
+enum class TvContentPhase { Loading, Empty, Error, Content }
+
+/**
+ * Replaces one same-page content region with another on the canonical fade curve.
+ *
+ * There is intentionally no size animation or per-item stagger here. The host owns stable bounds,
+ * so a skeleton resolving into a large lazy grid costs only alpha compositing and cannot push the
+ * rest of the page around. A phase key also means pagination and filtering within a populated grid
+ * remain immediate and interruptible.
+ */
+@Composable
+fun TvContentSwap(
+    phase: TvContentPhase,
+    modifier: Modifier = Modifier,
+    content: @Composable (TvContentPhase) -> Unit,
+) {
+    val enter = TvMotion.fadeInSpec(TvMotion.Standard)
+    val exit = TvMotion.fadeOutSpec(TvMotion.Quick)
+    androidx.compose.animation.AnimatedContent(
+        targetState = phase,
+        modifier = modifier,
+        transitionSpec = { enter.togetherWith(exit) },
+        contentKey = { it },
+        label = "tv-content-phase",
+    ) { target ->
+        content(target)
+    }
 }
 val AppPillShape = RoundedCornerShape(999.dp)
 

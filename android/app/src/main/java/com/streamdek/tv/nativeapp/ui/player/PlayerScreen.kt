@@ -111,6 +111,7 @@ import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.Job
@@ -1963,25 +1964,32 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
 
     @Composable
     fun RenderPlayerRoot() {
-    val breathing = rememberInfiniteTransition(label = "player-loading")
-    val logoScale by breathing.animateFloat(
+    // Do not keep a frame clock alive throughout a film for decoration that is not on screen.
+    // Loading and the two live hints are the only consumers. Reduced motion holds their resting
+    // values, while the viewer's speed still governs the decorative cycle when it is enabled.
+    val animateAmbient = !LocalTvExperienceSettings.current.reducedMotion &&
+        (loading || (isLive && liveHintsVisible))
+    val breathing = if (animateAmbient) rememberInfiniteTransition(label = "player-ambient") else null
+    val ambientDuration = TvMotion.duration(1600).coerceAtLeast(1)
+    val hintDuration = TvMotion.duration(850).coerceAtLeast(1)
+    val logoScale = breathing?.animateFloat(
         initialValue = 0.97f,
         targetValue = 1.03f,
-        animationSpec = infiniteRepeatable(animation = tween(1600), repeatMode = RepeatMode.Reverse),
+        animationSpec = infiniteRepeatable(animation = tween(ambientDuration), repeatMode = RepeatMode.Reverse),
         label = "logo-breathe",
-    )
-    val logoAlpha by breathing.animateFloat(
+    )?.value ?: 1f
+    val logoAlpha = breathing?.animateFloat(
         initialValue = 0.68f,
         targetValue = 1f,
-        animationSpec = infiniteRepeatable(animation = tween(1600), repeatMode = RepeatMode.Reverse),
+        animationSpec = infiniteRepeatable(animation = tween(ambientDuration), repeatMode = RepeatMode.Reverse),
         label = "logo-alpha",
-    )
-    val liveCaretOffset by breathing.animateFloat(
+    )?.value ?: 1f
+    val liveCaretOffset = breathing?.animateFloat(
         initialValue = 0f,
         targetValue = 5f,
-        animationSpec = infiniteRepeatable(animation = tween(850), repeatMode = RepeatMode.Reverse),
+        animationSpec = infiniteRepeatable(animation = tween(hintDuration), repeatMode = RepeatMode.Reverse),
         label = "live-channel-caret",
-    )
+    )?.value ?: 0f
 
     // The video surface deliberately does not take focus, so the player root holds it
     // whenever no control is focused. Without this, D-pad presses while the controls

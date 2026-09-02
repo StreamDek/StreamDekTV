@@ -117,6 +117,7 @@ import com.streamdek.tv.nativeapp.ui.MotionSettings
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import com.streamdek.tv.nativeapp.ui.TvChromeSurface
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
+import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
 import com.streamdek.tv.nativeapp.ui.streamDekThemeAccent
 import com.streamdek.tv.nativeapp.ui.player.normalizeSubtitleDefaultSource
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
@@ -211,6 +212,10 @@ fun SettingsScreen(
     var catalogDefinitions by remember { mutableStateOf<List<com.streamdek.tv.nativeapp.data.CatalogDefinition>>(emptyList()) }
     var playlists by remember { mutableStateOf<List<RemotePlaylist>>(emptyList()) }
     var selected by remember { mutableStateOf(SettingsDestination.Account) }
+    // Focus owns the left-menu highlight immediately. The selected page follows only after the
+    // remote settles: rebuilding a large settings panel in the same frame as every Up/Down press
+    // made the highlight visibly hitch, especially while travelling upward through the list.
+    var menuFocusedDestination by remember { mutableStateOf(SettingsDestination.Account) }
     // Device-local motion, from the app shell. Null only in a preview that has not provided it.
     val animationPreferences = LocalTvAnimationPreferences.current
     val motionSettings = LocalTvExperienceSettings.current.motion
@@ -261,6 +266,10 @@ fun SettingsScreen(
         runCatching { destinationRequesters.getValue(SettingsDestination.Account).requestFocus() }
     }
     LaunchedEffect(selected) { contentScroll.scrollTo(0) }
+    LaunchedEffect(menuFocusedDestination) {
+        delay(75)
+        selected = menuFocusedDestination
+    }
     LaunchedEffect(status) {
         val message = status ?: return@LaunchedEffect
         delay(2_500)
@@ -270,7 +279,12 @@ fun SettingsScreen(
     val visible = SettingsDestination.entries.filter {
         query.isBlank() || it.label.contains(query, true) || it.description.contains(query, true) || it.terms.contains(query, true)
     }
-    LaunchedEffect(visible) { if (visible.isNotEmpty() && selected !in visible) selected = visible.first() }
+    LaunchedEffect(visible) {
+        if (visible.isNotEmpty() && selected !in visible) {
+            menuFocusedDestination = visible.first()
+            selected = visible.first()
+        }
+    }
     val selectedRequester = destinationRequesters.getValue(selected)
     val activeProfile = repository.activeStreamProfile(bootstrap)
     val prefs = bootstrap?.preferences
@@ -352,7 +366,17 @@ fun SettingsScreen(
                         requester = destinationRequesters.getValue(destination),
                         navRequester = navFocusRequester,
                         contentRequester = contentEntryRequester,
-                        onFocused = { selected = destination },
+                        onFocused = { menuFocusedDestination = destination },
+                        onMoveUp = visible.getOrNull(index - 1)?.let { previous ->
+                            {
+                                destinationRequesters.getValue(previous).requestFocusOrFalse()
+                            }
+                        },
+                        onMoveDown = visible.getOrNull(index + 1)?.let { next ->
+                            {
+                                destinationRequesters.getValue(next).requestFocusOrFalse()
+                            }
+                        },
                     )
                 }
                 if (visible.isEmpty()) Text("No settings match", color = Color.White.copy(alpha = 0.6f), modifier = Modifier.padding(14.dp))
@@ -1517,10 +1541,19 @@ private fun SettingsSearchBox(query: String, onQueryChange: (String) -> Unit, na
 }
 
 @Composable
-private fun SettingsDestinationRow(destination: SettingsDestination, selected: Boolean, requester: FocusRequester, navRequester: FocusRequester, contentRequester: FocusRequester, onFocused: () -> Unit) {
+private fun SettingsDestinationRow(
+    destination: SettingsDestination,
+    selected: Boolean,
+    requester: FocusRequester,
+    navRequester: FocusRequester,
+    contentRequester: FocusRequester,
+    onFocused: () -> Unit,
+    onMoveUp: (() -> Boolean)?,
+    onMoveDown: (() -> Boolean)?,
+) {
     var focused by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().height(42.dp).background(when { focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.22f); selected -> Color(0x16FFFFFF); else -> Color.Transparent }, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).border(if (focused) 2.dp else 0.dp, if (focused) MaterialTheme.colorScheme.primary else Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).focusRequester(requester).onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }.onPreviewKeyEvent { e -> if (e.type != KeyEventType.KeyDown) false else when (e.key) { Key.DirectionRight -> runCatching { contentRequester.requestFocus() }.isSuccess; else -> false } }.clickable(onClick = onFocused).padding(horizontal = 10.dp),
+        Modifier.fillMaxWidth().height(42.dp).background(when { focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.22f); selected -> Color(0x16FFFFFF); else -> Color.Transparent }, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).border(if (focused) 2.dp else 0.dp, if (focused) MaterialTheme.colorScheme.primary else Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).focusRequester(requester).onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }.onPreviewKeyEvent { e -> if (e.type != KeyEventType.KeyDown) false else when (e.key) { Key.DirectionUp -> onMoveUp?.invoke() ?: false; Key.DirectionDown -> onMoveDown?.invoke() ?: false; Key.DirectionRight -> runCatching { contentRequester.requestFocus() }.isSuccess; else -> false } }.clickable(onClick = onFocused).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) { Icon(destination.icon, null, tint = if (focused || selected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.55f), modifier = Modifier.size(19.dp)); Text(destination.label, color = Color.White.copy(alpha = if (focused || selected) 0.96f else 0.66f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.Medium)) }
 }

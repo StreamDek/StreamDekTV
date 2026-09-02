@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import androidx.compose.runtime.remember
@@ -161,7 +162,18 @@ internal fun HomeSpotlight(
         return
     }
 
-    val synopsis = detail?.description?.takeIf { it.isNotBlank() } ?: item.description?.takeIf { it.isNotBlank() }
+    // AnimatedContent keeps the previous hero composed while it fades away. The screen-level
+    // detail belongs to the newly focused item and is cleared before that item's request starts;
+    // if the outgoing hero reads it directly, its logo disappears for one frame and its old text
+    // title flashes underneath. Retain the last matching detail inside this item-keyed composition
+    // so an exiting hero remains visually immutable while the incoming one resolves independently.
+    var retainedDetail by remember(item.type, item.id) { mutableStateOf(detail) }
+    LaunchedEffect(item.type, item.id, detail) {
+        if (detail != null) retainedDetail = detail
+    }
+    val presentedDetail = detail ?: retainedDetail
+    val synopsis = presentedDetail?.description?.takeIf { it.isNotBlank() }
+        ?: item.description?.takeIf { it.isNotBlank() }
     // A streaming service brings its own wordmark, and it is preferred here for the same reason the
     // card prefers it: what `/tmdb/networks` supplies is a provider-list thumbnail, and at hero size
     // it is a blur. It is drawn white so that it reads against the service's own colour behind it
@@ -169,7 +181,7 @@ internal fun HomeSpotlight(
     // no bundled wordmark falls through to its name in text rather than to the fetched logo — that
     // one is dark ink meant for a light tile, and on the hero it is a smudge.
     val networkLogo = if (item.type == "network") networkLogoArt(item) else null
-    val logo = if (item.type == "network") null else detail?.titleLogo ?: item.titleLogo
+    val logo = if (item.type == "network") null else presentedDetail?.titleLogo ?: item.titleLogo
     val context = LocalContext.current
     val logoRequest = remember(logo) {
         logo?.let {
@@ -203,7 +215,7 @@ internal fun HomeSpotlight(
         if (hideSynopsis) Spacer(Modifier.weight(1f))
 
         Box(modifier = Modifier.height(BadgeSlotHeight).fillMaxWidth()) {
-            spotlightKindLabel(item, detail)?.let { label ->
+            spotlightKindLabel(item, presentedDetail)?.let { label ->
                 SpotlightChip(label, emphasised = true)
             }
         }
@@ -240,7 +252,10 @@ internal fun HomeSpotlight(
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,
                     alignment = Alignment.CenterStart,
-                    loading = { titleText() },
+                    // A known logo should never flash its text equivalent while Coil decodes it.
+                    // The outgoing hero remains beneath this one during the short crossfade; text
+                    // is reserved for the real failure path below.
+                    loading = {},
                     error = { titleText() },
                 )
             } else {
@@ -254,12 +269,12 @@ internal fun HomeSpotlight(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxSize(),
             ) {
-                (detail?.rating ?: item.rating)?.takeIf { it > 0 }?.let {
+                (presentedDetail?.rating ?: item.rating)?.takeIf { it > 0 }?.let {
                     SpotlightChip("★ %.1f".format(it), emphasised = true)
                 }
-                (detail?.year ?: item.year)?.takeIf { it.isNotBlank() }?.let { SpotlightChip(it) }
-                detail?.runtime?.takeIf { it > 0 }?.let { SpotlightChip("${it / 60}h ${it % 60}m") }
-                detail?.genreNames?.take(2)?.forEach { SpotlightChip(it) }
+                (presentedDetail?.year ?: item.year)?.takeIf { it.isNotBlank() }?.let { SpotlightChip(it) }
+                presentedDetail?.runtime?.takeIf { it > 0 }?.let { SpotlightChip("${it / 60}h ${it % 60}m") }
+                presentedDetail?.genreNames?.take(2)?.forEach { SpotlightChip(it) }
             }
         }
 
