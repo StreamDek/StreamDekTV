@@ -1219,14 +1219,37 @@ class StreamDekRepository(
     }
 
     suspend fun toggleAddon(id: String, enabled: Boolean): Boolean {
+        val previousEnabled = bootstrapState.value?.integrations?.addons?.items
+            ?.firstOrNull { it.id == id }
+            ?.enabled
+        if (previousEnabled != null) {
+            applyAddonSnapshot(
+                bootstrapState.value?.integrations?.addons?.items.orEmpty().map { addon ->
+                    if (addon.id == id) addon.copy(enabled = enabled) else addon
+                },
+            )
+        }
         val response = api.post<JsonObject>("/addons/toggle", mapOf("id" to id, "enabled" to enabled))
-            ?: return false
+        if (response == null) {
+            if (previousEnabled != null) rollbackAddonToggle(id, enabled, previousEnabled)
+            return false
+        }
         val saved = response.get("success")?.asBoolean == true ||
             response.has("id") || response.has("enabled")
-        if (!saved) return false
+        if (!saved) {
+            if (previousEnabled != null) rollbackAddonToggle(id, enabled, previousEnabled)
+            return false
+        }
         homeCache.clear()
-        refreshBootstrap()
         return true
+    }
+
+    private fun rollbackAddonToggle(id: String, attempted: Boolean, previous: Boolean) {
+        val addons = bootstrapState.value?.integrations?.addons?.items.orEmpty()
+        if (addons.firstOrNull { it.id == id }?.enabled != attempted) return
+        applyAddonSnapshot(addons.map { addon ->
+            if (addon.id == id) addon.copy(enabled = previous) else addon
+        })
     }
 
     suspend fun setAddonFavourite(id: String, favourite: Boolean): Boolean {

@@ -1020,16 +1020,19 @@ fun SettingsScreen(
                                         selectedRequester,
                                     ) { next, complete ->
                                         scope.launch {
+                                            addons = addons.map { current ->
+                                                if (current.id == addon.id) current.copy(enabled = next) else current
+                                            }
                                             status = "Updating ${addon.manifest.name.ifBlank { addon.id }}..."
                                             val saved = repository.toggleAddon(addon.id, next)
                                             if (saved) {
-                                                addons = addons.map { current ->
-                                                    if (current.id == addon.id) current.copy(enabled = next) else current
-                                                }
                                                 bootstrap = repository.bootstrap.value
-                                                addons = repository.fetchAddonManifests(forceRefresh = true)
                                                 status = "${addon.manifest.name.ifBlank { addon.id }} updated."
                                             } else {
+                                                addons = addons.map { current ->
+                                                    if (current.id == addon.id && current.enabled == next) current.copy(enabled = addon.enabled) else current
+                                                }
+                                                bootstrap = repository.bootstrap.value
                                                 status = "Add-on could not be updated."
                                             }
                                             complete(saved)
