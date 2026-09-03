@@ -80,6 +80,7 @@ private val RowFocused = Color(0xFF172131)
 private fun serviceAccent(service: ContentService): Color = when (service) {
     ContentService.Tmdb -> Color(0xFF01B4E4)
     ContentService.Mdblist -> Color(0xFFF5A524)
+    ContentService.IntroDb -> Color(0xFFA78BFA)
     ContentService.TheIntroDb -> Color(0xFF05DF72)
 }
 

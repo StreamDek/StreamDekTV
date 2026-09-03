@@ -74,19 +74,29 @@ enum class ContentService(
         ),
         keyHint = "MDBList API key",
     ),
+    IntroDb(
+        id = "introdb",
+        label = "IntroDB",
+        tagline = "Series Playback Timing",
+        blurb = "Provides intro, recap and ending timestamps for series.",
+        uses = listOf("Episode timing", "Intro and recap skipping", "Ending detection and next episode"),
+        keyUrl = "introdb.app/account",
+        howToGet = listOf("Sign in at introdb.app/account.", "Create or copy your API key from the account page.", "Paste the complete key into StreamDek."),
+        keyHint = "IntroDB API key",
+    ),
     TheIntroDb(
         id = "theintrodb",
         label = "TheIntroDB",
         tagline = "Movies, Series & Playback Timing",
         blurb = "Community-verified intro, recap, credits and preview timestamps for movies and series.",
         uses = listOf("Movie and episode timing", "Intro and recap skipping", "Credits, next episode and recommendations"),
-        keyUrl = "theintrodb.org/dashboard",
-        howToGet = listOf("Sign in at theintrodb.org.", "Open your dashboard and create an API key.", "Copy the complete key into StreamDek."),
+        keyUrl = "theintrodb.org/docs",
+        howToGet = listOf("Open TheIntroDB documentation.", "Follow the API-key instructions and sign in when asked.", "Copy the complete key into StreamDek."),
         keyHint = "TheIntroDB API key",
     );
 
     companion object {
-        val all: List<ContentService> = listOf(Tmdb, Mdblist, TheIntroDb)
+        val all: List<ContentService> = listOf(Tmdb, Mdblist, IntroDb, TheIntroDb)
 
         fun fromId(value: String?): ContentService? =
             all.firstOrNull { it.id.equals(value?.trim(), ignoreCase = true) }
@@ -132,6 +142,7 @@ data class ContentServiceState(
 data class ContentServicesState(
     val tmdb: ContentServiceState = ContentServiceState(ContentService.Tmdb),
     val mdblist: ContentServiceState = ContentServiceState(ContentService.Mdblist),
+    val introDb: ContentServiceState = ContentServiceState(ContentService.IntroDb),
     val theIntroDb: ContentServiceState = ContentServiceState(ContentService.TheIntroDb),
     val sharedFallbackAvailable: Boolean = true,
     val loaded: Boolean = false,
@@ -139,18 +150,20 @@ data class ContentServicesState(
     fun of(service: ContentService): ContentServiceState = when (service) {
         ContentService.Tmdb -> tmdb
         ContentService.Mdblist -> mdblist
+        ContentService.IntroDb -> introDb
         ContentService.TheIntroDb -> theIntroDb
     }
 
     fun with(state: ContentServiceState): ContentServicesState = when (state.service) {
         ContentService.Tmdb -> copy(tmdb = state)
         ContentService.Mdblist -> copy(mdblist = state)
+        ContentService.IntroDb -> copy(introDb = state)
         ContentService.TheIntroDb -> copy(theIntroDb = state)
     }
 
-    val anyConfigured: Boolean get() = tmdb.configured || mdblist.configured || theIntroDb.configured
+    val anyConfigured: Boolean get() = tmdb.configured || mdblist.configured || introDb.configured || theIntroDb.configured
     val needsAttention: List<ContentServiceState>
-        get() = listOf(tmdb, mdblist, theIntroDb).filter { it.status == CredentialStatus.NeedsAttention }
+        get() = listOf(tmdb, mdblist, introDb, theIntroDb).filter { it.status == CredentialStatus.NeedsAttention }
 }
 
 /** What the backend reports about an account-saved key. Never the key. */
@@ -165,12 +178,14 @@ data class AccountCredentialState(
 data class AccountCredentials(
     val tmdb: AccountCredentialState? = null,
     val mdblist: AccountCredentialState? = null,
+    val introDb: AccountCredentialState? = null,
     val theIntroDb: AccountCredentialState? = null,
     val sharedFallbackAvailable: Boolean = true,
 ) {
     fun of(service: ContentService): AccountCredentialState? = when (service) {
         ContentService.Tmdb -> tmdb
         ContentService.Mdblist -> mdblist
+        ContentService.IntroDb -> introDb
         ContentService.TheIntroDb -> theIntroDb
     }
 }
@@ -363,6 +378,7 @@ class ServiceCredentialManager(context: Context) {
         previous.copy(
             tmdb = merge(ContentService.Tmdb, account?.tmdb),
             mdblist = merge(ContentService.Mdblist, account?.mdblist),
+            introDb = merge(ContentService.IntroDb, account?.introDb),
             theIntroDb = merge(ContentService.TheIntroDb, account?.theIntroDb),
             sharedFallbackAvailable = account?.sharedFallbackAvailable ?: previous.sharedFallbackAvailable,
             loaded = true,

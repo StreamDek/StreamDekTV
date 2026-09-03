@@ -4657,24 +4657,16 @@ class StreamDekRepository(
         episodeSegmentCache[cacheKey]?.let { return it }
         val params = "imdb_id=${URLEncoder.encode(imdbId, "UTF-8")}&season=$season&episode=$episode"
         val result = withContext(Dispatchers.IO) { runCatching {
-            val request = okhttp3.Request.Builder()
-                .url("https://api.introdb.app/segments?$params")
-                .header("Accept", "application/json")
-                .build()
-            api.client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    throw IllegalStateException("IntroDB fetch failed with status ${response.code}")
+            val payload = api.get<Any>("/services/timings/introdb?$params")
+                ?: throw IllegalStateException("IntroDB timing lookup failed")
+            val segments = parseIntroDbSegments(payload).toMutableList()
+            if (segments.none { it.segmentType == "intro" }) {
+                parseLegacyIntroSegment(fetchLegacyIntroPayload(imdbId, season, episode))?.let { legacyIntro ->
+                    segments.removeAll { it.segmentType == "intro" }
+                    segments.add(0, legacyIntro)
                 }
-                val raw = response.body?.string().orEmpty()
-                val segments = parseIntroDbSegments(api.gson.fromJson(raw, Any::class.java)).toMutableList()
-                if (segments.none { it.segmentType == "intro" }) {
-                    parseLegacyIntroSegment(fetchLegacyIntroPayload(imdbId, season, episode))?.let { legacyIntro ->
-                        segments.removeAll { it.segmentType == "intro" }
-                        segments.add(0, legacyIntro)
-                    }
-                }
-                segments.sortedWith(compareBy<PlaybackSegment> { it.startSec }.thenBy { it.endSec }.thenBy { it.segmentType })
             }
+            segments.sortedWith(compareBy<PlaybackSegment> { it.startSec }.thenBy { it.endSec }.thenBy { it.segmentType })
         }.recoverCatching {
             parseLegacyIntroSegment(fetchLegacyIntroPayload(imdbId, season, episode))?.let(::listOf) ?: emptyList()
         }.onFailure {
@@ -5013,6 +5005,7 @@ class StreamDekRepository(
             AccountCredentials(
                 tmdb = stateFor(ContentService.Tmdb),
                 mdblist = stateFor(ContentService.Mdblist),
+                introDb = stateFor(ContentService.IntroDb),
                 theIntroDb = stateFor(ContentService.TheIntroDb),
                 sharedFallbackAvailable = envelope.sharedFallbackAvailable,
             )
@@ -5742,18 +5735,9 @@ class StreamDekRepository(
         return PlaybackSegment(segmentType = "intro", startSec = startSec, endSec = endSec)
     }
 
-    private fun fetchLegacyIntroPayload(imdbId: String, season: Int, episode: Int): Any? {
-        val request = okhttp3.Request.Builder()
-            .url("https://api.introdb.app/intro?imdb=${URLEncoder.encode(imdbId, "UTF-8")}&imdb_id=${URLEncoder.encode(imdbId, "UTF-8")}&season=$season&episode=$episode")
-            .header("Accept", "application/json")
-            .build()
-        return api.client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                null
-            } else {
-                api.gson.fromJson(response.body?.string().orEmpty(), Any::class.java)
-            }
-        }
+    private suspend fun fetchLegacyIntroPayload(imdbId: String, season: Int, episode: Int): Any? {
+        val params = "imdb_id=${URLEncoder.encode(imdbId, "UTF-8")}&season=$season&episode=$episode&legacy=1"
+        return api.get<Any>("/services/timings/introdb?$params")
     }
 
     private fun normalizeSegmentType(value: Any?): String? {

@@ -517,6 +517,9 @@ class StreamDekApi(
         if (path.startsWith("/services/timings/theintrodb")) {
             serviceCredentials.requestKey(ContentService.TheIntroDb)?.let { builder.header("x-theintrodb-api-key", it) }
         }
+        if (path.startsWith("/services/timings/introdb")) {
+            serviceCredentials.requestKey(ContentService.IntroDb)?.let { builder.header("x-introdb-api-key", it) }
+        }
 
         if (session != null) {
             builder.header("Authorization", "Bearer ${session.user.accessToken}")
