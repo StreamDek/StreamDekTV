@@ -13,11 +13,22 @@ data class SessionUser(
 data class AuthSession(
     val token: String,
     val user: SessionUser,
+    /**
+     * Renews [token] when it expires.
+     *
+     * Null for a session stored before this shipped. Such a session keeps working exactly as it
+     * did -- access tokens do not expire yet -- and the television is paired again on the day they
+     * do, which is what would have happened anyway.
+     */
+    val refreshToken: String? = null,
 )
 
 data class AuthResponse(
     val token: String? = null,
     val user: AuthUserPayload? = null,
+    /** Both spellings, because the sign-in response carries both. */
+    val refreshToken: String? = null,
+    val refresh_token: String? = null,
 )
 
 data class AuthUserPayload(

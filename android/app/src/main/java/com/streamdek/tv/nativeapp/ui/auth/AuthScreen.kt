@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,10 +65,26 @@ fun AuthScreen(
     var tvSession by remember { mutableStateOf<TvSessionInfo?>(null) }
     var busy by remember { mutableStateOf(false) }
 
+    /**
+     * Why the last session ended, when it ended by itself.
+     *
+     * A suspended account is otherwise dropped at this screen with no explanation, starts the
+     * pairing flow again, and is refused -- with nothing on screen distinguishing "your account
+     * has been stopped" from "something went wrong". Shown as the status line, which is where a
+     * viewer is already looking.
+     */
+    val sessionEndedMessage by repository.sessionEndedMessage.collectAsState()
+
+    LaunchedEffect(sessionEndedMessage) {
+        sessionEndedMessage?.let { status = it }
+    }
+
     LaunchedEffect(mode) {
         if (mode != AuthMode.TvCode) return@LaunchedEffect
         TvDebugLogger.i("AuthUi", "starting TV code flow")
         busy = true
+        // Starting a fresh pairing clears whatever ended the last session.
+        repository.clearSessionExpired()
         status = null
         tvSession = runCatching { repository.createTvSession() }
             .onFailure { status = it.message ?: "Could not start TV sign-in" }

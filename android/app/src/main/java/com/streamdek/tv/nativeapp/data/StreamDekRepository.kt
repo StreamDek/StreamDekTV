@@ -713,6 +713,18 @@ class StreamDekRepository(
     /** Raised once the backend rejects the stored credentials, so the shell can ask for sign-in. */
     val sessionExpired: StateFlow<Boolean> = api.sessionExpired
 
+    /**
+     * Why the session ended, when the backend said why -- a suspension, in practice.
+     *
+     * Shown on the sign-in screen. Without it a banned account is dropped at a sign-in form with
+     * no explanation, types the correct password, is refused, and has no way to tell that the
+     * refusal is about the account rather than what they typed.
+     */
+    val sessionEndedMessage: StateFlow<String?> = api.sessionEndedMessage
+
+    /** Clears both, so a fresh pairing attempt does not start under the last one's message. */
+    fun clearSessionExpired() = api.clearSessionExpired()
+
     val fusionBadgeSources: StateFlow<Map<String, FusionBadgeSource>> = fusionBadgeSourcesState
     val favouriteChannels: StateFlow<List<MediaItem>> = favouriteChannelsState
 
@@ -5952,6 +5964,9 @@ class StreamDekRepository(
         val session = AuthSession(
             token = token,
             user = normalizeUser(response.user, token),
+            // The refresh token has been in every sign-in and pairing response since the backend
+            // shipped it; this is the television learning to keep it.
+            refreshToken = response.refreshToken ?: response.refresh_token,
         )
         sessionStore.saveSession(session)
         return session

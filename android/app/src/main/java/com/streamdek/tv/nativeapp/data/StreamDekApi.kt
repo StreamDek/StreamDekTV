@@ -296,6 +296,21 @@ class StreamDekApi(
     /** Set once the backend has rejected the stored credentials, so the shell can ask for sign-in. */
     val sessionExpired: StateFlow<Boolean> = _sessionExpired
 
+    private val _sessionEndedMessage = MutableStateFlow<String?>(null)
+
+    /**
+     * Why the session ended, when the backend said why.
+     *
+     * A suspension is the case this exists for. Until now a 403 for a banned account was an
+     * ordinary failed request: the television kept its home screen, kept polling, and every
+     * request was refused -- which looks like a broken app rather than a stopped account, on the
+     * one screen where nobody can read a log to find out otherwise.
+     */
+    val sessionEndedMessage: StateFlow<String?> = _sessionEndedMessage
+
+    /** Serialises token renewal, so several concurrent 401s do not rotate the token several times. */
+    private val refreshInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /**
      * Bumped whenever a request ends without a usable answer. Callers that fan out across many
      * endpoints compare the value before and after to tell "the backend returned nothing" from
@@ -307,6 +322,7 @@ class StreamDekApi(
 
     fun clearSessionExpired() {
         _sessionExpired.value = false
+        _sessionEndedMessage.value = null
     }
 
     suspend inline fun <reified T> get(path: String, session: AuthSession? = sessionStore.currentSession()): T? =
@@ -425,6 +441,25 @@ class StreamDekApi(
                     "Api",
                     "response method=$method path=$path code=${it.code} body=${errorBody.take(240)}",
                 )
+                // A suspended account is not a failed request to retry or a credential to renew.
+                // It ends the session here and now, with the reason the backend gave, because the
+                // alternative is a television sitting on a home screen it can no longer refresh.
+                if (it.code == 403 && errorCodeOf(errorBody) == "ACCOUNT_SUSPENDED") {
+                    endSession(errorMessageOf(errorBody) ?: "This account has been suspended.")
+                    failureEpoch++
+                    return@withContext null
+                }
+
+                // An expired access token is renewed once and the request repeated. Dormant today
+                // -- tokens do not expire yet -- and shipped first so that on the day they do,
+                // this television renews instead of dropping the viewer at a sign-in screen.
+                if (it.code == 401 && session != null && renewSession(session)) {
+                    val renewed = sessionStore.currentSession()
+                    if (renewed != null && renewed.token != session.token) {
+                        return@withContext executeRaw(method, path, body, renewed)
+                    }
+                }
+
                 if (it.code == 401 && session != null) confirmCredentialsRejected(path, session)
                 val retryable = idempotent && (it.code == 429 || it.code in 500..599)
                 if (!retryable || attempt == attempts) {
@@ -482,6 +517,71 @@ class StreamDekApi(
             }
         } finally {
             authProbeInFlight.set(false)
+        }
+    }
+
+    /**
+     * Reads the error code out of either envelope.
+     *
+     * Legacy paths answer `{ "error": "message", "errorDetail": { "code" } }` and /api/v1 answers
+     * `{ "error": { "code", "message" } }`. This app still calls legacy paths for almost
+     * everything, so both have to be understood -- and will while those aliases exist.
+     */
+    private fun errorCodeOf(body: String): String? = runCatching {
+        val json = org.json.JSONObject(body)
+        json.optJSONObject("error")?.optString("code")?.takeIf { it.isNotBlank() }
+            ?: json.optJSONObject("errorDetail")?.optString("code")?.takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    private fun errorMessageOf(body: String): String? = runCatching {
+        val json = org.json.JSONObject(body)
+        json.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+            ?: json.optString("error").takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    private fun endSession(message: String) {
+        TvDebugLogger.w("Api", "session ended: $message")
+        // The flags go first and the store is left to the shell, which watches `sessionExpired`
+        // and already runs the full sign-out. Clearing here instead would null the session before
+        // that effect reads it, and the effect skips when there is no session -- so the television
+        // would have been signed out silently and never sent to a screen explaining why.
+        _sessionEndedMessage.value = message
+        _sessionExpired.value = true
+    }
+
+    /**
+     * Renews the access token, at most once at a time.
+     *
+     * Guarded because this television fans out across many endpoints on every screen, and several
+     * concurrent 401s would otherwise rotate the refresh token several times -- which the server
+     * reads as reuse and answers by revoking the whole chain, turning a recoverable expiry into a
+     * forced re-pairing on the living room set.
+     */
+    private fun renewSession(session: AuthSession): Boolean {
+        val refreshToken = session.refreshToken ?: return false
+        if (!refreshInFlight.compareAndSet(false, true)) return false
+        try {
+            val request = buildRequest("POST", "/auth/refresh", gson.toJson(mapOf("refresh_token" to refreshToken)), null)
+            val response = runCatching { client.newCall(request).execute() }.getOrNull() ?: return false
+            response.use {
+                val payload = it.body?.string().orEmpty()
+                if (!it.isSuccessful) {
+                    if (errorCodeOf(payload) == "ACCOUNT_SUSPENDED") {
+                        endSession(errorMessageOf(payload) ?: "This account has been suspended.")
+                    }
+                    return false
+                }
+                val json = runCatching { org.json.JSONObject(payload) }.getOrNull() ?: return false
+                val token = json.optString("token").takeIf { value -> value.isNotBlank() } ?: return false
+                val rotated = json.optString("refreshToken").ifBlank { json.optString("refresh_token") }
+                    .takeIf { value -> value.isNotBlank() } ?: return false
+                // The rotated token replaces the one that was spent. Keeping the old one would
+                // mean the next renewal presents a used token, which the server reads as theft.
+                sessionStore.saveSession(session.copy(token = token, refreshToken = rotated))
+                return true
+            }
+        } finally {
+            refreshInFlight.set(false)
         }
     }
 
