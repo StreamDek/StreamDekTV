@@ -17,6 +17,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+/** The version prefix every canonical StreamDek API path carries. */
+const val API_PATH_PREFIX = "/api/v1"
+
+
 class AuthSessionStore(
     context: Context,
     private val gson: Gson = Gson(),
@@ -273,7 +277,24 @@ class StreamDekApi(
     @PublishedApi internal val sessionStore: AuthSessionStore,
     @PublishedApi internal val client: OkHttpClient = StreamDekHttp.client(sessionStore.appContext),
     @PublishedApi internal val gson: Gson = Gson(),
-    @PublishedApi internal val baseUrl: String = BuildConfig.STREAMDEK_API_URL.trimEnd('/'),
+    /**
+     * The API root, version and all.
+     *
+     * The bare prefixes this app grew up on -- /tmdb, /sync, /auth -- still answer: the backend
+     * rewrites them onto the canonical paths and replies with a Deprecation header. They are
+     * aliases kept so an old build keeps working, and every request arriving on one is recorded as
+     * deprecated traffic whose only purpose is to say when the alias can finally be removed. A
+     * shipped television that never moves off them is the reason it never can.
+     *
+     * Applied here rather than at each call site, and deliberately not to the path predicates
+     * below: buildRequest is handed a domain path (`/tmdb/details/...`), the prefix is added when
+     * the URL is assembled, and the credential rules keep matching on the path they describe.
+     *
+     * Note that AppUpdateManager builds its own URLs from the same BuildConfig value and must not
+     * gain this prefix -- it resolves a download location the server supplies in the release
+     * manifest, which is relative to the host, not to the API.
+     */
+    @PublishedApi internal val baseUrl: String = BuildConfig.STREAMDEK_API_URL.trimEnd('/') + API_PATH_PREFIX,
 ) {
     @PublishedApi internal val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
