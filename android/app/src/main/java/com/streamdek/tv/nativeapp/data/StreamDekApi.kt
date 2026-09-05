@@ -619,6 +619,11 @@ class StreamDekApi(
             .header("x-device-name", sessionStore.deviceName())
             .header("x-device-type", "tv")
             .header("x-app-version", BuildConfig.VERSION_NAME)
+            // Which language this television would like its *metadata* in - synopses, genres,
+            // certification labels - for the backend to pass on to TMDB. Interface text does not
+            // come from here; it comes from the app's own resources. Read per request rather than
+            // captured, so it is current the moment the viewer changes the language.
+            .header("Accept-Language", metadataAcceptLanguage(savedAppLanguage(sessionStore.appContext)))
         sessionStore.handoffPublicKey()?.let { builder.header("x-handoff-public-key", it) }
         sessionStore.previousDeviceId()?.let { builder.header("x-previous-device-id", it) }
 

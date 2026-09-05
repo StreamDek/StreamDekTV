@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,9 +79,19 @@ class ServiceCredentialStateTest {
     }
 
     @Test
-    fun `storage wording tells the viewer what it means for their other devices`() {
-        assertTrue(CredentialStorage.Account.detail.contains("every StreamDek device"))
-        assertTrue(CredentialStorage.Device.detail.contains("own key"))
+    fun `each storage choice carries its own wording`() {
+        // The wording moved into string resources, so this can no longer read the sentences - a
+        // plain JVM test has no resources to resolve them against, and asserting on English would
+        // only be asserting on one locale of eight. What is still worth pinning down here is that
+        // the two choices are distinguishable and neither is left without a label or an
+        // explanation; that the sentences themselves exist in every language is checked by
+        // scripts/check-translations.mjs.
+        for (storage in CredentialStorage.entries) {
+            assertNotEquals(0, storage.labelRes)
+            assertNotEquals(0, storage.detailRes)
+        }
+        assertNotEquals(CredentialStorage.Account.labelRes, CredentialStorage.Device.labelRes)
+        assertNotEquals(CredentialStorage.Account.detailRes, CredentialStorage.Device.detailRes)
     }
 
     @Test

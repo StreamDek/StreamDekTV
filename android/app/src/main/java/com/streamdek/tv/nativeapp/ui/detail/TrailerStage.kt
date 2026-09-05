@@ -1,10 +1,10 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
 import android.content.Context
-import androidx.annotation.OptIn
 import android.graphics.Matrix
 import android.view.TextureView
 import android.widget.FrameLayout
+import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,23 +28,23 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
-import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.Text
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -52,13 +52,15 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import com.streamdek.tv.nativeapp.data.TrailerResetSignal
+import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Text
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
+import com.streamdek.tv.nativeapp.data.TrailerResetSignal
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.trailerDataSourceFactory
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.delay
-import androidx.media3.common.MediaItem as ExoMediaItem
 
 /**
  * Where the picture is coming from.
@@ -206,12 +208,12 @@ internal fun TrailerStage(
                     .padding(horizontal = 34.dp, vertical = 22.dp),
             ) {
                 Text(
-                    text = "Paused",
+                    text = stringResource(R.string.trailer_paused),
                     style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
                     color = Color.White,
                 )
                 Text(
-                    text = "OK to resume · Back to exit the trailer",
+                    text = stringResource(R.string.trailer_resume_hint),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.72f),
                 )

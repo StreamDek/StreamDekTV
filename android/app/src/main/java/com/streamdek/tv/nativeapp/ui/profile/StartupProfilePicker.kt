@@ -54,6 +54,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -69,14 +70,15 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.StreamProfile
 import com.streamdek.tv.nativeapp.ui.AnimationSpeed
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.MotionDuration
 import com.streamdek.tv.nativeapp.ui.MotionSettings
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
-import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
+import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -355,13 +357,13 @@ internal fun StartupProfilePicker(
                     ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            "Who's watching?",
+                            stringResource(R.string.profiles_who_is_watching),
                             style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
                             color = Color.White,
                             modifier = Modifier.tvPickerCue(reveal, TvPickerCue.HeadingStart, TvPickerCue.HeadingDuration),
                         )
                         Text(
-                            "Choose a profile for this TV",
+                            stringResource(R.string.profiles_choose_for_tv),
                             style = MaterialTheme.typography.titleMedium,
                             color = Color.White.copy(alpha = 0.64f),
                             modifier = Modifier.tvPickerCue(reveal, TvPickerCue.SubtitleStart, TvPickerCue.SubtitleDuration, rise = 12.dp),
@@ -462,7 +464,7 @@ internal fun StartupProfilePicker(
                     verticalArrangement = Arrangement.spacedBy(18.dp),
                 ) {
                     Text(
-                        "Enter PIN for ${profile.name}",
+                        stringResource(R.string.profiles_enter_pin_for, profile.name),
                         style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onBackground,
                     )
@@ -473,7 +475,7 @@ internal fun StartupProfilePicker(
                         enabled = !checkingPin,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        label = { androidx.compose.material3.Text("4-digit PIN") },
+                        label = { androidx.compose.material3.Text(stringResource(R.string.profiles_pin_hint)) },
                         colors = TextFieldDefaults.colors(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = Color.White,
@@ -505,7 +507,7 @@ internal fun StartupProfilePicker(
                         OutlinedButton(
                             enabled = !checkingPin,
                             onClick = { lockedProfile = null },
-                        ) { Text("Back") }
+                        ) { Text(stringResource(R.string.action_back)) }
                     }
                 }
             }
@@ -565,7 +567,7 @@ private fun ProfileEntryTransition(profile: StreamProfile, startBounds: Rect?) {
             },
         ) {
             Text(
-                "Welcome back,",
+                stringResource(R.string.profiles_welcome_back),
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White.copy(alpha = 0.62f),
             )

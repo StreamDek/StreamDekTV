@@ -21,9 +21,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -31,6 +32,7 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.player.PlayerGlassSurface
@@ -129,7 +131,7 @@ fun BrowseItemActionMenu(
                             .focusRequester(primaryRequester),
                         scale = androidx.tv.material3.ButtonDefaults.scale(focusedScale = 1f),
                     ) {
-                        Text("Open Details")
+                        Text(stringResource(R.string.action_open_details))
                     }
 
                     OutlinedButton(
@@ -198,7 +200,7 @@ fun BrowseItemActionMenu(
                                 },
                             scale = androidx.tv.material3.ButtonDefaults.scale(focusedScale = 1f),
                         ) {
-                            Text("Remove from Continue Watching")
+                            Text(stringResource(R.string.continue_watching_remove))
                         }
                     }
 
@@ -257,7 +259,7 @@ fun BrowseItemActionMenu(
                             },
                         scale = androidx.tv.material3.ButtonDefaults.scale(focusedScale = 1f),
                     ) {
-                        Text("Close")
+                        Text(stringResource(R.string.action_close))
                     }
                 }
             }

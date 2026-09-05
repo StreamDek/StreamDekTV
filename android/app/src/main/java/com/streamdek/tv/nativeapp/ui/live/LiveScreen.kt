@@ -41,10 +41,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
@@ -52,9 +53,12 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import coil.compose.AsyncImage
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
 import com.streamdek.tv.nativeapp.ui.TvChromeSurface
@@ -64,7 +68,6 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
-import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 
 private val LiveSidebarWidth = 236.dp
 
@@ -237,7 +240,7 @@ fun LiveScreen(
         ) {
             item("heading") {
                 Text(
-                    text = "Live TV",
+                    text = stringResource(R.string.live_tv),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.padding(start = 6.dp, bottom = 12.dp),
@@ -245,7 +248,7 @@ fun LiveScreen(
             }
             item("all") {
                 LiveSourceRow(
-                    label = "All channels",
+                    label = stringResource(R.string.live_all_channels),
                     count = allItems.size,
                     selected = !favouritesOnly && selectedSourceId == null,
                     modifier = Modifier.focusProperties { right = contentFocusTarget },
@@ -254,7 +257,7 @@ fun LiveScreen(
             }
             item("favourites") {
                 LiveSourceRow(
-                    label = "Favourites",
+                    label = stringResource(R.string.live_favourites),
                     count = favouriteKeys.size,
                     selected = favouritesOnly,
                     modifier = Modifier.focusProperties { right = contentFocusTarget },
@@ -295,7 +298,7 @@ fun LiveScreen(
             }
             item("browse") {
                 LiveSourceRow(
-                    label = "Browse all",
+                    label = stringResource(R.string.live_browse_all),
                     count = null,
                     selected = false,
                     modifier = Modifier.padding(top = 14.dp).focusProperties { right = contentFocusTarget },
@@ -330,7 +333,7 @@ fun LiveScreen(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "${visibleItems.size} · hold OK to favourite",
+                    text = pluralStringResource(R.plurals.live_hold_ok_to_favourite, visibleItems.size, visibleItems.size),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
                     modifier = Modifier.padding(bottom = 4.dp),

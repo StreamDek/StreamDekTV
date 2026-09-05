@@ -29,10 +29,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.DoHSettings
 import kotlinx.coroutines.delay
 
@@ -52,8 +54,8 @@ internal fun CustomDoHEndpointDialog(initialValue: String, onSave: (String) -> U
                     .padding(horizontal = 28.dp, vertical = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Text("Custom DNS over HTTPS", color = Color.White, style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black))
-                Text("Enter an HTTPS endpoint implementing RFC 8484, for example https://resolver.example/dns-query.", color = Color.White.copy(alpha = 0.62f))
+                Text(stringResource(R.string.doh_custom_title), color = Color.White, style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black))
+                Text(stringResource(R.string.doh_custom_explainer), color = Color.White.copy(alpha = 0.62f))
                 OutlinedTextField(
                     value = value,
                     onValueChange = { value = it; error = null },
@@ -71,8 +73,8 @@ internal fun CustomDoHEndpointDialog(initialValue: String, onSave: (String) -> U
                     Button(onClick = {
                         val validation = DoHSettings.validateEndpoint(value)
                         if (validation == null) onSave(value.trim()) else error = validation
-                    }, enabled = value.isNotBlank()) { Text("Save") }
-                    OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                    }, enabled = value.isNotBlank()) { Text(stringResource(R.string.action_save)) }
+                    OutlinedButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
                 }
             }
         }

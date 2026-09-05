@@ -1,5 +1,7 @@
 package com.streamdek.tv.nativeapp.data
 
+import androidx.annotation.StringRes
+import com.streamdek.tv.R
 import java.util.Locale
 
 /**
@@ -47,7 +49,16 @@ internal fun homeCatalogRowAddonId(id: String): String? =
 data class HomeRowOption(
     val id: String,
     val title: String,
-    val subtitle: String,
+    /**
+     * The second line, as a resource rather than as text.
+     *
+     * This is a data-layer model and the line is read by a viewer, so holding the English here
+     * would pin it to English on a translated television. The settings row resolves it, which also
+     * means it re-reads when the language changes.
+     */
+    @StringRes val subtitleRes: Int,
+    /** The one argument [subtitleRes] takes, where it takes one - the add-on's own name. */
+    val subtitleArg: String? = null,
     val builtin: Boolean,
     val enabled: Boolean = true,
 )
@@ -73,10 +84,10 @@ internal fun homeRowOptions(
         HomeRowOption(
             id = definition.id,
             title = definition.title,
-            subtitle = when (definition.mediaType) {
-                "network" -> "Streaming services"
-                "tv" -> "Series"
-                else -> "Films"
+            subtitleRes = when (definition.mediaType) {
+                "network" -> R.string.home_row_kind_networks
+                "tv" -> R.string.home_row_kind_series
+                else -> R.string.home_row_kind_films
             },
             builtin = true,
         )
@@ -95,7 +106,8 @@ internal fun homeRowOptions(
                 HomeRowOption(
                     id = "addon:${addon.id}:$rawType:${catalog.id}:$index",
                     title = buildAddonRailTitle(addon.manifest.name, catalog.name ?: catalog.id),
-                    subtitle = "From ${addon.manifest.name.ifBlank { addon.id }}",
+                    subtitleRes = R.string.home_row_from_addon,
+                    subtitleArg = addon.manifest.name.ifBlank { addon.id },
                     builtin = false,
                 )
             }
@@ -190,8 +202,8 @@ internal const val STREAMDEK_ROW_GROUP_KEY = "__streamdek__"
 internal data class HomeRowGroup(
     val key: String,
     val title: String,
-    /** Why this group's rows cannot reach Home, or null when they can. */
-    val gatedNote: String?,
+    /** Why this group's rows cannot reach Home, as a resource, or null when they can. */
+    @StringRes val gatedNoteRes: Int?,
     val rows: List<HomeRowOption>,
 )
 
@@ -207,6 +219,13 @@ internal fun buildHomeRowGroups(
     options: List<HomeRowOption>,
     addons: List<AddonManifest>,
     streamDekRowsEnabled: Boolean,
+    /**
+     * What to call an add-on whose manifest gives no name, already in the interface language.
+     *
+     * Passed in rather than resolved here: this function is pure and unit-tested, and giving it a
+     * Context to look a string up with would be the only reason it needed one.
+     */
+    fallbackAddonName: String,
 ): List<HomeRowGroup> {
     val addonsById = addons.associateBy { it.id }
     return options
@@ -219,14 +238,17 @@ internal fun buildHomeRowGroups(
                 "StreamDek"
             } else {
                 addon?.manifest?.name?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: rows.firstNotNullOfOrNull { row -> row.subtitle.removePrefix("From ").trim().takeIf { it.isNotEmpty() } }
-                    ?: "Add-on"
+                    // The add-on's own name, read from the row that carries it. This used to strip
+                    // "From " off the front of the subtitle, which recovered the right answer only
+                    // for as long as that subtitle was English.
+                    ?: rows.firstNotNullOfOrNull { row -> row.subtitleArg?.trim()?.takeIf { it.isNotEmpty() } }
+                    ?: fallbackAddonName
             }
-            val gatedNote = when {
-                key == STREAMDEK_ROW_GROUP_KEY && !streamDekRowsEnabled -> "hidden by Built-in catalogs"
-                addon != null && !addon.enabled -> "hidden while this add-on is off"
+            val gatedNoteRes = when {
+                key == STREAMDEK_ROW_GROUP_KEY && !streamDekRowsEnabled -> R.string.home_row_group_hidden_builtin
+                addon != null && !addon.enabled -> R.string.home_row_group_hidden_addon_off
                 else -> null
             }
-            HomeRowGroup(key = key, title = title, gatedNote = gatedNote, rows = rows)
+            HomeRowGroup(key = key, title = title, gatedNoteRes = gatedNoteRes, rows = rows)
         }
 }

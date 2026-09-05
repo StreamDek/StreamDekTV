@@ -3,6 +3,8 @@ package com.streamdek.tv.nativeapp.data
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import androidx.annotation.StringRes
+import com.streamdek.tv.R
 import java.security.KeyStore
 import java.util.Base64
 import javax.crypto.Cipher
@@ -103,15 +105,22 @@ enum class ContentService(
     }
 }
 
-/** Where a configured key is kept. The wording is shown to the viewer as it stands. */
-enum class CredentialStorage(val label: String, val detail: String) {
+/**
+ * Where a configured key is kept.
+ *
+ * Resource ids rather than text: this is a data-layer enum and the wording is read by a viewer, so
+ * holding the English here would pin those two lines to English on a translated television. The
+ * screen resolves them with `stringResource`, which also means they re-read when the language
+ * changes rather than being fixed when the enum was first touched.
+ */
+enum class CredentialStorage(@StringRes val labelRes: Int, @StringRes val detailRes: Int) {
     Device(
-        label = "This TV only",
-        detail = "Kept on this television. Your other StreamDek devices need their own key.",
+        labelRes = R.string.content_services_this_tv_only,
+        detailRes = R.string.credential_storage_device_detail,
     ),
     Account(
-        label = "StreamDek account",
-        detail = "Saved to your account, so every StreamDek device signs in and already has it.",
+        labelRes = R.string.content_services_account_storage,
+        detailRes = R.string.credential_storage_account_detail,
     ),
 }
 

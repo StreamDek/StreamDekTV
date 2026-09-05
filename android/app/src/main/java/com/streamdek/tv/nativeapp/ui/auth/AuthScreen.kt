@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -26,18 +28,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.TvSessionInfo
@@ -164,15 +166,15 @@ fun AuthScreen(
                     shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
                     modifier = Modifier.fillMaxWidth(0.32f),
                 ) {
-                    Text("Back")
+                    Text(stringResource(R.string.action_back))
                 }
                 Text(
-                    text = "Link StreamDek TV",
+                    text = stringResource(R.string.auth_link_tv),
                     style = MaterialTheme.typography.displayMedium,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
-                    text = "Use your phone or sign in directly. Once linked, playback progress, addons, and account settings stay in sync.",
+                    text = stringResource(R.string.auth_link_explainer),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
                     maxLines = 4,
@@ -193,7 +195,7 @@ fun AuthScreen(
                         onReload = { mode = AuthMode.SignIn; mode = AuthMode.TvCode },
                     )
                     AuthMode.SignIn -> CredentialPanel(
-                        title = "Direct Sign In",
+                        title = stringResource(R.string.auth_direct_sign_in),
                         fields = {
                             TvField("Email", email) { email = it }
                             TvPasswordField("Password", password) { password = it }
@@ -214,7 +216,7 @@ fun AuthScreen(
                         },
                     )
                     AuthMode.SignUp -> CredentialPanel(
-                        title = "Create Account",
+                        title = stringResource(R.string.auth_create_account),
                         fields = {
                             TvField("Display Name", displayName) { displayName = it }
                             TvField("Email", email) { email = it }
@@ -222,7 +224,7 @@ fun AuthScreen(
                         },
                         busy = busy,
                         status = status,
-                        buttonLabel = "Create Account",
+                        buttonLabel = stringResource(R.string.auth_create_account),
                         onSubmit = {
                         busy = true
                             scope.launch {
@@ -294,7 +296,7 @@ private fun TvCodePanel(
             )
         }
         OutlinedButton(onClick = onReload, enabled = !busy) {
-            Text("Reload Code")
+            Text(stringResource(R.string.auth_reload_code))
         }
     }
 }

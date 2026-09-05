@@ -1,23 +1,12 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Bookmark
-import androidx.compose.material.icons.rounded.BookmarkBorder
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.CheckCircleOutline
-import androidx.compose.material.icons.rounded.Movie
-import androidx.compose.material.icons.rounded.Replay
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.tv.material3.Icon
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,23 +16,30 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as episodeGridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CheckCircleOutline
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items as episodeGridItems
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,12 +52,16 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,43 +70,45 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.DetailPreferences
-import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.EpisodeContext
+import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.SeasonDetail
 import com.streamdek.tv.nativeapp.data.SeasonEpisode
 import com.streamdek.tv.nativeapp.data.SeriesEpisodeSlot
+import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
+import com.streamdek.tv.nativeapp.data.TrailerResetSignal
+import com.streamdek.tv.nativeapp.data.TraktCommentItem
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.buildEpisodeRanges
 import com.streamdek.tv.nativeapp.data.episodeRangeIndexFor
 import com.streamdek.tv.nativeapp.data.focusEpisodeNumber
+import com.streamdek.tv.nativeapp.data.kinocheckTrailerKey
 import com.streamdek.tv.nativeapp.data.nextUnwatchedEpisodeNumber
 import com.streamdek.tv.nativeapp.data.resolveJumpTarget
-import com.streamdek.tv.nativeapp.data.StreamDekRepository
-import com.streamdek.tv.nativeapp.data.TraktCommentItem
-import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
-import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.resolveTrailerPlaybackSource
 import com.streamdek.tv.nativeapp.data.youtubeTrailerKey
-import com.streamdek.tv.nativeapp.data.TrailerResetSignal
-import com.streamdek.tv.nativeapp.data.kinocheckTrailerKey
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalImmersiveContent
 import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
-import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
-import com.streamdek.tv.nativeapp.ui.TvNavRailInset
-import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
-import com.streamdek.tv.nativeapp.ui.glideToItem
 import com.streamdek.tv.nativeapp.ui.TvMotion
+import com.streamdek.tv.nativeapp.ui.TvNavRailInset
+import com.streamdek.tv.nativeapp.ui.glideToItem
+import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -1317,8 +1319,11 @@ fun DetailScreen(
             com.streamdek.tv.nativeapp.ui.TvSynopsisDialog(
                 title = detail?.title.orEmpty(),
                 subtitle = selectedEpisodeContext?.let { episode ->
-                    "S${episode.seasonNumber} E${episode.episodeNumber}" +
-                        (episode.title?.takeIf { it.isNotBlank() }?.let { "  ·  $it" } ?: "")
+                    // Two resources rather than a glued-on suffix: a translator has to be able to
+                    // move the title relative to the numbering, which concatenation forbids.
+                    episode.title?.takeIf { it.isNotBlank() }?.let { title ->
+                        stringResource(R.string.detail_episode_short_with_title, episode.seasonNumber, episode.episodeNumber, title)
+                    } ?: stringResource(R.string.season_episode_short, episode.seasonNumber, episode.episodeNumber)
                 },
                 synopsis = synopsis,
                 onDismiss = {
@@ -1491,8 +1496,9 @@ private fun DetailHero(
 
             selectedEpisode?.let { episode ->
                 Text(
-                    text = "S${episode.seasonNumber} E${episode.episodeNumber}" +
-                        (episode.title?.takeIf { it.isNotBlank() }?.let { "  ·  $it" } ?: ""),
+                    text = episode.title?.takeIf { it.isNotBlank() }?.let { title ->
+                        stringResource(R.string.detail_episode_short_with_title, episode.seasonNumber, episode.episodeNumber, title)
+                    } ?: stringResource(R.string.season_episode_short, episode.seasonNumber, episode.episodeNumber),
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
@@ -1773,7 +1779,7 @@ internal fun DetailError(message: String, onRetry: (() -> Unit)? = null, onBack:
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "Could not load this title",
+            text = stringResource(R.string.detail_load_failed),
             style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onBackground,
         )
@@ -1792,10 +1798,10 @@ internal fun DetailError(message: String, onRetry: (() -> Unit)? = null, onBack:
                     onClick = it,
                     modifier = Modifier.focusRequester(retryRequester),
                     shape = ButtonDefaults.shape(AppPillShape),
-                ) { Text("Try Again") }
+                ) { Text(stringResource(R.string.action_retry)) }
             }
             onBack?.let {
-                OutlinedButton(onClick = it, shape = ButtonDefaults.shape(AppPillShape)) { Text("Go Back") }
+                OutlinedButton(onClick = it, shape = ButtonDefaults.shape(AppPillShape)) { Text(stringResource(R.string.action_go_back)) }
             }
         }
     }
@@ -1850,7 +1856,7 @@ private fun EpisodeJumpDialog(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                text = "Season $seasonNumber · go to episode",
+                text = stringResource(R.string.detail_go_to_episode_in_season, seasonNumber),
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
@@ -1891,7 +1897,7 @@ private fun EpisodeJumpDialog(
                         description = if (watched) "Episode $number, watched" else "Episode $number",
                     ) {
                         Text(
-                            text = "$number",
+                            text = number.toString(),
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp).fillMaxWidth(),
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
                             // Watched fades; the content description above carries the same thing
@@ -1938,7 +1944,7 @@ private fun EpisodeActionDialog(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(
-                text = "S${seasonNumber} E${episode.episodeNumber} - ${episode.name}",
+                text = stringResource(R.string.detail_episode_with_title, seasonNumber, episode.episodeNumber, episode.name),
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 2,
@@ -1975,13 +1981,13 @@ private fun EpisodeActionDialog(
                 enabled = !loading && (seasonNumber > 1 || episode.episodeNumber > 1),
                 modifier = Modifier.fillMaxWidth(),
                 shape = ButtonDefaults.shape(AppPillShape),
-            ) { Text("Mark All Previous Episodes as Watched") }
+            ) { Text(stringResource(R.string.detail_mark_previous_watched)) }
             OutlinedButton(
                 onClick = onDismiss,
                 enabled = !loading,
                 modifier = Modifier.fillMaxWidth(),
                 shape = ButtonDefaults.shape(AppPillShape),
-            ) { Text("Close") }
+            ) { Text(stringResource(R.string.action_close)) }
         }
     }
 }

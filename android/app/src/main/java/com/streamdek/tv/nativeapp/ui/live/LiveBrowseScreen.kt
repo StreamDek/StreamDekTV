@@ -39,19 +39,24 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.ui.AppFormats
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
-import com.streamdek.tv.nativeapp.ui.TvEmptyState
 import com.streamdek.tv.nativeapp.ui.TvContentPhase
 import com.streamdek.tv.nativeapp.ui.TvContentSwap
+import com.streamdek.tv.nativeapp.ui.TvEmptyState
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.search.SearchChip
@@ -60,7 +65,6 @@ import com.streamdek.tv.nativeapp.ui.search.SearchFilterTray
 import com.streamdek.tv.nativeapp.ui.search.SearchQueryDisplay
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlinx.coroutines.delay
-import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 
 private enum class OpenTray { None, Source, Catalogue }
 
@@ -183,8 +187,15 @@ fun LiveBrowseScreen(
                     focused = queryFocused,
                     modifier = Modifier.weight(1f),
                 )
+                val appLanguage = LocalAppLanguage.current
                 Text(
-                    text = "${filteredItems.size} of ${allItems.size}",
+                    // Through the formatter rather than interpolated: a five-figure channel list
+                    // is grouped the way the interface language groups digits.
+                    text = stringResource(
+                        R.string.count_of_total,
+                        AppFormats.number(appLanguage, filteredItems.size),
+                        AppFormats.number(appLanguage, allItems.size),
+                    ),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
                     modifier = Modifier.padding(bottom = 6.dp),

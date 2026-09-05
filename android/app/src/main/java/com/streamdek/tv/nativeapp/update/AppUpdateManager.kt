@@ -2,27 +2,30 @@ package com.streamdek.tv.nativeapp.update
 
 import android.content.ClipData
 import android.content.Context
-import android.content.pm.PackageInfo
-import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import android.content.res.Resources
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
 import com.streamdek.tv.BuildConfig
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.AppReleaseManifest
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.localizedContext
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.File
-import java.io.FileOutputStream
-import java.security.MessageDigest
 
 data class AppUpdateUiState(
     val autoCheckEnabled: Boolean = true,
@@ -44,6 +47,15 @@ class AppUpdateManager(
 ) {
     private val preferences: SharedPreferences =
         context.getSharedPreferences("streamdek_updates", Context.MODE_PRIVATE)
+
+    /**
+     * Status and error lines, in the interface language.
+     *
+     * Read through [localizedContext] rather than off [context] directly: the application context
+     * is never locale-wrapped, so it would answer in the device language and ignore the setting.
+     * Resolved per read so a language change is picked up without restarting.
+     */
+    private val strings: Resources get() = localizedContext(context).resources
 
     private val autoCheckEnabledKey = "auto_check_enabled"
     private val _uiState = MutableStateFlow(AppUpdateUiState())
@@ -73,7 +85,7 @@ class AppUpdateManager(
         val current = _uiState.value
         if (current.isChecking || (current.hasCheckedOnce && !force)) return
 
-        _uiState.value = current.copy(isChecking = true, errorMessage = null, statusText = "Checking for updates...")
+        _uiState.value = current.copy(isChecking = true, errorMessage = null, statusText = strings.getString(R.string.update_checking))
         val release = runCatching { repository.fetchLatestAppRelease() }.getOrNull()
         val updateAvailable = release?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
         val isMandatory = updateAvailable?.required == true || (
@@ -111,7 +123,7 @@ class AppUpdateManager(
                 downloadProgressPercent = null,
                 isInstalling = false,
                 statusText = null,
-                errorMessage = "Update check failed.",
+                errorMessage = strings.getString(R.string.update_check_failed),
                 hasCheckedOnce = true,
             )
         }
@@ -160,7 +172,7 @@ class AppUpdateManager(
                 _uiState.value = _uiState.value.copy(
                     isInstalling = false,
                     downloadProgressPercent = null,
-                    errorMessage = error.message ?: "Update download failed.",
+                    errorMessage = error.message ?: strings.getString(R.string.update_download_failed),
                     statusText = null,
                 )
                 return
@@ -172,7 +184,7 @@ class AppUpdateManager(
                     downloadProgressPercent = null,
                     showPrompt = true,
                     statusText = null,
-                    errorMessage = error.message ?: "The TV could not open its package installer.",
+                    errorMessage = error.message ?: strings.getString(R.string.update_installer_failed),
                 )
                 return
             }

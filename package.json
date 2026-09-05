@@ -7,6 +7,8 @@
     "android:dev": "cd android && gradlew.bat installDebug",
     "android:prod": "cd android && gradlew.bat installRelease",
     "android:build": "cd android && gradlew.bat assembleRelease",
-    "android:compile": "cd android && gradlew.bat :app:compileDebugKotlin"
+    "android:compile": "cd android && gradlew.bat :app:compileDebugKotlin",
+    "check:translations": "node scripts/check-translations.mjs",
+    "check:strings": "node scripts/check-hardcoded-strings.mjs"
   }
 }

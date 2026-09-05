@@ -1,12 +1,13 @@
 package com.streamdek.tv.nativeapp.ui.home
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,15 +34,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -53,18 +54,19 @@ import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.ApiReachability
-import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.HomeRail
+import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvNavRailInset
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.glideToItem
-import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.highResolutionCardArtwork
 import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
 import kotlinx.coroutines.async
@@ -515,7 +517,7 @@ fun HomeScreen(
             (screenState.isLoading && content == null) || (content != null && !initialArtworkReady) -> HomeFirstLoad(portraitCards)
 
             screenState.error != null && content == null -> HomeMessage(
-                title = "Home failed to load",
+                title = stringResource(R.string.home_failed),
                 message = screenState.error ?: "Could not load home",
                 primaryLabel = if (screenState.isLoading) "Retrying…" else "Try Again",
                 primaryEnabled = !screenState.isLoading,
@@ -524,10 +526,9 @@ fun HomeScreen(
             )
 
             content != null && content.rails.isEmpty() && content.isComplete -> HomeMessage(
-                title = "Nothing to show yet",
-                message = "This profile has no home rows turned on and no add-on catalogues to " +
-                    "fill them. Enable an add-on or turn the built-in catalogues back on.",
-                primaryLabel = if (screenState.isLoading) "Refreshing…" else "Refresh",
+                title = stringResource(R.string.home_empty),
+                message = stringResource(R.string.home_empty_detail),
+                primaryLabel = stringResource(if (screenState.isLoading) R.string.action_refreshing else R.string.action_refresh),
                 primaryEnabled = !screenState.isLoading,
                 onPrimary = { homeViewModel.forceRefresh(loadKey) },
                 secondaryLabel = "Open Settings",
@@ -917,7 +918,7 @@ private fun HomeMessage(
 @Composable
 private fun OfflineNotice(modifier: Modifier = Modifier) {
     Text(
-        text = "Offline — showing saved content",
+        text = stringResource(R.string.home_offline_saved),
         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
         color = Color(0xFF0B0B0B),
         modifier = modifier

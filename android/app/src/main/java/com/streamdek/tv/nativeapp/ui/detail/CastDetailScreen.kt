@@ -5,7 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -43,12 +43,14 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.PersonDetail
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppCardShape
@@ -161,7 +163,7 @@ private fun CastDetailContent(
                                     else -> FocusRequester.Default
                                 }
                             },
-                    ) { Text("Back") }
+                    ) { Text(stringResource(R.string.action_back)) }
                 }
                 listOfNotNull(person.knownFor, person.birthday, person.placeOfBirth)
                     .filter(String::isNotBlank)
@@ -175,7 +177,7 @@ private fun CastDetailContent(
                     }
                 biography?.let {
                     Text(
-                        "Biography",
+                        stringResource(R.string.cast_biography),
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onBackground,
                     )
@@ -228,7 +230,7 @@ private fun CastDetailContent(
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 // This section shares the outer column's leading edge with the portrait.
                 Text(
-                    "Known For",
+                    stringResource(R.string.cast_known_for),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onBackground,
                 )

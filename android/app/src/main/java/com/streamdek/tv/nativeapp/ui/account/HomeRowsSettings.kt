@@ -12,6 +12,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -29,22 +34,20 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.material3.Icon
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.AddonManifest
 import com.streamdek.tv.nativeapp.data.CatalogDefinition
 import com.streamdek.tv.nativeapp.data.HomeCatalogRowPreference
 import com.streamdek.tv.nativeapp.data.HomeRowOption
-import com.streamdek.tv.nativeapp.data.homeRowLayoutOf
 import com.streamdek.tv.nativeapp.data.buildHomeRowGroups
+import com.streamdek.tv.nativeapp.data.homeRowLayoutOf
 import com.streamdek.tv.nativeapp.data.homeRowOptions
 
 /**
@@ -81,7 +84,7 @@ internal fun HomeRowsSettings(
 
     if (rows.isEmpty()) {
         HomeRowsHeading(
-            title = "Home rows",
+            title = stringResource(R.string.settings_home_rows),
             body = if (addons.isEmpty() && definitions.isEmpty()) {
                 "Still loading the rows this profile can show."
             } else {
@@ -101,7 +104,7 @@ internal fun HomeRowsSettings(
     // viewer came for.
     var expanded by remember { mutableStateOf(false) }
     HomeRowsDisclosure(
-        title = "Home rows",
+        title = stringResource(R.string.settings_home_rows),
         summary = "$enabledCount of ${rows.size} on",
         expanded = expanded,
         leftRequester = leftRequester,
@@ -117,19 +120,26 @@ internal fun HomeRowsSettings(
 
     // One fold per source, the shape the phone shows. A viewer running several catalogue add-ons
     // has one list of seventy rows otherwise, and no way to tell whose row is whose.
-    val groups = remember(rows, addons, streamDekRowsEnabled) { buildHomeRowGroups(rows, addons, streamDekRowsEnabled) }
+    val fallbackAddonName = stringResource(R.string.home_row_group_unknown_addon)
+    val groups = remember(rows, addons, streamDekRowsEnabled, fallbackAddonName) {
+        buildHomeRowGroups(rows, addons, streamDekRowsEnabled, fallbackAddonName)
+    }
     var expandedGroups by remember { mutableStateOf(emptySet<String>()) }
 
     groups.forEach { group ->
         key(group.key) {
-            val open = group.gatedNote == null && group.key in expandedGroups
+            val open = group.gatedNoteRes == null && group.key in expandedGroups
             HomeRowsDisclosure(
                 title = group.title,
-                summary = if (group.gatedNote != null) "${group.rows.size} kept" else "${group.rows.count { it.enabled }} of ${group.rows.size} on",
-                detail = group.gatedNote
+                summary = if (group.gatedNoteRes != null) {
+                    pluralStringResource(R.plurals.home_row_group_kept, group.rows.size, group.rows.size)
+                } else {
+                    stringResource(R.string.home_row_group_on_of, group.rows.count { it.enabled }, group.rows.size)
+                },
+                detail = group.gatedNoteRes?.let { stringResource(it) }
                     ?: if (open) "Press OK to close this source" else "Press OK to choose its rows",
                 expanded = open,
-                gated = group.gatedNote != null,
+                gated = group.gatedNoteRes != null,
                 leftRequester = leftRequester,
                 onToggle = {
                     expandedGroups = if (group.key in expandedGroups) expandedGroups - group.key else expandedGroups + group.key
@@ -344,7 +354,9 @@ private fun HomeRowToggle(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = option.subtitle,
+                text = option.subtitleArg
+                    ?.let { stringResource(option.subtitleRes, it) }
+                    ?: stringResource(option.subtitleRes),
                 color = Color.White.copy(alpha = 0.45f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,

@@ -2,17 +2,18 @@ package com.streamdek.tv.nativeapp.ui.player
 
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,16 +23,24 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +58,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -59,14 +71,13 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
@@ -74,50 +85,43 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.ViewList
-import androidx.compose.material3.Icon
 import coil.compose.AsyncImage
+import com.streamdek.tv.R
 import com.streamdek.tv.TvRemoteKeyRouter
 import com.streamdek.tv.mpv.MPVTextureView
 import com.streamdek.tv.mpv.MPVView
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
-import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.AddonStream
-import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
+import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleOrigin
-import com.streamdek.tv.nativeapp.data.subtitleSourceAllowsOrigin
-import com.streamdek.tv.nativeapp.data.contentScopedResumePosition
-import com.streamdek.tv.nativeapp.data.MediaDetail
+import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.Languages
+import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
-import com.streamdek.tv.nativeapp.data.TvIdlePreferences
-import com.streamdek.tv.nativeapp.data.TvPowerActions
-import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
-import com.streamdek.tv.nativeapp.data.PlaybackStats
-import com.streamdek.tv.nativeapp.data.PlaybackSegment
-import com.streamdek.tv.nativeapp.data.Telemetry
-import com.streamdek.tv.nativeapp.data.classifyPlaybackFailure
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
+import com.streamdek.tv.nativeapp.data.PlaybackSegment
+import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.Telemetry
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
+import com.streamdek.tv.nativeapp.data.TvIdlePreferences
+import com.streamdek.tv.nativeapp.data.TvPowerActions
+import com.streamdek.tv.nativeapp.data.classifyPlaybackFailure
+import com.streamdek.tv.nativeapp.data.contentScopedResumePosition
+import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
+import com.streamdek.tv.nativeapp.data.subtitleSourceAllowsOrigin
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
-import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import com.streamdek.tv.nativeapp.ui.TvMotion
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -144,7 +148,16 @@ private const val LiveStallTimeoutMs = 15_000L
 private data class SegmentAction(
     val kind: SegmentActionKind,
     val segmentType: String,
-    val label: String,
+    /**
+     * The chip's wording, as a resource rather than as text.
+     *
+     * [activeSegmentAction] decides *which* action is due from the playback position and the
+     * viewer's skip preferences, which is a question about playback and not about language. Holding
+     * the resource id here keeps the decision where it belongs while leaving the wording to be
+     * resolved at the point it is drawn - which is also the only place a `stringResource` may be
+     * read from, and the only place that re-reads it when the interface language changes.
+     */
+    @StringRes val labelRes: Int,
     val targetTimeSec: Double? = null,
 )
 
@@ -888,7 +901,7 @@ fun PlayerScreen(
             return SegmentAction(
                 kind = SegmentActionKind.NextEpisode,
                 segmentType = "outro",
-                label = "Next Episode",
+                labelRes = R.string.player_next_episode,
             )
         }
 
@@ -912,19 +925,19 @@ fun PlayerScreen(
             "intro" -> SegmentAction(
                 kind = SegmentActionKind.Skip,
                 segmentType = activeSegment.segmentType,
-                label = "Skip Intro",
+                labelRes = R.string.player_skip_intro,
                 targetTimeSec = activeSegment.endSec,
             )
             "recap" -> SegmentAction(
                 kind = SegmentActionKind.Skip,
                 segmentType = activeSegment.segmentType,
-                label = "Skip Recap",
+                labelRes = R.string.player_skip_recap,
                 targetTimeSec = activeSegment.endSec,
             )
             "outro" -> SegmentAction(
                 kind = SegmentActionKind.Skip,
                 segmentType = activeSegment.segmentType,
-                label = "Skip Ending",
+                labelRes = R.string.player_skip_ending,
                 targetTimeSec = activeSegment.endSec,
             )
             else -> null
@@ -2635,12 +2648,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         androidx.tv.material3.Text(
-                            text = "Still in your watchlist",
+                            text = stringResource(R.string.watchlist_still_in),
                             style = androidx.tv.material3.MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Black),
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         androidx.tv.material3.Text(
-                            text = "You've finished this title. Remove it from your watchlist?",
+                            text = stringResource(R.string.watchlist_finished_prompt),
                             style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
                             color = Color.White.copy(alpha = 0.82f),
                             maxLines = 3,
@@ -2661,7 +2674,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 },
                                 modifier = Modifier.focusRequester(watchlistPromptRemoveRequester),
                             ) {
-                                androidx.tv.material3.Text("Remove")
+                                androidx.tv.material3.Text(stringResource(R.string.action_remove))
                             }
                             androidx.tv.material3.OutlinedButton(
                                 onClick = {
@@ -2671,7 +2684,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 },
                                 modifier = Modifier.focusRequester(watchlistPromptKeepRequester),
                             ) {
-                                androidx.tv.material3.Text("Not Now")
+                                androidx.tv.material3.Text(stringResource(R.string.action_not_now))
                             }
                         }
                     }
@@ -2729,7 +2742,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                         scope.launch { loadPlayback(forceRefresh = true) }
                                     },
                                 ) {
-                                    androidx.tv.material3.Text("Retry")
+                                    androidx.tv.material3.Text(stringResource(R.string.action_retry))
                                 }
                             }
                             if (hasMultipleStreams) {
@@ -2741,7 +2754,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     },
                                     modifier = Modifier.focusRequester(errorSourcesRequester),
                                 ) {
-                                    androidx.tv.material3.Text("Try Another Source")
+                                    androidx.tv.material3.Text(stringResource(R.string.player_try_another_source))
                                 }
                             }
                             if (canResume) {
@@ -2758,7 +2771,10 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     },
                                 ) {
                                     androidx.tv.material3.Text(
-                                        "Resume ${lastWorkingLabel?.take(24) ?: "last source"}",
+                                        stringResource(
+                                            R.string.player_resume_source,
+                                            lastWorkingLabel?.take(24) ?: stringResource(R.string.player_last_source),
+                                        ),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
@@ -2939,7 +2955,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         // Skip intro / recap / ending, and the hand-off into the next episode.
         segmentAction?.let { action ->
             PlayerSkipActionChip(
-                label = action.label,
+                label = stringResource(action.labelRes),
                 bottomPadding = if (controlsVisible) 112.dp else 24.dp,
                 focusRequester = segmentChipRequester,
                 onClick = {
@@ -3073,15 +3089,15 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text("This source keeps buffering", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black), color = Color.White)
-                            Text("Switch to ${suggested.addonName.ifBlank { "the next ranked source" }} and keep your position?", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.72f))
+                            Text(stringResource(R.string.player_source_keeps_buffering), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black), color = Color.White)
+                            Text(stringResource(R.string.player_switch_source_prompt, suggested.addonName.ifBlank { stringResource(R.string.player_next_ranked_source) }), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.72f))
                         }
                         androidx.tv.material3.OutlinedButton(onClick = {
                             smartSwitchCandidate = null
                             recentPlaybackStalls = emptyList()
                             smartSwitchCooldownUntil = android.os.SystemClock.elapsedRealtime() + 180_000L
                             showControls(focusPlay = !isLive)
-                        }) { Text("Keep") }
+                        }) { Text(stringResource(R.string.action_keep)) }
                         androidx.tv.material3.Button(
                             onClick = {
                                 val resumeAt = positionSec.coerceAtLeast(0.0)
@@ -3117,7 +3133,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 }
                             },
                             modifier = Modifier.focusRequester(smartSwitchRequester),
-                        ) { Text("Switch") }
+                        ) { Text(stringResource(R.string.action_switch)) }
                     }
                 }
             }
@@ -3168,7 +3184,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         }
                         currentEpisode?.let { ep ->
                             androidx.tv.material3.Text(
-                                text = "S${ep.seasonNumber} · E${ep.episodeNumber}" + (ep.title?.let { " — $it" } ?: ""),
+                                // Two resources rather than one plus concatenation: a translator
+                                // needs to be able to move the title, the dash and the numbering
+                                // relative to one another, which a glued-on suffix does not allow.
+                                text = ep.title?.let { title ->
+                                    stringResource(R.string.season_episode_dot_title, ep.seasonNumber, ep.episodeNumber, title)
+                                } ?: stringResource(R.string.season_episode_dot, ep.seasonNumber, ep.episodeNumber),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFFF0BA66),
                                 textAlign = TextAlign.End,
@@ -3523,13 +3544,13 @@ private fun LiveChannelDownHint(
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         Text(
-            text = "Channels",
+            text = stringResource(R.string.player_channels),
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
             color = Color.White,
         )
         Icon(
             imageVector = Icons.Default.KeyboardArrowDown,
-            contentDescription = "Press down for live channels",
+            contentDescription = stringResource(R.string.player_live_channels_hint),
             tint = Color.White,
             modifier = Modifier
                 .size(24.dp)
@@ -3549,13 +3570,13 @@ private fun LiveFavouritesRightHint(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(
-            text = "Favourites",
+            text = stringResource(R.string.live_favourites),
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
             color = Color.White,
         )
         Icon(
             imageVector = Icons.Default.KeyboardArrowRight,
-            contentDescription = "Press right for favourite channels",
+            contentDescription = stringResource(R.string.player_favourite_channels_hint),
             tint = Color.White,
             modifier = Modifier.size(26.dp).offset(x = offsetX.dp),
         )
@@ -3596,7 +3617,7 @@ private fun LiveFavouritesDrawer(
         ) {
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End) {
                 Text(
-                    text = "Favourite channels",
+                    text = stringResource(R.string.live_favourite_channels),
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
                     color = Color.White,
                     textAlign = TextAlign.End,
@@ -3605,7 +3626,7 @@ private fun LiveFavouritesDrawer(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    text = "${channels.size} saved  •  Hold OK to remove",
+                    text = pluralStringResource(R.plurals.live_favourites_saved_hint, channels.size, channels.size),
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White.copy(alpha = 0.66f),
                     textAlign = TextAlign.End,
@@ -3705,7 +3726,7 @@ private fun LiveFavouriteTextItem(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            if (selected) Text("  ON NOW", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black))
+            if (selected) Text("  " + stringResource(R.string.live_on_now), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black))
         }
     }
 }
@@ -3743,7 +3764,7 @@ private fun LiveFavouriteDrawerCard(
                 )
             }
             Column(Modifier.align(Alignment.BottomEnd).padding(8.dp), horizontalAlignment = Alignment.End) {
-                if (selected) Text("ON NOW", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black))
+                if (selected) Text(stringResource(R.string.live_on_now), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black))
                 Text(item.title, color = Color.White, textAlign = TextAlign.End, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -3775,7 +3796,7 @@ private fun LiveChannelCarousel(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = "Live channels",
+            text = stringResource(R.string.live_channels),
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
             color = Color.White,
             modifier = Modifier.padding(horizontal = 36.dp),
@@ -3868,7 +3889,7 @@ private fun LivePlayerChannelCard(
             if (favourite) {
                 Icon(
                     imageVector = Icons.Filled.Star,
-                    contentDescription = "Favourite channel",
+                    contentDescription = stringResource(R.string.player_favourite_channel),
                     tint = Color(0xFFFACC15),
                     modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(20.dp),
                 )
@@ -3879,7 +3900,7 @@ private fun LivePlayerChannelCard(
             ) {
                 if (selected) {
                     Text(
-                        text = "NOW PLAYING",
+                        text = stringResource(R.string.live_now_playing),
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
                         color = MaterialTheme.colorScheme.primary,
                     )

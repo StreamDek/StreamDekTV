@@ -34,21 +34,24 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.GenreItem
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
-import com.streamdek.tv.nativeapp.ui.TvEmptyState
 import com.streamdek.tv.nativeapp.ui.TvContentPhase
 import com.streamdek.tv.nativeapp.ui.TvContentSwap
+import com.streamdek.tv.nativeapp.ui.TvEmptyState
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
 import com.streamdek.tv.nativeapp.ui.TvSpacing
@@ -56,10 +59,9 @@ import com.streamdek.tv.nativeapp.ui.search.SearchChip
 import com.streamdek.tv.nativeapp.ui.search.SearchFilterOption
 import com.streamdek.tv.nativeapp.ui.search.SearchFilterTray
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
+import java.time.Year
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.time.Year
-import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 
 private data class BrowseActionState(
     val item: MediaItem,
@@ -319,15 +321,15 @@ fun NetworkBrowseScreen(
                 TvContentPhase.Loading -> TvSkeletonGrid(columns = gridColumns, rows = 3)
 
                 TvContentPhase.Error -> TvEmptyState(
-                    title = "Could not load $networkName",
-                    message = "The catalogue could not be reached. Check the connection and try again.",
+                    title = stringResource(R.string.network_load_failed, networkName),
+                    message = stringResource(R.string.network_load_failed_detail),
                     actionLabel = "Try Again",
                     onAction = { reloadToken++ },
                 )
 
                 TvContentPhase.Empty -> TvEmptyState(
-                    title = "Nothing matches these filters",
-                    message = "Widen the year, genre or rating and try again.",
+                    title = stringResource(R.string.filters_no_match),
+                    message = stringResource(R.string.filters_no_match_detail),
                     actionLabel = "Clear Filters",
                     onAction = { mediaType = "all"; year = null; genreId = null; minRating = null },
                 )

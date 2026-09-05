@@ -30,10 +30,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -82,13 +84,12 @@ internal fun DebridApiKeyDialog(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Text(
-                    "Connect $providerLabel",
+                    stringResource(R.string.debrid_connect_provider, providerLabel),
                     color = Color.White,
                     style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
                 )
                 Text(
-                    "Paste or type the API key from your $providerLabel account. It is checked before it is saved, " +
-                        "and kept encrypted on this television.",
+                    stringResource(R.string.debrid_key_explainer, providerLabel),
                     color = Color.White.copy(alpha = 0.62f),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -100,7 +101,7 @@ internal fun DebridApiKeyDialog(
                     },
                     singleLine = true,
                     enabled = !checking,
-                    placeholder = { Text("API key") },
+                    placeholder = { Text(stringResource(R.string.debrid_api_key)) },
                     shape = RoundedCornerShape(12.dp),
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color(0xFF121722),
@@ -133,7 +134,7 @@ internal fun DebridApiKeyDialog(
                         },
                         enabled = !checking && apiKey.isNotBlank(),
                     ) { Text(if (checking) "Checking…" else "Connect") }
-                    OutlinedButton(onClick = onDismiss, enabled = !checking) { Text("Cancel") }
+                    OutlinedButton(onClick = onDismiss, enabled = !checking) { Text(stringResource(R.string.action_cancel)) }
                 }
             }
         }

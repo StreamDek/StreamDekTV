@@ -44,11 +44,13 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.ContentService
 import com.streamdek.tv.nativeapp.data.ContentServiceState
 import com.streamdek.tv.nativeapp.data.ContentServicesState
@@ -57,7 +59,6 @@ import com.streamdek.tv.nativeapp.data.CredentialStatus
 import com.streamdek.tv.nativeapp.data.CredentialStorage
 import com.streamdek.tv.nativeapp.data.StorageChoice
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
-import com.streamdek.tv.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -205,7 +206,7 @@ private fun ContentServicesIntro(state: ContentServicesState, signedIn: Boolean)
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         Text(
-            "Your own content services",
+            stringResource(R.string.content_services_your_own),
             color = Color.White,
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
         )
@@ -303,7 +304,11 @@ private fun ContentServiceRow(
 
         state.storage?.let { storage ->
             Text(
-                "Storage: ${storage.label}${state.maskedKey?.let { "  $it" }.orEmpty()}  ·  ${storage.detail}",
+                // Two resources rather than one with an optional middle: a translator cannot
+                // reorder around a fragment that may or may not be there.
+                state.maskedKey?.let { key ->
+                    stringResource(R.string.content_services_storage_with_key, stringResource(storage.labelRes), key, stringResource(storage.detailRes))
+                } ?: stringResource(R.string.content_services_storage, stringResource(storage.labelRes), stringResource(storage.detailRes)),
                 color = Color.White.copy(alpha = 0.48f),
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -311,8 +316,17 @@ private fun ContentServiceRow(
 
         if (state.status == CredentialStatus.NeedsAttention) {
             Text(
-                "${service.label} is no longer accepting this key. Replace it to bring " +
-                    "${if (service == ContentService.Tmdb) "artwork and details" else "ratings"} back.",
+                // Whole sentences, not a sentence with a noun slotted into the middle: which
+                // words a language inflects around "artwork" or "ratings" is not something an
+                // English-shaped template can express.
+                stringResource(
+                    if (service == ContentService.Tmdb) {
+                        R.string.content_services_needs_attention_artwork
+                    } else {
+                        R.string.content_services_needs_attention_ratings
+                    },
+                    service.label,
+                ),
                 color = Color(0xFFF59E0B),
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -320,8 +334,7 @@ private fun ContentServiceRow(
 
         if (state.storage == CredentialStorage.Device && state.accountKeyAlsoAvailable) {
             Text(
-                "Your StreamDek account also has a ${service.label} key. This television is using its own; " +
-                    "remove the one here to fall back to the account key.",
+                stringResource(R.string.content_services_account_key_also, service.label),
                 color = Color.White.copy(alpha = 0.48f),
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -340,10 +353,10 @@ private fun ContentServiceRow(
             // Offered rather than done: a key the viewer chose to keep on this television is never
             // uploaded without them asking for it, here or anywhere else.
             if (state.storage == CredentialStorage.Device && !state.accountKeyAlsoAvailable && signedIn) {
-                OutlinedButton(onClick = onSaveToAccount, enabled = !busy) { Text("Save to StreamDek") }
+                OutlinedButton(onClick = onSaveToAccount, enabled = !busy) { Text(stringResource(R.string.content_services_save_to_account)) }
             }
             if (state.configured) {
-                OutlinedButton(onClick = onRemove, enabled = !busy) { Text("Remove") }
+                OutlinedButton(onClick = onRemove, enabled = !busy) { Text(stringResource(R.string.action_remove)) }
             }
         }
     }
@@ -366,7 +379,7 @@ private fun ContentServicesRoutes(leftRequester: FocusRequester) {
         verticalArrangement = Arrangement.spacedBy(11.dp),
     ) {
         Text(
-            "Three ways to set these up",
+            stringResource(R.string.content_services_three_ways),
             color = Color.White.copy(alpha = 0.88f),
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
         )
@@ -516,19 +529,19 @@ private fun ContentServiceKeyDialog(
 
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
-                        "Don't have a ${service.label} key?",
+                        stringResource(R.string.content_services_no_key_prompt, service.label),
                         color = Color.White.copy(alpha = 0.78f),
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                     )
                     service.howToGet.forEachIndexed { index, step ->
                         Text(
-                            "${index + 1}. $step",
+                            stringResource(R.string.content_services_step, index + 1, step),
                             color = Color.White.copy(alpha = 0.52f),
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
                     Text(
-                        "Get one at ${service.keyUrl}",
+                        stringResource(R.string.content_services_get_one_at, service.keyUrl),
                         color = serviceAccent(service),
                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                     )
@@ -556,7 +569,7 @@ private fun ContentServiceKeyDialog(
                         )
                     }
                     if (feedback == null || feedbackIsError) {
-                        OutlinedButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+                        OutlinedButton(onClick = onDismiss, enabled = !busy) { Text(stringResource(R.string.action_cancel)) }
                     }
                 }
             }
@@ -578,12 +591,12 @@ private fun StorageChoiceRows(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Text(
-            "Where should this key be kept?",
+            stringResource(R.string.content_services_where_kept),
             color = Color.White.copy(alpha = 0.86f),
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
         )
         StorageChoiceRow(
-            title = "Save to StreamDek",
+            title = stringResource(R.string.content_services_save_to_account),
             detail = if (signedIn) {
                 "Stored encrypted in your StreamDek account. Every device you sign in on uses it, " +
                     "so you never type it again."
@@ -595,7 +608,7 @@ private fun StorageChoiceRows(
             onSelect = { onChoice(StorageChoice.SaveToStreamDek) },
         )
         StorageChoiceRow(
-            title = "This TV only",
+            title = stringResource(R.string.content_services_this_tv_only),
             detail = "Stored encrypted on this television, and StreamDek keeps no copy. It is sent with " +
                 "this TV's own requests so they can be made, and never saved. Your other devices will " +
                 "each need their own key.",
@@ -683,7 +696,7 @@ private fun ContentServiceRemoveDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
-                    "Remove your ${service.label} key?",
+                    stringResource(R.string.content_services_remove_prompt, service.label),
                     color = Color.White,
                     style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
                 )
@@ -705,18 +718,18 @@ private fun ContentServiceRemoveDialog(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     if (bothPlaces) {
-                        Button(onClick = { onRemove(CredentialRemoval.Device) }) { Text("Remove from this TV") }
+                        Button(onClick = { onRemove(CredentialRemoval.Device) }) { Text(stringResource(R.string.content_services_remove_from_tv)) }
                         OutlinedButton(onClick = { onRemove(CredentialRemoval.Account) }) {
-                            Text("Remove from StreamDek")
+                            Text(stringResource(R.string.content_services_remove_from_account))
                         }
                     } else {
                         Button(
                             onClick = { onRemove(if (onAccount) CredentialRemoval.Account else CredentialRemoval.Device) },
                         ) {
-                            Text(if (onAccount) "Remove from StreamDek" else "Remove from this TV")
+                            Text(stringResource(if (onAccount) R.string.content_services_remove_from_account else R.string.content_services_remove_from_tv))
                         }
                     }
-                    OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                    OutlinedButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
                 }
             }
         }

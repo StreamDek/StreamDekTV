@@ -4,24 +4,15 @@ import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.ui.draw.clipToBounds
-import com.streamdek.tv.nativeapp.ui.TvScroll
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.LiveTv
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.VideoLibrary
-import androidx.compose.material3.Icon
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,15 +21,22 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.LiveTv
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -62,6 +61,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
@@ -79,20 +79,22 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.AppGraph
 import com.streamdek.tv.nativeapp.data.DefaultTrailerCacheClearHours
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
-import com.streamdek.tv.nativeapp.data.TrailerCache
-import com.streamdek.tv.nativeapp.data.TrailerCacheClearHourOfDay
-import com.streamdek.tv.nativeapp.data.clearTrailerState
-import com.streamdek.tv.nativeapp.data.mapAddonCatalogType
 import com.streamdek.tv.nativeapp.data.PlaybackHandoff
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
-import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.TrailerCache
+import com.streamdek.tv.nativeapp.data.TrailerCacheClearHourOfDay
+import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.TvIdlePreferences
 import com.streamdek.tv.nativeapp.data.TvPowerActions
+import com.streamdek.tv.nativeapp.data.clearTrailerState
 import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
+import com.streamdek.tv.nativeapp.data.mapAddonCatalogType
+import com.streamdek.tv.nativeapp.ui.TvScroll
 import com.streamdek.tv.nativeapp.ui.account.SettingsScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
 import com.streamdek.tv.nativeapp.ui.detail.DetailScreen
@@ -101,8 +103,8 @@ import com.streamdek.tv.nativeapp.ui.home.HomeEntryMode
 import com.streamdek.tv.nativeapp.ui.home.HomeEntryRequest
 import com.streamdek.tv.nativeapp.ui.home.HomeScreen
 import com.streamdek.tv.nativeapp.ui.library.LibraryScreen
-import com.streamdek.tv.nativeapp.ui.live.LiveScreen
 import com.streamdek.tv.nativeapp.ui.live.LiveBrowseScreen
+import com.streamdek.tv.nativeapp.ui.live.LiveScreen
 import com.streamdek.tv.nativeapp.ui.network.NetworkBrowseScreen
 import com.streamdek.tv.nativeapp.ui.player.PlayerScreen
 import com.streamdek.tv.nativeapp.ui.profile.StartupBootstrapGate
@@ -175,11 +177,36 @@ private fun detailRoute(mediaType: String, mediaId: String): String {
     val canonicalType = if (mediaType == "series") "tv" else mediaType
     return "detail/$canonicalType/$mediaId"
 }
+/**
+ * The app, in the selected interface language.
+ *
+ * Only the locale wrapper lives here; everything else is [StreamDekTvAppContent]. The split is what
+ * lets a language change take effect in place: [ProvideAppLocale] replaces the composition locals
+ * `stringResource` reads, so the tree below re-resolves every string on the next recomposition
+ * without the activity being rebuilt. On a television that distinction is the whole feature -
+ * rebuilding would reconstruct every [FocusRequester] in the tree and drop the remote's focus,
+ * leaving the viewer on a page where nothing responds until they press their way back into it.
+ */
 @Composable
 fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.repository }) {
+    val context = LocalContext.current
+    // Device-local, and read here so that choosing a language in Settings recomposes the tree on the
+    // spot. See AppLanguage.kt for why this setting does not travel with the account.
+    val languagePreferences = remember(context) { TvAppLanguagePreferences(context) }
+    CompositionLocalProvider(LocalTvAppLanguagePreferences provides languagePreferences) {
+        ProvideAppLocale(languagePreferences.selection) {
+            StreamDekTvAppContent(repository)
+        }
+    }
+}
+
+@Composable
+private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     val navController = rememberNavController()
     val context = LocalContext.current
-    val activity = context as? Activity
+    // findActivity(), not a cast: ProvideAppLocale hands the composition a ContextWrapper, and a
+    // direct `as? Activity` would quietly become null, taking the sleep and back-out paths with it.
+    val activity = context.findActivity()
     val appUpdateManager = remember { AppGraph.appUpdateManager }
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
@@ -1289,7 +1316,7 @@ private fun HandoffPrompt(
                 // A Dialog's content sits outside any Surface, so LocalContentColor is still the
                 // black default here — an unstyled Text disappears against the dark panel.
                 Text(
-                    "Continue on this TV?",
+                    stringResource(R.string.handoff_continue_on_tv),
                     style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onBackground,
                 )
@@ -1305,7 +1332,7 @@ private fun HandoffPrompt(
                         modifier = Modifier.focusRequester(acceptRequester),
                     ) { Text(if (processing) "Opening…" else if (errorMessage == null) "Continue watching" else "Close") }
                     if (errorMessage == null) {
-                        OutlinedButton(onClick = onDismiss, enabled = !processing) { Text("Not now") }
+                        OutlinedButton(onClick = onDismiss, enabled = !processing) { Text(stringResource(R.string.action_not_now)) }
                     }
                 }
             }
@@ -1325,7 +1352,7 @@ private fun ExitBackHint(
             .padding(horizontal = 18.dp, vertical = 12.dp),
     ) {
         Text(
-            text = "Press back again to exit StreamDek TV",
+            text = stringResource(R.string.exit_press_back_again),
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.onBackground,
         )
@@ -1384,7 +1411,7 @@ private fun AppUpdatePrompt(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
-                    text = "Update Available",
+                    text = stringResource(R.string.update_available),
                     style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onBackground,
                 )
@@ -1462,7 +1489,7 @@ private fun AppUpdatePrompt(
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
                                 Text(
-                                    text = "What's New",
+                                    text = stringResource(R.string.update_whats_new),
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
                                     color = MaterialTheme.colorScheme.onBackground,
                                 )
@@ -1561,7 +1588,7 @@ private fun AppUpdatePrompt(
                                 down = laterRequester
                             },
                     ) {
-                        Text("Later")
+                        Text(stringResource(R.string.action_later))
                     }
                 }
             }

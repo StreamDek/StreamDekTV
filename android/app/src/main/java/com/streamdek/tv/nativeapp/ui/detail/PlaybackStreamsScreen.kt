@@ -9,15 +9,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -30,19 +32,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -56,22 +57,23 @@ import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.AddonStream
-import com.streamdek.tv.nativeapp.data.addonStreamDisplayLabel
 import com.streamdek.tv.nativeapp.data.FusionBadgeSource
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
-import com.streamdek.tv.nativeapp.debrid.cachedAvailabilityLabel
-import com.streamdek.tv.nativeapp.debrid.readyServiceLabel
 import com.streamdek.tv.nativeapp.data.StreamsPreferences
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
+import com.streamdek.tv.nativeapp.data.addonStreamDisplayLabel
 import com.streamdek.tv.nativeapp.data.flattenFusionBadges
 import com.streamdek.tv.nativeapp.data.matchFusionBadges
 import com.streamdek.tv.nativeapp.data.mergeProgressiveStreamSnapshot
 import com.streamdek.tv.nativeapp.data.streamOriginLabel
+import com.streamdek.tv.nativeapp.debrid.cachedAvailabilityLabel
+import com.streamdek.tv.nativeapp.debrid.readyServiceLabel
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.FusionBadgeRow
@@ -771,7 +773,7 @@ private fun StreamsHeader(
                 StreamsSearchStatus(Modifier.width(186.dp))
             } else {
                 SearchChip(
-                    label = "Reload sources",
+                    label = stringResource(R.string.streams_reload),
                     selected = false,
                     modifier = Modifier.width(186.dp),
                     onClick = onReload,
@@ -807,7 +809,7 @@ private fun StreamsSearchStatus(modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = "Searching...",
+            text = stringResource(R.string.streams_searching),
             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
         )
@@ -846,7 +848,7 @@ private fun StreamSourceHeading(source: String, count: Int) {
             modifier = Modifier.weight(1f, fill = false),
         )
         Text(
-            text = "$count",
+            text = count.toString(),
             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
         )
@@ -888,7 +890,7 @@ private fun StreamQualityHeading(tier: StreamQualityTier, count: Int) {
         // is what stops a long list reading as one undifferentiated run of cards.
         Box(Modifier.weight(1f).height(1.dp).background(foreground.copy(alpha = 0.10f)))
         Text(
-            text = "$count",
+            text = count.toString(),
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
             color = foreground.copy(alpha = 0.42f),
         )
@@ -1122,18 +1124,18 @@ private fun NoStreamsRow(onReload: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = "No playable streams",
+            text = stringResource(R.string.streams_none_playable),
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
             color = MaterialTheme.colorScheme.onSurface,
         )
         Text(
-            text = "Every source answered without a usable link. Reloading asks them all again.",
+            text = stringResource(R.string.streams_none_playable_detail),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f),
         )
         Box(Modifier.padding(top = 4.dp)) {
             SearchChip(
-                label = "Reload sources",
+                label = stringResource(R.string.streams_reload),
                 selected = false,
                 modifier = Modifier.focusRequester(retryRequester),
                 onClick = onReload,

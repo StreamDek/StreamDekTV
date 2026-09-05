@@ -1,7 +1,9 @@
 package com.streamdek.tv.nativeapp.data
 
+import androidx.annotation.StringRes
 import com.google.gson.JsonObject
 import com.streamdek.tv.BuildConfig
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.debrid.DebridKeyStore
 import com.streamdek.tv.nativeapp.debrid.DebridManager
 import com.streamdek.tv.nativeapp.debrid.PremiumizeClient
@@ -9,10 +11,18 @@ import com.streamdek.tv.nativeapp.debrid.PremiumizeDeviceAuth
 import com.streamdek.tv.nativeapp.debrid.RealDebridClient
 import com.streamdek.tv.nativeapp.debrid.RealDebridDeviceAuth
 import com.streamdek.tv.nativeapp.debrid.SUPPORTED_DEBRID_PROVIDERS
-import com.streamdek.tv.nativeapp.usenet.UsenetPlayback
 import com.streamdek.tv.nativeapp.peer.LocalTorrentPlayback
+import com.streamdek.tv.nativeapp.usenet.UsenetPlayback
+import java.io.File
+import java.net.URLEncoder
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.time.Instant
+import java.util.LinkedHashMap
+import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -21,7 +31,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -30,13 +39,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.nio.ByteBuffer
-import java.nio.charset.CodingErrorAction
-import java.util.LinkedHashMap
-import java.util.Locale
-import java.net.URLEncoder
-import java.time.Instant
 
 // Stremio-native catalog types that represent live content. Native 'tv' means
 // live television channels — series catalogs use 'series'.
@@ -625,6 +627,19 @@ class StreamDekRepository(
     private val appContext: android.content.Context? = null,
 ) {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Viewer-facing text this repository has to synthesise itself, in the interface language.
+     *
+     * Only for labels StreamDek generates - a stream it built from a direct URL, say. Anything a
+     * provider or add-on supplied is passed through untouched; see AppLanguage.kt.
+     *
+     * [appContext] is absent in unit tests, and a label is not worth failing a test over, so those
+     * take the English source text. It is the same string `values/strings.xml` holds, which is
+     * also the platform fallback for every locale.
+     */
+    private fun label(@StringRes id: Int, fallback: String): String =
+        appContext?.let { runCatching { localizedContext(it).getString(id) }.getOrNull() } ?: fallback
 
     /** Loading a profile's `.cs3` extensions; cancelled when the profile changes under it. */
     private var cloudStreamLoadJob: kotlinx.coroutines.Job? = null
@@ -3571,9 +3586,9 @@ class StreamDekRepository(
         if (mediaType == "live" && !directStreamUrl.isNullOrBlank()) {
             val directStream = AddonStream(
                 addonId = sourceAddonId.orEmpty(),
-                addonName = sourceAddonName ?: "Live source",
-                name = sourceAddonName ?: "Live source",
-                title = "Direct live stream",
+                addonName = sourceAddonName ?: label(R.string.stream_live_source, "Live source"),
+                name = sourceAddonName ?: label(R.string.stream_live_source, "Live source"),
+                title = label(R.string.stream_direct_live, "Direct live stream"),
                 url = directStreamUrl,
                 requestHeaders = requestHeaders,
             )
@@ -4036,9 +4051,9 @@ class StreamDekRepository(
         if (isLive && !directStreamUrl.isNullOrBlank()) {
             val directStream = AddonStream(
                 addonId = sourceAddonId.orEmpty(),
-                addonName = sourceAddonName ?: "Live source",
-                name = sourceAddonName ?: "Live source",
-                title = "Direct live stream",
+                addonName = sourceAddonName ?: label(R.string.stream_live_source, "Live source"),
+                name = sourceAddonName ?: label(R.string.stream_live_source, "Live source"),
+                title = label(R.string.stream_direct_live, "Direct live stream"),
                 url = directStreamUrl,
                 requestHeaders = requestHeaders,
             )

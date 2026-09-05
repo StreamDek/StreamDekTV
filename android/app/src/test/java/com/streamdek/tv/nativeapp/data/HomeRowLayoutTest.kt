@@ -2,9 +2,13 @@ package com.streamdek.tv.nativeapp.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+
+/** What the settings screen would pass for an add-on whose manifest names itself nothing. */
+private const val FALLBACK_ADDON_NAME = "Add-on"
 
 /**
  * The layout rule, and the two reasons it did nothing on the television before.
@@ -243,8 +247,10 @@ class HomeRowLayoutTest {
     @Test
     fun `saving numbers the rows by their order on screen`() {
         val options = listOf(
-            HomeRowOption("b", "B", "", builtin = true, enabled = false),
-            HomeRowOption("a", "A", "", builtin = true, enabled = true),
+            // subtitleRes is not exercised here - this test is about ordering - so it is left at
+            // the no-resource sentinel rather than pulling R into a plain JVM test.
+            HomeRowOption("b", "B", subtitleRes = 0, builtin = true, enabled = false),
+            HomeRowOption("a", "A", subtitleRes = 0, builtin = true, enabled = true),
         )
 
         val layout = homeRowLayoutOf(options)
@@ -274,7 +280,7 @@ class HomeRowLayoutTest {
             layout = emptyList(),
         )
 
-        val groups = buildHomeRowGroups(options, listOf(addon("alpha", listOf("one", "two")), addon("beta", listOf("one"))), streamDekRowsEnabled = true)
+        val groups = buildHomeRowGroups(options, listOf(addon("alpha", listOf("one", "two")), addon("beta", listOf("one"))), streamDekRowsEnabled = true, fallbackAddonName = FALLBACK_ADDON_NAME)
 
         assertEquals(listOf(STREAMDEK_ROW_GROUP_KEY, "alpha", "beta"), groups.map { it.key })
         assertEquals(2, groups.first { it.key == "alpha" }.rows.size)
@@ -286,10 +292,12 @@ class HomeRowLayoutTest {
         val addons = listOf(addon("alpha", listOf("one")))
         val options = homeRowOptions(listOf(definition("trending_movies")), addons, emptyList())
 
-        val groups = buildHomeRowGroups(options, addons, streamDekRowsEnabled = false)
+        val groups = buildHomeRowGroups(options, addons, streamDekRowsEnabled = false, fallbackAddonName = FALLBACK_ADDON_NAME)
 
-        assertEquals("hidden by Built-in catalogs", groups.first { it.key == STREAMDEK_ROW_GROUP_KEY }.gatedNote)
-        assertNull(groups.first { it.key == "alpha" }.gatedNote)
+        // The note is a resource id now, so what is asserted is that StreamDek's group is gated and
+        // the add-on's is not. The wording itself is the translation checker's business.
+        assertNotNull(groups.first { it.key == STREAMDEK_ROW_GROUP_KEY }.gatedNoteRes)
+        assertNull(groups.first { it.key == "alpha" }.gatedNoteRes)
     }
 
     @Test
@@ -297,12 +305,12 @@ class HomeRowLayoutTest {
         val addons = listOf(addon("alpha", listOf("one", "two"), enabled = false))
         val options = homeRowOptions(emptyList(), addons, emptyList())
 
-        val group = buildHomeRowGroups(options, addons, streamDekRowsEnabled = true).single()
+        val group = buildHomeRowGroups(options, addons, streamDekRowsEnabled = true, fallbackAddonName = FALLBACK_ADDON_NAME).single()
 
         // Kept rather than dropped: the arrangement outlives the add-on being switched off.
         assertEquals(2, group.rows.size)
         assertEquals("alpha", group.title)
-        assertEquals("hidden while this add-on is off", group.gatedNote)
+        assertNotNull(group.gatedNoteRes)
     }
 
     @Test

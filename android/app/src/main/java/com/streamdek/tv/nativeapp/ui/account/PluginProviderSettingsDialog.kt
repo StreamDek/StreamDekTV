@@ -36,6 +36,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.PluginSettingField
 import com.streamdek.tv.nativeapp.data.PluginSettingOption
 import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
@@ -115,9 +117,9 @@ internal fun PluginProviderSettingsDialog(
                 )
                 val loaded = fields
                 when {
-                    loaded == null -> Text("Reading this source's settings…", color = Color.White.copy(alpha = 0.7f))
+                    loaded == null -> Text(stringResource(R.string.plugin_reading_settings), color = Color.White.copy(alpha = 0.7f))
                     error != null -> Text(error.orEmpty(), color = Color(0xFFFFB4AB))
-                    loaded.isEmpty() -> Text("This source has no settings to fill in.", color = Color.White.copy(alpha = 0.7f))
+                    loaded.isEmpty() -> Text(stringResource(R.string.plugin_no_settings), color = Color.White.copy(alpha = 0.7f))
                     else -> Column(
                         modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -167,8 +169,8 @@ internal fun PluginProviderSettingsDialog(
                             }
                         },
                         modifier = Modifier.focusRequester(saveRequester),
-                    ) { Text("Save") }
-                    OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                    ) { Text(stringResource(R.string.action_save)) }
+                    OutlinedButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
                 }
             }
         }

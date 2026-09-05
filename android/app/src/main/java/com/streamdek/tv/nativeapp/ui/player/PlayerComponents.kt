@@ -3,11 +3,11 @@ package com.streamdek.tv.nativeapp.ui.player
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,23 +35,23 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -74,6 +74,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -86,13 +88,12 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import com.streamdek.tv.R
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.EpisodeContext
-import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleOrigin
-import com.streamdek.tv.nativeapp.data.subtitleOriginVisible
-import com.streamdek.tv.nativeapp.data.preferredSubtitleLanguageAllowed
+import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
@@ -102,21 +103,23 @@ import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.formatBitrate
 import com.streamdek.tv.nativeapp.data.formatResolution
 import com.streamdek.tv.nativeapp.data.formatTransferRate
+import com.streamdek.tv.nativeapp.data.preferredSubtitleLanguageAllowed
 import com.streamdek.tv.nativeapp.data.prettyCodecName
 import com.streamdek.tv.nativeapp.data.streamOriginLabel
 import com.streamdek.tv.nativeapp.data.streamProviderLabel
 import com.streamdek.tv.nativeapp.data.streamTransport
+import com.streamdek.tv.nativeapp.data.subtitleOriginVisible
 import com.streamdek.tv.nativeapp.debrid.readyServiceLabel
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
-import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import com.streamdek.tv.nativeapp.ui.detail.streamQualityLabel
 import com.streamdek.tv.nativeapp.ui.detail.streamSizeLabel
 import com.streamdek.tv.nativeapp.ui.detail.streamTextFingerprint
 import com.streamdek.tv.nativeapp.ui.formatPlaybackClock
-import kotlinx.coroutines.launch
+import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 internal enum class OverlayPanel {
     Streams,
@@ -344,7 +347,7 @@ internal fun PlayerBottomBar(
                     exit = TvMotion.fadeOutSpec(TvMotion.Instant),
                 ) {
                     Text(
-                        text = "Hold down Left/Right button to scrub",
+                        text = stringResource(R.string.player_scrub_hint),
                         style = androidx.tv.material3.MaterialTheme.typography.labelSmall,
                         color = Color.White.copy(alpha = 0.42f),
                         maxLines = 1,
@@ -460,7 +463,7 @@ internal fun PlayerBottomBar(
                 if (isLive) {
                     PlayerControlIconButton(
                         icon = Icons.Filled.Timeline,
-                        label = "Progress",
+                        label = stringResource(R.string.player_progress),
                         active = showLiveProgress,
                         requester = liveProgressRequester,
                         upRequester = timelineUpRequester,
@@ -472,7 +475,7 @@ internal fun PlayerBottomBar(
                 } else {
                     PlayerControlIconButton(
                         icon = Icons.Filled.ClosedCaption,
-                        label = "Subtitles",
+                        label = stringResource(R.string.player_subtitles),
                         active = selectedPanel == OverlayPanel.Subtitles,
                         requester = subtitlesRequester,
                         upRequester = timelineUpRequester,
@@ -483,7 +486,7 @@ internal fun PlayerBottomBar(
                     )
                     PlayerControlIconButton(
                         icon = Icons.Filled.VolumeUp,
-                        label = "Audio",
+                        label = stringResource(R.string.player_audio),
                         active = selectedPanel == OverlayPanel.Audio,
                         requester = audioRequester,
                         upRequester = timelineUpRequester,
@@ -495,7 +498,7 @@ internal fun PlayerBottomBar(
                 }
                 PlayerControlIconButton(
                     icon = Icons.Filled.Cloud,
-                    label = "Sources",
+                    label = stringResource(R.string.player_sources),
                     active = selectedPanel == OverlayPanel.Streams,
                     requester = sourcesRequester,
                     upRequester = timelineUpRequester,
@@ -506,7 +509,7 @@ internal fun PlayerBottomBar(
                 )
                 PlayerControlIconButton(
                     icon = Icons.Filled.Tune,
-                    label = "Engine",
+                    label = stringResource(R.string.player_engine),
                     active = selectedPanel == OverlayPanel.Engine,
                     requester = engineRequester,
                     upRequester = timelineUpRequester,
@@ -534,7 +537,7 @@ internal fun PlayerBottomBar(
                     if (hasNext) {
                         PlayerControlIconButton(
                             icon = Icons.Filled.SkipNext,
-                            label = "Next",
+                            label = stringResource(R.string.player_next),
                             requester = nextRequester,
                             upRequester = timelineUpRequester,
                             leftRequester = engineRequester,
@@ -545,7 +548,7 @@ internal fun PlayerBottomBar(
                     }
                     PlayerControlIconButton(
                         icon = Icons.Filled.CheckCircle,
-                        label = "Watched",
+                        label = stringResource(R.string.player_watched),
                         requester = watchedRequester,
                         upRequester = timelineUpRequester,
                         leftRequester = if (hasNext) nextRequester else engineRequester,
@@ -555,7 +558,7 @@ internal fun PlayerBottomBar(
                     )
                     PlayerControlIconButton(
                         icon = Icons.Filled.Speed,
-                        label = "Speed",
+                        label = stringResource(R.string.player_playback_speed),
                         active = selectedPanel == OverlayPanel.Speed,
                         requester = speedRequester,
                         upRequester = timelineUpRequester,
@@ -568,7 +571,7 @@ internal fun PlayerBottomBar(
 
                 PlayerControlIconButton(
                     icon = Icons.Outlined.Info,
-                    label = "Stream info",
+                    label = stringResource(R.string.player_stream_info),
                     active = selectedPanel == OverlayPanel.Info,
                     requester = infoRequester,
                     upRequester = timelineUpRequester,
@@ -935,14 +938,16 @@ internal fun PlayerOptionPanel(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = when (panel) {
-                                OverlayPanel.Streams -> "Sources"
-                                OverlayPanel.Engine -> "Player Engine"
-                                OverlayPanel.Audio -> "Audio"
-                                OverlayPanel.Subtitles -> "Subtitles"
-                                OverlayPanel.Speed -> "Playback Speed"
-                                OverlayPanel.Info -> "Stream info"
-                            },
+                            text = stringResource(
+                                when (panel) {
+                                    OverlayPanel.Streams -> R.string.player_sources
+                                    OverlayPanel.Engine -> R.string.player_engine_panel_title
+                                    OverlayPanel.Audio -> R.string.player_audio
+                                    OverlayPanel.Subtitles -> R.string.player_subtitles
+                                    OverlayPanel.Speed -> R.string.player_playback_speed
+                                    OverlayPanel.Info -> R.string.player_stream_info
+                                },
+                            ),
                             style = androidx.tv.material3.MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
                             color = Color.White,
                         )
@@ -985,7 +990,7 @@ internal fun PlayerOptionPanel(
                                 focusedContentColor = Color.White,
                             ),
                         ) {
-                            Text("Close")
+                            Text(stringResource(R.string.action_close))
                         }
                     }
                 }
@@ -1032,7 +1037,7 @@ internal fun PlayerOptionPanel(
                     item {
                         OptionButton(
                             label = "ExoPlayer",
-                            subtitle = "Media3 playback engine",
+                            subtitle = stringResource(R.string.player_engine_media3_description),
                             active = activeEngine == ActivePlaybackEngine.Media3,
                             activeBadge = if (activeEngine == ActivePlaybackEngine.Media3) "Selected" else null,
                             requestFocus = firstItemRequester,
@@ -1043,7 +1048,7 @@ internal fun PlayerOptionPanel(
                     item {
                         OptionButton(
                             label = "mpv",
-                            subtitle = "libMPV playback engine",
+                            subtitle = stringResource(R.string.player_engine_mpv_description),
                             active = activeEngine == ActivePlaybackEngine.MPV,
                             activeBadge = if (activeEngine == ActivePlaybackEngine.MPV) "Selected" else null,
                             onInteract = onInteract,
@@ -1088,8 +1093,8 @@ internal fun PlayerOptionPanel(
                     }
                     item {
                         OptionButton(
-                            label = "Subtitles Off",
-                            subtitle = "Disable every subtitle track",
+                            label = stringResource(R.string.player_subtitles_off),
+                            subtitle = stringResource(R.string.player_subtitles_off_description),
                             active = selectedSubtitleId < 0 && selectedExternalSubtitleId == null,
                             activeBadge = if (selectedSubtitleId < 0 && selectedExternalSubtitleId == null) "Selected" else null,
                             requestFocus = firstItemRequester,
@@ -1099,7 +1104,7 @@ internal fun PlayerOptionPanel(
                     }
                     if (visibleEmbeddedTracks.isNotEmpty()) item {
                         Text(
-                            "Embedded in video",
+                            stringResource(R.string.player_subtitles_embedded),
                             color = Color.White.copy(alpha = 0.62f),
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(start = 30.dp, end = 14.dp, top = 10.dp, bottom = 4.dp),
@@ -1120,7 +1125,7 @@ internal fun PlayerOptionPanel(
                     if (subtitlesLoading) {
                         item {
                             OptionButton(
-                                label = "Searching subtitle sources...",
+                                label = stringResource(R.string.player_searching_subtitle_sources),
                                 subtitle = when (subtitleTab) {
                                     SubtitlePanelTab.BuiltIn -> "OpenSubtitles and StreamDek sources"
                                     SubtitlePanelTab.Addons -> "Installed subtitle add-ons"
@@ -1192,7 +1197,7 @@ internal fun PlayerOptionPanel(
                     // moving it further away.
                     item {
                         PlayerStepperRow(
-                            label = "Text size",
+                            label = stringResource(R.string.player_subtitle_text_size),
                             value = subtitleFontSize.toString(),
                             onInteract = onInteract,
                             onDecrease = { onSubtitleFontSize((subtitleFontSize - 2).coerceIn(SubtitleSizeRange)) },
@@ -1201,7 +1206,7 @@ internal fun PlayerOptionPanel(
                     }
                     item {
                         PlayerStepperRow(
-                            label = "Position",
+                            label = stringResource(R.string.player_subtitle_position),
                             value = subtitlePosition.toString(),
                             hint = "Higher sits nearer the bottom",
                             onInteract = onInteract,
@@ -1212,7 +1217,7 @@ internal fun PlayerOptionPanel(
                     if (subtitleDelaySupported) {
                         item {
                             PlayerStepperRow(
-                                label = "Delay",
+                                label = stringResource(R.string.player_subtitle_delay),
                                 value = String.format(Locale.US, "%+.1f s", subtitleDelay),
                                 hint = "Nudge subtitles ahead of or behind the audio",
                                 onInteract = onInteract,
@@ -1450,12 +1455,12 @@ internal fun NextEpisodeDialog(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "Auto-playing in ${countdown}s",
+                            text = pluralStringResource(R.plurals.player_autoplay_countdown, countdown, countdown),
                             style = androidx.tv.material3.MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = Color.White.copy(alpha = 0.9f),
                         )
                         OutlinedButton(onClick = onCancel) {
-                            Text("Cancel")
+                            Text(stringResource(R.string.action_cancel))
                         }
                     }
                 }
@@ -1477,14 +1482,14 @@ internal fun NextEpisodeDialog(
                         onClick = onCancel,
                         modifier = Modifier.focusRequester(cancelRequester),
                     ) {
-                        Text("Cancel")
+                        Text(stringResource(R.string.action_cancel))
                     }
                     Button(
                         onClick = onPlayNow,
                         enabled = streams.isNotEmpty(),
                         modifier = Modifier.focusRequester(playRequester),
                     ) {
-                        Text("Play Next")
+                        Text(stringResource(R.string.player_play_next))
                     }
                 }
             }
@@ -1519,7 +1524,7 @@ internal fun NextRecommendationDialog(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
                 Text(
-                    "Recommended for you",
+                    stringResource(R.string.player_recommended_for_you),
                     color = Color.White.copy(alpha = 0.58f),
                     style = androidx.tv.material3.MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
@@ -1540,7 +1545,7 @@ internal fun NextRecommendationDialog(
                     onClick = onDismiss,
                     modifier = Modifier.align(Alignment.End).focusRequester(cancelRequester),
                     colors = ButtonDefaults.colors(containerColor = Color.Transparent, focusedContainerColor = Color(0x22FFFFFF)),
-                ) { Text("Dismiss", color = Color.White.copy(alpha = 0.74f)) }
+                ) { Text(stringResource(R.string.action_dismiss), color = Color.White.copy(alpha = 0.74f)) }
             }
         }
     }
@@ -1581,7 +1586,7 @@ private fun TvRecommendationChoice(
             reason?.takeIf { it.isNotBlank() }?.let {
                 Text(it, color = Color.White.copy(alpha = 0.54f), style = androidx.tv.material3.MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (queued) Text("Queued next", color = Color(0xFFF0BA66), style = androidx.tv.material3.MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            if (queued) Text(stringResource(R.string.player_queued_next), color = Color(0xFFF0BA66), style = androidx.tv.material3.MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             Button(
                 onClick = onClick,
                 modifier = if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier,

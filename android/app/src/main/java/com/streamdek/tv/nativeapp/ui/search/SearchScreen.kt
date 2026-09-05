@@ -5,7 +5,9 @@ import android.content.Intent
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,8 +23,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.background
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextFieldDefaults
@@ -48,28 +48,30 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.GenreItem
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
+import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
-import com.streamdek.tv.nativeapp.ui.TvEmptyState
 import com.streamdek.tv.nativeapp.ui.TvContentPhase
 import com.streamdek.tv.nativeapp.ui.TvContentSwap
+import com.streamdek.tv.nativeapp.ui.TvEmptyState
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
+import java.time.Year
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.time.Year
-import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 
 private data class BrowseActionState(
     val item: MediaItem,
@@ -400,7 +402,7 @@ fun SearchScreen(
                         },
                 )
                 SearchChip(
-                    label = "Voice search",
+                    label = stringResource(R.string.a11y_voice_search),
                     leading = "MIC",
                     selected = false,
                     modifier = Modifier

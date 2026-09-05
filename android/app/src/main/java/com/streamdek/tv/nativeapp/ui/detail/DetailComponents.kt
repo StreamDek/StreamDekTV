@@ -1,31 +1,24 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.focusGroup
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.Saver
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
-import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -34,28 +27,35 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
@@ -66,9 +66,9 @@ import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.CastMember
 import com.streamdek.tv.nativeapp.data.EpisodeRange
-import kotlinx.coroutines.delay
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.SeasonEpisode
@@ -83,9 +83,11 @@ import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvSkeletonBox
 import com.streamdek.tv.nativeapp.ui.TvSpacing
+import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 /** Shared page inset. Matches the rest of the app rather than the bespoke value this replaced. */
 internal val DetailInset = TvSpacing.ScreenHorizontal
@@ -705,7 +707,7 @@ internal fun EpisodeRangeChipRow(
                 onClick = { onSelect(index) },
                 shape = AppPillShape,
                 modifier = Modifier.rowFocusItem(rowFocus, index),
-                description = "Episodes ${range.firstEpisodeNumber} to ${range.lastEpisodeNumber}",
+                description = stringResource(R.string.detail_episodes_range, range.firstEpisodeNumber, range.lastEpisodeNumber),
             ) {
                 Text(
                     text = range.label,
@@ -724,10 +726,10 @@ internal fun EpisodeRangeChipRow(
                 onClick = onJump,
                 shape = AppPillShape,
                 modifier = Modifier.rowFocusItem(rowFocus, ranges.size),
-                description = "Go to a specific episode",
+                description = stringResource(R.string.detail_go_to_specific_episode),
             ) {
                 Text(
-                    text = "Go to episode…",
+                    text = stringResource(R.string.detail_go_to_episode),
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.onSurface,
@@ -834,7 +836,7 @@ internal fun EpisodesBand(
         verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
     ) {
         DetailSectionHeader(
-            title = "Episodes",
+            title = stringResource(R.string.detail_episodes),
             trailing = entries.count { it.seasonNumber == activeSeasonNumber }
                 .takeIf { it > 0 }
                 ?.let { "$it episodes" },
@@ -1158,7 +1160,7 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
                 DetailFocusCard(
                     onClick = { },
                     modifier = Modifier.rowFocusItem(rowFocus, index).width(cardWidth).height(cardHeight),
-                    description = "Review by ${comment.author}",
+                    description = stringResource(R.string.detail_review_by, comment.author),
                 ) {
                 Column(
                     modifier = Modifier

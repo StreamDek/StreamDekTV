@@ -1,10 +1,9 @@
 package com.streamdek.tv.nativeapp.ui.account
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.Image
-import coil.compose.AsyncImage
-import com.streamdek.tv.R
+import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
@@ -28,8 +27,8 @@ import androidx.compose.material.icons.outlined.Accessibility
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Palette
@@ -37,11 +36,11 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -62,26 +61,27 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
@@ -89,40 +89,46 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import coil.compose.AsyncImage
 import com.streamdek.tv.BuildConfig
-import com.streamdek.tv.nativeapp.data.AccountBootstrap
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.APP_IDLE_CHOICES_MINUTES
+import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
+import com.streamdek.tv.nativeapp.data.AppLanguage
 import com.streamdek.tv.nativeapp.data.DefaultTrailerCacheClearHours
-import com.streamdek.tv.nativeapp.data.DoHSettings
 import com.streamdek.tv.nativeapp.data.DefaultTrailerDelaySeconds
+import com.streamdek.tv.nativeapp.data.DoHSettings
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
+import com.streamdek.tv.nativeapp.data.PAUSED_SLEEP_CHOICES_MINUTES
+import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
 import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.RemotePlaylist
-import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
-import com.streamdek.tv.nativeapp.data.PAUSED_SLEEP_CHOICES_MINUTES
-import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.StreamDekDoHProviders
+import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.SyncServiceId
 import com.streamdek.tv.nativeapp.data.TrailerCache
 import com.streamdek.tv.nativeapp.data.TrailerCacheClearChoices
 import com.streamdek.tv.nativeapp.data.TvIdlePreferences
 import com.streamdek.tv.nativeapp.data.clearTrailerState
-import com.streamdek.tv.nativeapp.data.trailerCacheClearLabel
 import com.streamdek.tv.nativeapp.data.idleTimeoutLabel
+import com.streamdek.tv.nativeapp.data.trailerCacheClearLabel
 import com.streamdek.tv.nativeapp.ui.AnimationSpeed
 import com.streamdek.tv.nativeapp.ui.LocalTvAnimationPreferences
+import com.streamdek.tv.nativeapp.ui.LocalTvAppLanguagePreferences
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.MotionSettings
 import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
-import com.streamdek.tv.nativeapp.ui.TvChromeSurface
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
+import com.streamdek.tv.nativeapp.ui.TvChromeSurface
+import com.streamdek.tv.nativeapp.ui.appLanguageOptionDescriptions
+import com.streamdek.tv.nativeapp.ui.appLanguageOptions
+import com.streamdek.tv.nativeapp.ui.player.normalizeSubtitleDefaultSource
 import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
 import com.streamdek.tv.nativeapp.ui.streamDekThemeAccent
-import com.streamdek.tv.nativeapp.ui.player.normalizeSubtitleDefaultSource
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -170,25 +176,44 @@ private fun animationSpeedDescription(motion: MotionSettings): String = when {
     else -> "How long transitions take. Saved on this television only."
 }
 
-private enum class SettingsDestination(val category: String, val label: String, val description: String, val terms: String, val icon: ImageVector) {
-    Account("Account & Profiles", "Account", "Profiles, sign-in, and household access.", "accounts profile pin sign in switch household", Icons.Outlined.AccountCircle),
+/**
+ * The settings rail: one entry per page, grouped under a category heading.
+ *
+ * Category, name and description are resource ids rather than text. Holding the English here would
+ * leave the whole rail in English on a translated television - which is exactly what it did, and
+ * what a screenshot of the French build made obvious.
+ *
+ * [terms] is deliberately still English, and is *additional* to the label and description rather
+ * than a replacement for them: the search matches all three, so a French viewer typing "langue"
+ * finds this page through its translated description, while the English keywords keep working for
+ * anyone who knows them. Translating the keyword lists as well would be a larger piece of work and
+ * is not needed for search to work in the interface language.
+ */
+private enum class SettingsDestination(
+    @StringRes val categoryRes: Int,
+    @StringRes val labelRes: Int,
+    @StringRes val descriptionRes: Int,
+    val terms: String,
+    val icon: ImageVector,
+) {
+    Account(R.string.settings_category_account, R.string.settings_dest_account, R.string.settings_dest_account_description, "accounts profile pin sign in switch household", Icons.Outlined.AccountCircle),
 
-    Appearance("Appearance", "Appearance", "Theme, motion, and presentation on this television.", "accent colour theme animation blur transparent navigation", Icons.Outlined.Palette),
-    Library("Appearance", "Home Screen", "Home rows, cards, spotlight, and browsing layout.", "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page card titles hide titles overlay label", Icons.Outlined.VideoLibrary),
-    LiveTv("Appearance", "Live TV", "Channel lists, cards, and what the live player shows.", "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
-    Accessibility("Appearance", "Accessibility", "Contrast, text size, and reduced motion for this television.", "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
+    Appearance(R.string.settings_category_appearance, R.string.settings_appearance, R.string.settings_dest_appearance_description, "accent colour theme animation blur transparent navigation language interface translation", Icons.Outlined.Palette),
+    Library(R.string.settings_category_appearance, R.string.settings_dest_home_screen, R.string.settings_dest_home_screen_description, "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page card titles hide titles overlay label", Icons.Outlined.VideoLibrary),
+    LiveTv(R.string.settings_category_appearance, R.string.live_tv, R.string.settings_dest_live_tv_description, "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
+    Accessibility(R.string.settings_category_appearance, R.string.settings_dest_accessibility, R.string.settings_dest_accessibility_description, "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
 
-    Playback("Playback", "Player", "Player engine, audio, subtitles, and compatibility.", "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
-    SkipAndAutoplay("Playback", "Skip and Autoplay", "Intros, recaps, endings, and the next episode.", "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
-    Streams("Playback", "Streams and Quality", "Preferred quality, size limits, and result labels.", "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
+    Playback(R.string.settings_category_playback, R.string.settings_dest_player, R.string.settings_dest_player_description, "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
+    SkipAndAutoplay(R.string.settings_category_playback, R.string.settings_dest_skip_autoplay, R.string.settings_dest_skip_autoplay_description, "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
+    Streams(R.string.settings_category_playback, R.string.settings_dest_streams, R.string.settings_dest_streams_description, "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
 
-    Sources("Sources", "Add-ons and Plugins", "Add-ons, plugin collections, playlists, and premium services.", "providers addon plugin cloudstream debrid premium install playlist", Icons.Outlined.Extension),
+    Sources(R.string.settings_category_sources, R.string.settings_dest_sources, R.string.settings_dest_sources_description, "providers addon plugin cloudstream debrid premium install playlist", Icons.Outlined.Extension),
 
-    ContentServices("Connections", "Content Services", "Manage metadata and timing-service keys.", "content services tmdb mdblist theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
-    Connections("Connections", "Sync Services", "Tracking services, linked devices, and active sessions.", "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
-    Network("Connections", "Network", "DNS privacy and connection behaviour on this television.", "network dns doh dns over https privacy resolver", Icons.Outlined.Dns),
+    ContentServices(R.string.settings_category_connections, R.string.settings_dest_content_services, R.string.settings_dest_content_services_description, "content services tmdb mdblist theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
+    Connections(R.string.settings_category_connections, R.string.settings_dest_sync_services, R.string.settings_dest_sync_services_description, "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
+    Network(R.string.settings_category_connections, R.string.settings_dest_network, R.string.settings_dest_network_description, "network dns doh dns over https privacy resolver", Icons.Outlined.Dns),
 
-    About("About", "App Updates and About", "Version, updates, diagnostics, and app health.", "release update version diagnostics health cache network runtime", Icons.Outlined.Info),
+    About(R.string.settings_category_about, R.string.settings_dest_about, R.string.settings_dest_about_description, "release update version diagnostics health cache network runtime", Icons.Outlined.Info),
 }
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -221,6 +246,7 @@ fun SettingsScreen(
     var menuFocusedDestination by remember { mutableStateOf(SettingsDestination.Account) }
     // Device-local motion, from the app shell. Null only in a preview that has not provided it.
     val animationPreferences = LocalTvAnimationPreferences.current
+    val languagePreferences = LocalTvAppLanguagePreferences.current
     val motionSettings = LocalTvExperienceSettings.current.motion
     var query by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
@@ -279,8 +305,14 @@ fun SettingsScreen(
         if (status == message) status = null
     }
 
+    // Matched against the *translated* name and description as well as the English keywords, so
+    // somebody using a French television finds a page by typing French - see the note on
+    // [SettingsDestination.terms].
+    val destinationText = SettingsDestination.entries.associateWith {
+        stringResource(it.labelRes) + " " + stringResource(it.descriptionRes) + " " + it.terms
+    }
     val visible = SettingsDestination.entries.filter {
-        query.isBlank() || it.label.contains(query, true) || it.description.contains(query, true) || it.terms.contains(query, true)
+        query.isBlank() || destinationText.getValue(it).contains(query, true)
     }
     LaunchedEffect(visible) {
         if (visible.isNotEmpty() && selected !in visible) {
@@ -298,13 +330,13 @@ fun SettingsScreen(
     val detailPrefs = prefs?.detail
     val pluginState = bootstrap?.profilePlugins
     val themeOptions = listOf(
-        "streamdek" to "StreamDek",
-        "cinema-blue" to "Cinema blue",
-        "carbon-gold" to "Carbon gold",
-        "frost-neon" to "Frost neon",
-        "ember-red" to "Ember red",
-        "aurora-green" to "Aurora green",
-        "violet-pulse" to "Violet pulse",
+        "streamdek" to stringResource(R.string.settings_opt_streamdek),
+        "cinema-blue" to stringResource(R.string.settings_opt_cinema_blue),
+        "carbon-gold" to stringResource(R.string.settings_opt_carbon_gold),
+        "frost-neon" to stringResource(R.string.settings_opt_frost_neon),
+        "ember-red" to stringResource(R.string.settings_opt_ember_red),
+        "aurora-green" to stringResource(R.string.settings_opt_aurora_green),
+        "violet-pulse" to stringResource(R.string.settings_opt_violet_pulse),
     )
     val themeColors = themeOptions.associate { (value, _) -> value to streamDekThemeAccent(value) }
 
@@ -347,17 +379,17 @@ fun SettingsScreen(
         horizontalArrangement = Arrangement.spacedBy(22.dp),
     ) {
         Column(Modifier.width(238.dp).fillMaxHeight()) {
-            Text("Settings", color = Color.White, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
-            Text("Fast, focused, TV-first controls", color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 2.dp, bottom = 14.dp))
+            Text(stringResource(R.string.nav_settings), color = Color.White, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black))
+            Text(stringResource(R.string.settings_tagline), color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 2.dp, bottom = 14.dp))
             SettingsSearchBox(query, { query = it }, navFocusRequester, contentEntryRequester)
             Column(
                 Modifier.weight(1f).padding(top = 12.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 visible.forEachIndexed { index, destination ->
-                    if (index == 0 || visible[index - 1].category != destination.category) {
+                    if (index == 0 || visible[index - 1].categoryRes != destination.categoryRes) {
                         Text(
-                            destination.category,
+                            stringResource(destination.categoryRes),
                             color = Color.White.copy(alpha = 0.42f),
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             modifier = Modifier.padding(start = 10.dp, top = if (index == 0) 2.dp else 10.dp, bottom = 2.dp),
@@ -382,7 +414,7 @@ fun SettingsScreen(
                         },
                     )
                 }
-                if (visible.isEmpty()) Text("No settings match", color = Color.White.copy(alpha = 0.6f), modifier = Modifier.padding(14.dp))
+                if (visible.isEmpty()) Text(stringResource(R.string.settings_no_match), color = Color.White.copy(alpha = 0.6f), modifier = Modifier.padding(14.dp))
             }
         }
         Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0x18FFFFFF)))
@@ -424,7 +456,7 @@ fun SettingsScreen(
             )
             when (selected) {
                 SettingsDestination.Account -> {
-                    SettingsPanel("Active profile") {
+                    SettingsPanel(stringResource(R.string.settings_tv_active_profile)) {
                         if (activeProfile != null) {
                             var profileSummaryFocused by remember(activeProfile.id) { mutableStateOf(false) }
                             Row(
@@ -449,11 +481,11 @@ fun SettingsScreen(
                         InfoLine("Subscription", session?.user?.subscriptionStatus ?: "Free")
                     }
                     if (session == null) {
-                        SettingsActionRow("Sign in or link this TV", "Sync profiles, library and providers", "Open", selectedRequester, onClick = onSignIn)
+                        SettingsActionRow(stringResource(R.string.settings_tv_sign_in_or_link_this_tv), stringResource(R.string.settings_tv_sync_profiles_library_and_providers), "Open", selectedRequester, onClick = onSignIn)
                     } else {
                         SettingsToggleRow(
-                            "Remember Last profile at startup",
-                            "Skip the profile picker when this TV opens and continue with the last profile used",
+                            stringResource(R.string.settings_tv_remember_last_profile_at_startup),
+                            stringResource(R.string.settings_tv_skip_the_profile_picker_when_this_tv),
                             rememberLastProfileAtStartup,
                             selectedRequester,
                         ) { next, complete ->
@@ -466,47 +498,47 @@ fun SettingsScreen(
                                 scope.launch { repository.setActiveStreamProfile(profile.id); bootstrap = repository.refreshBootstrap(); status = "Using ${profile.name}." }
                             }
                         }
-                        SettingsActionRow("Sign out", "Remove this account from the television", "Sign out", selectedRequester) {
+                        SettingsActionRow(stringResource(R.string.settings_tv_sign_out), stringResource(R.string.settings_tv_remove_this_account_from_the_television), "Sign out", selectedRequester) {
                             repository.signOut(); bootstrap = null; addons = emptyList(); status = "Signed out from this TV."
                         }
                     }
                 }
                 SettingsDestination.Playback -> {
-                    SettingsPanel("Synced TV playback") {
+                    SettingsPanel(stringResource(R.string.settings_tv_synced_tv_playback)) {
                         InfoLine("Cloud scope", "Changes apply on this TV and sync to mobile")
                     }
-                    SettingsDropdownRow("Default player", "Auto uses Media3 first with one MPV fallback", normalizePlayerEngine(playbackPrefs?.playerEngine), listOf("Auto" to "Auto", "ExoPlayer" to "Media3 / ExoPlayer", "MPV" to "MPV")) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_player), stringResource(R.string.settings_tv_auto_uses_media3_first_with_one_mpv), normalizePlayerEngine(playbackPrefs?.playerEngine), listOf("Auto" to stringResource(R.string.settings_opt_auto), "ExoPlayer" to stringResource(R.string.settings_opt_media3_exoplayer), "MPV" to "MPV")) { value ->
                         savePreference("Default player") { repository.updatePlaybackPreferences(mapOf("playerEngine" to value)) }
                     }
-                    SettingsDropdownRow("Default audio", "Select the first matching audio track", normalizeLanguage(playbackPrefs?.defaultAudioLanguage), languageOptions(includeOff = false)) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_audio), stringResource(R.string.settings_tv_select_the_first_matching_audio_track), normalizeLanguage(playbackPrefs?.defaultAudioLanguage), languageOptions(includeOff = false)) { value ->
                         savePreference("Default audio") { repository.updatePlaybackPreferences(mapOf("defaultAudioLanguage" to value)) }
                     }
-                    SettingsDropdownRow("Default subtitles", "Choose a preferred subtitle language or leave subtitles off", normalizeLanguage(playbackPrefs?.defaultSubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_subtitles), stringResource(R.string.settings_tv_choose_a_preferred_subtitle_language_or_leave), normalizeLanguage(playbackPrefs?.defaultSubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
                         savePreference("Default subtitles") { repository.updatePlaybackPreferences(mapOf("defaultSubtitleLanguage" to value)) }
                     }
-                    SettingsDropdownRow("Secondary subtitles", "Used only when the preferred language is unavailable", normalizeLanguage(playbackPrefs?.secondarySubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_secondary_subtitles), stringResource(R.string.settings_tv_used_only_when_the_preferred_language_is), normalizeLanguage(playbackPrefs?.secondarySubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
                         savePreference("Secondary subtitles") { repository.updatePlaybackPreferences(mapOf("secondarySubtitleLanguage" to value)) }
                     }
-                    SettingsToggleRow("Auto-load subtitles", "Automatically select matching subtitles when playback starts", playbackPrefs?.autoLoadSubtitles != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_auto_load_subtitles), stringResource(R.string.settings_tv_automatically_select_matching_subtitles_when_playback_starts), playbackPrefs?.autoLoadSubtitles != false, selectedRequester) { next, complete ->
                         savePreference("Auto-load subtitles", complete) { repository.updatePlaybackPreferences(mapOf("autoLoadSubtitles" to next)) }
                     }
-                    SettingsToggleRow("Show only preferred language", "Hide embedded and add-on subtitles in other languages", playbackPrefs?.showOnlyPreferredSubtitleLanguages == true, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_show_only_preferred_language), stringResource(R.string.settings_tv_hide_embedded_and_add_on_subtitles_in), playbackPrefs?.showOnlyPreferredSubtitleLanguages == true, selectedRequester) { next, complete ->
                         savePreference("Show only preferred language", complete) { repository.updatePlaybackPreferences(mapOf("showOnlyPreferredSubtitleLanguages" to next)) }
                     }
                     SettingsDropdownRow(
-                        "Subtitle sources",
-                        "Choose which subtitle sources the player searches and shows",
+                        stringResource(R.string.settings_tv_subtitle_sources),
+                        stringResource(R.string.settings_tv_choose_which_subtitle_sources_the_player_searches),
                         normalizeSubtitleDefaultSource(playbackPrefs?.subtitleDefaultSource),
-                        listOf("All" to "All sources", "BuiltIn" to "Built-in", "Addons" to "Add-ons"),
+                        listOf("All" to stringResource(R.string.settings_opt_all_sources), "BuiltIn" to stringResource(R.string.settings_opt_built_in), "Addons" to stringResource(R.string.settings_opt_add_ons)),
                     ) { value ->
                         savePreference("Preferred subtitle source") { repository.updatePlaybackPreferences(mapOf("subtitleDefaultSource" to value)) }
                     }
-                    SettingsPanel("Sleep & Idle") {
+                    SettingsPanel(stringResource(R.string.settings_tv_sleep_idle)) {
                         InfoLine("Scope", "Stored on this TV. Active video playback never counts as app inactivity.")
                     }
                     SettingsDropdownRow(
-                        "Sleep when paused",
-                        "Return to the title page and start the screen saver after it stays paused",
+                        stringResource(R.string.settings_tv_sleep_when_paused),
+                        stringResource(R.string.settings_tv_return_to_the_title_page_and_start),
                         pausedTimeoutMinutes.toString(),
                         PAUSED_SLEEP_CHOICES_MINUTES.map { it.toString() to idleTimeoutLabel(it) },
                     ) { value ->
@@ -515,8 +547,8 @@ fun SettingsScreen(
                         status = "Paused sleep set to ${idleTimeoutLabel(pausedTimeoutMinutes)}."
                     }
                     SettingsDropdownRow(
-                        "App idle timeout",
-                        "Put the TV to sleep after remote inactivity, or stand down so its own power saving takes over",
+                        stringResource(R.string.settings_tv_app_idle_timeout),
+                        stringResource(R.string.settings_tv_put_the_tv_to_sleep_after_remote),
                         appIdleTimeoutMinutes.toString(),
                         APP_IDLE_CHOICES_MINUTES.map { it.toString() to idleTimeoutLabel(it) },
                     ) { value ->
@@ -525,18 +557,18 @@ fun SettingsScreen(
                         status = "App idle timeout set to ${idleTimeoutLabel(appIdleTimeoutMinutes)}."
                     }
                     // Last on the page: only worth opening when something will not play.
-                    SettingsPanel("If a video will not play") {
+                    SettingsPanel(stringResource(R.string.settings_tv_if_a_video_will_not_play)) {
                         InfoLine("When these apply", "Used when MPV is selected, or Auto falls back to it")
                     }
-                    SettingsDropdownRow("MPV video compatibility", "Choose hardware acceleration or safe software decoding", normalizeDecoderMode(playbackPrefs?.decoderMode), listOf("HW+" to "Recommended (HW+)", "HW" to "Device (HW)", "SW" to "Safe (SW)")) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_mpv_video_compatibility), stringResource(R.string.settings_tv_choose_hardware_acceleration_or_safe_software_decoding), normalizeDecoderMode(playbackPrefs?.decoderMode), listOf("HW+" to stringResource(R.string.settings_opt_recommended_hw), "HW" to stringResource(R.string.settings_opt_device_hw), "SW" to stringResource(R.string.settings_opt_safe_sw))) { value ->
                         savePreference("MPV video compatibility") { repository.updatePlaybackPreferences(mapOf("decoderMode" to value)) }
                     }
-                    SettingsDropdownRow("MPV display", "Compatibility mode uses a texture-backed video surface", normalizeRenderSurface(playbackPrefs?.renderSurface), listOf("Standard" to "Standard", "Compatibility" to "Compatibility")) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_mpv_display), stringResource(R.string.settings_tv_compatibility_mode_uses_a_texture_backed_video), normalizeRenderSurface(playbackPrefs?.renderSurface), listOf("Standard" to stringResource(R.string.settings_opt_standard), "Compatibility" to stringResource(R.string.settings_opt_compatibility))) { value ->
                         savePreference("MPV display") { repository.updatePlaybackPreferences(mapOf("renderSurface" to value)) }
                     }
                 }
                 SettingsDestination.SkipAndAutoplay -> {
-                    SettingsPanel("Auto Skip") {
+                    SettingsPanel(stringResource(R.string.settings_tv_auto_skip)) {
                         InfoLine("Detection", "Only reliable IntroDB segments are skipped; each segment runs once per playback session")
                     }
                     // Each segment's own pair, together: the switch that offers the control, then
@@ -544,61 +576,61 @@ fun SettingsScreen(
                     // -- all three automatic ones, then all three manual ones -- so the setting that
                     // governs a row and the row it governs were six apart, and turning off "Skip
                     // intro" left an "Auto Skip Intro" switch further up still reading as on.
-                    SettingsToggleRow("Skip intro", "Show the skip control when an intro is detected", playbackPrefs?.isSegmentEnabled("intro") != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_skip_intro), stringResource(R.string.settings_tv_show_the_skip_control_when_an_intro), playbackPrefs?.isSegmentEnabled("intro") != false, selectedRequester) { next, complete ->
                         savePreference("Skip intro", complete) { repository.updatePlaybackPreferences(mapOf("skipIntroEnabled" to next)) }
                     }
                     // Only while the control it automates is switched on. An automatic skip of a
                     // segment the viewer has asked not to be offered is a setting that cannot do
                     // anything, and a switch that cannot do anything is worse than no switch.
                     if (playbackPrefs?.isSegmentEnabled("intro") != false) {
-                        SettingsToggleRow("Auto Skip Intro", "Skip a detected intro without waiting to be asked", playbackPrefs?.autoSkipIntroEnabled == true, selectedRequester) { next, complete ->
+                        SettingsToggleRow(stringResource(R.string.settings_tv_auto_skip_intro), stringResource(R.string.settings_tv_skip_a_detected_intro_without_waiting_to), playbackPrefs?.autoSkipIntroEnabled == true, selectedRequester) { next, complete ->
                             savePreference("Auto Skip Intro", complete) { repository.updatePlaybackPreferences(mapOf("autoSkipIntroEnabled" to next)) }
                         }
                     }
-                    SettingsToggleRow("Skip recap", "Show the skip control when a recap is detected", playbackPrefs?.isSegmentEnabled("recap") != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_skip_recap), stringResource(R.string.settings_tv_show_the_skip_control_when_a_recap), playbackPrefs?.isSegmentEnabled("recap") != false, selectedRequester) { next, complete ->
                         savePreference("Skip recap", complete) { repository.updatePlaybackPreferences(mapOf("skipRecapEnabled" to next)) }
                     }
                     if (playbackPrefs?.isSegmentEnabled("recap") != false) {
-                        SettingsToggleRow("Auto Skip Recap", "Skip a detected recap without waiting to be asked", playbackPrefs?.autoSkipRecapEnabled == true, selectedRequester) { next, complete ->
+                        SettingsToggleRow(stringResource(R.string.settings_tv_auto_skip_recap), stringResource(R.string.settings_tv_skip_a_detected_recap_without_waiting_to), playbackPrefs?.autoSkipRecapEnabled == true, selectedRequester) { next, complete ->
                             savePreference("Auto Skip Recap", complete) { repository.updatePlaybackPreferences(mapOf("autoSkipRecapEnabled" to next)) }
                         }
                     }
-                    SettingsToggleRow("Skip ending", "Show the skip control when an ending is detected", playbackPrefs?.isSegmentEnabled("outro") != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_skip_ending), stringResource(R.string.settings_tv_show_the_skip_control_when_an_ending), playbackPrefs?.isSegmentEnabled("outro") != false, selectedRequester) { next, complete ->
                         savePreference("Skip ending", complete) { repository.updatePlaybackPreferences(mapOf("skipEndingEnabled" to next)) }
                     }
                     if (playbackPrefs?.isSegmentEnabled("outro") != false) {
-                        SettingsToggleRow("Auto Skip Ending", "Skip a detected ending without waiting to be asked, when next-episode autoplay is not taking over", playbackPrefs?.autoSkipEndingEnabled == true, selectedRequester) { next, complete ->
+                        SettingsToggleRow(stringResource(R.string.settings_tv_auto_skip_ending), stringResource(R.string.settings_tv_skip_a_detected_ending_without_waiting_to), playbackPrefs?.autoSkipEndingEnabled == true, selectedRequester) { next, complete ->
                             savePreference("Auto Skip Ending", complete) { repository.updatePlaybackPreferences(mapOf("autoSkipEndingEnabled" to next)) }
                         }
                     }
-                    SettingsToggleRow("Auto-play next episode", "Start the next episode near the configured threshold", playbackPrefs?.isAutoPlayNextEpisodeEnabled() != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_auto_play_next_episode), stringResource(R.string.settings_tv_start_the_next_episode_near_the_configured), playbackPrefs?.isAutoPlayNextEpisodeEnabled() != false, selectedRequester) { next, complete ->
                         savePreference("Auto-play next episode", complete) { repository.updatePlaybackPreferences(mapOf("autoPlayNextEpisodeEnabled" to next)) }
                     }
-                    SettingsToggleRow("Keep the same source", "Prefer the current provider and release group for the next episode", playbackPrefs?.preferBingeGroupNextEpisode != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_keep_the_same_source), stringResource(R.string.settings_tv_prefer_the_current_provider_and_release_group), playbackPrefs?.preferBingeGroupNextEpisode != false, selectedRequester) { next, complete ->
                         savePreference("Next-episode source", complete) { repository.updatePlaybackPreferences(mapOf("preferBingeGroupNextEpisode" to next)) }
                     }
                     TimingProviderBrandPanel(
                         playbackPrefs?.timingProvider?.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb",
                     )
                     SettingsDropdownRow(
-                        "Preferred Timing Provider",
-                        "Choose which timing service StreamDek asks first",
+                        stringResource(R.string.settings_tv_preferred_timing_provider),
+                        stringResource(R.string.settings_tv_choose_which_timing_service_streamdek_asks_first),
                         playbackPrefs?.timingProvider?.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb",
-                        listOf("introdb" to "IntroDB", "theintrodb" to "TheIntroDB"),
+                        listOf("introdb" to stringResource(R.string.settings_opt_introdb), "theintrodb" to stringResource(R.string.settings_opt_theintrodb)),
                     ) { value ->
                         savePreference("Timing provider") { repository.updatePlaybackPreferences(mapOf("timingProvider" to value)) }
                     }
                     SettingsToggleRow(
-                        "Automatically use the other provider when needed",
-                        "Silently improves coverage when the preferred service has no usable timing data",
+                        stringResource(R.string.settings_tv_automatically_use_the_other_provider_when_needed),
+                        stringResource(R.string.settings_tv_silently_improves_coverage_when_the_preferred_service),
                         playbackPrefs?.timingProviderFallbackEnabled != false,
                         selectedRequester,
                     ) { next, complete ->
                         savePreference("Timing provider fallback", complete) { repository.updatePlaybackPreferences(mapOf("timingProviderFallbackEnabled" to next)) }
                     }
                     SettingsToggleRow(
-                        "End-of-Playback Recommendations",
-                        "Show relevant recommendations as you approach the end of something you're watching.",
+                        stringResource(R.string.settings_tv_end_of_playback_recommendations),
+                        stringResource(R.string.settings_tv_show_relevant_recommendations_as_you_approach_the),
                         playbackPrefs?.endOfPlaybackRecommendationsEnabled == true,
                         selectedRequester,
                     ) { next, complete ->
@@ -608,45 +640,45 @@ fun SettingsScreen(
                     }
                     if (playbackPrefs?.endOfPlaybackRecommendationsEnabled == true) {
                         SettingsDropdownRow(
-                            "Recommendation Timing",
-                            "Choose how early the adaptive end-of-playback invitation appears",
+                            stringResource(R.string.settings_tv_recommendation_timing),
+                            stringResource(R.string.settings_tv_choose_how_early_the_adaptive_end_of),
                             playbackPrefs.recommendationTiming,
-                            listOf("early" to "Early", "standard" to "Standard", "late" to "Late"),
+                            listOf("early" to stringResource(R.string.settings_opt_early), "standard" to stringResource(R.string.settings_opt_standard), "late" to stringResource(R.string.settings_opt_late)),
                         ) { value ->
                             savePreference("Recommendation Timing") { repository.updatePlaybackPreferences(mapOf("recommendationTiming" to value)) }
                         }
                         SettingsDropdownRow(
-                            "Recommendations Shown",
-                            "Choose how many suggestions appear in the player",
+                            stringResource(R.string.settings_tv_recommendations_shown),
+                            stringResource(R.string.settings_tv_choose_how_many_suggestions_appear_in_the),
                             playbackPrefs.recommendationItemCount.coerceIn(1, 2).toString(),
-                            listOf("1" to "1 recommendation", "2" to "2 recommendations"),
+                            listOf("1" to stringResource(R.string.settings_opt_1_recommendation), "2" to stringResource(R.string.settings_opt_2_recommendations)),
                         ) { value ->
                             savePreference("Recommendations Shown") { repository.updatePlaybackPreferences(mapOf("recommendationItemCount" to value.toInt())) }
                         }
                     }
                 }
                 SettingsDestination.Streams -> {
-                    SettingsDropdownRow("Preferred quality", "Rank matching streams first across TV and mobile", normalizePreferredQuality(playbackPrefs?.preferredQuality), listOf("Auto" to "Auto", "2160p" to "4K / 2160p", "1080p" to "1080p", "720p" to "720p")) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_preferred_quality), stringResource(R.string.settings_tv_rank_matching_streams_first_across_tv_and), normalizePreferredQuality(playbackPrefs?.preferredQuality), listOf("Auto" to stringResource(R.string.settings_opt_auto), "2160p" to stringResource(R.string.settings_opt_4k_2160p), "1080p" to "1080p", "720p" to "720p")) { value ->
                         savePreference("Preferred quality") { repository.updatePlaybackPreferences(mapOf("preferredQuality" to value)) }
                     }
-                    SettingsDropdownRow("Maximum file size", "Hide larger streams when size metadata is available", playbackPrefs?.maxFileSizeGB ?: "0", listOf("0" to "Unlimited", "2" to "2 GB", "5" to "5 GB", "10" to "10 GB", "20" to "20 GB")) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_maximum_file_size), stringResource(R.string.settings_tv_hide_larger_streams_when_size_metadata_is), playbackPrefs?.maxFileSizeGB ?: "0", listOf("0" to stringResource(R.string.settings_opt_unlimited), "2" to stringResource(R.string.settings_opt_2_gb), "5" to stringResource(R.string.settings_opt_5_gb), "10" to stringResource(R.string.settings_opt_10_gb), "20" to stringResource(R.string.settings_opt_20_gb))) { value ->
                         savePreference("Maximum file size") { repository.updatePlaybackPreferences(mapOf("maxFileSizeGB" to value)) }
                     }
-                    SettingsToggleRow("Show stream picker", "Choose a source before playback instead of selecting automatically", streamsPrefs?.showStreamsList != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_show_stream_picker), stringResource(R.string.settings_tv_choose_a_source_before_playback_instead_of), streamsPrefs?.showStreamsList != false, selectedRequester) { next, complete ->
                         savePreference("Stream picker", complete) { repository.updateStreamsPreferences(mapOf("showStreamsList" to next)) }
                     }
-                    SettingsToggleRow("Remember last source", "Prefer the source previously used for the same title", streamsPrefs?.rememberLastSource != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_remember_last_source), stringResource(R.string.settings_tv_prefer_the_source_previously_used_for_the), streamsPrefs?.rememberLastSource != false, selectedRequester) { next, complete ->
                         savePreference("Remember last source", complete) { repository.updateStreamsPreferences(mapOf("rememberLastSource" to next)) }
                     }
-                    SettingsToggleRow("Stream detail badges", "Show quality, source, codec and HDR labels", streamsPrefs?.fusionBadgesEnabled != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_stream_detail_badges), stringResource(R.string.settings_tv_show_quality_source_codec_and_hdr_labels), streamsPrefs?.fusionBadgesEnabled != false, selectedRequester) { next, complete ->
                         savePreference("Stream detail badges", complete) { repository.updateStreamsPreferences(mapOf("fusionBadgesEnabled" to next)) }
                     }
-                    SettingsToggleRow("Size badges", "Show file sizes on stream choices", streamsPrefs?.showSizeBadges != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_size_badges), stringResource(R.string.settings_tv_show_file_sizes_on_stream_choices), streamsPrefs?.showSizeBadges != false, selectedRequester) { next, complete ->
                         savePreference("Size badges", complete) { repository.updateStreamsPreferences(mapOf("showSizeBadges" to next)) }
                     }
                     SettingsToggleRow(
-                        "StreamDek formatting",
-                        "Rebuild add-on results into StreamDek's comparison layout. Off shows the add-on's original text and line breaks.",
+                        stringResource(R.string.settings_tv_streamdek_formatting),
+                        stringResource(R.string.settings_tv_rebuild_add_on_results_into_streamdek_s),
                         streamsPrefs?.streamDekFormattingEnabled == true,
                         selectedRequester,
                     ) { next, complete ->
@@ -660,8 +692,8 @@ fun SettingsScreen(
                     var dv7HevcFallback by remember { mutableStateOf(PlaybackCodecOptions.dv7HevcFallback) }
                     var tunneledPlayback by remember { mutableStateOf(PlaybackCodecOptions.tunneledPlayback) }
                     SettingsToggleRow(
-                        "DV7 - HEVC Fallback",
-                        "Dolby Vision Profile 7 files, mostly disc remuxes, play as a black picture on most devices. Play them with mpv instead, which decodes the HEVC base layer. You lose the Dolby Vision grade.",
+                        stringResource(R.string.settings_tv_dv7_hevc_fallback),
+                        stringResource(R.string.settings_tv_dolby_vision_profile_7_files_mostly_disc),
                         dv7HevcFallback,
                         selectedRequester,
                     ) { next, complete ->
@@ -670,8 +702,8 @@ fun SettingsScreen(
                         complete(true)
                     }
                     SettingsToggleRow(
-                        "Tunneled playback",
-                        "Hand decoding and display to the hardware as one pipeline, which can hold audio and video in step on devices that support it. Turn it off again if the picture goes black while the sound keeps playing.",
+                        stringResource(R.string.settings_tv_tunneled_playback),
+                        stringResource(R.string.settings_tv_hand_decoding_and_display_to_the_hardware),
                         tunneledPlayback,
                         selectedRequester,
                     ) { next, complete ->
@@ -681,7 +713,7 @@ fun SettingsScreen(
                     }
                 }
                 SettingsDestination.Library -> {
-                    SettingsToggleRow("Built-in catalogs", "Show StreamDek's default movie and series rows alongside add-ons", homePrefs?.defaultAppCatalogsEnabled != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_built_in_catalogs), stringResource(R.string.settings_tv_show_streamdek_s_default_movie_and_series), homePrefs?.defaultAppCatalogsEnabled != false, selectedRequester) { next, complete ->
                         savePreference("Built-in catalogs", complete) { repository.updateHomePreferences(mapOf("defaultAppCatalogsEnabled" to next)) }
                     }
                     // Under the built-in switch it qualifies, and above the presentation settings:
@@ -697,47 +729,47 @@ fun SettingsScreen(
                             repository.updateHomePreferences(mapOf("homeCatalogRows" to rows))
                         }
                     }
-                    SettingsToggleRow("Hide home synopsis", "Drop the description from the Home spotlight and centre the title and its details", appPrefs?.hideHomeSynopsis != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_hide_home_synopsis), stringResource(R.string.settings_tv_drop_the_description_from_the_home_spotlight), appPrefs?.hideHomeSynopsis != false, selectedRequester) { next, complete ->
                         savePreference("Hide home synopsis", complete) { repository.updateAppPreferences(mapOf("hideHomeSynopsis" to next)) }
                     }
-                    SettingsDropdownRow("Home row cards", "Use landscape or portrait artwork on the Home screen", appPrefs?.homeRowCardStyle ?: "landscape", listOf("landscape" to "Landscape", "portrait" to "Portrait")) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_home_row_cards), stringResource(R.string.settings_tv_use_landscape_or_portrait_artwork_on_the), appPrefs?.homeRowCardStyle ?: "landscape", listOf("landscape" to stringResource(R.string.settings_opt_landscape), "portrait" to stringResource(R.string.settings_opt_portrait))) { value ->
                         savePreference("Home row cards") { repository.updateAppPreferences(mapOf("homeRowCardStyle" to value)) }
                     }
                     // Directly under the style it belongs to, and only when that style is portrait.
                     // A landscape still is often unidentifiable without its title, so the setting
                     // does nothing there -- and a switch that does nothing is worse than no switch.
                     if ((appPrefs?.homeRowCardStyle ?: "landscape") == "portrait") {
-                        SettingsToggleRow("Hide card titles", "Most posters already carry the title, so drop the overlay and leave the year and rating", appPrefs?.hideHomeCardTitles == true, selectedRequester) { next, complete ->
+                        SettingsToggleRow(stringResource(R.string.settings_tv_hide_card_titles), stringResource(R.string.settings_tv_most_posters_already_carry_the_title_so), appPrefs?.hideHomeCardTitles == true, selectedRequester) { next, complete ->
                             savePreference("Hide card titles", complete) { repository.updateAppPreferences(mapOf("hideHomeCardTitles" to next)) }
                         }
                     }
                     SettingsDropdownRow(
-                        "Streaming network cards",
-                        "Draw the Streaming Networks row with each service's own artwork, or with its logo on a white tile.",
+                        stringResource(R.string.settings_tv_streaming_network_cards),
+                        stringResource(R.string.settings_tv_draw_the_streaming_networks_row_with_each),
                         if ("Classic".equals(homePrefs?.networkCardStyle, ignoreCase = true)) "Classic" else "Branded",
-                        listOf("Branded" to "Branded artwork", "Classic" to "Logo tile"),
+                        listOf("Branded" to stringResource(R.string.settings_opt_branded_artwork), "Classic" to stringResource(R.string.settings_opt_logo_tile)),
                         optionDescriptions = mapOf(
-                            "Branded" to "The service's own artwork, edge to edge.",
-                            "Classic" to "Each service's logo on a white tile and named",
+                            "Branded" to stringResource(R.string.settings_opt_the_service_s_own_artwork_edge_to),
+                            "Classic" to stringResource(R.string.settings_opt_each_service_s_logo_on_a_white),
                         ),
                         optionPreview = { option -> NetworkCardStylePreview(branded = option != "Classic") },
                     ) { value ->
                         savePreference("Streaming network cards") { repository.updateHomePreferences(mapOf("networkCardStyle" to value)) }
                     }
-                    SettingsDropdownRow("Card density", "Comfortable or compact browsing", appPrefs?.cardDensity ?: "comfortable", listOf("comfortable" to "Comfortable", "compact" to "Compact")) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_card_density), stringResource(R.string.settings_tv_comfortable_or_compact_browsing), appPrefs?.cardDensity ?: "comfortable", listOf("comfortable" to stringResource(R.string.settings_opt_comfortable), "compact" to stringResource(R.string.settings_opt_compact))) { value ->
                         savePreference("Card density") { repository.updateAppPreferences(mapOf("cardDensity" to value)) }
                     }
-                    SettingsDropdownRow("Grid columns", "Balance artwork size and visible items", (appPrefs?.gridSize ?: 5).toString(), (4..7).map { it.toString() to "$it columns" }) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_grid_columns), stringResource(R.string.settings_tv_balance_artwork_size_and_visible_items), (appPrefs?.gridSize ?: 5).toString(), (4..7).map { it.toString() to "$it columns" }) { value ->
                         savePreference("Grid columns") { repository.updateAppPreferences(mapOf("gridSize" to value.toInt())) }
                     }
                     // Sits with Home rather than Appearance: it picks which screen opens, not how it looks.
-                    SettingsDropdownRow("Start screen", "Choose where StreamDek opens", appPrefs?.startScreen ?: "home", listOf("home" to "Home", "library" to "Library", "continue-watching" to "Continue watching")) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_start_screen), stringResource(R.string.settings_tv_choose_where_streamdek_opens), appPrefs?.startScreen ?: "home", listOf("home" to stringResource(R.string.settings_opt_home), "library" to stringResource(R.string.settings_opt_library), "continue-watching" to stringResource(R.string.settings_opt_continue_watching))) { value ->
                         savePreference("Start screen") { repository.updateAppPreferences(mapOf("startScreen" to value)) }
                     }
-                    SettingsPanel("Title page") {
+                    SettingsPanel(stringResource(R.string.settings_tv_title_page)) {
                         SettingsToggleRow(
-                            "Play trailers automatically",
-                            "When a title page opens, play its trailer full screen as soon as one is ready. Back returns to the page, and the replay button on the page plays it again.",
+                            stringResource(R.string.settings_tv_play_trailers_automatically),
+                            stringResource(R.string.settings_tv_when_a_title_page_opens_play_its),
                             detailPrefs?.heroTrailerAutoplay != false,
                             selectedRequester,
                         ) { next, complete ->
@@ -749,8 +781,8 @@ fun SettingsScreen(
                         // Nothing here affects the trailer button, which always plays at once:
                         // somebody who pressed it has already decided.
                         SettingsDropdownRow(
-                            "Trailer start delay",
-                            "How long a title page stays put before its trailer begins. The trailer button ignores this and plays straight away.",
+                            stringResource(R.string.settings_tv_trailer_start_delay),
+                            stringResource(R.string.settings_tv_how_long_a_title_page_stays_put),
                             (detailPrefs?.heroTrailerDelaySeconds ?: DefaultTrailerDelaySeconds)
                                 .coerceIn(0, MaxTrailerDelaySeconds).toString(),
                             (0..MaxTrailerDelaySeconds).map { seconds ->
@@ -771,8 +803,8 @@ fun SettingsScreen(
                         // quietly ignoring it — the TV was reading this setting and honouring it
                         // with no way to change it here.
                         SettingsDropdownRow(
-                            "Trailer quality",
-                            "The best picture a trailer may use. YouTube is asked for this and serves the closest it can.",
+                            stringResource(R.string.settings_tv_trailer_quality),
+                            stringResource(R.string.settings_tv_the_best_picture_a_trailer_may_use),
                             (detailPrefs?.heroTrailerResolution ?: 2160).coerceIn(360, 2160).toString(),
                             listOf("360" to "360p", "720" to "720p", "1080" to "1080p", "2160" to "2160p"),
                         ) { value ->
@@ -789,8 +821,8 @@ fun SettingsScreen(
                         // "clear app data" a viewer can reasonably be asked to find.
                         val trailerClearHours = detailPrefs?.trailerCacheClearHours ?: DefaultTrailerCacheClearHours
                         SettingsDropdownRow(
-                            "Clear trailer cache",
-                            "Trailers can stop playing when the stored playback state goes stale. StreamDek clears it on this schedule, at 9am.",
+                            stringResource(R.string.settings_tv_clear_trailer_cache),
+                            stringResource(R.string.settings_tv_trailers_can_stop_playing_when_the_stored),
                             trailerClearHours.toString(),
                             // The synced value is folded in so a choice made on the phone that this
                             // build does not list still reads as an interval rather than a number.
@@ -809,7 +841,7 @@ fun SettingsScreen(
                             }
                         }
                         SettingsActionRow(
-                            "Clear trailer cache now",
+                            stringResource(R.string.settings_tv_clear_trailer_cache_now),
                             trailerCacheStatus,
                             "Clear",
                             selectedRequester,
@@ -831,22 +863,22 @@ fun SettingsScreen(
                     }
                 }
                 SettingsDestination.LiveTv -> {
-                    SettingsPanel("Channel list") {
+                    SettingsPanel(stringResource(R.string.settings_tv_channel_list)) {
                         InfoLine("Synced with mobile", "These match the Live TV page in StreamDek Mobile")
                     }
-                    SettingsToggleRow("Landscape channel cards", "Show channels as wide cards. Off uses portrait artwork.", homePrefs?.liveLandscapeCards != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_landscape_channel_cards), stringResource(R.string.settings_tv_show_channels_as_wide_cards_off_uses), homePrefs?.liveLandscapeCards != false, selectedRequester) { next, complete ->
                         savePreference("Landscape channel cards", complete) { repository.updateHomePreferences(mapOf("liveLandscapeCards" to next)) }
                     }
-                    SettingsToggleRow("Group channels into categories", "List each source's categories in the sidebar. Off lists one entry per source.", homePrefs?.liveCategoriesEnabled != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_group_channels_into_categories), stringResource(R.string.settings_tv_list_each_source_s_categories_in_the), homePrefs?.liveCategoriesEnabled != false, selectedRequester) { next, complete ->
                         savePreference("Channel categories", complete) { repository.updateHomePreferences(mapOf("liveCategoriesEnabled" to next)) }
                     }
-                    SettingsToggleRow("Card-style favourites", "Show channel artwork in the player's favourites drawer. Off uses the compact text list.", homePrefs?.liveFavouriteDrawerCards == true, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_card_style_favourites), stringResource(R.string.settings_tv_show_channel_artwork_in_the_player_s), homePrefs?.liveFavouriteDrawerCards == true, selectedRequester) { next, complete ->
                         savePreference("Card-style favourites", complete) { repository.updateHomePreferences(mapOf("liveFavouriteDrawerCards" to next)) }
                     }
-                    SettingsToggleRow("Live progress bar", "Show the timeline when Live TV or playlist VOD playback opens", playbackPrefs?.liveProgressBarEnabled == true, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_live_progress_bar), stringResource(R.string.settings_tv_show_the_timeline_when_live_tv_or), playbackPrefs?.liveProgressBarEnabled == true, selectedRequester) { next, complete ->
                         savePreference("Live progress bar", complete) { repository.updatePlaybackPreferences(mapOf("liveProgressBarEnabled" to next)) }
                     }
-                    SettingsPanel("Where channels come from") {
+                    SettingsPanel(stringResource(R.string.settings_tv_where_channels_come_from)) {
                         InfoLine("Add-ons", "${addons.count { it.enabled }} enabled · listed under Sources")
                         InfoLine(
                             "IPTV playlists",
@@ -874,7 +906,7 @@ fun SettingsScreen(
                     // Premium services first. They are the thing on this page a viewer comes to set
                     // up, and they used to sit under three panels of synced lists that nothing on
                     // this television can change.
-                    SettingsPanel("Debrid accounts") {
+                    SettingsPanel(stringResource(R.string.settings_tv_debrid_accounts)) {
                         val accounts = bootstrap?.integrations?.debrid?.accounts.orEmpty()
                         val debridProviders = repository.supportedDebridProviders()
                         val chosenLabel = debridProviderLabel(debridProviders, debridProviderChoice)
@@ -892,8 +924,8 @@ fun SettingsScreen(
                         // Real-Debrid was ever offered here, so an account holder with TorBox or
                         // AllDebrid had to link it on another device to use it on this one.
                         SettingsDropdownRow(
-                            "Service",
-                            "Every premium service StreamDek can talk to. Choose one, then connect it below.",
+                            stringResource(R.string.settings_tv_service),
+                            stringResource(R.string.settings_tv_every_premium_service_streamdek_can_talk_to),
                             debridProviderChoice,
                             debridProviders,
                         ) { debridProviderChoice = it }
@@ -955,8 +987,8 @@ fun SettingsScreen(
                             }
                         }
                         SettingsToggleRow(
-                            "Save keys to your StreamDek account",
-                            "Keys are stored encrypted on your account so every device shares them. Turn this off to keep them on this television only.",
+                            stringResource(R.string.settings_tv_save_keys_to_your_streamdek_account),
+                            stringResource(R.string.settings_tv_keys_are_stored_encrypted_on_your_account),
                             repository.debridCloudSyncEnabled(),
                             selectedRequester,
                         ) { next, complete ->
@@ -995,7 +1027,7 @@ fun SettingsScreen(
                             }
                         }
                     }
-                    SettingsPanel("Synced providers") {
+                    SettingsPanel(stringResource(R.string.settings_tv_synced_providers)) {
                         InfoLine("Enabled add-ons", "${addons.count { it.enabled }} of ${addons.size}")
                         // Past three, this stops being a summary and becomes a list to scroll
                         // through — and it pushes plugins, playlists and everything below it off
@@ -1004,7 +1036,7 @@ fun SettingsScreen(
                         val collapsibleAddons = addons.size > 3
                         if (collapsibleAddons) {
                             SettingsActionRow(
-                                "Installed add-ons",
+                                stringResource(R.string.settings_tv_installed_add_ons),
                                 "${addons.size} synced from your account",
                                 if (addonsExpanded) "Collapse" else "Expand",
                                 selectedRequester,
@@ -1015,7 +1047,7 @@ fun SettingsScreen(
                                 key(addon.id) {
                                     SettingsToggleRow(
                                         addon.manifest.name.ifBlank { addon.id },
-                                        "Enable or disable this installed add-on for the active profile",
+                                        stringResource(R.string.settings_tv_enable_or_disable_this_installed_add_on),
                                         addon.enabled,
                                         selectedRequester,
                                     ) { next, complete ->
@@ -1040,7 +1072,7 @@ fun SettingsScreen(
                                     }
                                     SettingsActionRow(
                                         "${addon.manifest.name.ifBlank { addon.id }} favourite",
-                                        "Favourite add-ons are searched before other enabled add-ons",
+                                        stringResource(R.string.settings_tv_favourite_add_ons_are_searched_before_other),
                                         if (addon.favourite) "Unfavourite" else "Favourite",
                                         selectedRequester,
                                     ) {
@@ -1058,13 +1090,13 @@ fun SettingsScreen(
                         }
                         if (addons.isEmpty()) InfoLine("Providers", "Install add-ons from StreamDek Mobile")
                     }
-                    SettingsPanel("Synced plugins") {
+                    SettingsPanel(stringResource(R.string.settings_tv_synced_plugins)) {
                         if (pluginState == null || (pluginState.repos.isEmpty() && pluginState.providers.isEmpty())) {
                             InfoLine("Plugins", "Install plugins from StreamDek Mobile")
                         } else {
                             SettingsToggleRow(
-                                "Plugin sources",
-                                "Enable or disable every synced plugin source for this profile",
+                                stringResource(R.string.settings_tv_plugin_sources),
+                                stringResource(R.string.settings_tv_enable_or_disable_every_synced_plugin_source),
                                 pluginState.enabled,
                                 selectedRequester,
                             ) { next, complete ->
@@ -1098,7 +1130,7 @@ fun SettingsScreen(
                             val collapsiblePlugins = collectionCount > 2
                             if (collapsiblePlugins) {
                                 SettingsActionRow(
-                                    "Plugin collections",
+                                    stringResource(R.string.settings_tv_plugin_collections),
                                     "$collectionCount synced from your account",
                                     if (pluginsExpanded) "Collapse" else "Expand",
                                     selectedRequester,
@@ -1134,7 +1166,7 @@ fun SettingsScreen(
                                                 }
                                                 SettingsActionRow(
                                                     "${repo.name.ifBlank { "Plugin collection" }} favourite",
-                                                    "Favourite plugin collections are searched before other enabled collections",
+                                                    stringResource(R.string.settings_tv_favourite_plugin_collections_are_searched_before_other),
                                                     if (repo.favourite) "Unfavourite" else "Favourite",
                                                     selectedRequester,
                                                 ) {
@@ -1149,7 +1181,7 @@ fun SettingsScreen(
                                                 }
                                                 if (expanded) {
                                                     SettingsToggleRow(
-                                                        "Collection enabled",
+                                                        stringResource(R.string.settings_tv_collection_enabled),
                                                         "Enable or disable ${repo.name.ifBlank { "this plugin collection" }} and its sources",
                                                         repo.enabled,
                                                         selectedRequester,
@@ -1190,7 +1222,7 @@ fun SettingsScreen(
                                                             if (repository.pluginProviderHasSettings(provider)) {
                                                                 SettingsActionRow(
                                                                     "${provider.name.ifBlank { "This source" }} settings",
-                                                                    "API keys and options this source asks for. Stored on this TV.",
+                                                                    stringResource(R.string.settings_tv_api_keys_and_options_this_source_asks),
                                                                     "Open",
                                                                     selectedRequester,
                                                                 ) { editingPluginProvider = provider }
@@ -1204,7 +1236,7 @@ fun SettingsScreen(
                                             val parentKey = "unparented:${section.name}"
                                             val expanded = parentKey in expandedPluginParents
                                             SettingsActionRow(
-                                                "Other synced sources",
+                                                stringResource(R.string.settings_tv_other_synced_sources),
                                                 "${unparentedProviders.size} source${if (unparentedProviders.size == 1) "" else "s"} without repository metadata",
                                                 if (expanded) "Collapse" else "Expand",
                                                 selectedRequester,
@@ -1235,7 +1267,7 @@ fun SettingsScreen(
                                                         if (repository.pluginProviderHasSettings(provider)) {
                                                             SettingsActionRow(
                                                                 "${provider.name.ifBlank { "This source" }} settings",
-                                                                "API keys and options this source asks for. Stored on this TV.",
+                                                                stringResource(R.string.settings_tv_api_keys_and_options_this_source_asks),
                                                                 "Open",
                                                                 selectedRequester,
                                                             ) { editingPluginProvider = provider }
@@ -1255,7 +1287,7 @@ fun SettingsScreen(
                     // fetches a multi-megabyte extension, so it is worth being clear which is which.
                     val cloudStream = pluginState?.cloudstream
                     if (cloudStream != null && cloudStream.repos.isNotEmpty()) {
-                        SettingsPanel("CloudStream sources") {
+                        SettingsPanel(stringResource(R.string.settings_tv_cloudstream_sources)) {
                             InfoLine(
                                 "Collections",
                                 "${cloudStream.repos.size} · ${cloudStream.providers.count { it.enabled }} of ${cloudStream.providers.size} sources on",
@@ -1318,7 +1350,7 @@ fun SettingsScreen(
                             }
                         }
                     }
-                    SettingsPanel("IPTV playlists") {
+                    SettingsPanel(stringResource(R.string.settings_tv_iptv_playlists)) {
                         if (playlists.isEmpty()) {
                             InfoLine("Playlists", "Add one from StreamDek Mobile or the web portal")
                         } else {
@@ -1326,7 +1358,7 @@ fun SettingsScreen(
                             val collapsiblePlaylists = playlists.size > 2
                             if (collapsiblePlaylists) {
                                 SettingsActionRow(
-                                    "Synced playlists",
+                                    stringResource(R.string.settings_tv_synced_playlists),
                                     "${playlists.size} on your account",
                                     if (playlistsExpanded) "Collapse" else "Expand",
                                     selectedRequester,
@@ -1361,45 +1393,60 @@ fun SettingsScreen(
                     }
                 }
                 SettingsDestination.Appearance -> {
-                    SettingsDropdownRow("Theme", "Change the visual colour system", appPrefs?.theme ?: "cinema-blue", themeOptions, themeColors) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_theme), stringResource(R.string.settings_tv_change_the_visual_colour_system), appPrefs?.theme ?: "cinema-blue", themeOptions, themeColors) { value ->
                         savePreference("Theme") { repository.updateAppPreferences(mapOf("theme" to value)) }
                     }
                     // Saved on this television and nowhere else, unlike every other row on this
                     // page: see AnimationSpeed.kt. There is nothing to save to the account and so
                     // nothing that can fail, which is why it does not go through savePreference.
                     SettingsDropdownRow(
-                        title = "Animation speed",
+                        title = stringResource(R.string.settings_animation_speed),
                         description = animationSpeedDescription(motionSettings),
                         value = motionSettings.speed.key,
-                        options = AnimationSpeed.entries.map { it.key to it.label },
-                        optionDescriptions = AnimationSpeed.entries.associate { it.key to it.description },
+                        options = AnimationSpeed.entries.map { it.key to stringResource(it.labelRes) },
+                        optionDescriptions = AnimationSpeed.entries.associate { it.key to stringResource(it.descriptionRes) },
                     ) { value ->
                         animationPreferences?.select(AnimationSpeed.fromKey(value))
                     }
-                    SettingsToggleRow("Background depth", "Subtle cinematic depth behind content", appPrefs?.backgroundBlur != false, selectedRequester) { next, complete ->
+                    // Saved on this television and nowhere else, like Animation speed above and
+                    // for the same reason: see AppLanguage.kt. There is nothing to save to the
+                    // account and so nothing that can fail, which is why it does not go through
+                    // savePreference. Choosing a language recomposes the tree in place - the rail
+                    // keeps its focus and this row stays under the highlight, now reading in the
+                    // language just chosen.
+                    SettingsDropdownRow(
+                        title = stringResource(R.string.settings_language),
+                        description = stringResource(R.string.settings_language_description),
+                        value = languagePreferences?.selection ?: AppLanguage.SystemSelection,
+                        options = appLanguageOptions(),
+                        optionDescriptions = appLanguageOptionDescriptions(),
+                    ) { value ->
+                        languagePreferences?.select(value)
+                    }
+                    SettingsToggleRow(stringResource(R.string.settings_tv_background_depth), stringResource(R.string.settings_tv_subtle_cinematic_depth_behind_content), appPrefs?.backgroundBlur != false, selectedRequester) { next, complete ->
                         savePreference("Background depth", complete) { repository.updateAppPreferences(mapOf("backgroundBlur" to next)) }
                     }
-                    SettingsToggleRow("Transparent navigation", "Let the backdrop show through the expanded navigation rail, up to 15%. Collapsed it is always transparent.", appPrefs?.transparentNavigation != false, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_transparent_navigation), stringResource(R.string.settings_tv_let_the_backdrop_show_through_the_expanded), appPrefs?.transparentNavigation != false, selectedRequester) { next, complete ->
                         savePreference("Transparent navigation", complete) { repository.updateAppPreferences(mapOf("transparentNavigation" to next)) }
                     }
                 }
                 SettingsDestination.Accessibility -> {
                     // Stated here as well as on Appearance: somebody turning this on should be able
                     // to see, from the row they are turning on, what it does to the rest of the app.
-                    SettingsToggleRow("Reduced motion", "Limit scaling and transitions. Overrides the Animation speed setting while it is on.", appPrefs?.reducedMotion == true, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_reduced_motion), stringResource(R.string.settings_tv_limit_scaling_and_transitions_overrides_the_animation), appPrefs?.reducedMotion == true, selectedRequester) { next, complete ->
                         savePreference("Reduced motion", complete) { repository.updateAppPreferences(mapOf("reducedMotion" to next)) }
                     }
-                    SettingsToggleRow("High contrast", "Increase separation between controls", appPrefs?.highContrast == true, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_high_contrast), stringResource(R.string.settings_tv_increase_separation_between_controls), appPrefs?.highContrast == true, selectedRequester) { next, complete ->
                         savePreference("High contrast", complete) { repository.updateAppPreferences(mapOf("highContrast" to next)) }
                     }
-                    SettingsToggleRow("Large text", "Increase primary interface text", appPrefs?.largeText == true, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_large_text), stringResource(R.string.settings_tv_increase_primary_interface_text), appPrefs?.largeText == true, selectedRequester) { next, complete ->
                         savePreference("Large text", complete) { repository.updateAppPreferences(mapOf("largeText" to next)) }
                     }
                     // Sat alone under the old Advanced page. It is a comfort setting like the rest here.
-                    SettingsToggleRow("Legacy compact mode", "Reduce spacing on older low-memory devices", appPrefs?.compactMode == true, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_legacy_compact_mode), stringResource(R.string.settings_tv_reduce_spacing_on_older_low_memory_devices), appPrefs?.compactMode == true, selectedRequester) { next, complete ->
                         savePreference("Legacy compact mode", complete) { repository.updateAppPreferences(mapOf("compactMode" to next)) }
                     }
-                    SettingsPanel("TV navigation") { InfoLine("Focus indicator", "Always visible"); InfoLine("Screen reader labels", "Enabled"); InfoLine("Colour-only status", "Never used") }
+                    SettingsPanel(stringResource(R.string.settings_tv_tv_navigation)) { InfoLine("Focus indicator", "Always visible"); InfoLine("Screen reader labels", "Enabled"); InfoLine("Colour-only status", "Never used") }
                 }
                 SettingsDestination.ContentServices -> {
                     ContentServicesPanel(
@@ -1416,14 +1463,14 @@ fun SettingsScreen(
                     // credentials, not a tracking connection, but this is where someone looking for
                     // "the MDBList thing" will start.
                     SettingsActionRow(
-                        "Content Services",
-                        "Your own TMDB and MDBList keys, and where each one is kept.",
+                        stringResource(R.string.settings_tv_content_services),
+                        stringResource(R.string.settings_tv_your_own_tmdb_and_mdblist_keys_and),
                         contentServicesSummary(contentServices),
                         selectedRequester,
                     ) { selected = SettingsDestination.ContentServices }
                     SettingsDropdownRow(
-                        "Where your sync lives",
-                        "One source supplies Continue Watching and your watchlist. Everything else you connect still receives your watchlist changes.",
+                        stringResource(R.string.settings_tv_where_your_sync_lives),
+                        stringResource(R.string.settings_tv_one_source_supplies_continue_watching_and_your),
                         SyncServiceId.normalize(homePrefs?.primarySyncService),
                         trackingOptions,
                     ) { value ->
@@ -1431,7 +1478,7 @@ fun SettingsScreen(
                             repository.updateHomePreferences(mapOf("primarySyncService" to value))
                         }
                     }
-                    SettingsPanel("Cloud tracking") {
+                    SettingsPanel(stringResource(R.string.settings_tv_cloud_tracking)) {
                         InfoLine("In use", SyncServiceId.label(SyncServiceId.normalize(homePrefs?.primarySyncService)))
                         InfoLine("SyncDek", "Always on — keeps your place and watchlist across your devices")
                         InfoLine("Trakt", serviceStatus(integrations?.trakt?.connected == true, integrations?.trakt?.username))
@@ -1440,21 +1487,21 @@ fun SettingsScreen(
                         InfoLine("MDBList", serviceStatus(integrations?.mdblist?.connected == true, integrations?.mdblist?.username))
                         InfoLine("Connect services", "Use StreamDek Mobile for OAuth sign-in")
                     }
-                    SettingsPanel("Sync status") { InfoLine("Settings", bootstrap?.syncStatus?.lastSettingsSyncAt ?: "Ready"); InfoLine("Cloud sync", onOff(bootstrap?.syncStatus?.cloudSyncEnabled != false)); InfoLine("Playback sync", onOff(bootstrap?.syncStatus?.playbackSyncEnabled != false)) }
+                    SettingsPanel(stringResource(R.string.settings_tv_sync_status)) { InfoLine("Settings", bootstrap?.syncStatus?.lastSettingsSyncAt ?: "Ready"); InfoLine("Cloud sync", onOff(bootstrap?.syncStatus?.cloudSyncEnabled != false)); InfoLine("Playback sync", onOff(bootstrap?.syncStatus?.playbackSyncEnabled != false)) }
                     bootstrap?.devices.orEmpty().take(6).forEach { device ->
                         SettingsPanel(device.name ?: "StreamDek device") { InfoLine("Platform", device.platform ?: device.deviceType ?: "Unknown"); InfoLine("Version", device.appVersion ?: "Unknown"); InfoLine("Status", if (device.isCurrent) "This TV" else device.lastSeenAt ?: "Connected") }
                     }
                     bootstrap?.sessions.orEmpty().take(6).forEach { activeSession ->
                         SettingsPanel(activeSession.clientName ?: "Active session") { InfoLine("Platform", activeSession.clientPlatform ?: "Unknown"); InfoLine("Device", activeSession.deviceId ?: "Not reported"); InfoLine("Status", if (activeSession.isCurrent) "Current session" else activeSession.lastSeenAt ?: "Active") }
                     }
-                    SettingsActionRow("Refresh connections", "Update tracking services, devices and sync status", "Refresh", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); status = "Connections refreshed." } }
+                    SettingsActionRow(stringResource(R.string.settings_tv_refresh_connections), stringResource(R.string.settings_tv_update_tracking_services_devices_and_sync_status), "Refresh", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); status = "Connections refreshed." } }
                 }
                 SettingsDestination.Network -> {
-                    SettingsPanel("DNS privacy") {
+                    SettingsPanel(stringResource(R.string.settings_tv_dns_privacy)) {
                         InfoLine("Scope", "Encrypts DNS for StreamDek API and app-controlled HTTP requests")
                         InfoLine("Not a VPN", "Video traffic is not tunnelled through the DNS provider")
                     }
-                    SettingsToggleRow("DNS over HTTPS", "Resolve StreamDek hostnames through an encrypted HTTPS resolver", dohEnabled, selectedRequester) { next, complete ->
+                    SettingsToggleRow(stringResource(R.string.settings_tv_dns_over_https), stringResource(R.string.settings_tv_resolve_streamdek_hostnames_through_an_encrypted_https), dohEnabled, selectedRequester) { next, complete ->
                         if (next && dohSettings.endpoint() == null) {
                             status = "Choose a valid DNS over HTTPS provider first."
                             complete(false)
@@ -1467,8 +1514,8 @@ fun SettingsScreen(
                     }
                     if (dohEnabled) {
                         SettingsDropdownRow(
-                            "DoH provider",
-                            "Use the provider's official RFC 8484 HTTPS endpoint",
+                            stringResource(R.string.settings_tv_doh_provider),
+                            stringResource(R.string.settings_tv_use_the_provider_s_official_rfc_8484),
                             dohProviderId,
                             StreamDekDoHProviders.map { it.id to it.label },
                             optionDescriptions = StreamDekDoHProviders.associate { provider ->
@@ -1484,11 +1531,11 @@ fun SettingsScreen(
                             }
                         }
                         if (dohProviderId == "custom") {
-                            SettingsActionRow("Custom DoH endpoint", dohSettings.customEndpoint.ifBlank { "Enter an HTTPS RFC 8484 endpoint" }, "Edit", selectedRequester) {
+                            SettingsActionRow(stringResource(R.string.settings_tv_custom_doh_endpoint), dohSettings.customEndpoint.ifBlank { "Enter an HTTPS RFC 8484 endpoint" }, "Edit", selectedRequester) {
                                 customDohEntry = true
                             }
                         }
-                        SettingsPanel("Platform coverage") {
+                        SettingsPanel(stringResource(R.string.settings_tv_platform_coverage)) {
                             InfoLine("Protected", "StreamDek API calls made through the shared HTTP client")
                             InfoLine("System-owned", "Media3, MPV and third-party extensions may resolve DNS independently")
                             InfoLine("Failure policy", "No silent system-DNS fallback while DoH is enabled")
@@ -1496,18 +1543,18 @@ fun SettingsScreen(
                     }
                 }
                 SettingsDestination.About -> {
-                    SettingsPanel("StreamDek TV") { InfoLine("Version", BuildConfig.VERSION_NAME); InfoLine("Client", "Android TV / Fire TV"); InfoLine("Profile", activeProfile?.name ?: "Not selected"); InfoLine("Update", updateState.statusText ?: updateState.errorMessage ?: "Ready") }
-                    SettingsToggleRow("Automatic update checks", "Notify when a release is ready", updateState.autoCheckEnabled, selectedRequester) { next, complete ->
+                    SettingsPanel(stringResource(R.string.settings_tv_streamdek_tv)) { InfoLine("Version", BuildConfig.VERSION_NAME); InfoLine("Client", "Android TV / Fire TV"); InfoLine("Profile", activeProfile?.name ?: "Not selected"); InfoLine("Update", updateState.statusText ?: updateState.errorMessage ?: "Ready") }
+                    SettingsToggleRow(stringResource(R.string.settings_tv_automatic_update_checks), stringResource(R.string.settings_tv_notify_when_a_release_is_ready), updateState.autoCheckEnabled, selectedRequester) { next, complete ->
                         appUpdateManager.setAutoCheckEnabled(next)
                         complete(true)
                     }
-                    SettingsActionRow("Check for updates", "Query the production TV update channel", "Check", selectedRequester) { scope.launch { appUpdateManager.checkForUpdates(showPromptOnAvailable = false, force = true) } }
+                    SettingsActionRow(stringResource(R.string.settings_tv_check_for_updates), stringResource(R.string.settings_tv_query_the_production_tv_update_channel), "Check", selectedRequester) { scope.launch { appUpdateManager.checkForUpdates(showPromptOnAvailable = false, force = true) } }
                     updateState.availableRelease?.let { release -> SettingsActionRow("Install ${release.versionName}", release.requiredReason ?: "Download the available update", "Install", selectedRequester) { scope.launch { appUpdateManager.startUpdate() } } }
                     // The old Diagnostics page, folded in: two panels and one button did not earn a
                     // rail entry of their own, and this is where someone reporting a problem looks.
-                    SettingsPanel("Health check") { InfoLine("Backend", reachability.name.lowercase().replaceFirstChar { it.uppercase() }); InfoLine("Authentication", if (session == null) "Guest mode" else "Healthy"); InfoLine("Sources", "${addons.count { it.enabled }} enabled"); InfoLine("Cache", formatBytes(directorySize(context.cacheDir))); InfoLine("Playback", playbackPrefs?.playerEngine ?: "Auto") }
-                    SettingsActionRow("Run health check", "Refresh cloud, sources and connectivity", "Run", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(); status = "Health checks refreshed." } }
-                    SettingsPanel("Runtime") { InfoLine("Hardware acceleration", "Enabled"); InfoLine("Progressive loading", "Enabled"); InfoLine("Navigation", "Collapsible left rail") }
+                    SettingsPanel(stringResource(R.string.settings_tv_health_check)) { InfoLine("Backend", reachability.name.lowercase().replaceFirstChar { it.uppercase() }); InfoLine("Authentication", if (session == null) "Guest mode" else "Healthy"); InfoLine("Sources", "${addons.count { it.enabled }} enabled"); InfoLine("Cache", formatBytes(directorySize(context.cacheDir))); InfoLine("Playback", playbackPrefs?.playerEngine ?: "Auto") }
+                    SettingsActionRow(stringResource(R.string.settings_tv_run_health_check), stringResource(R.string.settings_tv_refresh_cloud_sources_and_connectivity), "Run", selectedRequester) { scope.launch { bootstrap = repository.refreshBootstrap(); addons = repository.fetchAddonManifests(); status = "Health checks refreshed." } }
+                    SettingsPanel(stringResource(R.string.settings_tv_runtime)) { InfoLine("Hardware acceleration", "Enabled"); InfoLine("Progressive loading", "Enabled"); InfoLine("Navigation", "Collapsible left rail") }
                 }
             }
             Spacer(Modifier.height(24.dp))
@@ -1558,7 +1605,7 @@ private fun TimingProviderBrandPanel(preferred: String) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            "Timing services",
+            stringResource(R.string.settings_timing_services),
             color = Color.White.copy(alpha = 0.76f),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
@@ -1583,7 +1630,7 @@ private fun TimingProviderBrandPanel(preferred: String) {
             )
         }
         Text(
-            "When fallback is enabled, the other service is used only if your preferred service has no usable timing.",
+            stringResource(R.string.settings_timing_fallback_note),
             color = Color.White.copy(alpha = 0.60f),
             style = MaterialTheme.typography.bodySmall,
         )
@@ -1650,7 +1697,7 @@ private fun SettingsSearchBox(query: String, onQueryChange: (String) -> Unit, na
     if (editing) {
         OutlinedTextField(
             value = query, onValueChange = onQueryChange, singleLine = true,
-            label = { androidx.compose.material3.Text("Find settings") }, shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+            label = { androidx.compose.material3.Text(stringResource(R.string.settings_find)) }, shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
             colors = TextFieldDefaults.colors(focusedContainerColor = Color(0xFF121722), unfocusedContainerColor = Color(0xFF0E121A), focusedIndicatorColor = MaterialTheme.colorScheme.primary, unfocusedIndicatorColor = Color(0x18FFFFFF), focusedTextColor = Color.White, unfocusedTextColor = Color.White),
             modifier = Modifier.fillMaxWidth().height(50.dp).focusRequester(editorRequester).onFocusChanged { if (it.isFocused) editorWasFocused = true else if (editorWasFocused) { editorWasFocused = false; editing = false } }.onPreviewKeyEvent(keyHandler),
         )
@@ -1658,7 +1705,7 @@ private fun SettingsSearchBox(query: String, onQueryChange: (String) -> Unit, na
         Row(
             Modifier.fillMaxWidth().height(46.dp).background(if (focused) Color(0xFF151C28) else Color(0xFF0D1118), androidx.compose.foundation.shape.RoundedCornerShape(14.dp)).border(if (focused) 2.dp else 1.dp, if (focused) MaterialTheme.colorScheme.primary else Color(0x18FFFFFF), androidx.compose.foundation.shape.RoundedCornerShape(14.dp)).focusRequester(launcherRequester).onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent(keyHandler).clickable { editing = true }.padding(horizontal = 13.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) { Icon(Icons.Outlined.Search, null, tint = Color.White.copy(alpha = 0.62f), modifier = Modifier.size(18.dp)); Text(query.ifBlank { "Find settings" }, color = Color.White.copy(alpha = if (query.isBlank()) 0.58f else 0.9f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ) { Icon(Icons.Outlined.Search, null, tint = Color.White.copy(alpha = 0.62f), modifier = Modifier.size(18.dp)); Text(query.ifBlank { stringResource(R.string.settings_find) }, color = Color.White.copy(alpha = if (query.isBlank()) 0.58f else 0.9f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
     }
 }
 
@@ -1677,7 +1724,7 @@ private fun SettingsDestinationRow(
     Row(
         Modifier.fillMaxWidth().height(42.dp).background(when { focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.22f); selected -> Color(0x16FFFFFF); else -> Color.Transparent }, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).border(if (focused) 2.dp else 0.dp, if (focused) MaterialTheme.colorScheme.primary else Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).focusRequester(requester).onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }.onPreviewKeyEvent { e -> if (e.type != KeyEventType.KeyDown) false else when (e.key) { Key.DirectionUp -> onMoveUp?.invoke() ?: false; Key.DirectionDown -> onMoveDown?.invoke() ?: false; Key.DirectionRight -> runCatching { contentRequester.requestFocus() }.isSuccess; else -> false } }.clickable(onClick = onFocused).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) { Icon(destination.icon, null, tint = if (focused || selected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.55f), modifier = Modifier.size(19.dp)); Text(destination.label, color = Color.White.copy(alpha = if (focused || selected) 0.96f else 0.66f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.Medium)) }
+    ) { Icon(destination.icon, null, tint = if (focused || selected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.55f), modifier = Modifier.size(19.dp)); Text(stringResource(destination.labelRes), color = Color.White.copy(alpha = if (focused || selected) 0.96f else 0.66f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.Medium)) }
 }
 
 @Composable
@@ -1723,8 +1770,8 @@ private fun SettingsOverviewCard(
                 ),
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            Text(destination.label, color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
-            Text(destination.description, color = Color.White.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium)
+            Text(stringResource(destination.labelRes), color = Color.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black))
+            Text(stringResource(destination.descriptionRes), color = Color.White.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium)
             status?.let { SettingsStatusRow(it) }
         }
         action?.invoke(requester)
@@ -1819,7 +1866,7 @@ private fun DeviceSignInPanel(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
-                        "1. On your phone, open",
+                        stringResource(R.string.pairing_step_open_app),
                         color = Color.White.copy(alpha = 0.62f),
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -1831,7 +1878,7 @@ private fun DeviceSignInPanel(
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
-                        "2. Enter this code",
+                        stringResource(R.string.pairing_step_enter_code),
                         color = Color.White.copy(alpha = 0.62f),
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -1845,7 +1892,7 @@ private fun DeviceSignInPanel(
                     )
                 }
                 Text(
-                    "Waiting for you to approve it…",
+                    stringResource(R.string.pairing_waiting),
                     color = Color.White.copy(alpha = 0.55f),
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -2218,7 +2265,7 @@ private fun normalizeLanguage(value: String?, allowOff: Boolean = false): String
 }
 
 private fun languageOptions(includeOff: Boolean): List<Pair<String, String>> = buildList {
-    if (includeOff) add("off" to "Off")
+    if (includeOff) add("off" to stringResource(R.string.settings_opt_off))
     // Every ISO language rather than a typed list of ten. The list is long, but the row is a
     // dropdown a viewer opens knowing what they are looking for, and the alternative is telling
     // most of the world their language is not available.
