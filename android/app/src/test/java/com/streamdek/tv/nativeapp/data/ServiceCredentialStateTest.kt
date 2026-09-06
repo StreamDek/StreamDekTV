@@ -46,9 +46,12 @@ class ServiceCredentialStateTest {
         )
 
         // The difference is the whole point of the feature on a television: one of these required
-        // no typing, and the viewer should be able to see which.
-        assertEquals("Connected via StreamDek", fromAccount.summary)
-        assertEquals("Connected on this TV", fromThisTv.summary)
+        // no typing, and the viewer should be able to see which. The summary is a resource id now,
+        // so what this pins down is that the two states do not share one - asserting on the English
+        // would be asserting on one locale of eight, and check-translations.mjs covers the rest.
+        assertNotEquals(0, fromAccount.summaryRes)
+        assertNotEquals(0, fromThisTv.summaryRes)
+        assertNotEquals(fromAccount.summaryRes, fromThisTv.summaryRes)
     }
 
     @Test
@@ -58,14 +61,14 @@ class ServiceCredentialStateTest {
             status = CredentialStatus.NeedsAttention,
             storage = CredentialStorage.Account,
         )
-        assertEquals("Needs attention", stale.summary)
+        assertNotEquals(ContentServiceState(ContentService.Mdblist).summaryRes, stale.summaryRes)
         // Still configured: the viewer needs Update rather than Add, and the explanation with it.
         assertTrue(stale.configured)
     }
 
     @Test
     fun `an unconfigured service says so plainly`() {
-        assertEquals("Not configured", ContentServiceState(ContentService.Tmdb).summary)
+        assertNotEquals(0, ContentServiceState(ContentService.Tmdb).summaryRes)
         assertFalse(ContentServiceState(ContentService.Tmdb).configured)
     }
 
@@ -99,25 +102,36 @@ class ServiceCredentialStateTest {
         assertEquals(CredentialFailure.InvalidKey, CredentialFailure.fromId("invalid_key"))
         assertEquals(CredentialFailure.ServiceUnavailable, CredentialFailure.fromId("service_unavailable"))
         assertEquals(CredentialFailure.Malformed, CredentialFailure.fromId("malformed"))
-        assertTrue(CredentialFailure.ServiceUnavailable.message.contains("hasn't been checked"))
     }
 
     @Test
-    fun `no failure message shows a viewer an HTTP status`() {
-        CredentialFailure.values().forEach { failure ->
-            assertFalse(failure.name, failure.message.contains("HTTP"))
-            assertFalse(failure.name, Regex("\\b[45]\\d\\d\\b").containsMatchIn(failure.message))
-        }
+    fun `every failure has a sentence of its own`() {
+        // What a viewer must never be shown is a status code, and what they must always be shown is
+        // something. The sentences live in the resources now, so this checks each failure carries a
+        // distinct one rather than reading the English of any single locale.
+        val ids = CredentialFailure.entries.map { it.messageRes }
+        ids.forEach { assertNotEquals(0, it) }
+        assertEquals("each failure needs its own wording", ids.size, ids.toSet().size)
+    }
+
+    @Test
+    fun `the exception a screen catches names the failure rather than carrying English`() {
+        val thrown = CredentialFailureException(CredentialFailure.ServiceUnavailable)
+        assertEquals(CredentialFailure.ServiceUnavailable, thrown.failure)
+        // The message is the constant's name, for a log. Nothing on screen comes from it.
+        assertFalse("a viewer must never be shown a status code", Regex("\\b[45]\\d\\d\\b").containsMatchIn(thrown.message.orEmpty()))
     }
 
     @Test
     fun `every service can explain itself without leaving the television`() {
         ContentService.all.forEach { service ->
-            assertTrue(service.tagline.isNotBlank())
-            assertTrue(service.uses.isNotEmpty())
+            assertNotEquals(0, service.taglineRes)
+            assertNotEquals(0, service.blurbRes)
+            assertTrue(service.usesRes.isNotEmpty())
             // A television cannot usefully open a link, so the steps have to stand on their own
             // and the address has to be readable and typeable from the sofa.
-            assertTrue(service.howToGet.isNotEmpty())
+            assertTrue(service.howToGetRes.isNotEmpty())
+            assertNotEquals(0, service.keyHintRes)
             assertFalse("the TV shows this as text, not a link", service.keyUrl.startsWith("http"))
         }
     }

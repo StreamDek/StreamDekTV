@@ -1,5 +1,7 @@
 package com.streamdek.tv.nativeapp.data
 
+import android.content.res.Resources
+import com.streamdek.tv.R
 import java.util.Locale
 
 /**
@@ -123,12 +125,33 @@ object Languages {
     }.distinct()
   }
 
-  /** The name to show for a code, including the two that are not languages. */
+  /**
+   * The canonical name for a code, including the two entries that are not languages.
+   *
+   * Deliberately not translated. Two callers lowercase this and match it against the words in a
+   * release name -- "french", "german" -- so a translated value here would stop those matching
+   * anything. Use [displayLabel] for a name a viewer reads.
+   */
   fun label(code: String?): String = when (val normalized = normalize(code)) {
     ORIGINAL -> "Original language"
     NONE -> "None"
     "" -> "Unknown"
     else -> byCode[normalized]?.label ?: normalized.uppercase()
+  }
+
+  /**
+   * The same name for the screen, with the three entries that are words rather than languages said
+   * in the interface language.
+   *
+   * The languages themselves keep their own names: a subtitle track labelled "Français" is what the
+   * source called it, and a viewer scanning a list for their own language wants to see it written
+   * the way they write it.
+   */
+  fun displayLabel(resources: Resources, code: String?): String = when (normalize(code)) {
+    ORIGINAL -> resources.getString(R.string.language_original)
+    NONE -> resources.getString(R.string.language_none)
+    "" -> resources.getString(R.string.state_unknown)
+    else -> label(code)
   }
 
   /** Whether two language names or codes mean the same language. */

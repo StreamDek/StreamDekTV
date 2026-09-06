@@ -92,8 +92,11 @@ class HomeViewModel(
                         isLoading = false,
                         // A partial screen is better than an error page, so the failure is only
                         // surfaced when nothing at all arrived.
+                        // Only what the failure actually said. A view model has no resources, and
+                        // the screen supplies the wording when this is null -- which is where it can
+                        // be said in the viewer's language.
                         error = if (_uiState.value.content?.rails.isNullOrEmpty()) {
-                            error.message ?: "Could not load home"
+                            error.message
                         } else {
                             null
                         },

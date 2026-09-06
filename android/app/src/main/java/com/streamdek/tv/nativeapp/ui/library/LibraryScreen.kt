@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.library
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.horizontalScroll
@@ -37,6 +38,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -71,8 +73,9 @@ private data class BrowseActionState(
     val restoreFocusRequester: FocusRequester,
 )
 
-private enum class LibrarySection(val label: String) {
-    Continue("Continue Watching"), Watchlist("Watchlist")
+private enum class LibrarySection(@StringRes val labelRes: Int) {
+    Continue(R.string.home_rail_continue_watching),
+    Watchlist(R.string.nav_watchlist),
 }
 
 /** The stored tab, or Continue Watching when nothing valid is stored. */
@@ -148,6 +151,8 @@ fun LibraryScreen(
 
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Read here rather than in the effect below, which is a coroutine and not a composition.
+    val libraryLoadFailed = stringResource(R.string.library_load_failed)
     var loading by remember { mutableStateOf(true) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
@@ -211,7 +216,7 @@ fun LibraryScreen(
             throw cancelled
         } catch (failure: Throwable) {
             library = null
-            error = "Your library could not be loaded. Check the connection and try again."
+            error = libraryLoadFailed
             TvDebugLogger.e("LibraryUi", "library failed to load", failure)
         }
         loading = false
@@ -271,8 +276,8 @@ fun LibraryScreen(
                 )
                 Text(
                     text = when {
-                        loading -> "Loading…"
-                        else -> "${items.size} ${if (items.size == 1) "title" else "titles"}"
+                        loading -> stringResource(R.string.state_loading)
+                        else -> pluralStringResource(R.plurals.library_title_count, items.size, items.size)
                     },
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
@@ -294,7 +299,7 @@ fun LibraryScreen(
                     val active = section == option
                     val count = if (option == LibrarySection.Continue) continueItems.size else watchlistItems.size
                     SearchChip(
-                        label = option.label,
+                        label = stringResource(option.labelRes),
                         selected = active,
                         leading = count.toString(),
                         modifier = (if (active) Modifier.focusRequester(firstChipRequester) else Modifier)
@@ -303,9 +308,13 @@ fun LibraryScreen(
                     )
                 }
                 Box(Modifier.width(16.dp))
-                listOf("all" to "Everything", "movie" to "Films", "tv" to "Series").forEach { (value, label) ->
+                listOf(
+                    "all" to R.string.filter_everything,
+                    "movie" to R.string.filter_movies,
+                    "tv" to R.string.filter_series,
+                ).forEach { (value, labelRes) ->
                     SearchChip(
-                        label = label,
+                        label = stringResource(labelRes),
                         selected = typeFilter == value,
                         modifier = Modifier.dpadDownInto(firstCardRequester),
                         onClick = { selectTypeFilter(value) },
@@ -326,21 +335,25 @@ fun LibraryScreen(
                 TvContentPhase.Error -> TvEmptyState(
                     title = stringResource(R.string.library_unavailable),
                     message = error.orEmpty(),
-                    actionLabel = "Try Again",
+                    actionLabel = stringResource(R.string.action_try_again),
                     onAction = { reloadToken++ },
                 )
 
                 TvContentPhase.Empty -> TvEmptyState(
-                    title = when {
-                        session == null -> "Sign in to see your library"
-                        section == LibrarySection.Continue -> "Nothing in progress"
-                        else -> "Your watchlist is empty"
-                    },
-                    message = when {
-                        session == null -> "Your continue-watching and watchlist sync to the active profile."
-                        section == LibrarySection.Continue -> "Titles you start appear here so you can pick them back up."
-                        else -> "Hold OK on any title to add it to your watchlist."
-                    },
+                    title = stringResource(
+                        when {
+                            session == null -> R.string.library_sign_in
+                            section == LibrarySection.Continue -> R.string.library_nothing_in_progress
+                            else -> R.string.library_watchlist_empty
+                        },
+                    ),
+                    message = stringResource(
+                        when {
+                            session == null -> R.string.library_sync_note
+                            section == LibrarySection.Continue -> R.string.library_continue_note
+                            else -> R.string.library_watchlist_note
+                        },
+                    ),
                 )
 
                 TvContentPhase.Content -> LazyVerticalGrid(

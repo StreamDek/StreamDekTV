@@ -34,6 +34,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -230,8 +231,15 @@ fun NetworkBrowseScreen(
                 )
                 Text(
                     text = when {
-                        loading -> "Loading…"
-                        else -> "${visibleResults.size} titles" + if (page < totalPages) " so far" else ""
+                        loading -> stringResource(R.string.state_loading)
+                        else -> {
+                            val counted = pluralStringResource(
+                                R.plurals.search_discover_count,
+                                visibleResults.size,
+                                visibleResults.size,
+                            )
+                            if (page < totalPages) stringResource(R.string.network_count_so_far, counted) else counted
+                        }
                     },
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
@@ -248,7 +256,13 @@ fun NetworkBrowseScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 SearchChip(
-                    label = when (mediaType) { "movie" -> "Films"; "tv" -> "Series"; else -> "Everything" },
+                    label = stringResource(
+                        when (mediaType) {
+                            "movie" -> R.string.home_row_kind_films
+                            "tv" -> R.string.home_row_kind_series
+                            else -> R.string.filter_everything
+                        },
+                    ),
                     selected = openTray == OpenTray.Type,
                     leading = "Show",
                     modifier = Modifier.focusRequester(firstChipRequester)
@@ -263,7 +277,7 @@ fun NetworkBrowseScreen(
                     onClick = { openTray = if (openTray == OpenTray.Year) OpenTray.None else OpenTray.Year },
                 )
                 SearchChip(
-                    label = genres.firstOrNull { it.id == genreId }?.name ?: "All Genres",
+                    label = genres.firstOrNull { it.id == genreId }?.name ?: stringResource(R.string.discover_all_genres),
                     selected = openTray == OpenTray.Genre,
                     leading = "Genre",
                     modifier = Modifier.focusProperties { down = firstCardRequester },
@@ -284,12 +298,21 @@ fun NetworkBrowseScreen(
                 )
             }
 
+            // The filter tray builds its options in a plain lambda, which is not a composition.
+            val everythingLabel = stringResource(R.string.filter_everything)
+            val filmsLabel = stringResource(R.string.home_row_kind_films)
+            val seriesLabel = stringResource(R.string.home_row_kind_series)
+            val allGenresLabel = stringResource(R.string.discover_all_genres)
             if (openTray != OpenTray.None) {
                 SearchFilterTray(
                     firstOptionRequester = trayRequester,
                     onDismiss = { openTray = OpenTray.None },
                     options = when (openTray) {
-                        OpenTray.Type -> listOf("all" to "Everything", "movie" to "Films", "tv" to "Series")
+                        OpenTray.Type -> listOf(
+                            "all" to everythingLabel,
+                            "movie" to filmsLabel,
+                            "tv" to seriesLabel,
+                        )
                             .map { (value, label) ->
                                 SearchFilterOption(label, mediaType == value) { mediaType = value; genreId = null }
                             }
@@ -297,7 +320,7 @@ fun NetworkBrowseScreen(
                             SearchFilterOption(option ?: "Any Year", year == option) { year = option }
                         }
                         OpenTray.Genre -> buildList {
-                            add(SearchFilterOption("All Genres", genreId == null) { genreId = null })
+                            add(SearchFilterOption(allGenresLabel, genreId == null) { genreId = null })
                             genres.forEach { genre ->
                                 add(SearchFilterOption(genre.name, genre.id == genreId) { genreId = genre.id })
                             }
@@ -323,14 +346,14 @@ fun NetworkBrowseScreen(
                 TvContentPhase.Error -> TvEmptyState(
                     title = stringResource(R.string.network_load_failed, networkName),
                     message = stringResource(R.string.network_load_failed_detail),
-                    actionLabel = "Try Again",
+                    actionLabel = stringResource(R.string.action_try_again),
                     onAction = { reloadToken++ },
                 )
 
                 TvContentPhase.Empty -> TvEmptyState(
                     title = stringResource(R.string.filters_no_match),
                     message = stringResource(R.string.filters_no_match_detail),
-                    actionLabel = "Clear Filters",
+                    actionLabel = stringResource(R.string.action_clear_filters),
                     onAction = { mediaType = "all"; year = null; genreId = null; minRating = null },
                 )
 

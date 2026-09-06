@@ -1,7 +1,11 @@
 package com.streamdek.tv.nativeapp.data
 
 import android.content.Context
+import android.content.res.Resources
+import androidx.annotation.StringRes
 import com.streamdek.tv.BuildConfig
+import com.streamdek.tv.R
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -64,6 +68,26 @@ object M3uPlaylistEngine {
 
     private var cacheRoot: File? = null
 
+    /**
+     * Held for the progress line, which is read by whoever is waiting for the channels to appear.
+     *
+     * The engine runs on an IO dispatcher with no composition anywhere near it, so the wording and
+     * the channel counts inside it are resolved against the saved interface language rather than
+     * the device's default - a French interface on an English television said "Reading …" and
+     * grouped its thousands the English way.
+     */
+    private var appContext: Context? = null
+
+    private val progressText: Resources?
+        get() = appContext?.let { runCatching { localizedContext(it).resources }.getOrNull() }
+
+    private val numberLocale: Locale
+        get() = appContext?.let { savedAppLanguage(it).locale } ?: Locale.getDefault()
+
+    /** The resource when there is a context to resolve it against, and the English otherwise. */
+    private fun progress(@StringRes id: Int, fallback: String, vararg args: Any): String =
+        progressText?.let { runCatching { it.getString(id, *args) }.getOrNull() } ?: fallback
+
     private val http: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .followRedirects(true)
@@ -72,6 +96,7 @@ object M3uPlaylistEngine {
     }
 
     fun initialize(context: Context) {
+        appContext = context.applicationContext
         if (cacheRoot == null) cacheRoot = File(context.applicationContext.filesDir, CACHE_DIRECTORY)
     }
 
@@ -132,10 +157,32 @@ object M3uPlaylistEngine {
                 val items = parseM3uLines(reader.lineSequence(), playlist.id, playlist.name) { parsed ->
                     if (parsed - lastReported >= 5_000) {
                         lastReported = parsed
-                        onProgress(M3uLoadProgress("Opening ${playlist.name}: ${parsed.formatted()} channels", null, parsed))
+                        onProgress(
+                            M3uLoadProgress(
+                                progress(
+                                    R.string.live_opening_playlist,
+                                    "Opening ${playlist.name}: ${parsed.formatted()} channels",
+                                    playlist.name,
+                                    parsed.formatted(numberLocale),
+                                ),
+                                null,
+                                parsed,
+                            ),
+                        )
                     }
                 }
-                onProgress(M3uLoadProgress("${playlist.name}: ${items.size.formatted()} saved channels", 1f, items.size))
+                onProgress(
+                    M3uLoadProgress(
+                        progress(
+                            R.string.live_saved_channels,
+                            "${playlist.name}: ${items.size.formatted()} saved channels",
+                            playlist.name,
+                            items.size.formatted(numberLocale),
+                        ),
+                        1f,
+                        items.size,
+                    ),
+                )
                 items
             }
         }.onFailure {
@@ -157,7 +204,12 @@ object M3uPlaylistEngine {
             runCatching { GZIPOutputStream(BufferedOutputStream(FileOutputStream(it), 64 * 1024)) }.getOrNull()
         }
         var parsedCleanly = false
-        onProgress(M3uLoadProgress("Connecting to ${playlist.name}…", 0f))
+        onProgress(
+            M3uLoadProgress(
+                progress(R.string.live_connecting_playlist, "Connecting to ${playlist.name}…", playlist.name),
+                0f,
+            ),
+        )
         try {
             openPlaylist(playlist.url).use { response ->
                 val body = response.body ?: throw IllegalStateException("Empty playlist response.")
@@ -174,12 +226,34 @@ object M3uPlaylistEngine {
                         // Held below 1.0 while bytes are still arriving: a bar that sits full for
                         // the rest of a long parse is worse than one that never quite gets there.
                         val fraction = total?.let { (read.toDouble() / it).toFloat().coerceIn(0f, 0.99f) }
-                        onProgress(M3uLoadProgress("Reading ${playlist.name}: ${parsed.formatted()} channels found", fraction, parsed))
+                        onProgress(
+                            M3uLoadProgress(
+                                progress(
+                                    R.string.live_reading_playlist,
+                                    "Reading ${playlist.name}: ${parsed.formatted()} channels found",
+                                    playlist.name,
+                                    parsed.formatted(numberLocale),
+                                ),
+                                fraction,
+                                parsed,
+                            ),
+                        )
                     }
                 }
                 if (counting.bytesRead == 0L) throw IllegalStateException("Empty playlist response.")
                 parsedCleanly = true
-                onProgress(M3uLoadProgress("${playlist.name}: ${items.size.formatted()} channels", 1f, items.size))
+                onProgress(
+                    M3uLoadProgress(
+                        progress(
+                            R.string.live_playlist_channel_count,
+                            "${playlist.name}: ${items.size.formatted()} channels",
+                            playlist.name,
+                            items.size.formatted(numberLocale),
+                        ),
+                        1f,
+                        items.size,
+                    ),
+                )
                 TvDebugLogger.i(TAG, "parsed ${items.size} entries from ${playlist.name}")
                 return items
             }
@@ -305,7 +379,14 @@ private fun isM3uVodEntry(title: String, group: String?, declaredType: String?, 
  * built from those, so without interning a 200k-entry playlist holds close to a million
  * near-duplicate strings.
  */
-internal fun Int.formatted(): String = String.format("%,d", this)
+/**
+ * A count with thousands separators, in the interface language rather than the device's.
+ *
+ * The default is the device locale for the callers that have no language to hand; everything a
+ * viewer reads passes one in, because a French interface writing "12,345" is writing an English
+ * number.
+ */
+internal fun Int.formatted(locale: Locale = Locale.getDefault()): String = String.format(locale, "%,d", this)
 
 internal fun parseM3uLines(
     lines: Sequence<String>,

@@ -75,7 +75,9 @@ import com.streamdek.tv.nativeapp.data.SeasonEpisode
 import com.streamdek.tv.nativeapp.data.SeasonRef
 import com.streamdek.tv.nativeapp.data.TraktCommentItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.AppFormats
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.PremiumMediaCard
 import com.streamdek.tv.nativeapp.ui.ProgressMeter
@@ -401,12 +403,16 @@ internal fun EpisodeCard(
         onClick = { if (released) onClick() },
         modifier = modifier.width(cardWidth).tvCardLongPress(onLongPress),
         onFocused = onFocused,
+        // Read aloud rather than shown, so it is built from whole clauses: a screen reader gets
+        // "Season 2 episode 4, Name, watched", and each clause is translated as a clause.
         description = buildString {
-            append("Season $seasonNumber episode ${episode.episodeNumber}, ${episode.name}")
-            if (watched) append(", watched")
-            if (nextUp) append(", next up")
-            progress?.let { append(", ${(it * 100).toInt()} percent watched") }
-            if (!released) append(", not released yet")
+            append(stringResource(R.string.detail_a11y_season_episode, seasonNumber, episode.episodeNumber, episode.name))
+            if (watched) append(stringResource(R.string.detail_a11y_watched_suffix))
+            if (nextUp) append(stringResource(R.string.detail_a11y_next_up_suffix))
+            progress?.let {
+                append(stringResource(R.string.detail_a11y_percent_watched_suffix, AppFormats.percent(LocalAppLanguage.current, it.toDouble())))
+            }
+            if (!released) append(stringResource(R.string.detail_a11y_not_released_suffix))
         },
     ) {
         Box(Modifier.fillMaxWidth().height(stillHeight).background(Color.Black.copy(alpha = 0.5f))) {
@@ -427,7 +433,7 @@ internal fun EpisodeCard(
                         else "E${episode.episodeNumber}",
                     )
                     if (!compact && watched) MetaChip("WATCHED", emphasised = true)
-                    if (!compact && nextUp && !watched) MetaChip("NEXT UP", emphasised = true)
+                    if (!compact && nextUp && !watched) MetaChip(stringResource(R.string.detail_next_up), emphasised = true)
                     if (!compact && !released) MetaChip("SOON")
                 }
                 if (!compact) episode.runtime?.takeIf { it > 0 }?.let {
@@ -457,7 +463,7 @@ internal fun EpisodeCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = episode.overview?.takeIf { it.isNotBlank() } ?: "No synopsis available.",
+                        text = episode.overview?.takeIf { it.isNotBlank() } ?: stringResource(R.string.detail_no_synopsis),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
                         maxLines = 2,
@@ -566,7 +572,7 @@ internal fun SeasonChipRow(
                         if (index == 0 && firstChipRequester != null) Modifier.focusRequester(firstChipRequester) else Modifier,
                     )
                     .rowFocusItem(rowFocus, index),
-                description = if (watched) "${season.name}, watched" else season.name,
+                description = if (watched) stringResource(R.string.detail_a11y_named_watched, season.name) else season.name,
             ) {
                 Text(
                     text = if (watched) "${season.name}  ✓" else season.name,
@@ -597,11 +603,13 @@ private fun MarkSeasonWatchedRow(
     upRequester: FocusRequester?,
     onMarkSeasonWatched: () -> Unit,
 ) {
-    val label = when {
-        markingSeason -> "Updating season..."
-        seasonWatched -> "Mark Season as Unwatched"
-        else -> "Mark Season as Watched"
-    }
+    val label = stringResource(
+        when {
+            markingSeason -> R.string.detail_updating_season
+            seasonWatched -> R.string.detail_mark_season_unwatched
+            else -> R.string.detail_mark_season_watched
+        },
+    )
     Row(modifier = Modifier.padding(horizontal = DetailInset)) {
         DetailFocusCard(
             onClick = { if (!markingSeason) onMarkSeasonWatched() },
@@ -979,7 +987,7 @@ internal fun SimilarBand(
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
     ) {
-        DetailSectionHeader("More Like This")
+        DetailSectionHeader(stringResource(R.string.detail_more_like_this))
         LazyRow(
             modifier = Modifier.detailBandScale(scale, compact),
             state = rowState,
@@ -1005,7 +1013,7 @@ internal fun SimilarBand(
 @Composable
 internal fun SimilarBandSkeleton() {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        DetailSectionHeader("More Like This")
+        DetailSectionHeader(stringResource(R.string.detail_more_like_this))
         Row(
             modifier = Modifier.padding(horizontal = DetailInset),
             horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
@@ -1036,7 +1044,7 @@ internal fun CastBand(
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
     ) {
-        DetailSectionHeader("Cast")
+        DetailSectionHeader(stringResource(R.string.detail_cast))
         LazyRow(
             modifier = Modifier.detailBandScale(scale, compact),
             state = rowState,
@@ -1144,7 +1152,7 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
     ) {
-        DetailSectionHeader("Reviews", trailing = "${comments.size}")
+        DetailSectionHeader(stringResource(R.string.detail_reviews), trailing = AppFormats.number(LocalAppLanguage.current, comments.size))
         LazyRow(
             modifier = Modifier.detailBandScale(scale, compact),
             state = rowState,
@@ -1182,12 +1190,12 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
                         )
-                        comment.userRating?.let { MetaChip("★ $it", emphasised = true) }
+                        comment.userRating?.let { MetaChip(stringResource(R.string.rating_star_value, it), emphasised = true) }
                     }
                     Text(
                         // Spoilers stay collapsed: there is no hover on a remote, so a reveal
                         // control would be one more thing to focus past on every review.
-                        text = if (comment.spoiler) "Hidden — this review is marked as a spoiler." else comment.comment,
+                        text = if (comment.spoiler) stringResource(R.string.detail_review_spoiler_hidden) else comment.comment,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(
                             alpha = if (comment.spoiler) 0.48f else 0.76f,

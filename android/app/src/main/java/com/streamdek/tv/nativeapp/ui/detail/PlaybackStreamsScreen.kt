@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
@@ -43,6 +44,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -143,14 +146,19 @@ internal fun streamSizeLabel(stream: AddonStream, label: String): String? =
  * read as the ungrouped one it replaced. [Unknown] is a real band rather than a bin for failures:
  * plenty of sources genuinely do not say, and those results still have to appear.
  */
-internal enum class StreamQualityTier(val label: String) {
+internal enum class StreamQualityTier(
+    /** The resolution as it is written everywhere, which is the same in every language. */
+    val label: String,
+    /** Set only for the band that is a word rather than a resolution. */
+    @StringRes val labelRes: Int? = null,
+) {
     Uhd("4K"),
     Qhd("1440p"),
     Fhd("1080p"),
     Hd("720p"),
     Sd("480p"),
     Ld("360p"),
-    Unknown("Other"),
+    Unknown("Other", labelRes = R.string.quality_tier_other),
     // Last whatever else is present. A camera recording is not a quality tier so much as a
     // warning, and it belongs under the results somebody actually wants.
     Cam("CAM"),
@@ -259,10 +267,16 @@ internal fun buildStreamListEntries(
     streams: List<AddonStream>,
     preferredQuality: String,
     includeSourceHeadings: Boolean,
+    /**
+     * What to head results from an add-on that gave no name. Passed in because this is a pure
+     * function with no composition to read a resource from, and it has to match the tab label the
+     * screen builds from the same fallback.
+     */
+    unnamedSourceLabel: String = "Other",
 ): List<StreamListEntry> = buildList {
     // groupBy keeps first-appearance order, and the list arriving here is already ranked, so the
     // source holding the best single result leads.
-    streams.groupBy { it.addonName.ifBlank { "Other" } }.forEach { (source, items) ->
+    streams.groupBy { it.addonName.ifBlank { unnamedSourceLabel } }.forEach { (source, items) ->
         if (includeSourceHeadings) add(StreamListEntry.SourceHeading(source, items.size))
         items.groupBy(::streamQualityTier)
             .toList()
@@ -330,6 +344,8 @@ fun PlaybackStreamsScreen(
             ?.let { ResolvedPlaybackCandidate(null, null, it) }
             ?: repository.peekCachedResolvedPlayback(request)
     }
+    // The load failure is recorded in a coroutine, which is not a composition.
+    val streamsResources = LocalContext.current.resources
     var uiState by remember(request) {
         mutableStateOf<PlaybackStreamsUiState>(
             cachedCandidate?.let { PlaybackStreamsUiState.Ready(cachedDetail, it) } ?: PlaybackStreamsUiState.Loading(),
@@ -347,6 +363,10 @@ fun PlaybackStreamsScreen(
     // Names the collection a plugin scraper came from, so a plugin row cannot be mistaken for an
     // add-on row when the list mixes both.
     val pluginState = bootstrap?.profilePlugins ?: ProfilePluginState()
+    // Read here rather than per row: every row asks for the same two words, and the lazy list's item
+    // builder is not the place for a resource lookup.
+    val addonOriginLabel = stringResource(R.string.source_origin_addon)
+    val pluginOriginLabel = stringResource(R.string.source_origin_plugin)
     val activeFusionBadgeSources = remember(
         streamsPrefs.fusionBadgeUrls, streamsPrefs.activeFusionBadgeUrl, fusionBadgeSourcesByUrl,
     ) {
@@ -417,7 +437,7 @@ fun PlaybackStreamsScreen(
             }
         }.onFailure {
             if (uiState !is PlaybackStreamsUiState.Ready) {
-                uiState = PlaybackStreamsUiState.Error(it.message ?: "Could not load streams")
+                uiState = PlaybackStreamsUiState.Error(streamsResources.getString(R.string.streams_load_failed))
             }
         }
     }
@@ -483,14 +503,17 @@ fun PlaybackStreamsScreen(
             }
         }
     }
-    val addonNames = remember(streamRows) { streamRows.map { it.addonName.ifBlank { "Other" } }.distinct() }
+    val otherSourceLabel = stringResource(R.string.source_group_other)
+    val addonNames = remember(streamRows, otherSourceLabel) {
+        streamRows.map { it.addonName.ifBlank { otherSourceLabel } }.distinct()
+    }
     val sourceTabs = remember(addonNames) { if (addonNames.size <= 1) emptyList() else listOf("All") + addonNames }
     // Keyed to the request, not the stream list: progressive batches must not reset the chosen tab.
     var selectedTab by remember(request) { mutableStateOf("All") }
     val filteredStreams = if (sourceTabs.isEmpty() || selectedTab == "All") {
         streamRows
     } else {
-        streamRows.filter { it.addonName.ifBlank { "Other" } == selectedTab }
+        streamRows.filter { it.addonName.ifBlank { otherSourceLabel } == selectedTab }
     }
 
     // Decided across the whole list so the columns line up and empty ones disappear entirely.
@@ -521,6 +544,7 @@ fun PlaybackStreamsScreen(
     }
     val streamEntries = remember(filteredStreams, preferredQuality, selectedTab, addonNames) {
         buildStreamListEntries(
+            unnamedSourceLabel = otherSourceLabel,
             streams = filteredStreams,
             preferredQuality = preferredQuality,
             includeSourceHeadings = addonNames.size > 1 && selectedTab == "All",
@@ -705,7 +729,7 @@ fun PlaybackStreamsScreen(
                                     StreamRow(
                                         stream = stream,
                                         label = rowLabel,
-                                        origin = streamOriginLabel(stream, pluginState),
+                                        origin = streamOriginLabel(stream, pluginState, addonOriginLabel, pluginOriginLabel),
                                         showQuality = anyQuality,
                                         showSize = anySize,
                                         requestFocus = if (index == focusTargetIndex) firstCardRequester else null,
@@ -787,9 +811,10 @@ private fun StreamsHeader(
                     it.title?.takeIf { name -> name.isNotBlank() }?.let { name -> append("  ·  $name") }
                     append("  ·  ")
                 }
-                append(if (streamCount == 1) "1 stream" else "$streamCount streams")
+                append(pluralStringResource(R.plurals.streams_count, streamCount, streamCount))
                 if (pendingSources > 0) {
-                    append("  ·  $pendingSources source${if (pendingSources == 1) "" else "s"} still loading")
+                    append("  ·  ")
+                    append(pluralStringResource(R.plurals.streams_sources_still_loading, pendingSources, pendingSources))
                 }
             },
             style = MaterialTheme.typography.labelLarge,
@@ -880,7 +905,7 @@ private fun StreamQualityHeading(tier: StreamQualityTier, count: Int) {
                 .padding(horizontal = 10.dp, vertical = 4.dp),
         ) {
             Text(
-                text = tier.label,
+                text = tier.labelRes?.let { stringResource(it) } ?: tier.label,
                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
                 color = accent,
                 maxLines = 1,
@@ -930,12 +955,12 @@ private fun StreamRow(
     }
     val availability = when {
         stream.cachedBy.isNotEmpty() -> cachedAvailabilityLabel(stream.cachedBy).orEmpty() to true
-        !stream.url.isNullOrBlank() -> "Direct" to false
+        !stream.url.isNullOrBlank() -> stringResource(R.string.player_info_route_direct) to false
         // Assembled on this device from the NZB and the news servers the stream names, the same
         // way the phone does it — named in the column because how it arrives changes how long it
         // takes to start, not because it cannot be played.
-        !stream.nzbUrl.isNullOrBlank() -> "Usenet" to false
-        else -> "Torrent" to false
+        !stream.nzbUrl.isNullOrBlank() -> stringResource(R.string.transport_usenet) to false
+        else -> stringResource(R.string.transport_torrent) to false
     }
     val formatted = streamsPrefs.streamDekFormattingEnabled
     val readyLabel = remember(stream.cachedBy) { readyServiceLabel(stream.cachedBy) }

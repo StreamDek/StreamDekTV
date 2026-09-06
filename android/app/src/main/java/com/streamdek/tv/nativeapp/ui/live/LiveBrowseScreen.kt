@@ -104,18 +104,22 @@ fun LiveBrowseScreen(
     val allItems = remember(sections) {
         sections.flatMap { it.rails }.flatMap { it.items }.distinctBy(::liveBrowseKey)
     }
-    val addons = remember(sections) {
+    // Stand-ins for a source or catalogue that named itself nothing. Read here because both lists
+    // are built inside remember blocks, which are not compositions.
+    val sourceFallbackLabel = stringResource(R.string.filter_leading_source)
+    val liveTvFallbackLabel = stringResource(R.string.live_tv)
+    val addons = remember(sections, sourceFallbackLabel) {
         allItems.mapNotNull { item ->
-            item.sourceAddonId?.let { it to (item.sourceAddonName ?: "Source") }
+            item.sourceAddonId?.let { it to (item.sourceAddonName ?: sourceFallbackLabel) }
         }.distinctBy { it.first }
     }
     var selectedAddonId by remember(initialAddonId, sections) {
         mutableStateOf(initialAddonId?.takeIf { wanted -> addons.any { it.first == wanted } })
     }
-    val catalogues = remember(allItems, selectedAddonId) {
+    val catalogues = remember(allItems, selectedAddonId, liveTvFallbackLabel) {
         allItems.asSequence()
             .filter { selectedAddonId == null || it.sourceAddonId == selectedAddonId }
-            .mapNotNull { item -> item.sourceCatalogId?.let { it to (item.sourceCatalogName ?: "Live TV") } }
+            .mapNotNull { item -> item.sourceCatalogId?.let { it to (item.sourceCatalogName ?: liveTvFallbackLabel) } }
             .distinctBy { it.first }
             .toList()
     }
@@ -255,17 +259,19 @@ fun LiveBrowseScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 SearchChip(
-                    label = addons.firstOrNull { it.first == selectedAddonId }?.second ?: "All sources",
+                    label = addons.firstOrNull { it.first == selectedAddonId }?.second
+                        ?: stringResource(R.string.browse_all_sources),
                     selected = openTray == OpenTray.Source,
-                    leading = "Source",
+                    leading = stringResource(R.string.filter_leading_source),
                     modifier = Modifier.focusRequester(firstChipRequester)
                         .focusProperties { up = queryRequester; down = gridFocusTarget },
                     onClick = { openTray = if (openTray == OpenTray.Source) OpenTray.None else OpenTray.Source },
                 )
                 SearchChip(
-                    label = catalogues.firstOrNull { it.first == selectedCatalogId }?.second ?: "All collections",
+                    label = catalogues.firstOrNull { it.first == selectedCatalogId }?.second
+                        ?: stringResource(R.string.live_all_collections),
                     selected = openTray == OpenTray.Catalogue,
-                    leading = "Collection",
+                    leading = stringResource(R.string.filter_leading_collection),
                     modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                     onClick = {
                         if (catalogues.isNotEmpty()) {
@@ -274,7 +280,9 @@ fun LiveBrowseScreen(
                     },
                 )
                 SearchChip(
-                    label = if (favouritesOnly) "Favourites only" else "All channels",
+                    label = stringResource(
+                        if (favouritesOnly) R.string.live_favourites_only else R.string.live_all_channels_filter,
+                    ),
                     selected = favouritesOnly,
                     leading = favouriteKeys.size.toString(),
                     modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
@@ -282,13 +290,16 @@ fun LiveBrowseScreen(
                 )
             }
 
+            // The tray builds its options in a plain lambda, which is not a composition.
+            val allSourcesLabel = stringResource(R.string.browse_all_sources)
+            val allCollectionsLabel = stringResource(R.string.live_all_collections)
             if (openTray != OpenTray.None) {
                 SearchFilterTray(
                     firstOptionRequester = trayRequester,
                     onDismiss = { openTray = OpenTray.None },
                     options = when (openTray) {
                         OpenTray.Source -> buildList {
-                            add(SearchFilterOption("All sources", selectedAddonId == null) {
+                            add(SearchFilterOption(allSourcesLabel, selectedAddonId == null) {
                                 selectedAddonId = null
                                 selectedCatalogId = null
                             })
@@ -300,7 +311,7 @@ fun LiveBrowseScreen(
                             }
                         }
                         OpenTray.Catalogue -> buildList {
-                            add(SearchFilterOption("All collections", selectedCatalogId == null) { selectedCatalogId = null })
+                            add(SearchFilterOption(allCollectionsLabel, selectedCatalogId == null) { selectedCatalogId = null })
                             catalogues.forEach { (id, name) ->
                                 add(SearchFilterOption(name, selectedCatalogId == id) { selectedCatalogId = id })
                             }
@@ -314,13 +325,13 @@ fun LiveBrowseScreen(
             TvContentSwap(phase = contentPhase, modifier = Modifier.weight(1f).fillMaxWidth()) { phase ->
             if (phase == TvContentPhase.Empty) {
                 TvEmptyState(
-                    title = if (favouritesOnly) "No favourite channels" else "No channels match",
-                    message = if (favouritesOnly) {
-                        "Hold OK on any channel to add it to your favourites."
-                    } else {
-                        "Try a shorter search, or widen the source and collection."
-                    },
-                    actionLabel = "Clear filters",
+                    title = stringResource(
+                        if (favouritesOnly) R.string.live_no_favourite_channels else R.string.live_no_channels_match,
+                    ),
+                    message = stringResource(
+                        if (favouritesOnly) R.string.live_hold_ok_favourite else R.string.live_try_shorter_search,
+                    ),
+                    actionLabel = stringResource(R.string.action_clear_filters),
                     onAction = {
                         query = ""
                         selectedAddonId = null

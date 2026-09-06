@@ -5,6 +5,7 @@ import android.content.Intent
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.horizontalScroll
@@ -48,6 +49,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
@@ -78,29 +80,45 @@ private data class BrowseActionState(
     val restoreFocusRequester: FocusRequester,
 )
 
-private enum class SearchScope(val label: String) {
-    All("Everything"), Movies("Movies"), Series("Series"), Live("Live TV")
+private enum class SearchScope(@StringRes val labelRes: Int) {
+    All(R.string.filter_everything),
+    Movies(R.string.filter_movies),
+    Series(R.string.filter_series),
+    Live(R.string.nav_live),
 }
 
 private enum class OpenTray { None, Type, Genre, Year }
 
 private val DiscoverTypes = listOf("movie", "tv", "documentary")
 
-private fun discoverTypeLabel(value: String): String = when (value) {
-    "tv" -> "Series"
-    "documentary" -> "Documentaries"
-    else -> "Films"
-}
+@Composable
+private fun discoverTypeLabel(value: String): String = stringResource(
+    when (value) {
+        "tv" -> R.string.filter_series
+        "documentary" -> R.string.filter_documentaries
+        else -> R.string.filter_movies
+    }
+)
 
 private data class YearOption(val label: String, val value: String?)
 
+/**
+ * The year filter's options. [YearOption.value] is what the query carries and stays as it is; the
+ * label is what the chip reads, and the two open-ended ones are resources rather than English.
+ */
+@Composable
 private fun buildYearOptions(): List<YearOption> {
     val now = Year.now().value
-    return buildList {
-        add(YearOption("Any Year", null))
-        (0..14).forEach { add(YearOption("${now - it}", "${now - it}")) }
-        add(YearOption("Before 2010", "before:2009"))
-        add(YearOption("Before 2000", "before:1999"))
+    val anyYear = stringResource(R.string.filter_any_year)
+    val before2010 = stringResource(R.string.filter_before_2010)
+    val before2000 = stringResource(R.string.filter_before_2000)
+    return remember(anyYear, before2010, before2000, now) {
+        buildList {
+            add(YearOption(anyYear, null))
+            (0..14).forEach { add(YearOption("${now - it}", "${now - it}")) }
+            add(YearOption(before2010, "before:2009"))
+            add(YearOption(before2000, "before:1999"))
+        }
     }
 }
 
@@ -163,7 +181,7 @@ fun SearchScreen(
     val trayRequester = remember { FocusRequester() }
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
     val gridState = rememberLazyGridState()
-    val yearOptions = remember { buildYearOptions() }
+    val yearOptions = buildYearOptions()
     val voiceSearchLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
@@ -179,10 +197,13 @@ fun SearchScreen(
                 }
         }
     }
-    val voiceSearchIntent = remember {
+    // The prompt is shown by the system's voice dialog, so it is resolved here and the intent is
+    // rebuilt if the language changes underneath it.
+    val voicePrompt = stringResource(R.string.search_placeholder)
+    val voiceSearchIntent = remember(voicePrompt) {
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Search StreamDek")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, voicePrompt)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
     }
@@ -439,7 +460,7 @@ fun SearchScreen(
                 if (hasQuery) {
                     SearchScope.entries.forEachIndexed { index, option ->
                         SearchChip(
-                            label = option.label,
+                            label = stringResource(option.labelRes),
                             selected = searchScope == option,
                             modifier = (if (index == 0) Modifier.focusRequester(firstChipRequester) else Modifier)
                                 .focusProperties { up = queryRequester; down = gridFocusTarget },
@@ -450,16 +471,17 @@ fun SearchScreen(
                     SearchChip(
                         label = discoverTypeLabel(discoverType),
                         selected = openTray == OpenTray.Type,
-                        leading = "Show",
+                        leading = stringResource(R.string.filter_leading_show),
                         modifier = Modifier.focusRequester(firstChipRequester)
                             .focusProperties { up = queryRequester; down = gridFocusTarget },
                         onClick = { openTray = if (openTray == OpenTray.Type) OpenTray.None else OpenTray.Type },
                     )
-                    val genreLabel = discoverGenres.firstOrNull { it.id == discoverGenreId }?.name ?: "All Genres"
+                    val genreLabel = discoverGenres.firstOrNull { it.id == discoverGenreId }?.name
+                        ?: stringResource(R.string.discover_all_genres)
                     SearchChip(
-                        label = if (discoverGenres.isEmpty()) "No genres" else genreLabel,
+                        label = if (discoverGenres.isEmpty()) stringResource(R.string.search_no_genres) else genreLabel,
                         selected = openTray == OpenTray.Genre,
-                        leading = "Genre",
+                        leading = stringResource(R.string.filter_leading_genre),
                         modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                         onClick = {
                             if (discoverGenres.isNotEmpty()) {
@@ -468,9 +490,9 @@ fun SearchScreen(
                         },
                     )
                     SearchChip(
-                        label = yearOptions.firstOrNull { it.value == discoverYear }?.label ?: "Any Year",
+                        label = yearOptions.firstOrNull { it.value == discoverYear }?.label ?: stringResource(R.string.filter_any_year),
                         selected = openTray == OpenTray.Year,
-                        leading = "Year",
+                        leading = stringResource(R.string.filter_leading_year),
                         modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                         onClick = { openTray = if (openTray == OpenTray.Year) OpenTray.None else OpenTray.Year },
                     )
@@ -478,7 +500,7 @@ fun SearchScreen(
                         SearchChip(
                             label = recent,
                             selected = false,
-                            leading = "Recent",
+                            leading = stringResource(R.string.filter_leading_recent),
                             modifier = Modifier.focusProperties { up = queryRequester; down = gridFocusTarget },
                             onClick = { query = recent },
                         )
@@ -487,6 +509,9 @@ fun SearchScreen(
             }
 
             if (openTray != OpenTray.None) {
+                // Read here rather than in the option list below: that list is built in a
+                // plain lambda, which is not a composition and cannot resolve a resource.
+                val allGenresLabel = stringResource(R.string.discover_all_genres)
                 SearchFilterTray(
                     firstOptionRequester = trayRequester,
                     onDismiss = { openTray = OpenTray.None },
@@ -495,7 +520,7 @@ fun SearchScreen(
                             SearchFilterOption(discoverTypeLabel(value), discoverType == value) { discoverType = value }
                         }
                         OpenTray.Genre -> buildList {
-                            add(SearchFilterOption("All Genres", discoverGenreId == null) { discoverGenreId = null })
+                            add(SearchFilterOption(allGenresLabel, discoverGenreId == null) { discoverGenreId = null })
                             discoverGenres.forEach { genre ->
                                 add(SearchFilterOption(genre.name, genre.id == discoverGenreId) { discoverGenreId = genre.id })
                             }
@@ -509,11 +534,15 @@ fun SearchScreen(
             }
 
             SearchResultsHeading(
-                title = if (hasQuery) "Results" else "Discover",
+                title = stringResource(if (hasQuery) R.string.search_results else R.string.nav_discover),
                 detail = when {
-                    loading -> "Searching…"
-                    hasQuery -> "${visibleResults.size} for \"${query.trim()}\""
-                    else -> "${discoverItems.size} titles"
+                    loading -> stringResource(R.string.streams_searching)
+                    hasQuery -> stringResource(
+                        R.string.search_results_for,
+                        pluralStringResource(R.plurals.search_result_count, visibleResults.size, visibleResults.size),
+                        query.trim(),
+                    )
+                    else -> pluralStringResource(R.plurals.search_discover_count, discoverItems.size, discoverItems.size)
                 },
                 modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
             )
@@ -529,12 +558,10 @@ fun SearchScreen(
                 TvContentPhase.Loading -> TvSkeletonGrid(columns = gridColumns, rows = 3)
 
                 TvContentPhase.Empty -> TvEmptyState(
-                    title = if (hasQuery) "No matches" else "Nothing to show",
-                    message = if (hasQuery) {
-                        "Try a shorter title, or part of a channel name."
-                    } else {
-                        "Widen the genre or year and try again."
-                    },
+                    title = stringResource(if (hasQuery) R.string.search_no_matches else R.string.search_nothing_to_show),
+                    message = stringResource(
+                        if (hasQuery) R.string.search_try_shorter else R.string.search_widen_filters,
+                    ),
                 )
 
                 TvContentPhase.Content -> LazyVerticalGrid(

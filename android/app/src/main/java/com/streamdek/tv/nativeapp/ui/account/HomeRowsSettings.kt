@@ -49,6 +49,8 @@ import com.streamdek.tv.nativeapp.data.HomeRowOption
 import com.streamdek.tv.nativeapp.data.buildHomeRowGroups
 import com.streamdek.tv.nativeapp.data.homeRowLayoutOf
 import com.streamdek.tv.nativeapp.data.homeRowOptions
+import com.streamdek.tv.nativeapp.ui.AppFormats
+import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 
 /**
  * Which rows Home shows, arranged from the television.
@@ -85,12 +87,13 @@ internal fun HomeRowsSettings(
     if (rows.isEmpty()) {
         HomeRowsHeading(
             title = stringResource(R.string.settings_home_rows),
-            body = if (addons.isEmpty() && definitions.isEmpty()) {
-                "Still loading the rows this profile can show."
-            } else {
-                "There are no rows to arrange yet. Install a catalogue add-on, or turn the " +
-                    "built-in catalogues back on above."
-            },
+            body = stringResource(
+                if (addons.isEmpty() && definitions.isEmpty()) {
+                    R.string.home_rows_still_loading
+                } else {
+                    R.string.home_rows_none_yet
+                },
+            ),
         )
         return
     }
@@ -105,7 +108,11 @@ internal fun HomeRowsSettings(
     var expanded by remember { mutableStateOf(false) }
     HomeRowsDisclosure(
         title = stringResource(R.string.settings_home_rows),
-        summary = "$enabledCount of ${rows.size} on",
+        summary = stringResource(
+            R.string.home_rows_on_of,
+            AppFormats.number(LocalAppLanguage.current, enabledCount),
+            AppFormats.number(LocalAppLanguage.current, rows.size),
+        ),
         expanded = expanded,
         leftRequester = leftRequester,
         onToggle = { expanded = !expanded },
@@ -114,8 +121,7 @@ internal fun HomeRowsSettings(
 
     HomeRowsHeading(
         title = null,
-        body = "Switch off the rows you do not want on Home. This is the same list the phone and " +
-            "the web portal use, so a change here reaches every device on this profile.",
+        body = stringResource(R.string.home_rows_explainer),
     )
 
     // One fold per source, the shape the phone shows. A viewer running several catalogue add-ons
@@ -137,7 +143,7 @@ internal fun HomeRowsSettings(
                     stringResource(R.string.home_row_group_on_of, group.rows.count { it.enabled }, group.rows.size)
                 },
                 detail = group.gatedNoteRes?.let { stringResource(it) }
-                    ?: if (open) "Press OK to close this source" else "Press OK to choose its rows",
+                    ?: stringResource(if (open) R.string.home_rows_close_source else R.string.home_rows_choose_rows),
                 expanded = open,
                 gated = group.gatedNoteRes != null,
                 leftRequester = leftRequester,
@@ -242,7 +248,7 @@ private fun HomeRowsDisclosure(
             )
             Text(
                 text = detail
-                    ?: if (expanded) "Press OK to close the list" else "Choose which rows appear on Home",
+                    ?: stringResource(if (expanded) R.string.home_rows_close_list else R.string.home_rows_choose_which),
                 color = Color.White.copy(alpha = alpha * 0.55f),
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -364,7 +370,13 @@ private fun HomeRowToggle(
             )
         }
         Text(
-            text = if (saving) "Saving" else if (visualEnabled) "On" else "Off",
+            text = stringResource(
+                when {
+                    saving -> R.string.state_saving
+                    visualEnabled -> R.string.state_on
+                    else -> R.string.animation_speed_off
+                },
+            ),
             color = when {
                 saving -> Color.White.copy(alpha = 0.5f)
                 visualEnabled -> MaterialTheme.colorScheme.primary

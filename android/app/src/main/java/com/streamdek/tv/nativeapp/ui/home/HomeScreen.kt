@@ -245,11 +245,25 @@ fun HomeScreen(
     var pendingRestoreKey by remember { mutableStateOf<String?>(null) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
 
+    /**
+     * What Home's content depends on, as a value that only changes when the content would.
+     *
+     * The add-on descriptors are sorted before they are joined. Without that this key was sensitive
+     * to the *order* the add-on list happened to arrive in, which is not stable across bootstrap
+     * emissions: the same add-ons, the same enabled flags and the same positions would produce two
+     * different strings, the key would flip between them, and every flip restarted the load effect
+     * and forced a full refresh. On a cold start that showed up as Home filling in and then
+     * visibly reloading twice.
+     *
+     * Position is still part of each entry, so a genuine reorder - which does change what Home
+     * shows - still changes the key.
+     */
     val homeContentConfiguration = remember(bootstrap) {
         val builtIns = bootstrap?.preferences?.home?.defaultAppCatalogsEnabled != false
-        val addons = bootstrap?.integrations?.addons?.items.orEmpty().joinToString("|") {
-            "${it.id}:${it.enabled}:${it.position}"
-        }
+        val addons = bootstrap?.integrations?.addons?.items.orEmpty()
+            .map { "${it.id}:${it.enabled}:${it.position}" }
+            .sorted()
+            .joinToString("|")
         "$builtIns:$addons"
     }
     val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration) {
@@ -518,8 +532,10 @@ fun HomeScreen(
 
             screenState.error != null && content == null -> HomeMessage(
                 title = stringResource(R.string.home_failed),
-                message = screenState.error ?: "Could not load home",
-                primaryLabel = if (screenState.isLoading) "Retrying…" else "Try Again",
+                message = screenState.error ?: stringResource(R.string.home_load_failed_message),
+                primaryLabel = stringResource(
+                    if (screenState.isLoading) R.string.action_retrying else R.string.action_try_again,
+                ),
                 primaryEnabled = !screenState.isLoading,
                 onPrimary = { homeViewModel.forceRefresh(loadKey) },
                 entryRequester = firstCardRequester,
@@ -531,7 +547,7 @@ fun HomeScreen(
                 primaryLabel = stringResource(if (screenState.isLoading) R.string.action_refreshing else R.string.action_refresh),
                 primaryEnabled = !screenState.isLoading,
                 onPrimary = { homeViewModel.forceRefresh(loadKey) },
-                secondaryLabel = "Open Settings",
+                secondaryLabel = stringResource(R.string.action_open_settings),
                 onSecondary = onOpenAccount,
                 entryRequester = firstCardRequester,
             )

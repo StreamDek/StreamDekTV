@@ -115,6 +115,8 @@ import com.streamdek.tv.nativeapp.data.contentScopedResumePosition
 import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
 import com.streamdek.tv.nativeapp.data.subtitleSourceAllowsOrigin
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.AppFormats
+import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
@@ -282,6 +284,11 @@ fun PlayerScreen(
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    // Playback failures are reported from coroutines and callbacks, none of which are a
+    // composition; these are the resources the composition is already using.
+    val playerResources = context.resources
+    // Counts inside those notices are written the way the interface language writes them.
+    val appLanguage = LocalAppLanguage.current
     val view = LocalView.current
     val bootstrap by repository.bootstrap.collectAsState()
     val playbackPreferences = bootstrap?.preferences?.playback ?: PlaybackPreferences()
@@ -309,7 +316,7 @@ fun PlayerScreen(
     var currentSourceUrl by remember { mutableStateOf<String?>(null) }
     val defaultPlaybackHeaders = remember { mapOf("User-Agent" to "Mozilla/5.0 StreamDekTV") }
     var currentRequestHeaders by remember { mutableStateOf(defaultPlaybackHeaders) }
-    var currentLabel by remember { mutableStateOf("Selecting stream…") }
+    var currentLabel by remember { mutableStateOf(playerResources.getString(R.string.player_selecting_stream)) }
     var paused by remember { mutableStateOf(false) }
     var positionSec by remember { mutableDoubleStateOf(0.0) }
     var durationSec by remember { mutableDoubleStateOf(0.0) }
@@ -715,9 +722,9 @@ fun PlayerScreen(
         liveChannelRowVisible = false
         controlsVisible = false
         currentLabel = if (retryAction == LiveRetryAction.Reload) {
-            "Reloading live feed…"
+            playerResources.getString(R.string.player_reloading_live)
         } else {
-            "Refreshing live source… (attempt $attempt)"
+            playerResources.getString(R.string.player_refreshing_live_attempt, AppFormats.number(appLanguage, attempt))
         }
         TvDebugLogger.w("Player", "live retry attempt=$attempt mediaId=${playbackRequest.mediaId} reason=$message")
         liveReconnectJob = scope.launch {
@@ -1237,6 +1244,7 @@ fun PlayerScreen(
                 "${activeRequest.mediaType}:${activeRequest.mediaId}",
             )
             val prepared = preparePlayback(
+                resources = playerResources,
                 repository = repository,
                 request = activeRequest,
                 initialEpisode = currentEpisode,
@@ -1320,13 +1328,13 @@ fun PlayerScreen(
             }
             sourceFallbackNotice = null
             if (candidate?.source == null) {
-                error = repository.lastUsenetFailureMessage ?: when {
-                    prepared.initialSource.viewerChoseSource ->
-                    "The source you chose could not be opened, and no alternative worked. Choose another source."
-                    prepared.autoContinueResume ->
-                    "No saved source could be resumed, and no new playable source was found. Choose a source to continue."
-                    else -> "No playable stream could be resolved"
-                }
+                error = repository.lastUsenetFailureMessage ?: playerResources.getString(
+                    when {
+                        prepared.initialSource.viewerChoseSource -> R.string.player_source_failed_no_alternative
+                        prepared.autoContinueResume -> R.string.player_no_saved_source_resumed
+                        else -> R.string.player_no_playable_stream_resolved
+                    },
+                )
                 loading = false
                 controlsVisible = true
             } else error = null
@@ -1339,19 +1347,20 @@ fun PlayerScreen(
             TvDebugLogger.e("Player", "loadPlayback failed mediaType=${activeRequest.mediaType} mediaId=${activeRequest.mediaId}", throwable)
             candidate = null
             currentSourceUrl = null
-            currentLabel = streamLabelOverride ?: "No playable stream found"
+            currentLabel = streamLabelOverride ?: playerResources.getString(R.string.player_no_playable_stream_found)
             resetPlaybackEngineForNewSource()
             error = when (throwable) {
-                is java.net.SocketTimeoutException, is TimeoutCancellationException -> when {
-                    // Recomputed here: the load body's locals are out of scope, and the wording
-                    // has to match what the viewer actually did rather than how they arrived.
-                    activeRequest.selectedStreamKey != null || streamKeyOverride != null ->
-                        "The source you chose is taking too long. Choose another source."
-                    activeRequest.fromContinueWatching ->
-                        "Remembered source is taking too long. Choose another source."
-                    else -> "Stream lookup timed out. Please try again or choose another source."
-                }
-                else -> throwable.message ?: "Could not prepare playback"
+                is java.net.SocketTimeoutException, is TimeoutCancellationException -> playerResources.getString(
+                    when {
+                        // Recomputed here: the load body's locals are out of scope, and the wording
+                        // has to match what the viewer actually did rather than how they arrived.
+                        activeRequest.selectedStreamKey != null || streamKeyOverride != null ->
+                            R.string.player_source_taking_too_long
+                        activeRequest.fromContinueWatching -> R.string.player_remembered_taking_too_long
+                        else -> R.string.player_stream_lookup_timed_out
+                    },
+                )
+                else -> throwable.message ?: playerResources.getString(R.string.player_could_not_prepare)
             }
             loading = false
             controlsVisible = true
@@ -1391,7 +1400,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         while (isLive && !loading && error == null && !currentSourceUrl.isNullOrBlank()) {
             delay(5_000L)
             if (System.currentTimeMillis() - lastLiveProgressAtMs >= LiveStallTimeoutMs) {
-                scheduleLiveReconnect("The live feed stalled")
+                scheduleLiveReconnect(playerResources.getString(R.string.player_live_feed_stalled))
                 break
             }
         }
@@ -1610,13 +1619,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             repository.forgetRememberedStream(request.mediaType, request.mediaId, currentEpisode)
             candidate = null
             currentSourceUrl = null
-            continueSourceNotice = "That source has expired. Finding a new one…"
+            continueSourceNotice = playerResources.getString(R.string.player_source_expired_finding)
             scope.launch { loadPlayback(forceRefresh = true) }
             return@LaunchedEffect
         }
         TvDebugLogger.w("Player", "startup stalled before first frame source=${source.substringBefore('?')}")
         loading = false
-        error = "This source is not delivering playable media. Choose another source."
+        error = playerResources.getString(R.string.player_source_not_delivering)
         controlsVisible = true
     }
 
@@ -1631,7 +1640,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         if (media3Buffering && currentSourceUrl == source && !loading && error == null && kotlin.math.abs(positionSec - positionAtStall) < 1.0) {
             TvDebugLogger.w("Player", "playback buffering stalled source=${source.substringBefore('?')} position=$positionSec")
             paused = true
-            error = "Playback has stalled with no incoming media. Choose another source."
+            error = playerResources.getString(R.string.player_playback_stalled)
             controlsVisible = true
         }
     }
@@ -1779,11 +1788,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         if (segment.segmentType == "outro" && nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled()) return@LaunchedEffect
         markSegmentHandled(segment.segmentType)
         scheduleSeek(maxOf(segment.endSec, positionSec))
-        autoSkipNotice = when (segment.segmentType) {
-            "recap" -> "Recap skipped"
-            "outro" -> "Ending skipped"
-            else -> "Intro skipped"
-        }
+        autoSkipNotice = playerResources.getString(
+            when (segment.segmentType) {
+                "recap" -> R.string.player_recap_skipped
+                "outro" -> R.string.player_ending_skipped
+                else -> R.string.player_intro_skipped
+            },
+        )
     }
 
     LaunchedEffect(autoSkipNotice) {

@@ -559,11 +559,12 @@ fun mapAddonCatalogType(rawType: String): String? = when {
  * identical rows stacked one above the other. Only added when a title is genuinely ambiguous; a
  * catalog that exists under one type only keeps the name its author gave it.
  */
-private fun addonRailTypeSuffix(rawType: String): String = when {
-    rawType == "movie" -> "Movies"
-    rawType == "series" -> "Series"
-    rawType == "anime" -> "Anime"
-    rawType in LIVE_ADDON_CATALOG_TYPES -> "Live"
+private fun addonRailTypeSuffix(rawType: String, label: (Int, String) -> String): String = when {
+    rawType == "movie" -> label(R.string.rail_type_movies, "Movies")
+    rawType == "series" -> label(R.string.home_row_kind_series, "Series")
+    rawType == "anime" -> label(R.string.rail_type_anime, "Anime")
+    rawType in LIVE_ADDON_CATALOG_TYPES -> label(R.string.nav_live, "Live")
+    // A type StreamDek does not know a word for is the add-on's own; it stays as the add-on wrote it.
     else -> rawType.replaceFirstChar { it.uppercase(Locale.US) }
 }
 
@@ -603,15 +604,16 @@ fun buildAddonRailTitle(addonName: String, catalogName: String?, typeSuffix: Str
     return finish(truncateAtWordBoundary(catalog, budget))
 }
 
-private fun buildLiveRailTitle(rawType: String, catalogName: String?): String {
+private fun buildLiveRailTitle(rawType: String, catalogName: String?, label: (Int, String) -> String): String {
     val catalog = catalogName?.trim().orEmpty()
+    // The catalog's own name, when it has one. That is the provider's text, not StreamDek's.
     if (catalog.isNotBlank()) {
         return truncateAtWordBoundary(catalog, MAX_ADDON_RAIL_TITLE_LENGTH)
     }
     return when (rawType) {
-        "sport", "sports" -> "Sports"
-        "event", "events" -> "Live Events"
-        else -> "Live TV"
+        "sport", "sports" -> label(R.string.rail_live_sports, "Sports")
+        "event", "events" -> label(R.string.rail_live_events, "Live Events")
+        else -> label(R.string.live_tv, "Live TV")
     }
 }
 
@@ -638,8 +640,17 @@ class StreamDekRepository(
      * take the English source text. It is the same string `values/strings.xml` holds, which is
      * also the platform fallback for every locale.
      */
-    private fun label(@StringRes id: Int, fallback: String): String =
-        appContext?.let { runCatching { localizedContext(it).getString(id) }.getOrNull() } ?: fallback
+    private fun label(@StringRes id: Int, fallback: String, vararg args: Any): String =
+        appContext?.let { runCatching { localizedContext(it).getString(id, *args) }.getOrNull() } ?: fallback
+
+    /**
+     * The locale for counts and dates this repository writes into text a viewer reads.
+     *
+     * The interface language, not the device's: a French interface on an English television was
+     * grouping its thousands and abbreviating its months the English way.
+     */
+    private val numberLocale: Locale
+        get() = appContext?.let { savedAppLanguage(it).locale } ?: Locale.getDefault()
 
     /** Loading a profile's `.cs3` extensions; cancelled when the profile changes under it. */
     private var cloudStreamLoadJob: kotlinx.coroutines.Job? = null
@@ -1541,7 +1552,7 @@ class StreamDekRepository(
                     buildAddonRailTitle(
                         addonName = collection.addonName,
                         catalogName = collection.catalogName,
-                        typeSuffix = addonRailTypeSuffix(collection.rawType),
+                        typeSuffix = addonRailTypeSuffix(collection.rawType, ::label),
                     )
                 } else {
                     plainTitle
@@ -1560,7 +1571,7 @@ class StreamDekRepository(
     suspend fun fetchLiveCatalogSections(
         onProgress: (M3uLoadProgress) -> Unit = {},
     ): List<LiveCatalogSection> {
-        onProgress(M3uLoadProgress("Loading channels from your add-ons…"))
+        onProgress(M3uLoadProgress(label(R.string.live_loading_from_addons, "Loading channels from your add-ons…")))
         val addonSections = fetchAddonCatalogCollections { _, mappedType -> mappedType == "live" }
             .groupBy { it.addonId }
             .map { (addonId, collections) ->
@@ -1570,7 +1581,7 @@ class StreamDekRepository(
                     rails = collections.mapIndexed { index, collection ->
                         LiveCatalogRail(
                             id = "live:${collection.addonId}:${collection.rawType}:${collection.catalogId}:$index",
-                            title = buildLiveRailTitle(collection.rawType, collection.catalogName),
+                            title = buildLiveRailTitle(collection.rawType, collection.catalogName, ::label),
                             items = collection.items,
                         )
                     },
@@ -1641,7 +1652,11 @@ class StreamDekRepository(
                 }
                 .onFailure {
                     TvDebugLogger.w("Live", "playlist ${playlist.name} failed to load")
-                    onProgress(M3uLoadProgress("${playlist.name} could not be loaded"))
+                    onProgress(
+                        M3uLoadProgress(
+                            label(R.string.live_playlist_load_failed, "${playlist.name} could not be loaded", playlist.name),
+                        ),
+                    )
                 }
                 .getOrDefault(emptyList())
                 .filter { it.type == "live" }
@@ -1649,7 +1664,17 @@ class StreamDekRepository(
 
             // Grouping a 200k-channel playlist is real work, and it happens after the counts have
             // stopped moving — without a word here the screen looks stuck at the last number.
-            onProgress(M3uLoadProgress("${prefix}Sorting ${channels.size.formatted()} channels into categories", null, channels.size))
+            onProgress(
+                M3uLoadProgress(
+                    prefix + label(
+                        R.string.live_sorting_categories,
+                        "Sorting ${channels.size.formatted()} channels into categories",
+                        channels.size.formatted(numberLocale),
+                    ),
+                    null,
+                    channels.size,
+                ),
+            )
             val rails = withContext(Dispatchers.Default) {
                 channels
                     .groupBy { it.sourceCatalogName ?: playlist.name }
@@ -1663,7 +1688,19 @@ class StreamDekRepository(
                         )
                     }
             }
-            onProgress(M3uLoadProgress("${playlist.name}: ${rails.size} categories, ${channels.size.formatted()} channels", 1f, channels.size))
+            onProgress(
+                M3uLoadProgress(
+                    label(
+                        R.string.live_playlist_summary,
+                        "${playlist.name}: ${rails.size} categories, ${channels.size.formatted()} channels",
+                        playlist.name,
+                        rails.size.formatted(numberLocale),
+                        channels.size.formatted(numberLocale),
+                    ),
+                    1f,
+                    channels.size,
+                ),
+            )
             sections += LiveCatalogSection(
                 id = "playlist:${playlist.id}",
                 title = playlist.name,
@@ -1835,22 +1872,24 @@ class StreamDekRepository(
         // Slots are declared up front, in final display order, so a row that resolves late lands
         // where its skeleton already was.
         val pending = linkedMapOf<String, PendingRail>()
-        fun reserve(id: String, title: String, portrait: Boolean = false) {
-            pending[id] = PendingRail(id, title, portrait)
+        // `title` stays English as a fallback for anything that reaches a log or a test; what Home
+        // draws is `titleRes`, resolved in the composition so it follows the chosen language.
+        fun reserve(id: String, title: String, portrait: Boolean = false, titleRes: Int? = null) {
+            pending[id] = PendingRail(id, title, portrait, titleRes)
         }
-        reserve("continue-watching", "Continue Watching")
-        reserve("new-episodes", "New Episodes", portrait = true)
+        reserve("continue-watching", "Continue Watching", titleRes = R.string.home_rail_continue_watching)
+        reserve("new-episodes", "New Episodes", portrait = true, titleRes = R.string.home_rail_new_episodes)
         if (catalogRows.isNotEmpty()) {
             catalogRows.forEach { reserve(it.id, it.title, portrait = it.mediaType != "network") }
         } else if (builtInCatalogsEnabled) {
-            reserve("popular-movies", "Popular Movies")
-            reserve("popular-series", "Popular Series")
-            reserve("trending", "Trending")
-            reserve("recently-added", "Recently Added")
-            reserve("networks", "Streaming Services")
-            reserve("recommended", "Recommended For You")
+            reserve("popular-movies", "Popular Movies", titleRes = R.string.home_rail_popular_movies)
+            reserve("popular-series", "Popular Series", titleRes = R.string.home_rail_popular_series)
+            reserve("trending", "Trending", titleRes = R.string.home_rail_trending)
+            reserve("recently-added", "Recently Added", titleRes = R.string.home_rail_recently_added)
+            reserve("networks", "Streaming Services", titleRes = R.string.home_rail_streaming_services)
+            reserve("recommended", "Recommended For You", titleRes = R.string.home_rail_recommended)
         }
-        reserve("addon-catalogs", "Add-on Catalogues")
+        reserve("addon-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
 
         // Display order, which with the registry is only known at runtime. The pre-registry slots
         // still come from [HOME_SLOT_ORDER], so the fallback path is unchanged.
@@ -1896,7 +1935,7 @@ class StreamDekRepository(
                 // cache and then rebuild the row from the still-stale library cache beneath it.
                 val library = runCatching { fetchLibrary(forceRefresh = forceRefresh) }.getOrDefault(LibraryResponse())
                 val items = library.continueWatching.map(::continueWatchingCard)
-                publish("continue-watching", listOf(HomeRail("continue-watching", "Continue Watching", items)))
+                publish("continue-watching", listOf(HomeRail("continue-watching", "Continue Watching", items, titleRes = R.string.home_rail_continue_watching)))
                 // Built from the same library read rather than a second one. A television cannot
                 // show a notification -- there is no drawer on Android TV or Fire OS for one to
                 // land in -- so "a new episode is out" has to be somewhere the viewer already
@@ -2011,7 +2050,7 @@ class StreamDekRepository(
         }.sortedByDescending { (airDate, _) -> airDate }.map { (_, item) -> item }
 
         if (recent.isEmpty()) return emptyList()
-        return listOf(HomeRail("new-episodes", "New Episodes", recent))
+        return listOf(HomeRail("new-episodes", "New Episodes", recent, titleRes = R.string.home_rail_new_episodes))
     }
 
     /** How far back the New Episodes row reaches. A week covers a weekly show plus a late look. */
@@ -2036,27 +2075,37 @@ class StreamDekRepository(
      */
     private fun newEpisodeCardSubtitle(episode: AiringEpisode, airDate: java.time.LocalDate): String {
         val code = when {
-            episode.season != null && episode.episode != null -> "S${episode.season} E${episode.episode}"
-            episode.episode != null -> "Ep ${episode.episode}"
+            episode.season != null && episode.episode != null -> label(
+                R.string.new_episode_season_episode,
+                "S${episode.season} E${episode.episode}",
+                episode.season,
+                episode.episode,
+            )
+            episode.episode != null -> label(R.string.new_episode_short, "Ep ${episode.episode}", episode.episode)
             else -> null
         }
         val today = java.time.LocalDate.now()
         val whenLabel = when (airDate) {
-            today -> "Today"
-            today.minusDays(1) -> "Yesterday"
-            else -> airDate.format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
+            today -> label(R.string.date_today, "Today")
+            today.minusDays(1) -> label(R.string.date_yesterday, "Yesterday")
+            // A month name, so the pattern is resolved against the interface locale rather than
+            // the device's - "4 Oct" is "4 oct." in French and "4 Okt." in German.
+            else -> airDate.format(
+                java.time.format.DateTimeFormatter.ofPattern("d MMM", numberLocale),
+            )
         }
-        return listOfNotNull("NEW", code, whenLabel).joinToString(" · ")
+        return listOfNotNull(label(R.string.new_episode_badge, "NEW"), code, whenLabel).joinToString(" · ")
     }
 
     private fun newEpisodeSubtitle(episode: AiringEpisode): String {
         val code = when {
             episode.season != null && episode.episode != null -> "S%02dE%02d".format(episode.season, episode.episode)
-            episode.episode != null -> "Episode ${episode.episode}"
+            episode.episode != null -> label(R.string.new_episode_number, "Episode ${episode.episode}", episode.episode)
             else -> null
         }
         val name = episode.name?.trim()?.takeIf { it.isNotEmpty() }
-        return listOfNotNull(code, name).joinToString(" · ").ifBlank { "A new episode is out." }
+        return listOfNotNull(code, name).joinToString(" · ")
+            .ifBlank { label(R.string.new_episode_fallback, "A new episode is out.") }
     }
 
     private fun continueWatchingCard(item: ContinueWatchingItem): MediaItem = MediaItem(
@@ -2158,9 +2207,9 @@ class StreamDekRepository(
         val popularMovies = popularMovie.await().ifEmpty { trendingMovies }
         val popularShows = popularTv.await().ifEmpty { trendingShows }
 
-        publish("popular-movies", listOf(HomeRail("popular-movies", "Popular Movies", popularMovies)))
-        publish("popular-series", listOf(HomeRail("popular-series", "Popular Series", popularShows)))
-        publish("trending", listOf(HomeRail("trending", "Trending", (trendingMovies + trendingShows).take(20))))
+        publish("popular-movies", listOf(HomeRail("popular-movies", "Popular Movies", popularMovies, titleRes = R.string.home_rail_popular_movies)))
+        publish("popular-series", listOf(HomeRail("popular-series", "Popular Series", popularShows, titleRes = R.string.home_rail_popular_series)))
+        publish("trending", listOf(HomeRail("trending", "Trending", (trendingMovies + trendingShows).take(20), titleRes = R.string.home_rail_trending)))
 
         val browseMovies = browseMovie.await().ifEmpty { popularMovies }
         val browseShows = browseTv.await().ifEmpty { popularShows }
@@ -2168,14 +2217,14 @@ class StreamDekRepository(
             .distinctBy { "${it.type}:${it.id}" }
             .sortedByDescending { it.year?.toIntOrNull() ?: 0 }
             .take(20)
-        publish("recently-added", listOf(HomeRail("recently-added", "Recently Added", recentlyAdded)))
-        publish("networks", listOf(HomeRail("networks", "Streaming Services", networks.await())))
+        publish("recently-added", listOf(HomeRail("recently-added", "Recently Added", recentlyAdded, titleRes = R.string.home_rail_recently_added)))
+        publish("networks", listOf(HomeRail("networks", "Streaming Services", networks.await(), titleRes = R.string.home_rail_streaming_services)))
 
         val recommendedMovies = recMovie.await().ifEmpty { popularMovies }
         val recommendedShows = recTv.await().ifEmpty { popularShows }
         publish(
             "recommended",
-            listOf(HomeRail("recommended", "Recommended For You", (recommendedMovies + recommendedShows).take(20))),
+            listOf(HomeRail("recommended", "Recommended For You", (recommendedMovies + recommendedShows).take(20), titleRes = R.string.home_rail_recommended)),
         )
     }
 
@@ -2392,7 +2441,9 @@ class StreamDekRepository(
         // also had failed requests behind it is reported as a problem worth showing.
         if (merged.continueWatching.isEmpty() && merged.watchlist.isEmpty() && api.failureEpoch > failuresBefore) {
             TvDebugLogger.w("Library", "library came back empty after backend failures")
-            throw ContentUnavailableException("Your library could not be loaded. Check the connection and try again.")
+            throw ContentUnavailableException(
+                label(R.string.library_load_failed, "Your library could not be loaded. Check the connection and try again."),
+            )
         }
         TvDebugLogger.i(
             "Library",
@@ -2687,7 +2738,15 @@ class StreamDekRepository(
                 TvDebugLogger.w("Watchlist", "$action failed on $service for ${item.type}:${item.id}")
             }
         }
-        if (!sourceUpdated) throw ContentUnavailableException("Could not ${if (remove) "remove this title from" else "add this title to"} your watchlist.")
+        if (!sourceUpdated) {
+            throw ContentUnavailableException(
+                if (remove) {
+                    label(R.string.watchlist_remove_failed, "Could not remove this title from your watchlist.")
+                } else {
+                    label(R.string.watchlist_add_failed, "Could not add this title to your watchlist.")
+                },
+            )
+        }
         // Publish the successful mutation immediately. Tracking providers can be eventually
         // consistent; force-reading in the same frame used to replace the whole grid with a
         // transient empty response and later resurrect the item that had just been removed.
@@ -4675,11 +4734,11 @@ class StreamDekRepository(
      * time to give up, so a viewer watching the player work through a list is owed the distinction.
      */
     fun streamDeliveryLabel(stream: AddonStream?): String = when {
-        stream == null -> "Source"
-        isUsenetStream(stream) -> "Usenet"
-        !normalizedDirectUrl(stream).isNullOrBlank() -> "Direct"
-        !effectiveInfoHash(stream).isNullOrBlank() -> "Torrent"
-        else -> "Source"
+        stream == null -> label(R.string.player_info_source, "Source")
+        isUsenetStream(stream) -> label(R.string.transport_usenet, "Usenet")
+        !normalizedDirectUrl(stream).isNullOrBlank() -> label(R.string.player_info_route_direct, "Direct")
+        !effectiveInfoHash(stream).isNullOrBlank() -> label(R.string.transport_torrent, "Torrent")
+        else -> label(R.string.player_info_source, "Source")
     }
 
     suspend fun resolvePlaybackSource(
@@ -5086,7 +5145,7 @@ class StreamDekRepository(
         val response = api.post<JsonObject>(
             "/services/credentials/${service.id}/validate",
             mapOf("apiKey" to apiKey),
-        ) ?: return Result.failure(IllegalStateException(CredentialFailure.ServiceUnavailable.message))
+        ) ?: return Result.failure(CredentialFailureException(CredentialFailure.ServiceUnavailable))
 
         if (response.get("valid")?.asBoolean == true) {
             return Result.success(response.get("label")?.takeIf { !it.isJsonNull }?.asString)
@@ -5094,7 +5153,7 @@ class StreamDekRepository(
         val failure = CredentialFailure.fromId(
             response.get("failure")?.takeIf { !it.isJsonNull }?.asString,
         )
-        return Result.failure(IllegalStateException(failure.message))
+        return Result.failure(CredentialFailureException(failure))
     }
 
     /**
@@ -5110,16 +5169,16 @@ class StreamDekRepository(
         choice: StorageChoice,
     ): Result<String> {
         val trimmed = apiKey.trim()
-        if (trimmed.length < 8) return Result.failure(IllegalStateException(CredentialFailure.Malformed.message))
+        if (trimmed.length < 8) return Result.failure(CredentialFailureException(CredentialFailure.Malformed))
 
         if (choice == StorageChoice.SaveToStreamDek) {
             if (currentSession() == null) {
-                return Result.failure(IllegalStateException(CredentialFailure.NotSignedIn.message))
+                return Result.failure(CredentialFailureException(CredentialFailure.NotSignedIn))
             }
             val response = api.put<JsonObject>(
                 "/services/credentials/${service.id}",
                 mapOf("apiKey" to trimmed),
-            ) ?: return Result.failure(IllegalStateException(CredentialFailure.ServiceUnavailable.message))
+            ) ?: return Result.failure(CredentialFailureException(CredentialFailure.ServiceUnavailable))
             response.get("error")?.takeIf { !it.isJsonNull }?.let {
                 return Result.failure(IllegalStateException(it.asString))
             }
@@ -5157,14 +5216,14 @@ class StreamDekRepository(
      */
     suspend fun copyContentServiceKeyToAccount(service: ContentService): Result<String> {
         if (currentSession() == null) {
-            return Result.failure(IllegalStateException(CredentialFailure.NotSignedIn.message))
+            return Result.failure(CredentialFailureException(CredentialFailure.NotSignedIn))
         }
         val key = serviceCredentials.deviceKey(service)
             ?: return Result.failure(IllegalStateException("There is no ${service.label} key on this TV to save."))
         val response = api.put<JsonObject>(
             "/services/credentials/${service.id}",
             mapOf("apiKey" to key),
-        ) ?: return Result.failure(IllegalStateException(CredentialFailure.ServiceUnavailable.message))
+        ) ?: return Result.failure(CredentialFailureException(CredentialFailure.ServiceUnavailable))
         response.get("error")?.takeIf { !it.isJsonNull }?.let {
             return Result.failure(IllegalStateException(it.asString))
         }
@@ -5189,10 +5248,10 @@ class StreamDekRepository(
             return Result.success("${service.label} key removed from this TV.")
         }
         if (currentSession() == null) {
-            return Result.failure(IllegalStateException(CredentialFailure.NotSignedIn.message))
+            return Result.failure(CredentialFailureException(CredentialFailure.NotSignedIn))
         }
         api.delete<JsonObject>("/services/credentials/${service.id}")
-            ?: return Result.failure(IllegalStateException(CredentialFailure.ServiceUnavailable.message))
+            ?: return Result.failure(CredentialFailureException(CredentialFailure.ServiceUnavailable))
         refreshContentServices()
         return Result.success(
             "${service.label} key removed from your StreamDek account. Your other devices will stop using it.",
@@ -5263,7 +5322,8 @@ class StreamDekRepository(
 
         while (System.currentTimeMillis() < deadline) {
             delay(intervalMs)
-            when (val poll = PremiumizeDeviceAuth.poll(clientId, started.deviceCode)) {
+            val authResources = appContext?.let { runCatching { localizedContext(it).resources }.getOrNull() }
+            when (val poll = PremiumizeDeviceAuth.poll(clientId, started.deviceCode, authResources)) {
                 is PremiumizeDeviceAuth.Poll.Authorized -> {
                     val token = poll.accessToken
                     val validation = runCatching { PremiumizeClient(token).validate() }.getOrNull()

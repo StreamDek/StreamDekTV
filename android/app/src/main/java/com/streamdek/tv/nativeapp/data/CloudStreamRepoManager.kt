@@ -3,6 +3,7 @@ package com.streamdek.tv.nativeapp.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.streamdek.tv.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -366,14 +367,21 @@ class CloudStreamRepoManager(private val context: Context) {
       .flatMap(CloudStreamPluginLoader::providersFor)
   }
 
+  /**
+   * Why one extension would not load, in the interface language.
+   *
+   * The extension's own name and the loader's reason are passed through untranslated: the first is
+   * the author's, and the second is a Java exception message that exists in one language only.
+   */
   private fun loadFailureMessage(name: String, failure: Throwable): String {
     val reason = failure.message.orEmpty()
+    val resources = localizedContext(context).resources
     return when {
       reason.contains("ClassNotFoundException", true) || reason.contains("NoClassDefFoundError", true) ->
-        "$name needs a part of the CloudStream API that StreamDek does not ship. It cannot run here."
-      reason.contains("manifest.json", true) -> "$name is not a valid CloudStream extension file."
-      reason.isBlank() -> "$name could not be loaded."
-      else -> "$name could not be loaded: ${reason.take(180)}"
+        resources.getString(R.string.cloudstream_needs_unsupported_api, name)
+      reason.contains("manifest.json", true) -> resources.getString(R.string.cloudstream_not_valid_extension, name)
+      reason.isBlank() -> resources.getString(R.string.cloudstream_could_not_load, name)
+      else -> resources.getString(R.string.cloudstream_could_not_load_reason, name, reason.take(180))
     }
   }
 

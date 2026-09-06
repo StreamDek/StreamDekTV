@@ -73,9 +73,17 @@ function kotlinFiles(dir) {
   return out;
 }
 
-const paramPattern = new RegExp(`\\b(?:${USER_FACING_PARAMS.join("|")})\\s*=\\s*"((?:[^"\\\\]|\\\\.)*)"`, "g");
+/**
+ * Every pattern below spells a string literal as `"((?:[^"\\\n]|\\.)*)"`, and the `\n` in the
+ * character class is load-bearing: a Kotlin single-quoted string cannot contain a raw newline, so a
+ * pattern that allows one stops matching a string and starts matching the gap between two of them.
+ * Without it, `Torrent("torrent", ...),` followed on the next line by `Usenet("usenet", ...)` was
+ * reported as one finding whose text was `"),\r\n    Usenet("` - the code in between. Those are
+ * unactionable, and there were enough of them to pad the ceiling by a tenth.
+ */
+const paramPattern = new RegExp(`\\b(?:${USER_FACING_PARAMS.join("|")})\\s*=\\s*"((?:[^"\\\\\\n]|\\\\.)*)"`, "g");
 // Text("...") and Text(text = "..."), the single most common way a string reaches a screen.
-const textPattern = /\bText\s*\(\s*(?:text\s*=\s*)?"((?:[^"\\]|\\.)*)"/g;
+const textPattern = /\bText\s*\(\s*(?:text\s*=\s*)?"((?:[^"\\\n]|\\.)*)"/g;
 
 /**
  * Settings builders whose headings and subtitles are passed positionally.
@@ -96,7 +104,39 @@ const POSITIONAL_BUILDERS = [
   "LanguageChoiceRow",
 ];
 const builderPattern = new RegExp(`\\b(?:${POSITIONAL_BUILDERS.join("|")})\\s*\\(`, "g");
-const literalPattern = /"((?:[^"\\]|\\.)*)"/g;
+const literalPattern = /"((?:[^"\\\n]|\\.)*)"/g;
+
+/**
+ * Three routes English took to the screen without passing any of the checks above.
+ *
+ * Every settings page kept an English heading long after its contents were translated, because the
+ * heading came from a `when` returning a string; the caption under a Home card stayed English
+ * because its enum constant carried a `label`; and every text field's placeholder stayed English
+ * because it was written `InputGuideText("...")` rather than `placeholder = "..."`. None of those
+ * is exotic, and all three are invisible to a detector that only knows `Text(...)`, a named
+ * parameter, and the settings builders. So they are checked too.
+ */
+// `-> "Some words"`: a `when` arm handing back a sentence.
+const whenArmPattern = /->\s*"((?:[^"\\\n]|\\.)*)"/g;
+// `ShowFull("show_full", "Show Full")`: an enum constant carrying its own label.
+const enumEntryPattern = /^\s{2,4}[A-Z]\w*\(\s*[^)\n]*"((?:[^"\\\n]|\\.)*)"/gm;
+// `SomeComposable("Some words", ...)`: words in the first position of a call.
+const positionalCallPattern = /\b([A-Z]\w+)\s*\(\s*"((?:[^"\\\n]|\\.)*)"/g;
+
+/**
+ * Calls whose first argument is an id, a key, a pattern or a message for a log - never something a
+ * viewer reads. Without this the positional rule buries the real findings under `Regex(...)`,
+ * `Color(...)` and every exception constructor in the codebase.
+ */
+const NOT_INTERFACE_CALLS = new Set([
+  "Regex", "Color", "Locale", "Uri", "File", "Intent", "Log", "Json", "Bundle", "Pair",
+  "SimpleDateFormat", "URL", "URI", "String", "StringBuilder", "Modifier", "Icons", "Request",
+  "Builder", "MediaItem", "HomeCatalogRow", "Exception", "RuntimeException", "Throwable", "Error",
+  "IllegalStateException", "IllegalArgumentException", "UnknownHostException", "IOException",
+  "SaveableStateProvider", "CsTestMedia", "ExternalRating", "OAEPParameterSpec",
+  "DebridNotReadyException",
+]);
+
 
 /**
  * The argument list of a call starting at `open`, balanced.
@@ -144,6 +184,17 @@ for (const path of kotlinFiles(sourceRoot)) {
     for (const literal of args.matchAll(literalPattern)) {
       if (isProse(literal[1])) hits.push(literal[1]);
     }
+  }
+  for (const pattern of [whenArmPattern, enumEntryPattern]) {
+    pattern.lastIndex = 0;
+    for (const match of src.matchAll(pattern)) {
+      if (isProse(match[1])) hits.push(match[1]);
+    }
+  }
+  positionalCallPattern.lastIndex = 0;
+  for (const match of src.matchAll(positionalCallPattern)) {
+    if (NOT_INTERFACE_CALLS.has(match[1])) continue;
+    if (isProse(match[2])) hits.push(match[2]);
   }
   if (hits.length) {
     perFile.set(relative(root, path).split(sep).join("/"), hits);

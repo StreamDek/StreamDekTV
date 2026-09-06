@@ -28,73 +28,99 @@ import javax.crypto.spec.GCMParameterSpec
 
 // ── The services ──────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A content service the viewer can bring their own key to.
+ *
+ * The tagline, the blurb, the bullets and the help text are resource ids rather than text, for the
+ * same reason [CredentialStorage] below holds ids: these are read by a person, and a data model
+ * carrying English pins them to English on a translated television. The [id] and the [label] stay
+ * plain strings - the id is a storage contract and the label is the service's own name, and neither
+ * is ever translated. The same enum on the phone is written this way, and the two share the
+ * resources so one English sentence cannot become two different French ones.
+ */
 enum class ContentService(
     val id: String,
     val label: String,
-    val tagline: String,
-    val blurb: String,
-    val uses: List<String>,
+    @StringRes val taglineRes: Int,
+    @StringRes val blurbRes: Int,
+    val usesRes: List<Int>,
     val keyUrl: String,
-    val howToGet: List<String>,
-    val keyHint: String,
+    val howToGetRes: List<Int>,
+    @StringRes val keyHintRes: Int,
 ) {
     Tmdb(
         id = "tmdb",
         label = "TMDB",
-        tagline = "Movies, Shows & Metadata",
-        blurb = "Powers the artwork, descriptions and episode information across StreamDek.",
-        uses = listOf(
-            "Posters and backdrops",
-            "Movie and series information",
-            "Cast and crew",
-            "Seasons and episodes",
-            "Search and discovery",
+        taglineRes = R.string.service_tmdb_tagline,
+        blurbRes = R.string.service_tmdb_blurb,
+        usesRes = listOf(
+            R.string.service_tmdb_use_posters,
+            R.string.service_tmdb_use_information,
+            R.string.service_tmdb_use_cast,
+            R.string.service_tmdb_use_seasons,
+            R.string.service_tmdb_use_search,
         ),
         keyUrl = "themoviedb.org/settings/api",
-        howToGet = listOf(
-            "Create a free account at themoviedb.org.",
-            "Open Settings, then API, and request a key for personal use.",
-            "Copy either the API Key or the API Read Access Token - StreamDek accepts both.",
+        howToGetRes = listOf(
+            R.string.service_tmdb_step_account,
+            R.string.service_tmdb_step_request,
+            R.string.service_tmdb_step_copy,
         ),
-        keyHint = "API key or read access token",
+        keyHintRes = R.string.service_tmdb_key_hint,
     ),
     Mdblist(
         id = "mdblist",
         label = "MDBList",
-        tagline = "Ratings & Lists",
-        blurb = "Brings in ratings from IMDb, Rotten Tomatoes and others, and keeps your lists in step.",
-        uses = listOf(
-            "IMDb, Rotten Tomatoes and Metacritic ratings",
-            "Extra rating services on title pages",
-            "Watchlist and list synchronisation",
+        taglineRes = R.string.service_mdblist_tagline,
+        blurbRes = R.string.service_mdblist_blurb,
+        usesRes = listOf(
+            R.string.service_mdblist_use_ratings,
+            R.string.service_mdblist_use_extra_ratings,
+            R.string.service_mdblist_use_lists,
         ),
         keyUrl = "mdblist.com/preferences",
-        howToGet = listOf(
-            "Sign in at mdblist.com.",
-            "Open Preferences and find the API key section.",
-            "Generate a key if you have not already, then copy it.",
+        howToGetRes = listOf(
+            R.string.service_mdblist_step_sign_in,
+            R.string.service_mdblist_step_preferences,
+            R.string.service_mdblist_step_generate,
         ),
-        keyHint = "MDBList API key",
+        keyHintRes = R.string.service_mdblist_key_hint,
     ),
     IntroDb(
         id = "introdb",
         label = "IntroDB",
-        tagline = "Series Playback Timing",
-        blurb = "Provides intro, recap and ending timestamps for series.",
-        uses = listOf("Episode timing", "Intro and recap skipping", "Ending detection and next episode"),
+        taglineRes = R.string.service_introdb_tagline,
+        blurbRes = R.string.service_introdb_blurb,
+        usesRes = listOf(
+            R.string.service_introdb_use_timing,
+            R.string.service_introdb_use_skipping,
+            R.string.service_introdb_use_ending,
+        ),
         keyUrl = "introdb.app/account",
-        howToGet = listOf("Sign in at introdb.app/account.", "Create or copy your API key from the account page.", "Paste the complete key into StreamDek."),
-        keyHint = "IntroDB API key",
+        howToGetRes = listOf(
+            R.string.service_introdb_step_sign_in,
+            R.string.service_introdb_step_copy,
+            R.string.service_introdb_step_paste,
+        ),
+        keyHintRes = R.string.service_introdb_key_hint,
     ),
     TheIntroDb(
         id = "theintrodb",
         label = "TheIntroDB",
-        tagline = "Movies, Series & Playback Timing",
-        blurb = "Community-verified intro, recap, credits and preview timestamps for movies and series.",
-        uses = listOf("Movie and episode timing", "Intro and recap skipping", "Credits, next episode and recommendations"),
+        taglineRes = R.string.service_theintrodb_tagline,
+        blurbRes = R.string.service_theintrodb_blurb,
+        usesRes = listOf(
+            R.string.service_theintrodb_use_timing,
+            R.string.service_theintrodb_use_skipping,
+            R.string.service_theintrodb_use_credits,
+        ),
         keyUrl = "theintrodb.org/docs",
-        howToGet = listOf("Open TheIntroDB documentation.", "Follow the API-key instructions and sign in when asked.", "Copy the complete key into StreamDek."),
-        keyHint = "TheIntroDB API key",
+        howToGetRes = listOf(
+            R.string.service_theintrodb_step_docs,
+            R.string.service_theintrodb_step_follow,
+            R.string.service_theintrodb_step_copy,
+        ),
+        keyHintRes = R.string.service_theintrodb_key_hint,
     );
 
     companion object {
@@ -138,13 +164,20 @@ data class ContentServiceState(
     val configured: Boolean
         get() = status == CredentialStatus.Connected || status == CredentialStatus.NeedsAttention
 
-    /** What the settings row says on the right-hand side, in a few words readable from a sofa. */
-    val summary: String
+    /**
+     * What the settings row says on the right-hand side, in a few words readable from a sofa.
+     *
+     * A resource id rather than the words themselves: this is a data class, and a summary resolved
+     * here would be fixed in whatever language was current when the state was built.
+     */
+    @get:StringRes
+    val summaryRes: Int
         get() = when {
-            status == CredentialStatus.NeedsAttention -> "Needs attention"
-            status == CredentialStatus.Connected && storage == CredentialStorage.Account -> "Connected via StreamDek"
-            status == CredentialStatus.Connected -> "Connected on this TV"
-            else -> "Not configured"
+            status == CredentialStatus.NeedsAttention -> R.string.credential_status_needs_attention
+            status == CredentialStatus.Connected && storage == CredentialStorage.Account ->
+                R.string.credential_status_connected_via_streamdek
+            status == CredentialStatus.Connected -> R.string.credential_status_connected_on_this_tv
+            else -> R.string.settings_tv_not_configured
         }
 }
 
@@ -203,11 +236,20 @@ enum class StorageChoice { SaveToStreamDek, ThisDeviceOnly }
 
 enum class CredentialRemoval { Device, Account }
 
-enum class CredentialFailure(val message: String) {
-    InvalidKey("That key wasn't accepted. Check it was copied in full, then try again."),
-    ServiceUnavailable("Couldn't reach the service just now, so the key hasn't been checked. Nothing has changed."),
-    Malformed("That doesn't look like a key. Enter the whole key from your account page."),
-    NotSignedIn("Sign in to StreamDek to check and save your keys.");
+/**
+ * A failure thrown where the screen can name it, rather than a sentence carried in an exception.
+ *
+ * The repository runs outside any composition, so the message it used to put into an
+ * `IllegalStateException` was always English no matter what language the television was in. It
+ * throws this instead and the screen resolves [CredentialFailure.messageRes] itself.
+ */
+class CredentialFailureException(val failure: CredentialFailure) : IllegalStateException(failure.name)
+
+enum class CredentialFailure(@StringRes val messageRes: Int) {
+    InvalidKey(R.string.credential_failure_invalid_key),
+    ServiceUnavailable(R.string.credential_failure_service_unavailable),
+    Malformed(R.string.credential_failure_malformed),
+    NotSignedIn(R.string.credential_failure_not_signed_in);
 
     companion object {
         fun fromId(value: String?): CredentialFailure = when (value?.trim()?.lowercase()) {

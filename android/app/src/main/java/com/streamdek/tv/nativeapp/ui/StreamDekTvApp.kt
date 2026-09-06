@@ -3,6 +3,7 @@ package com.streamdek.tv.nativeapp.ui
 import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -63,6 +64,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.window.Dialog
@@ -94,6 +96,8 @@ import com.streamdek.tv.nativeapp.data.TvPowerActions
 import com.streamdek.tv.nativeapp.data.clearTrailerState
 import com.streamdek.tv.nativeapp.data.idleTimeoutMillis
 import com.streamdek.tv.nativeapp.data.mapAddonCatalogType
+import com.streamdek.tv.nativeapp.ui.AppFormats
+import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 import com.streamdek.tv.nativeapp.ui.TvScroll
 import com.streamdek.tv.nativeapp.ui.account.SettingsScreen
 import com.streamdek.tv.nativeapp.ui.auth.AuthScreen
@@ -115,17 +119,23 @@ import com.streamdek.tv.nativeapp.update.AppUpdateUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/**
+ * The five places the navigation rail can take you.
+ *
+ * [route] is the identity and never changes; the word on the rail is a resource. The `width` each
+ * entry used to carry was measured from the English label and read by nothing - the rail sizes
+ * itself - so it is gone rather than left to mislead the next person who translates this.
+ */
 private enum class TopLevelDestination(
     val route: String,
-    val label: String,
-    val width: androidx.compose.ui.unit.Dp,
+    @StringRes val labelRes: Int,
     val icon: ImageVector?,
 ) {
-    Home("home", "Home", 92.dp, Icons.Outlined.Home),
-    Search("search", "Search", 98.dp, Icons.Outlined.Search),
-    Live("live", "Live", 82.dp, Icons.Outlined.LiveTv),
-    Library("library", "Library", 104.dp, Icons.Outlined.VideoLibrary),
-    Profile("profile", "Settings", 42.dp, null),
+    Home("home", R.string.nav_home, Icons.Outlined.Home),
+    Search("search", R.string.nav_search, Icons.Outlined.Search),
+    Live("live", R.string.nav_live, Icons.Outlined.LiveTv),
+    Library("library", R.string.nav_library, Icons.Outlined.VideoLibrary),
+    Profile("profile", R.string.nav_settings, null),
 }
 
 private data class LiveNavigationState(
@@ -207,6 +217,8 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     // findActivity(), not a cast: ProvideAppLocale hands the composition a ContextWrapper, and a
     // direct `as? Activity` would quietly become null, taking the sleep and back-out paths with it.
     val activity = context.findActivity()
+    // The handoff failure is reported from a coroutine, which is not a composition.
+    val appResources = context.resources
     val appUpdateManager = remember { AppGraph.appUpdateManager }
     val session by repository.session.collectAsState()
     val bootstrap by repository.bootstrap.collectAsState()
@@ -1257,7 +1269,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                                             handledHandoffId = handoff.id
                                             repository.acknowledgeHandoff(handoff.id, "failed")
                                             handoffProcessing = false
-                                            handoffError = "This handoff could not be opened securely. Reopen StreamDek on your phone and try again."
+                                            handoffError = appResources.getString(R.string.handoff_open_failed)
                                         }
                                 }
                             }
@@ -1321,7 +1333,7 @@ private fun HandoffPrompt(
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
-                    errorMessage ?: "StreamDek Mobile wants to continue the current movie or episode here. The playback details are encrypted and expire automatically.",
+                    errorMessage ?: stringResource(R.string.handoff_prompt),
                     style = MaterialTheme.typography.bodyLarge,
                     color = if (errorMessage == null) MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f) else Color(0xFFFFB4AB),
                 )
@@ -1330,7 +1342,17 @@ private fun HandoffPrompt(
                         onClick = if (errorMessage == null) onAccept else onDismiss,
                         enabled = !processing,
                         modifier = Modifier.focusRequester(acceptRequester),
-                    ) { Text(if (processing) "Opening…" else if (errorMessage == null) "Continue watching" else "Close") }
+                    ) {
+                        Text(
+                            stringResource(
+                                when {
+                                    processing -> R.string.state_opening
+                                    errorMessage == null -> R.string.continue_watching
+                                    else -> R.string.action_close
+                                },
+                            ),
+                        )
+                    }
                     if (errorMessage == null) {
                         OutlinedButton(onClick = onDismiss, enabled = !processing) { Text(stringResource(R.string.action_not_now)) }
                     }
@@ -1568,10 +1590,15 @@ private fun AppUpdatePrompt(
                     ) {
                         Text(
                             when {
-                                state.blockedByUnknownSources -> "Open Install Settings"
-                                state.downloadProgressPercent != null -> "Downloading ${state.downloadProgressPercent}%"
-                                state.isInstalling -> "Preparing Update"
-                                else -> "Install Update"
+                                state.blockedByUnknownSources -> stringResource(R.string.update_open_install_settings)
+                                state.downloadProgressPercent != null -> stringResource(
+                                    R.string.update_downloading_percent,
+                                    // Through the percent formatter: the sign sits on the other
+                                    // side of the number in several of these languages.
+                                    AppFormats.percent(LocalAppLanguage.current, state.downloadProgressPercent / 100.0),
+                                )
+                                state.isInstalling -> stringResource(R.string.update_preparing)
+                                else -> stringResource(R.string.update_install)
                             },
                         )
                     }
@@ -1908,7 +1935,7 @@ private fun TvSideNav(
                         destination.icon?.let { icon ->
                             Icon(
                                 imageVector = icon,
-                                contentDescription = destination.label,
+                                contentDescription = stringResource(destination.labelRes),
                                 tint = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
                                 modifier = Modifier.size(20.dp),
                             )
@@ -1918,12 +1945,16 @@ private fun TvSideNav(
                 if (labelAlpha > 0.01f) {
                     Spacer(Modifier.width(12.dp))
                     Text(
-                        text = destination.label,
+                        text = stringResource(destination.labelRes),
                         color = (if (highlighted) Color.White else MaterialTheme.colorScheme.onBackground)
                             .copy(alpha = labelAlpha),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         maxLines = 1,
                         softWrap = false,
+                        // The expanded rail is a fixed width, and "Einstellungen" is half again as
+                        // long as "Settings". Ellipsis rather than a hard clip, so a label that
+                        // does not fit still ends somewhere a viewer can read.
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }

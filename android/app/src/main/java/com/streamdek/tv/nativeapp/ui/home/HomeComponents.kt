@@ -24,6 +24,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
+import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.ui.AppFormats
+import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 import com.streamdek.tv.nativeapp.ui.animateToAnchoredItem
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
@@ -270,10 +274,22 @@ internal fun HomeSpotlight(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 (presentedDetail?.rating ?: item.rating)?.takeIf { it > 0 }?.let {
-                    SpotlightChip("★ %.1f".format(it), emphasised = true)
+                    SpotlightChip(
+                        stringResource(R.string.rating_star_value, AppFormats.number(LocalAppLanguage.current, it, 1)),
+                        emphasised = true,
+                    )
                 }
                 (presentedDetail?.year ?: item.year)?.takeIf { it.isNotBlank() }?.let { SpotlightChip(it) }
-                presentedDetail?.runtime?.takeIf { it > 0 }?.let { SpotlightChip("${it / 60}h ${it % 60}m") }
+                presentedDetail?.runtime?.takeIf { it > 0 }?.let {
+                    val language = LocalAppLanguage.current
+                    SpotlightChip(
+                        stringResource(
+                            R.string.runtime_hours_minutes,
+                            AppFormats.number(language, it / 60),
+                            AppFormats.number(language, it % 60),
+                        ),
+                    )
+                }
                 presentedDetail?.genreNames?.take(2)?.forEach { SpotlightChip(it) }
             }
         }
@@ -311,19 +327,24 @@ private val MetaSlotHeight = 30.dp
  * Genre wins over the raw type where it is more use — "Documentary" says more than "Movie" — and a
  * live channel names its source, which is where the addon label above the title used to live.
  */
+@Composable
 private fun spotlightKindLabel(item: MediaItem, detail: MediaDetail?): String? {
     val genres = detail?.genreNames.orEmpty()
-    return when {
-        item.type == "live" -> item.sourceAddonName?.takeIf { it.isNotBlank() }?.uppercase() ?: "LIVE"
-        item.type == "network" -> "STREAMING SERVICE"
-        genres.any { it.equals("Documentary", ignoreCase = true) } -> "DOCUMENTARY"
-        genres.any { it.equals("Reality", ignoreCase = true) } -> "REALITY"
-        genres.any { it.equals("Talk", ignoreCase = true) } -> "TALK SHOW"
-        genres.any { it.equals("News", ignoreCase = true) } -> "NEWS"
-        item.type == "tv" -> "SERIES"
-        item.type == "movie" -> "MOVIE"
-        else -> null
+    // The genre names being matched are TMDB's, which arrive in English whatever the interface
+    // language is, so the comparisons stay English while every word this returns is translated.
+    val labelRes = when {
+        item.type == "live" -> return item.sourceAddonName?.takeIf { it.isNotBlank() }?.uppercase()
+            ?: stringResource(R.string.badge_live)
+        item.type == "network" -> R.string.badge_streaming_service
+        genres.any { it.equals("Documentary", ignoreCase = true) } -> R.string.badge_documentary
+        genres.any { it.equals("Reality", ignoreCase = true) } -> R.string.badge_reality
+        genres.any { it.equals("Talk", ignoreCase = true) } -> R.string.badge_talk_show
+        genres.any { it.equals("News", ignoreCase = true) } -> R.string.badge_news
+        item.type == "tv" -> R.string.badge_series
+        item.type == "movie" -> R.string.badge_movie
+        else -> return null
     }
+    return stringResource(labelRes)
 }
 
 @Composable
@@ -420,7 +441,7 @@ internal fun HomeShelf(
     val representativeWidthPx = with(LocalDensity.current) { representativeWidth.toPx() }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            text = row.title,
+            text = row.titleRes?.let { stringResource(it) } ?: row.title,
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = titleAlpha),
             modifier = Modifier.padding(start = HomeInset),
@@ -640,7 +661,7 @@ internal fun HomeSkeletonShelf(pending: PendingRail, portraitCards: Boolean) {
     val height = (if (pending.portrait || portraitCards) 174.dp else 117.dp) * scale
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            text = pending.title,
+            text = pending.titleRes?.let { stringResource(it) } ?: pending.title,
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
             modifier = Modifier.padding(start = HomeInset),

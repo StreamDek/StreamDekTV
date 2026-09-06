@@ -427,10 +427,10 @@ internal fun StartupProfilePicker(
                                     )
                                     Text(
                                         when {
-                                            profile.hasPinSet -> "PIN required"
-                                            profile.id == activeProfileId -> "Last used"
-                                            profile.isDefault -> "Default"
-                                            else -> "Ready to watch"
+                                            profile.hasPinSet -> stringResource(R.string.profile_pin_required)
+                                            profile.id == activeProfileId -> stringResource(R.string.profile_last_used)
+                                            profile.isDefault -> stringResource(R.string.profile_default)
+                                            else -> stringResource(R.string.profile_ready_to_watch)
                                         },
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = Color.White.copy(alpha = 0.58f),
@@ -503,7 +503,7 @@ internal fun StartupProfilePicker(
                                     checkingPin = false
                                 }
                             },
-                        ) { Text(if (checkingPin) "Checking…" else "Continue") }
+                        ) { Text(if (checkingPin) stringResource(R.string.credential_status_checking) else stringResource(R.string.action_continue)) }
                         OutlinedButton(
                             enabled = !checkingPin,
                             onClick = { lockedProfile = null },

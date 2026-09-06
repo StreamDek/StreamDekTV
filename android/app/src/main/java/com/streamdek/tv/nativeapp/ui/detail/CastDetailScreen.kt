@@ -43,6 +43,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -73,15 +74,17 @@ fun CastDetailScreen(
     var loading by remember(personId) { mutableStateOf(true) }
     var error by remember(personId) { mutableStateOf<String?>(null) }
     var reloadToken by remember(personId) { mutableStateOf(0) }
+    // The failure is recorded in a coroutine, which is not a composition.
+    val castResources = LocalContext.current.resources
 
     BackHandler(onBack = onBack)
     LaunchedEffect(personId, reloadToken) {
         loading = true
         error = null
         person = runCatching { repository.fetchPerson(personId) }
-            .onFailure { error = it.message ?: "Could not load cast details" }
+            .onFailure { error = castResources.getString(R.string.cast_load_failed) }
             .getOrNull()
-        if (person == null && error == null) error = "Could not load cast details"
+        if (person == null && error == null) error = castResources.getString(R.string.cast_load_failed)
         loading = false
     }
     LaunchedEffect(person?.id, error) {

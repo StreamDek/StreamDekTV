@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -101,7 +102,9 @@ import com.streamdek.tv.nativeapp.data.resolveJumpTarget
 import com.streamdek.tv.nativeapp.data.resolveTrailerPlaybackSource
 import com.streamdek.tv.nativeapp.data.youtubeTrailerKey
 import com.streamdek.tv.nativeapp.ui.AppCardShape
+import com.streamdek.tv.nativeapp.ui.AppFormats
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 import com.streamdek.tv.nativeapp.ui.LocalImmersiveContent
 import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.SuppressBringIntoView
@@ -294,6 +297,9 @@ fun DetailScreen(
     val seasonChipRequester = remember(mediaType, mediaId) { FocusRequester() }
     val listState = rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
+    // Load failures and watched-state failures are reported from coroutines, which are not
+    // compositions; these are the resources the composition is already using.
+    val detailResources = context.resources
     val scope = rememberCoroutineScope()
     var ambientPalette by remember(mediaType, mediaId) {
         mutableStateOf(AmbientBackdropPalette(Color(0xFF1A2633), Color(0xFF111820), Color(0xFF24384A)))
@@ -318,7 +324,9 @@ fun DetailScreen(
         val libraryDeferred = supervisorScope { async { runCatching { repository.fetchLibrary() }.getOrNull() } }
         val detail = repository.fetchDetail(mediaId, mediaType, forceRefresh = reloadToken > 0)
         if (detail == null) {
-            if (existingDetail == null) uiState = DetailUiState.Error("Could not load title details")
+            if (existingDetail == null) {
+                uiState = DetailUiState.Error(detailResources.getString(R.string.detail_load_failed))
+            }
             onContentReady()
             return@LaunchedEffect
         }
@@ -690,7 +698,10 @@ fun DetailScreen(
                 loadedSeasons.lastOrNull()?.seasonNumber == lastLoaded
             if (stillCurrent) {
                 loadedSeasons = loadedSeasons + (
-                    season ?: SeasonDetail(seasonNumber = nextSeasonNumber, name = "Season $nextSeasonNumber")
+                    season ?: SeasonDetail(
+                        seasonNumber = nextSeasonNumber,
+                        name = detailResources.getString(R.string.detail_season_number, nextSeasonNumber),
+                    )
                     )
             }
             loadingNextSeason = false
@@ -1285,7 +1296,7 @@ fun DetailScreen(
                                     }
                                     episodeAction = null
                                 } else {
-                                    episodeActionError = "Could not update this episode's watched state."
+                                    episodeActionError = detailResources.getString(R.string.detail_watched_state_failed)
                                 }
                                 episodeActionLoading = false
                             }
@@ -1305,7 +1316,7 @@ fun DetailScreen(
                                     resumeEpisodeContext = refreshed.target?.let { EpisodeContext(it.seasonNumber, it.episodeNumber) }
                                     episodeAction = null
                                 } else {
-                                    episodeActionError = "Could not mark the previous episodes watched."
+                                    episodeActionError = detailResources.getString(R.string.detail_mark_previous_failed)
                                 }
                                 episodeActionLoading = false
                             }
@@ -1369,6 +1380,9 @@ private fun DetailHero(
     onPlayTrailer: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    // Load failures and watched-state failures are reported from coroutines, which are not
+    // compositions; these are the resources the composition is already using.
+    val detailResources = context.resources
     val titleLogoRequest = remember(detail.titleLogo) {
         detail.titleLogo?.takeIf { it.isNotBlank() }?.let { logoUrl ->
             ImageRequest.Builder(context)
@@ -1485,7 +1499,12 @@ private fun DetailHero(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                detail.rating?.takeIf { it > 0 }?.let { MetaChip("★ %.1f".format(it), emphasised = true) }
+                detail.rating?.takeIf { it > 0 }?.let {
+                    MetaChip(
+                        stringResource(R.string.rating_star_value, AppFormats.number(LocalAppLanguage.current, it, 1)),
+                        emphasised = true,
+                    )
+                }
                 detail.year?.takeIf { it.isNotBlank() }?.let { MetaChip(it) }
                 detail.runtime?.takeIf { it > 0 }?.let { MetaChip(formatRuntime(it)) }
                 detail.numberOfSeasons?.takeIf { it > 0 }?.let {
@@ -1567,9 +1586,11 @@ private fun DetailHero(
                 ) {
                     Text(
                         text = if ((progressFraction ?: 0f) > 0f) {
-                            progressLabel?.substringBefore(" / ")?.takeIf { it.isNotBlank() }?.let { "Resume · $it" } ?: "Resume"
+                            progressLabel?.substringBefore(" / ")?.takeIf { it.isNotBlank() }
+                                ?.let { stringResource(R.string.detail_resume_at, it) }
+                                ?: stringResource(R.string.detail_resume)
                         } else {
-                            "Play"
+                            stringResource(R.string.action_play)
                         },
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
                         textAlign = TextAlign.Center,
@@ -1608,13 +1629,16 @@ private fun DetailHero(
                             // what is on screen. "Loading" is true at the same time and is the less
                             // useful half of it: the viewer wants to know when, not that work is
                             // happening.
-                            trailerCountdown != null -> "Trailer in ${trailerCountdown}s"
-                            trailerLoading -> "Loading trailer…"
+                            trailerCountdown != null -> stringResource(
+                                R.string.detail_trailer_countdown,
+                                AppFormats.number(LocalAppLanguage.current, trailerCountdown),
+                            )
+                            trailerLoading -> stringResource(R.string.detail_trailer_loading)
                             // Ahead of "replay": if the last attempt came to nothing, that is the
                             // news, even on a title whose trailer has played before.
-                            trailerUnavailable -> "Trailer unavailable"
-                            trailerPlayed -> "Replay trailer"
-                            else -> "Watch trailer"
+                            trailerUnavailable -> stringResource(R.string.detail_trailer_unavailable)
+                            trailerPlayed -> stringResource(R.string.detail_trailer_replay)
+                            else -> stringResource(R.string.detail_trailer_watch)
                         },
                         loading = trailerLoading,
                         onClick = onPlayTrailer,
@@ -1840,11 +1864,15 @@ private fun EpisodeJumpDialog(
         delay(120)
         runCatching { entryRequester.requestFocus() }
     }
-    val shortcuts = remember(episodeNumbers, selectedNumber, nextUnwatched) {
+    // The list is built in a remember block, which is not a composition.
+    val jumpResources = LocalContext.current.resources
+    val shortcuts = remember(episodeNumbers, selectedNumber, nextUnwatched, jumpResources) {
         buildList {
-            episodeNumbers.firstOrNull()?.let { add("First" to it) }
-            nextUnwatched?.let { add("Next Up · E$it" to it) }
-            episodeNumbers.lastOrNull()?.takeIf { it != episodeNumbers.firstOrNull() }?.let { add("Last · E$it" to it) }
+            episodeNumbers.firstOrNull()?.let { add(jumpResources.getString(R.string.episode_jump_first) to it) }
+            nextUnwatched?.let { add(jumpResources.getString(R.string.episode_jump_next_up, it) to it) }
+            episodeNumbers.lastOrNull()?.takeIf { it != episodeNumbers.firstOrNull() }?.let {
+                add(jumpResources.getString(R.string.episode_jump_last, it) to it)
+            }
         }
     }
     Dialog(onDismissRequest = onDismiss) {
@@ -1894,7 +1922,10 @@ private fun EpisodeJumpDialog(
                         onClick = { onJump(number) },
                         shape = AppPillShape,
                         modifier = if (isFocusTarget) Modifier.focusRequester(entryRequester) else Modifier,
-                        description = if (watched) "Episode $number, watched" else "Episode $number",
+                        description = stringResource(
+                            if (watched) R.string.episode_a11y_number_watched else R.string.episode_a11y_number,
+                            number,
+                        ),
                     ) {
                         Text(
                             text = number.toString(),
@@ -1951,11 +1982,13 @@ private fun EpisodeActionDialog(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = when {
-                    watched -> "Marking it unwatched will make it eligible for series continuation again."
-                    loading -> "Updating your watched history..."
-                    else -> "Choose an action for this episode."
-                },
+                text = stringResource(
+                    when {
+                        watched -> R.string.detail_mark_unwatched_note
+                        loading -> R.string.detail_updating_watch_history
+                        else -> R.string.detail_choose_episode_action
+                    },
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
             )
@@ -1969,11 +2002,13 @@ private fun EpisodeActionDialog(
                 shape = ButtonDefaults.shape(AppPillShape),
             ) {
                 Text(
-                    when {
-                        loading -> "Updating..."
-                        watched -> "Mark as Unwatched"
-                        else -> "Mark as Watched"
-                    },
+                    stringResource(
+                        when {
+                            loading -> R.string.action_updating
+                            watched -> R.string.action_mark_unwatched
+                            else -> R.string.action_mark_watched
+                        },
+                    ),
                 )
             }
             OutlinedButton(

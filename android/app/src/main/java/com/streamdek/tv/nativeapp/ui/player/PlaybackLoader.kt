@@ -1,5 +1,8 @@
 package com.streamdek.tv.nativeapp.ui.player
 
+import android.content.res.Resources
+
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.ContinueWatchingItem
 import com.streamdek.tv.nativeapp.data.EpisodeContext
@@ -185,6 +188,11 @@ internal suspend fun resolvePlaybackSource(
     forceRefresh: Boolean,
     currentNotice: String?,
     perf: Perf.Span,
+    /**
+     * For the notice below, which a viewer reads while they wait. Passed in because this file is
+     * deliberately outside the Compose screen and has no composition to resolve a resource from.
+     */
+    resources: Resources,
 ): ResolvedPlaybackDecision {
     val rememberedAttempt = autoContinueResume && rememberedKey != null
     val resolved = initialCandidate ?: withTimeout(if (rememberedAttempt) 16_000L else 60_000L) {
@@ -209,12 +217,18 @@ internal suspend fun resolvePlaybackSource(
         autoContinueResume -> {
             val selectedKey = resolved.stream?.let(repository::streamSelectionKey)
             when {
-                rememberedKey != null && selectedKey == rememberedKey -> "Resuming with your remembered source…"
+                rememberedKey != null && selectedKey == rememberedKey ->
+                    resources.getString(R.string.playback_resuming_with_remembered)
                 rememberedKey != null && selectedKey != null -> {
                     repository.forgetRememberedStream(request.mediaType, request.mediaId, episode)
-                    "Remembered source expired or is unavailable. Trying ${resolved.stream?.addonName?.ifBlank { "a new source" }}…"
+                    // The add-on's own name where it has one; only the sentence around it is ours.
+                    resources.getString(
+                        R.string.playback_remembered_expired_trying,
+                        resolved.stream?.addonName?.takeIf { it.isNotBlank() }
+                            ?: resources.getString(R.string.playback_a_new_source),
+                    )
                 }
-                rememberedKey == null && selectedKey != null -> "Found a new source. Starting playback…"
+                rememberedKey == null && selectedKey != null -> resources.getString(R.string.playback_found_new_source)
                 else -> null
             }
         }
@@ -222,7 +236,11 @@ internal suspend fun resolvePlaybackSource(
             val selectedKey = resolved.stream?.let(repository::streamSelectionKey)
             val chosenKey = chosenStream?.let(repository::streamSelectionKey) ?: streamKeyOverride
             if (chosenKey != null && selectedKey != null && selectedKey != chosenKey) {
-                "That source could not be opened. Trying ${resolved.stream?.addonName?.ifBlank { "another source" }}…"
+                resources.getString(
+                    R.string.playback_chosen_failed_trying,
+                    resolved.stream?.addonName?.takeIf { it.isNotBlank() }
+                        ?: resources.getString(R.string.playback_another_source),
+                )
             } else {
                 currentNotice
             }
@@ -245,6 +263,8 @@ internal suspend fun recoverPlaybackSource(
     selectedStream: AddonStream?,
     failedStreamKeys: Set<String>,
     onAttemptNotice: (String) -> Unit,
+    /** For the notice naming which source is being tried next; see [resolvePlaybackSource]. */
+    resources: Resources,
 ): PlaybackFallbackResult {
     var updatedFailedKeys = failedStreamKeys
     var failureText: String? = (selectedStream ?: resolved.stream)?.let { failed ->
@@ -256,8 +276,11 @@ internal suspend fun recoverPlaybackSource(
         streams = resolved.streams,
         skipKeys = updatedFailedKeys,
         onAttempt = { next ->
-            val target = next.addonName.ifBlank { "the next source" }
-            onAttemptNotice(listOfNotNull(failureText, "Trying $target…").joinToString(". "))
+            val target = next.addonName.ifBlank { resources.getString(R.string.playback_the_next_source) }
+            onAttemptNotice(
+                listOfNotNull(failureText, resources.getString(R.string.playback_trying_named, target))
+                    .joinToString(". "),
+            )
         },
         onAttemptFailed = { failed, key ->
             updatedFailedKeys = updatedFailedKeys + key
@@ -298,6 +321,8 @@ internal suspend fun preparePlayback(
     onPreflight: (PlaybackPreflight) -> Unit,
     onResolved: (ResolvedPlaybackCandidate) -> Unit,
     onFallbackNotice: (String) -> Unit,
+    /** For the notices this reports while it works; see [resolvePlaybackSource]. */
+    resources: Resources,
 ): PreparedPlayback {
     val initialSource = selectInitialPlaybackSource(
         repository = repository,
@@ -323,15 +348,19 @@ internal suspend fun preparePlayback(
         repository.rememberedStreamKey(request.mediaType, request.mediaId, episode)
     } else null
     var continueNotice = when {
-        initialSource.rememberedSource -> "Resuming your remembered source…"
+        initialSource.rememberedSource -> resources.getString(R.string.playback_resuming_remembered)
         initialSource.viewerChoseSource -> {
             val chosenLabel = streamLabelOverride
                 ?: request.selectedStreamLabel
                 ?: initialSource.chosenStream?.addonName?.takeIf { it.isNotBlank() }
-            if (chosenLabel.isNullOrBlank()) "Opening the source you chose…" else "Opening $chosenLabel…"
+            if (chosenLabel.isNullOrBlank()) {
+                resources.getString(R.string.playback_opening_chosen)
+            } else {
+                resources.getString(R.string.playback_opening_named, chosenLabel)
+            }
         }
-        autoContinueResume && rememberedKey == null -> "No remembered source for this episode. Finding a new source…"
-        autoContinueResume -> "Checking your remembered source…"
+        autoContinueResume && rememberedKey == null -> resources.getString(R.string.playback_no_remembered_finding)
+        autoContinueResume -> resources.getString(R.string.playback_checking_remembered)
         else -> null
     }
     val continueOriginPlatform = preflight.continueWatchingItem?.lastPlatform ?: preflight.progress?.lastPlatform
@@ -369,6 +398,7 @@ internal suspend fun preparePlayback(
         forceRefresh = forceRefresh,
         currentNotice = continueNotice,
         perf = perf,
+        resources = resources,
     )
     var resolved = resolvedDecision.candidate
     continueNotice = resolvedDecision.continueSourceNotice
@@ -400,6 +430,7 @@ internal suspend fun preparePlayback(
             selectedStream = initialSource.selectedStream,
             failedStreamKeys = updatedFailedKeys,
             onAttemptNotice = onFallbackNotice,
+            resources = resources,
         )
         resolved = fallback.candidate
         updatedFailedKeys = fallback.failedStreamKeys

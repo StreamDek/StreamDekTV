@@ -35,6 +35,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -70,8 +71,13 @@ internal fun PluginProviderSettingsDialog(
     var fields by remember(provider.id) { mutableStateOf<List<PluginSettingField>?>(null) }
     var values by remember(provider.id) { mutableStateOf(repository.pluginProviderSettings(provider.id)) }
     var error by remember(provider.id) { mutableStateOf<String?>(null) }
+    // Set from a LaunchedEffect, which is not a composition.
+    val dialogResources = LocalContext.current.resources
     var editingKey by remember(provider.id) { mutableStateOf<String?>(null) }
     val saveRequester = remember { FocusRequester() }
+    // Substituted into a field's option list, which is built outside the composition below.
+    val onLabel = stringResource(R.string.state_on)
+    val offLabel = stringResource(R.string.animation_speed_off)
 
     LaunchedEffect(provider.id) {
         repository.pluginSettingsSchema(provider)
@@ -88,7 +94,7 @@ internal fun PluginProviderSettingsDialog(
             }
             .onFailure {
                 fields = emptyList()
-                error = it.message ?: "This source could not describe its settings."
+                error = dialogResources.getString(R.string.plugin_settings_undescribed)
             }
     }
     LaunchedEffect(fields) {
@@ -111,7 +117,7 @@ internal fun PluginProviderSettingsDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
-                    provider.name.ifBlank { "Plugin source" },
+                    provider.name.ifBlank { stringResource(R.string.plugin_source_fallback) },
                     color = Color.White,
                     style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
                 )
@@ -140,8 +146,8 @@ internal fun PluginProviderSettingsDialog(
                                         field.type == "boolean" || field.type == "switch" -> PluginSettingChoiceRow(
                                             field = field.copy(
                                                 options = listOf(
-                                                    PluginSettingOption("On", "true"),
-                                                    PluginSettingOption("Off", "false"),
+                                                    PluginSettingOption(onLabel, "true"),
+                                                    PluginSettingOption(offLabel, "false"),
                                                 ),
                                             ),
                                             value = values[fieldKey].orEmpty().ifBlank { "false" },
@@ -236,7 +242,7 @@ private fun PluginSettingTextRow(
             )
         } else {
             val shown = when {
-                value.isBlank() -> field.placeholder?.takeIf { it.isNotBlank() } ?: "Not set"
+                value.isBlank() -> field.placeholder?.takeIf { it.isNotBlank() } ?: stringResource(R.string.state_not_set)
                 // Never put a key back on screen in full once it has been entered.
                 field.isPassword -> "•".repeat(value.length.coerceAtMost(12))
                 else -> value

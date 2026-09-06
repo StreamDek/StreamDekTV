@@ -1,6 +1,8 @@
 package com.streamdek.tv.nativeapp.data
 
 import android.content.Context
+import androidx.annotation.StringRes
+import com.streamdek.tv.R
 import java.net.InetAddress
 import java.net.UnknownHostException
 import okhttp3.Dns
@@ -8,7 +10,16 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 
-data class DoHProvider(val id: String, val label: String, val endpoint: String?)
+/**
+ * @param label the provider's own name, which is never translated, and [labelRes] the resource for
+ * the one entry that is a word rather than a brand.
+ */
+data class DoHProvider(
+    val id: String,
+    val label: String,
+    val endpoint: String?,
+    @StringRes val labelRes: Int? = null,
+)
 
 val StreamDekDoHProviders = listOf(
     DoHProvider("cloudflare", "Cloudflare", "https://cloudflare-dns.com/dns-query"),
@@ -17,7 +28,7 @@ val StreamDekDoHProviders = listOf(
     DoHProvider("quad9", "Quad9", "https://dns.quad9.net/dns-query"),
     DoHProvider("dnssb", "DNS.SB", "https://doh.dns.sb/dns-query"),
     DoHProvider("canadian-shield", "Canadian Shield", "https://private.canadianshield.cira.ca/dns-query"),
-    DoHProvider("custom", "Custom", null),
+    DoHProvider("custom", "Custom", null, labelRes = R.string.doh_provider_custom),
 )
 
 class DoHSettings(context: Context) {

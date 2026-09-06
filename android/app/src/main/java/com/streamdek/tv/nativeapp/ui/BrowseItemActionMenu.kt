@@ -24,6 +24,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,6 +59,8 @@ fun BrowseItemActionMenu(
     var inWatchlist by remember(item.type, item.id) { mutableStateOf(false) }
     var watched by remember(item.type, item.id, item.episode?.seasonNumber, item.episode?.episodeNumber) { mutableStateOf(false) }
     var actionError by remember(item.type, item.id) { mutableStateOf<String?>(null) }
+    // Every one of these failures is reported from inside a coroutine, which is not a composition.
+    val menuResources = LocalContext.current.resources
 
     LaunchedEffect(item.type, item.id, item.episode?.seasonNumber, item.episode?.episodeNumber) {
         loading = true
@@ -98,14 +101,18 @@ fun BrowseItemActionMenu(
                 )
                 Text(
                     text = when {
-                        loading -> "Loading actions…"
-                        watched && item.type == "movie" -> "This movie is already marked watched."
-                        watched && item.type == "tv" && item.episode != null -> "This episode is already marked watched."
-                        watched && item.type == "tv" -> "This series is already marked watched."
-                        item.type == "tv" && item.episode != null ->
-                            "Choose an action for S${item.episode.seasonNumber}E${item.episode.episodeNumber}."
-                        item.type == "tv" -> "Choose an action for this series."
-                        else -> "Choose an action for this title."
+                        loading -> stringResource(R.string.action_menu_loading)
+                        watched && item.type == "movie" -> stringResource(R.string.action_menu_movie_watched)
+                        watched && item.type == "tv" && item.episode != null ->
+                            stringResource(R.string.action_menu_episode_watched)
+                        watched && item.type == "tv" -> stringResource(R.string.action_menu_series_watched)
+                        item.type == "tv" && item.episode != null -> stringResource(
+                            R.string.action_menu_choose_for_episode,
+                            item.episode.seasonNumber,
+                            item.episode.episodeNumber,
+                        )
+                        item.type == "tv" -> stringResource(R.string.action_menu_choose_for_series)
+                        else -> stringResource(R.string.action_menu_choose_for_title)
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.8f),
@@ -151,7 +158,7 @@ fun BrowseItemActionMenu(
                                 result.onSuccess {
                                     inWatchlist = !inWatchlist
                                 }.onFailure {
-                                    actionError = it.message ?: "Watchlist update failed."
+                                    actionError = menuResources.getString(R.string.action_watchlist_update_failed)
                                 }
                             }
                         },
@@ -165,7 +172,7 @@ fun BrowseItemActionMenu(
                             },
                         scale = androidx.tv.material3.ButtonDefaults.scale(focusedScale = 1f),
                     ) {
-                        Text(if (inWatchlist) "Remove from Watchlist" else "Add to Watchlist")
+                        Text(stringResource(if (inWatchlist) R.string.action_remove_from_watchlist else R.string.action_add_to_watchlist))
                     }
 
                     if (showRemoveFromContinueWatching) {
@@ -176,9 +183,7 @@ fun BrowseItemActionMenu(
                                         // This is intentionally a dismissed progress tombstone. It
                                         // neither writes a completion marker nor adds watched history,
                                         // but it does stop stale provider progress returning after sync.
-                                        check(repository.dismissContinueWatching(item)) {
-                                            "Could not remove this title from Continue Watching."
-                                        }
+                                        check(repository.dismissContinueWatching(item))
                                         // The focused card no longer exists after this mutation.
                                         // Let the owning grid dismiss without restoring that stale
                                         // requester, then choose a surviving neighbour itself.
@@ -186,7 +191,7 @@ fun BrowseItemActionMenu(
                                         onChanged()
                                     }
                                     result.onFailure {
-                                        actionError = it.message ?: "Could not remove this title from Continue Watching."
+                                        actionError = menuResources.getString(R.string.action_continue_watching_remove_failed)
                                     }
                                 }
                             },
@@ -217,10 +222,10 @@ fun BrowseItemActionMenu(
                                         watched = true
                                         onDismiss()
                                     } else {
-                                        actionError = "Could not mark this title watched."
+                                        actionError = menuResources.getString(R.string.action_mark_watched_failed)
                                     }
                                 }.onFailure {
-                                    actionError = it.message ?: "Could not mark this title watched."
+                                    actionError = menuResources.getString(R.string.action_mark_watched_failed)
                                 }
                             }
                         },
@@ -235,12 +240,14 @@ fun BrowseItemActionMenu(
                         scale = androidx.tv.material3.ButtonDefaults.scale(focusedScale = 1f),
                     ) {
                         Text(
-                            when {
-                                watched && item.progress?.let { it > 0.0 } == true -> "Mark as Watched Again"
-                                watched -> "Already Watched"
-                                item.type == "tv" && item.episode == null -> "Mark Series Watched"
-                                else -> "Mark as Watched"
-                            },
+                            stringResource(
+                                when {
+                                    watched && item.progress?.let { it > 0.0 } == true -> R.string.action_mark_watched_again
+                                    watched -> R.string.action_already_watched
+                                    item.type == "tv" && item.episode == null -> R.string.action_mark_series_watched
+                                    else -> R.string.action_mark_watched
+                                },
+                            ),
                         )
                     }
                 }

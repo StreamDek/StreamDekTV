@@ -48,6 +48,7 @@ import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
+import com.streamdek.tv.nativeapp.data.localizedContext
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
@@ -366,7 +367,7 @@ fun launchExternalIntent(context: android.content.Context, intent: android.conte
             onSuccess = { null },
             onFailure = { error ->
                 TvDebugLogger.w("Intent", "no activity accepted $label", error)
-                "This TV has no app that can open $label."
+                localizedContext(context).getString(R.string.intent_no_app_for, label)
             },
         )
 }
@@ -564,7 +565,7 @@ fun TvSectionHeading(title: String, subtitle: String? = null, modifier: Modifier
 fun TvMoreButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    label: String = "More",
+    label: String = stringResource(R.string.action_more),
 ) {
     OutlinedButton(
         onClick = onClick,

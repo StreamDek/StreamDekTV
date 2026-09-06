@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.player
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -74,6 +75,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -110,7 +112,9 @@ import com.streamdek.tv.nativeapp.data.streamProviderLabel
 import com.streamdek.tv.nativeapp.data.streamTransport
 import com.streamdek.tv.nativeapp.data.subtitleOriginVisible
 import com.streamdek.tv.nativeapp.debrid.readyServiceLabel
+import com.streamdek.tv.nativeapp.ui.AppFormats
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.detail.streamQualityLabel
@@ -163,12 +167,16 @@ internal fun subtitleSourceIncludesBuiltIn(value: String?): Boolean =
 internal fun subtitleSourceIncludesAddons(value: String?): Boolean =
     normalizeSubtitleDefaultSource(value) != "BuiltIn"
 
-/** Subtitle-source views plus the appearance controls. */
-internal enum class SubtitlePanelTab(val label: String) {
-    All("All sources"),
-    BuiltIn("Built-in"),
-    Addons("Add-ons"),
-    Adjust("Adjust"),
+/**
+ * Subtitle-source views plus the appearance controls.
+ *
+ * The constant name is what gets stored and compared; only [labelRes] is read by anyone.
+ */
+internal enum class SubtitlePanelTab(@StringRes val labelRes: Int) {
+    All(R.string.browse_all_sources),
+    BuiltIn(R.string.settings_opt_built_in),
+    Addons(R.string.settings_opt_add_ons),
+    Adjust(R.string.subtitle_tab_adjust),
 }
 
 private val PlayerPanelShape = RoundedCornerShape(22.dp)
@@ -451,7 +459,7 @@ internal fun PlayerBottomBar(
             ) {
                 PlayerControlIconButton(
                     icon = if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                    label = if (paused) "Play" else "Pause",
+                    label = stringResource(if (paused) R.string.action_play else R.string.action_pause),
                     primary = true,
                     requester = playRequester,
                     upRequester = timelineUpRequester,
@@ -523,7 +531,7 @@ internal fun PlayerBottomBar(
                     // is no use once you are watching it — this is where you decide you want it.
                     PlayerControlIconButton(
                         icon = if (isFavourite) Icons.Filled.Star else Icons.Filled.StarBorder,
-                        label = if (isFavourite) "Favourited" else "Favourite",
+                        label = stringResource(if (isFavourite) R.string.action_favourited else R.string.action_favourite),
                         active = isFavourite,
                         requester = favouriteRequester,
                         upRequester = timelineUpRequester,
@@ -896,6 +904,21 @@ internal fun PlayerOptionPanel(
             .distinct()
     }
 
+    // Resolved once, up here, because each of these is read from inside a lazy-list item builder or
+    // a `buildList` block, and a resource lookup is a composable call that does not belong in either.
+    val appLanguage = LocalAppLanguage.current
+    val selectedBadge = stringResource(R.string.a11y_selected)
+    val embeddedTag = stringResource(R.string.player_subtitle_embedded_tag)
+    val builtInSourceLabel = stringResource(R.string.player_subtitle_source_builtin)
+    val addonOriginLabel = stringResource(R.string.source_origin_addon)
+    val pluginOriginLabel = stringResource(R.string.source_origin_plugin)
+    val sourceHeading = stringResource(R.string.player_info_source)
+    val playbackHeading = stringResource(R.string.player_info_playback)
+    // The info panel names each row and formats several of its values, and it builds both lists in
+    // the lazy list's content block, which is not a composition. These come from the resources the
+    // composition is already using, which ProvideAppLocale has wrapped in the chosen language.
+    val panelResources = LocalContext.current.resources
+
     PlayerGlassSurface(
         modifier = modifier
             .width(540.dp)
@@ -952,14 +975,16 @@ internal fun PlayerOptionPanel(
                             color = Color.White,
                         )
                         Text(
-                            text = when (panel) {
-                                OverlayPanel.Streams -> "Switch streams without leaving playback."
-                                OverlayPanel.Engine -> "Switch engines without losing your place."
-                                OverlayPanel.Audio -> "Pick a different audio track."
-                                OverlayPanel.Subtitles -> "Change the track, then size and place it."
-                                OverlayPanel.Speed -> "Match playback speed to your preference."
-                                OverlayPanel.Info -> "Where this stream comes from and how it is arriving."
-                            },
+                            text = stringResource(
+                                when (panel) {
+                                    OverlayPanel.Streams -> R.string.player_panel_streams_description
+                                    OverlayPanel.Engine -> R.string.player_panel_engine_description
+                                    OverlayPanel.Audio -> R.string.player_panel_audio_description
+                                    OverlayPanel.Subtitles -> R.string.player_panel_subtitles_description
+                                    OverlayPanel.Speed -> R.string.player_panel_speed_description
+                                    OverlayPanel.Info -> R.string.player_panel_info_description
+                                },
+                            ),
                             style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.58f),
                         )
@@ -976,7 +1001,7 @@ internal fun PlayerOptionPanel(
                                     focusedContentColor = Color.White,
                                 ),
                             ) {
-                                Text(if (streamsReloading) "Reloading…" else "Reload")
+                                Text(stringResource(if (streamsReloading) R.string.player_streams_reloading else R.string.player_reload))
                             }
                         }
                         OutlinedButton(
@@ -1001,7 +1026,7 @@ internal fun PlayerOptionPanel(
                     PanelTabRow(
                         tabs = availableSubtitleTabs,
                         selected = subtitleTab,
-                        labelOf = { it.label },
+                        labelOf = { stringResource(it.labelRes) },
                         onInteract = onInteract,
                         onSelect = { subtitleTab = it },
                     )
@@ -1016,14 +1041,14 @@ internal fun PlayerOptionPanel(
                     }
                     if (streams.isEmpty()) {
                         item {
-                            PanelNote(if (streamsReloading) "Searching for sources…" else "No sources loaded yet.")
+                            PanelNote(stringResource(if (streamsReloading) R.string.player_streams_searching else R.string.player_streams_none_yet))
                         }
                     }
                     itemsIndexed(streams) { index, stream ->
                         StreamOptionButton(
                             stream = stream,
-                            origin = streamOriginLabel(stream, pluginState),
-                            fallbackLabel = "Source ${index + 1}",
+                            origin = streamOriginLabel(stream, pluginState, addonOriginLabel, pluginOriginLabel),
+                            fallbackLabel = stringResource(R.string.player_stream_fallback_label, index + 1),
                             playing = candidate?.stream == stream,
                             requestFocus = if (index == 0) firstItemRequester else null,
                             onInteract = onInteract,
@@ -1039,7 +1064,7 @@ internal fun PlayerOptionPanel(
                             label = "ExoPlayer",
                             subtitle = stringResource(R.string.player_engine_media3_description),
                             active = activeEngine == ActivePlaybackEngine.Media3,
-                            activeBadge = if (activeEngine == ActivePlaybackEngine.Media3) "Selected" else null,
+                            activeBadge = selectedBadge.takeIf { activeEngine == ActivePlaybackEngine.Media3 },
                             requestFocus = firstItemRequester,
                             onInteract = onInteract,
                             onClick = { onSelectEngine(ActivePlaybackEngine.Media3) },
@@ -1050,23 +1075,23 @@ internal fun PlayerOptionPanel(
                             label = "mpv",
                             subtitle = stringResource(R.string.player_engine_mpv_description),
                             active = activeEngine == ActivePlaybackEngine.MPV,
-                            activeBadge = if (activeEngine == ActivePlaybackEngine.MPV) "Selected" else null,
+                            activeBadge = selectedBadge.takeIf { activeEngine == ActivePlaybackEngine.MPV },
                             onInteract = onInteract,
                             onClick = { onSelectEngine(ActivePlaybackEngine.MPV) },
                         )
                     }
                     item {
-                        PanelNote("Switching keeps your playback position. If a stream has no sound or a black screen, try the other engine.")
+                        PanelNote(stringResource(R.string.player_engine_switch_note))
                     }
                 }
                 OverlayPanel.Audio -> {
                     itemsIndexed(audioTracks) { index, track ->
                         val language = trackLanguageName(track.language)
                         OptionButton(
-                            label = track.title ?: language ?: "Track ${track.id}",
+                            label = track.title ?: language ?: stringResource(R.string.player_audio_track_fallback, track.id),
                             subtitle = listOfNotNull(language, track.codec).joinToString(" • ").ifBlank { null },
                             active = selectedAudioId == track.id,
-                            activeBadge = if (selectedAudioId == track.id) "Selected" else null,
+                            activeBadge = selectedBadge.takeIf { selectedAudioId == track.id },
                             requestFocus = if (index == 0) firstItemRequester else null,
                             onInteract = onInteract,
                             onClick = { onSelectAudio(track.id) },
@@ -1096,7 +1121,7 @@ internal fun PlayerOptionPanel(
                             label = stringResource(R.string.player_subtitles_off),
                             subtitle = stringResource(R.string.player_subtitles_off_description),
                             active = selectedSubtitleId < 0 && selectedExternalSubtitleId == null,
-                            activeBadge = if (selectedSubtitleId < 0 && selectedExternalSubtitleId == null) "Selected" else null,
+                            activeBadge = selectedBadge.takeIf { selectedSubtitleId < 0 && selectedExternalSubtitleId == null },
                             requestFocus = firstItemRequester,
                             onInteract = onInteract,
                             onClick = onDisableSubtitles,
@@ -1113,10 +1138,10 @@ internal fun PlayerOptionPanel(
                     itemsIndexed(visibleEmbeddedTracks) { index, track ->
                         val language = trackLanguageName(track.language)
                         OptionButton(
-                            label = language ?: track.title ?: "Subtitle ${track.id}",
-                            subtitle = listOfNotNull("Embedded", track.title, track.codec).distinct().joinToString(" • "),
+                            label = language ?: track.title ?: stringResource(R.string.player_subtitle_track_fallback, track.id),
+                            subtitle = listOfNotNull(embeddedTag, track.title, track.codec).distinct().joinToString(" • "),
                             active = selectedExternalSubtitleId == null && selectedSubtitleId == track.id,
-                            activeBadge = if (selectedExternalSubtitleId == null && selectedSubtitleId == track.id) "Selected" else null,
+                            activeBadge = selectedBadge.takeIf { selectedExternalSubtitleId == null && selectedSubtitleId == track.id },
                             requestFocus = if (index == 0 && subtitleTracks.isEmpty()) firstItemRequester else null,
                             onInteract = onInteract,
                             onClick = { onSelectSubtitle(track.id) },
@@ -1126,11 +1151,13 @@ internal fun PlayerOptionPanel(
                         item {
                             OptionButton(
                                 label = stringResource(R.string.player_searching_subtitle_sources),
-                                subtitle = when (subtitleTab) {
-                                    SubtitlePanelTab.BuiltIn -> "OpenSubtitles and StreamDek sources"
-                                    SubtitlePanelTab.Addons -> "Installed subtitle add-ons"
-                                    else -> "Built-in sources and installed add-ons"
-                                },
+                                subtitle = stringResource(
+                                    when (subtitleTab) {
+                                        SubtitlePanelTab.BuiltIn -> R.string.player_subtitles_searching_builtin
+                                        SubtitlePanelTab.Addons -> R.string.player_subtitles_searching_addons
+                                        else -> R.string.player_subtitles_searching_all
+                                    },
+                                ),
                                 active = false,
                                 onInteract = onInteract,
                                 onClick = {},
@@ -1139,11 +1166,13 @@ internal fun PlayerOptionPanel(
                     }
                     if (visibleExternalSubtitles.isNotEmpty()) item {
                         Text(
-                            when (subtitleTab) {
-                                SubtitlePanelTab.BuiltIn -> "StreamDek sources"
-                                SubtitlePanelTab.Addons -> "Subtitle add-ons"
-                                else -> "Online subtitles"
-                            },
+                            stringResource(
+                                when (subtitleTab) {
+                                    SubtitlePanelTab.BuiltIn -> R.string.player_subtitles_heading_builtin
+                                    SubtitlePanelTab.Addons -> R.string.player_subtitles_heading_addons
+                                    else -> R.string.player_subtitles_heading_online
+                                },
+                            ),
                             color = Color.White.copy(alpha = 0.62f),
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(start = 30.dp, end = 14.dp, top = 10.dp, bottom = 4.dp),
@@ -1157,34 +1186,40 @@ internal fun PlayerOptionPanel(
                             it.language == subtitle.language && it.sourceName == subtitle.sourceName
                         }
                         OptionButton(
-                            label = Languages.label(subtitle.language),
+                            label = Languages.displayLabel(panelResources, subtitle.language),
                             subtitle = listOfNotNull(
                                 subtitle.sourceName,
-                                if (subtitle.origin == ExternalSubtitleOrigin.BuiltIn) "Built-in source" else "Add-on",
+                                if (subtitle.origin == ExternalSubtitleOrigin.BuiltIn) builtInSourceLabel else addonOriginLabel,
                                 subtitle.release,
-                                if (duplicateCount > 1) "Option $duplicateNumber" else null,
+                                if (duplicateCount > 1) stringResource(R.string.player_subtitle_option_number, duplicateNumber) else null,
                             ).joinToString(" • "),
                             active = selectedExternalSubtitleId == subtitle.id,
-                            activeBadge = if (selectedExternalSubtitleId == subtitle.id) "Selected" else null,
+                            activeBadge = selectedBadge.takeIf { selectedExternalSubtitleId == subtitle.id },
                             onInteract = onInteract,
                             onClick = { onSelectExternalSubtitle(subtitle) },
                         )
                     }
                     if (!subtitlesLoading && visibleEmbeddedTracks.isEmpty() && visibleExternalSubtitles.isEmpty()) item {
-                        val requestedLanguages = allowedSubtitleLanguages.joinToString(" or ") { Languages.label(it) }
+                        val requestedLanguages = allowedSubtitleLanguages.joinToString(" or ") {
+                            Languages.displayLabel(panelResources, it)
+                        }
                         OptionButton(
                             label = if (showOnlyPreferredSubtitleLanguages && requestedLanguages.isNotBlank()) {
-                                "No subtitles found for $requestedLanguages"
-                            } else when (subtitleTab) {
-                                SubtitlePanelTab.BuiltIn -> "No built-in subtitles found"
-                                SubtitlePanelTab.Addons -> "No subtitle add-on results found"
-                                else -> "No matching subtitles found"
-                            },
-                            subtitle = when (subtitleTab) {
-                                SubtitlePanelTab.BuiltIn -> "No embedded tracks or StreamDek source results"
-                                SubtitlePanelTab.Addons -> "Try another language or enable another subtitle add-on"
-                                else -> "Try another language or subtitle source"
-                            },
+                                stringResource(R.string.player_subtitles_none_for_languages, requestedLanguages)
+                            } else stringResource(
+                                when (subtitleTab) {
+                                    SubtitlePanelTab.BuiltIn -> R.string.player_subtitles_none_builtin
+                                    SubtitlePanelTab.Addons -> R.string.player_subtitles_none_addons
+                                    else -> R.string.player_subtitles_none_all
+                                },
+                            ),
+                            subtitle = stringResource(
+                                when (subtitleTab) {
+                                    SubtitlePanelTab.BuiltIn -> R.string.player_subtitles_none_hint_builtin
+                                    SubtitlePanelTab.Addons -> R.string.player_subtitles_none_hint_addons
+                                    else -> R.string.player_subtitles_none_hint_all
+                                },
+                            ),
                             active = false,
                             onInteract = onInteract,
                             onClick = {},
@@ -1208,7 +1243,7 @@ internal fun PlayerOptionPanel(
                         PlayerStepperRow(
                             label = stringResource(R.string.player_subtitle_position),
                             value = subtitlePosition.toString(),
-                            hint = "Higher sits nearer the bottom",
+                            hint = stringResource(R.string.player_subtitle_position_hint),
                             onInteract = onInteract,
                             onDecrease = { onSubtitlePosition((subtitlePosition - 2).coerceIn(SubtitlePositionRange)) },
                             onIncrease = { onSubtitlePosition((subtitlePosition + 2).coerceIn(SubtitlePositionRange)) },
@@ -1218,8 +1253,13 @@ internal fun PlayerOptionPanel(
                         item {
                             PlayerStepperRow(
                                 label = stringResource(R.string.player_subtitle_delay),
-                                value = String.format(Locale.US, "%+.1f s", subtitleDelay),
-                                hint = "Nudge subtitles ahead of or behind the audio",
+                                value = stringResource(
+                                    R.string.player_subtitle_delay_seconds,
+                                    // The sign is what makes "ahead" and "behind" readable at a
+                                    // glance, and no number format adds one to a positive value.
+                                    (if (subtitleDelay > 0) "+" else "") + AppFormats.number(appLanguage, subtitleDelay, 1),
+                                ),
+                                hint = stringResource(R.string.player_subtitle_delay_hint),
                                 onInteract = onInteract,
                                 onDecrease = {
                                     onSubtitleDelay((subtitleDelay - 0.25).coerceIn(SubtitleDelayRange))
@@ -1231,7 +1271,7 @@ internal fun PlayerOptionPanel(
                         }
                     }
                     item {
-                        PanelNote("Colour, outline and background are in Settings › Subtitles.")
+                        PanelNote(stringResource(R.string.player_subtitle_style_note))
                     }
                 }
                 OverlayPanel.Speed -> {
@@ -1248,7 +1288,7 @@ internal fun PlayerOptionPanel(
                             label = option.label,
                             subtitle = null,
                             active = currentSpeed == option.value,
-                            activeBadge = if (currentSpeed == option.value) "Selected" else null,
+                            activeBadge = selectedBadge.takeIf { currentSpeed == option.value },
                             requestFocus = if (index == 0) firstItemRequester else null,
                             onInteract = onInteract,
                             onClick = { onSelectSpeed(option.value) },
@@ -1259,45 +1299,63 @@ internal fun PlayerOptionPanel(
                     val stream = candidate?.stream
                     val transport = streamTransport(stream, currentStreamUrl.orEmpty())
                     val sourceRows = buildList {
-                        streamProviderLabel(stream, currentLabel)?.let { add("Provider" to it) }
-                        streamOriginLabel(stream, pluginState)?.let { add("Installed as" to it) }
-                        add("Delivery" to transport.label)
-                        stream?.size?.takeIf { it.isNotBlank() }?.let { add("Size" to it) }
-                        stream?.quality?.takeIf { it.isNotBlank() }?.let { add("Quality" to it) }
+                        streamProviderLabel(stream, currentLabel)
+                            ?.let { add(panelResources.getString(R.string.player_info_provider) to it) }
+                        streamOriginLabel(stream, pluginState, addonOriginLabel, pluginOriginLabel)
+                            ?.let { add(panelResources.getString(R.string.player_info_installed_as) to it) }
+                        add(panelResources.getString(R.string.player_info_delivery) to panelResources.getString(transport.labelRes))
+                        stream?.size?.takeIf { it.isNotBlank() }
+                            ?.let { add(panelResources.getString(R.string.player_info_size) to it) }
+                        stream?.quality?.takeIf { it.isNotBlank() }
+                            ?.let { add(panelResources.getString(R.string.player_quality) to it) }
                         (stream?.filename ?: stream?.behaviorHints?.filename)?.takeIf { it.isNotBlank() }
-                            ?.let { add("File" to it) }
+                            ?.let { add(panelResources.getString(R.string.player_info_file) to it) }
                     }
                     val playbackRows = buildList {
-                        formatTransferRate(playbackStats?.bytesPerSecond)?.let { add("Speed" to it) }
-                        formatResolution(playbackStats?.width ?: 0, playbackStats?.height ?: 0)?.let { add("Resolution" to it) }
+                        formatTransferRate(playbackStats?.bytesPerSecond)
+                            ?.let { add(panelResources.getString(R.string.player_info_speed) to it) }
+                        formatResolution(playbackStats?.width ?: 0, playbackStats?.height ?: 0)
+                            ?.let { add(panelResources.getString(R.string.player_info_resolution) to it) }
                         val videoLine = listOfNotNull(
                             prettyCodecName(playbackStats?.videoCodec),
                             formatBitrate(playbackStats?.videoBitrateBps),
-                            playbackStats?.frameRate?.let { String.format(Locale.US, "%.0f fps", it) },
+                            playbackStats?.frameRate?.let {
+                                panelResources.getString(R.string.player_video_fps, AppFormats.number(appLanguage, it))
+                            },
                         ).joinToString(" · ")
-                        if (videoLine.isNotBlank()) add("Video" to videoLine)
+                        if (videoLine.isNotBlank()) add(panelResources.getString(R.string.player_info_video) to videoLine)
                         val audioLine = listOfNotNull(
                             prettyCodecName(playbackStats?.audioCodec),
                             playbackStats?.audioChannels?.let { channels ->
                                 when {
-                                    channels > 2 -> "${channels}ch"
-                                    channels == 2 -> "Stereo"
-                                    else -> "Mono"
+                                    channels > 2 -> panelResources.getString(
+                                        R.string.player_audio_channels,
+                                        AppFormats.number(appLanguage, channels),
+                                    )
+                                    channels == 2 -> panelResources.getString(R.string.player_audio_stereo)
+                                    else -> panelResources.getString(R.string.player_audio_mono)
                                 }
                             },
                         ).joinToString(" · ")
-                        if (audioLine.isNotBlank()) add("Audio" to audioLine)
-                        playbackStats?.bufferedSeconds?.let { add("Buffered" to String.format(Locale.US, "%.0f s ahead", it)) }
-                        playbackStats?.hardwareDecoder?.let { add("Decoder" to it) }
-                        if (engineLabel.isNotBlank()) add("Engine" to engineLabel)
-                        if (!isLive && durationSec > 0.0) add("Runtime" to formatPlaybackClock(durationSec))
+                        if (audioLine.isNotBlank()) add(panelResources.getString(R.string.player_audio) to audioLine)
+                        playbackStats?.bufferedSeconds?.let {
+                            add(
+                                panelResources.getString(R.string.player_info_buffered) to
+                                    panelResources.getString(R.string.player_buffered_ahead, AppFormats.number(appLanguage, it)),
+                            )
+                        }
+                        playbackStats?.hardwareDecoder?.let { add(panelResources.getString(R.string.player_info_decoder) to it) }
+                        if (engineLabel.isNotBlank()) add(panelResources.getString(R.string.player_engine) to engineLabel)
+                        if (!isLive && durationSec > 0.0) {
+                            add(panelResources.getString(R.string.player_info_runtime) to formatPlaybackClock(durationSec))
+                        }
                     }
-                    item { PanelSectionHeading("Source") }
+                    item { PanelSectionHeading(sourceHeading) }
                     item { PlayerInfoTable(sourceRows) }
-                    item { PanelSectionHeading("Playback") }
+                    item { PanelSectionHeading(playbackHeading) }
                     item { PlayerInfoTable(playbackRows) }
                     if (playbackStats == null) {
-                        item { PanelNote("Reading playback details from the engine…") }
+                        item { PanelNote(stringResource(R.string.player_reading_details)) }
                     }
                 }
             }
@@ -1428,7 +1486,7 @@ internal fun NextEpisodeDialog(
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Text(
-                            text = detail?.title ?: "Next Episode",
+                            text = detail?.title ?: stringResource(R.string.player_next_episode),
                             style = androidx.tv.material3.MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
                             color = Color.White,
                         )
@@ -1466,7 +1524,13 @@ internal fun NextEpisodeDialog(
                 }
 
                 Text(
-                    text = if (loading && streams.isEmpty()) "Preparing the next episode…" else if (streams.isEmpty()) "No playable source is available yet." else "The current episode will continue to its natural end.",
+                    text = stringResource(
+                        when {
+                            loading && streams.isEmpty() -> R.string.player_next_preparing
+                            streams.isEmpty() -> R.string.player_next_no_source
+                            else -> R.string.player_next_will_continue
+                        },
+                    ),
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
                     color = Color.White.copy(alpha = 0.76f),
                 )
@@ -1533,7 +1597,7 @@ internal fun NextRecommendationDialog(
                     visibleItems.forEachIndexed { index, item ->
                         TvRecommendationChoice(
                             item = item,
-                            reason = "Because you watched $currentTitle",
+                            reason = stringResource(R.string.player_recommendation_reason, currentTitle),
                             queued = queuedItemId == item.id,
                             focusRequester = playRequester.takeIf { index == 0 },
                             onClick = { onPlayNext(item) },
@@ -1596,7 +1660,7 @@ private fun TvRecommendationChoice(
                     contentColor = if (queued) Color.White else Color(0xFF171A20),
                     focusedContentColor = Color.Black,
                 ),
-            ) { Text(if (queued) "Selected" else "Watch after this", fontWeight = FontWeight.Bold) }
+            ) { Text(stringResource(if (queued) R.string.a11y_selected else R.string.player_watch_after_this), fontWeight = FontWeight.Bold) }
         }
     }
 }
@@ -1739,9 +1803,9 @@ private fun StreamOptionButton(
         // Same wording as the streams picker, so the row a viewer chose there is recognisable
         // here — two names for the same promise reads as two different things.
         stream.cachedBy.isNotEmpty() -> readyServiceLabel(stream.cachedBy).orEmpty() to true
-        !stream.url.isNullOrBlank() -> "Direct" to false
-        !stream.nzbUrl.isNullOrBlank() -> "Usenet" to false
-        else -> "Torrent" to false
+        !stream.url.isNullOrBlank() -> stringResource(R.string.player_info_route_direct) to false
+        !stream.nzbUrl.isNullOrBlank() -> stringResource(R.string.transport_usenet) to false
+        else -> stringResource(R.string.transport_torrent) to false
     }
     OutlinedButton(
         onClick = onClick,
@@ -1783,7 +1847,7 @@ private fun StreamOptionButton(
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = stream.addonName.ifBlank { "Stream source" },
+                    text = stream.addonName.ifBlank { stringResource(R.string.player_stream_source_fallback) },
                     style = androidx.tv.material3.MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
                     color = Color(0xFFD4B8FF),
                     maxLines = 1,
@@ -1792,7 +1856,7 @@ private fun StreamOptionButton(
                 )
                 Icon(
                     imageVector = if (favourite) Icons.Filled.Star else Icons.Filled.StarBorder,
-                    contentDescription = if (favourite) "Pinned source; hold OK to unpin" else "Hold OK to pin source",
+                    contentDescription = stringResource(if (favourite) R.string.player_source_pinned_hint else R.string.player_source_pin_hint),
                     tint = if (favourite) Color(0xFFF0BA66) else Color.White.copy(alpha = 0.42f),
                     modifier = Modifier.size(18.dp),
                 )
@@ -1805,7 +1869,7 @@ private fun StreamOptionButton(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                if (playing) ActiveBadge("Playing")
+                if (playing) ActiveBadge(stringResource(R.string.player_now_playing))
             }
             Text(
                 text = releaseLabel,
@@ -1923,7 +1987,7 @@ private fun PlayerStepperRow(
                     ),
                     color = Color.White,
                 )
-                (hint ?: "Left and right to adjust").let {
+                (hint ?: stringResource(R.string.player_stepper_hint)).let {
                     Text(
                         text = it,
                         style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
@@ -1964,7 +2028,7 @@ private fun PlayerStepperRow(
 private fun <T> PanelTabRow(
     tabs: List<T>,
     selected: T,
-    labelOf: (T) -> String,
+    labelOf: @Composable (T) -> String,
     onInteract: () -> Unit,
     onSelect: (T) -> Unit,
 ) {
@@ -2044,7 +2108,7 @@ private fun PanelNote(text: String) {
 @Composable
 private fun PlayerInfoTable(rows: List<Pair<String, String>>) {
     if (rows.isEmpty()) {
-        PanelNote("Nothing reported yet.")
+        PanelNote(stringResource(R.string.player_info_nothing_yet))
         return
     }
     Column(

@@ -24,6 +24,10 @@ class IdleAndAutoSkipPolicyTest {
     fun `off has no idle deadline and configured minutes convert exactly`() {
         assertNull(idleTimeoutMillis(0))
         assertEquals(15L * 60_000L, idleTimeoutMillis(15))
-        assertEquals("2 hours", idleTimeoutLabel(120))
+        // The label moved into string resources and a plain JVM test has none to resolve against.
+        // Asserting on the English would be asserting on one locale of eight, and every value in
+        // both choice lists is checked for wording by scripts/check-translations.mjs. What matters
+        // here is the timer, and that is the conversion above.
+        assertEquals(120L * 60_000L, idleTimeoutMillis(120))
     }
 }

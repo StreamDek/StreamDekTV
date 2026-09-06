@@ -1,5 +1,7 @@
 package com.streamdek.tv.nativeapp.debrid
 
+import android.content.res.Resources
+import com.streamdek.tv.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
@@ -83,7 +85,11 @@ object PremiumizeDeviceAuth {
    * `slow_down`. Those are the ordinary path rather than failures, so the status alone cannot be
    * trusted here — the body decides.
    */
-  suspend fun poll(clientId: String, deviceCode: String): Poll {
+  /**
+   * @param resources for the two outcomes a viewer reads. Absent in tests, where the English
+   * source text -- the same string `values/strings.xml` holds -- stands in.
+   */
+  suspend fun poll(clientId: String, deviceCode: String, resources: Resources? = null): Poll {
     val body = runCatching {
       postForm("grant_type" to "device_code", "code" to deviceCode, "client_id" to clientId)
     }.getOrElse { error ->
@@ -99,8 +105,12 @@ object PremiumizeDeviceAuth {
     return when (val error = json.optString("error").lowercase()) {
       "authorization_pending" -> Poll.Pending
       "slow_down" -> Poll.SlowDown
-      "access_denied" -> Poll.Failed("Sign-in was declined on Premiumize.")
-      "expired_token", "invalid_grant" -> Poll.Failed("That code expired. Start again to get a new one.")
+      "access_denied" -> Poll.Failed(
+        resources?.getString(R.string.premiumize_sign_in_declined) ?: "Sign-in was declined on Premiumize.",
+      )
+      "expired_token", "invalid_grant" -> Poll.Failed(
+        resources?.getString(R.string.premiumize_code_expired) ?: "That code expired. Start again to get a new one.",
+      )
       else -> {
         // An empty body on a 200 means nothing has happened yet either.
         if (error.isBlank() && body.successful) Poll.Pending

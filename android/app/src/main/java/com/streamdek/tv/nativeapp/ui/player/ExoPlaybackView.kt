@@ -7,6 +7,7 @@ import android.util.AttributeSet
 import android.util.Log
 import android.view.KeyEvent
 import androidx.annotation.OptIn
+import androidx.annotation.StringRes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -28,6 +29,7 @@ import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
+import com.streamdek.tv.R
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.Dv7Hevc
@@ -35,6 +37,7 @@ import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
+import com.streamdek.tv.nativeapp.data.localizedContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -45,6 +48,16 @@ class ExoPlaybackView @JvmOverloads constructor(
   attrs: AttributeSet? = null,
   defStyleAttr: Int = 0,
 ) : PlayerView(context, attrs, defStyleAttr), MpvPlayerController {
+
+  /**
+   * Wording for the viewer, in the interface language.
+   *
+   * A View is not a composition, and its own context carries the system locale rather than the one
+   * chosen in Settings. Everything else this class logs stays English on purpose -- those lines are
+   * for whoever reads the log, not for whoever is watching.
+   */
+  private fun viewerText(@StringRes id: Int): String =
+    runCatching { localizedContext(context).getString(id) }.getOrElse { context.getString(id) }
   companion object {
     private const val TAG = "StreamDekExoPlayer"
     private const val DEFAULT_USER_AGENT =
@@ -239,7 +252,7 @@ class ExoPlaybackView @JvmOverloads constructor(
           Log.i(TAG, "External subtitle ready: ${timeline.size} timed cue groups")
         }.onFailure {
           Log.w(TAG, "External subtitle parse failed", it)
-          onExternalSubtitleErrorCallback?.invoke("That subtitle could not be loaded. Try another subtitle source.")
+          onExternalSubtitleErrorCallback?.invoke(viewerText(R.string.player_subtitle_load_failed))
         }
       }
     }
@@ -391,7 +404,7 @@ class ExoPlaybackView @JvmOverloads constructor(
       Log.i(TAG, "Preparing source with Media3: ${url.substringBefore('?')}")
     }.onFailure { failure ->
       Log.e(TAG, "Media3 could not prepare this protocol", failure)
-      post { onErrorCallback?.invoke(failure.localizedMessage ?: "This source protocol is not supported.") }
+      post { onErrorCallback?.invoke(failure.localizedMessage ?: viewerText(R.string.player_protocol_unsupported)) }
     }
   }
 
@@ -421,7 +434,7 @@ class ExoPlaybackView @JvmOverloads constructor(
 
     override fun onPlayerError(error: PlaybackException) {
       Log.e(TAG, "Media3 playback failed", error)
-      onErrorCallback?.invoke(error.localizedMessage ?: "This source could not be played.")
+      onErrorCallback?.invoke(error.localizedMessage ?: viewerText(R.string.player_source_unplayable))
     }
 
     override fun onTracksChanged(tracks: Tracks) = dispatchTracks(tracks)

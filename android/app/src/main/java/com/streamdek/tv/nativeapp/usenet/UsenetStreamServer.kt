@@ -2,6 +2,8 @@ package com.streamdek.tv.nativeapp.usenet
 
 import android.content.Context
 import android.util.Log
+import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.data.localizedContext
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
@@ -251,7 +253,7 @@ object UsenetPlayback {
         // the honest answer until unpacking exists.
         if (document.isPackedArchive()) {
             throw PackedUsenetPostException(
-                "This usenet post is packed into archives, which StreamDek cannot play yet. Try another source.",
+                localizedContext(context).getString(R.string.usenet_archived_post),
             )
         }
         val file = document.primaryVideoFile()

@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.account
 
+import android.content.res.Resources
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -43,6 +44,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -54,6 +56,7 @@ import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.ContentService
 import com.streamdek.tv.nativeapp.data.ContentServiceState
 import com.streamdek.tv.nativeapp.data.ContentServicesState
+import com.streamdek.tv.nativeapp.data.CredentialFailureException
 import com.streamdek.tv.nativeapp.data.CredentialRemoval
 import com.streamdek.tv.nativeapp.data.CredentialStatus
 import com.streamdek.tv.nativeapp.data.CredentialStorage
@@ -106,6 +109,9 @@ internal fun ContentServicesPanel(
     var removing by remember { mutableStateOf<ContentServiceState?>(null) }
     var busy by remember { mutableStateOf<ContentService?>(null) }
     var keyFeedback by remember { mutableStateOf<Triple<ContentService, String, Boolean>?>(null) }
+    // The result of a key check arrives in a coroutine rather than in the composition, so the
+    // wording is read from the resources the composition is already using.
+    val resources = LocalContext.current.resources
 
     fun run(
         service: ContentService,
@@ -118,9 +124,7 @@ internal fun ContentServicesPanel(
             val result = work()
             busy = null
             onComplete?.invoke(result)
-            onStatus(
-                result.getOrElse { it.message ?: "That didn't work. Try again in a moment." },
-            )
+            onStatus(result.getOrElse { failureMessage(resources, it) })
         }
     }
 
@@ -164,7 +168,7 @@ internal fun ContentServicesPanel(
                     onComplete = { result ->
                         keyFeedback = Triple(
                             service,
-                            result.getOrElse { it.message ?: "That didn't work. Try again in a moment." },
+                            result.getOrElse { failureMessage(resources, it) },
                             result.isFailure,
                         )
                     },
@@ -211,21 +215,14 @@ private fun ContentServicesIntro(state: ContentServicesState, signedIn: Boolean)
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
         )
         Text(
-            when {
-                !signedIn ->
-                    "Sign in to StreamDek and any keys saved to your account appear here on their own. " +
-                        "Until then, a key entered on this television stays on this television."
-                !state.anyConfigured && state.sharedFallbackAvailable ->
-                    "StreamDek is using its own shared TMDB key for now, which works but is shared with " +
-                        "everyone. Add your own for faster, fuller results — and you almost certainly " +
-                        "don't need to type it here."
-                !state.anyConfigured ->
-                    "A TMDB key is needed for artwork and details on this television. The easiest way to " +
-                        "add one is on your phone or the StreamDek web portal — it then appears here by itself."
-                else ->
-                    "Keys saved to your StreamDek account are used here automatically. You can replace or " +
-                        "remove them from any of your devices."
-            },
+            stringResource(
+                when {
+                    !signedIn -> R.string.content_services_signed_out_note
+                    !state.anyConfigured && state.sharedFallbackAvailable -> R.string.content_services_shared_tmdb_note
+                    !state.anyConfigured -> R.string.content_services_tmdb_needed_note
+                    else -> R.string.content_services_account_keys_note
+                },
+            ),
             color = Color.White.copy(alpha = 0.62f),
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -272,7 +269,7 @@ private fun ContentServiceRow(
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 )
                 Text(
-                    service.tagline,
+                    stringResource(service.taglineRes),
                     color = Color.White.copy(alpha = 0.55f),
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -283,7 +280,7 @@ private fun ContentServiceRow(
                         .background(statusColor(if (busy) CredentialStatus.Checking else state.status), CircleShape),
                 )
                 Text(
-                    if (busy) "Checking…" else state.summary,
+                    stringResource(if (busy) R.string.content_services_checking else state.summaryRes),
                     color = statusColor(if (busy) CredentialStatus.Checking else state.status),
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                 )
@@ -294,7 +291,7 @@ private fun ContentServiceRow(
         // is noise on a screen being read from three metres away.
         if (!state.configured) {
             Text(
-                service.blurb,
+                stringResource(service.blurbRes),
                 color = Color.White.copy(alpha = 0.52f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = if (focused) Int.MAX_VALUE else 2,
@@ -343,11 +340,13 @@ private fun ContentServiceRow(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = onEnterKey, enabled = !busy) {
                 Text(
-                    when {
-                        state.status == CredentialStatus.NeedsAttention -> "Update Key"
-                        state.configured -> "Replace Key"
-                        else -> "Enter Key on TV"
-                    },
+                    stringResource(
+                        when {
+                            state.status == CredentialStatus.NeedsAttention -> R.string.credential_update_key
+                            state.configured -> R.string.credential_replace_key
+                            else -> R.string.content_services_enter_key_on_tv
+                        },
+                    ),
                 )
             }
             // Offered rather than done: a key the viewer chose to keep on this television is never
@@ -384,21 +383,18 @@ private fun ContentServicesRoutes(leftRequester: FocusRequester) {
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
         )
         RouteLine(
-            "1 - On the StreamDek web portal",
-            "Sign in on a computer, open Account, then Content Services, and paste your keys with a " +
-                "real keyboard. They save to your account and this television picks them up on its own.",
+            stringResource(R.string.content_services_route_portal_title),
+            stringResource(R.string.content_services_route_portal_detail),
             leftRequester,
         )
         RouteLine(
-            "2 - On StreamDek Mobile",
-            "Enter a key on your phone and choose Save to StreamDek. This television will already have " +
-                "it the next time it refreshes.",
+            stringResource(R.string.content_services_route_mobile_title),
+            stringResource(R.string.content_services_route_mobile_detail),
             leftRequester,
         )
         RouteLine(
-            "3 - On this television",
-            "Use Enter Key on TV above if you would rather not use another device, or if you want this " +
-                "television to have a key of its own.",
+            stringResource(R.string.content_services_route_tv_title),
+            stringResource(R.string.content_services_route_tv_detail),
             leftRequester,
         )
     }
@@ -485,12 +481,15 @@ private fun ContentServiceKeyDialog(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Text(
-                    if (existing.configured) "Update your ${service.label} key" else "Enter your ${service.label} key",
+                    stringResource(
+                        if (existing.configured) R.string.content_services_update_named_key else R.string.content_services_enter_named_key,
+                        service.label,
+                    ),
                     color = Color.White,
                     style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
                 )
                 Text(
-                    service.blurb,
+                    stringResource(service.blurbRes),
                     color = Color.White.copy(alpha = 0.62f),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -501,7 +500,7 @@ private fun ContentServiceKeyDialog(
                     enabled = !busy && (feedback == null || feedbackIsError),
                     isError = feedbackIsError,
                     singleLine = true,
-                    placeholder = { Text(service.keyHint) },
+                    placeholder = { Text(stringResource(service.keyHintRes)) },
                     shape = RoundedCornerShape(12.dp),
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color(0xFF121722),
@@ -533,7 +532,8 @@ private fun ContentServiceKeyDialog(
                         color = Color.White.copy(alpha = 0.78f),
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                     )
-                    service.howToGet.forEachIndexed { index, step ->
+                    service.howToGetRes.forEachIndexed { index, stepRes ->
+                        val step = stringResource(stepRes)
                         Text(
                             stringResource(R.string.content_services_step, index + 1, step),
                             color = Color.White.copy(alpha = 0.52f),
@@ -560,12 +560,14 @@ private fun ContentServiceKeyDialog(
                         enabled = !busy && ((feedback != null && !feedbackIsError) || apiKey.trim().length >= 8),
                     ) {
                         Text(
-                            when {
-                                busy -> "Checking…"
-                                feedback != null && !feedbackIsError -> "Done"
-                                existing.configured -> "Check & Update"
-                                else -> "Check & Connect"
-                            },
+                            stringResource(
+                                when {
+                                    busy -> R.string.content_services_checking
+                                    feedback != null && !feedbackIsError -> R.string.state_done
+                                    existing.configured -> R.string.content_services_check_and_update
+                                    else -> R.string.content_services_check_and_connect
+                                },
+                            ),
                         )
                     }
                     if (feedback == null || feedbackIsError) {
@@ -597,21 +599,20 @@ private fun StorageChoiceRows(
         )
         StorageChoiceRow(
             title = stringResource(R.string.content_services_save_to_account),
-            detail = if (signedIn) {
-                "Stored encrypted in your StreamDek account. Every device you sign in on uses it, " +
-                    "so you never type it again."
-            } else {
-                "Sign in to StreamDek to use this option."
-            },
+            detail = stringResource(
+                if (signedIn) {
+                    R.string.content_services_storage_account_detail
+                } else {
+                    R.string.content_services_storage_account_needs_sign_in
+                },
+            ),
             selected = choice == StorageChoice.SaveToStreamDek,
             enabled = signedIn,
             onSelect = { onChoice(StorageChoice.SaveToStreamDek) },
         )
         StorageChoiceRow(
             title = stringResource(R.string.content_services_this_tv_only),
-            detail = "Stored encrypted on this television, and StreamDek keeps no copy. It is sent with " +
-                "this TV's own requests so they can be made, and never saved. Your other devices will " +
-                "each need their own key.",
+            detail = stringResource(R.string.content_services_storage_device_detail),
             selected = choice == StorageChoice.ThisDeviceOnly,
             enabled = true,
             onSelect = { onChoice(StorageChoice.ThisDeviceOnly) },
@@ -702,16 +703,9 @@ private fun ContentServiceRemoveDialog(
                 )
                 Text(
                     when {
-                        onAccount ->
-                            "This key is saved to your StreamDek account and is in use on every device you " +
-                                "are signed in on. Removing it takes it away from your phone and any other " +
-                                "television as well as this one."
-                        bothPlaces ->
-                            "This television has its own ${service.label} key, and your StreamDek account has " +
-                                "one too. Choose which to remove — removing the account key affects your " +
-                                "other devices."
-                        else ->
-                            "This key is stored on this television only, so removing it affects nothing else."
+                        onAccount -> stringResource(R.string.content_services_remove_account_key_note)
+                        bothPlaces -> stringResource(R.string.content_services_remove_choose_note, service.label)
+                        else -> stringResource(R.string.content_services_remove_device_key_note)
                     },
                     color = Color.White.copy(alpha = 0.66f),
                     style = MaterialTheme.typography.bodyMedium,
@@ -736,14 +730,33 @@ private fun ContentServiceRemoveDialog(
     }
 }
 
-/** The one-line summary the Connections list shows without opening the page. */
+/**
+ * The one-line summary the Connections list shows without opening the page.
+ *
+ * The service names inside it are the services' own, and stay as they are; only the words around
+ * them are translated.
+ */
+@Composable
 internal fun contentServicesSummary(state: ContentServicesState): String {
     val attention = state.needsAttention
     val connected = listOf(state.tmdb, state.mdblist).filter { it.configured }
     return when {
-        attention.isNotEmpty() -> "${attention.joinToString(", ") { it.service.label }} needs attention"
-        connected.size == 2 -> "TMDB and MDBList connected"
-        connected.size == 1 -> "${connected.first().service.label} connected"
-        else -> "Not configured"
+        attention.isNotEmpty() -> stringResource(
+            R.string.content_services_needs_attention_named,
+            attention.joinToString(", ") { it.service.label },
+        )
+        connected.size == 2 -> stringResource(R.string.content_services_tmdb_and_mdblist_connected)
+        connected.size == 1 -> stringResource(R.string.content_services_named_connected, connected.first().service.label)
+        else -> stringResource(R.string.settings_tv_not_configured)
     }
 }
+
+/**
+ * What went wrong, in the viewer's language.
+ *
+ * A [CredentialFailureException] names one of the four failures the backend distinguishes; anything
+ * else is a fault nobody wrote a sentence for, and gets the general one rather than a Java message.
+ */
+private fun failureMessage(resources: Resources, error: Throwable): String = resources.getString(
+    (error as? CredentialFailureException)?.failure?.messageRes ?: R.string.credential_failure_generic,
+)

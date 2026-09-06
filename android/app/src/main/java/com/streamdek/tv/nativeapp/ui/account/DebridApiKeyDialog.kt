@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -63,6 +64,8 @@ internal fun DebridApiKeyDialog(
     var apiKey by remember(providerId) { mutableStateOf("") }
     var checking by remember(providerId) { mutableStateOf(false) }
     var error by remember(providerId) { mutableStateOf<String?>(null) }
+    // The rejection is reported from a coroutine, which is not a composition.
+    val dialogResources = LocalContext.current.resources
 
     // The field is the only thing anyone opened this for, so it is live on arrival rather than
     // behind one more press.
@@ -126,14 +129,14 @@ internal fun DebridApiKeyDialog(
                                 val username = repository.connectDebridApiKey(providerId, apiKey)
                                 checking = false
                                 if (username == null) {
-                                    error = "$providerLabel would not accept that key. Check it and try again."
+                                    error = dialogResources.getString(R.string.debrid_key_rejected, providerLabel)
                                 } else {
                                     onConnected(username)
                                 }
                             }
                         },
                         enabled = !checking && apiKey.isNotBlank(),
-                    ) { Text(if (checking) "Checking…" else "Connect") }
+                    ) { Text(stringResource(if (checking) R.string.content_services_checking else R.string.action_connect)) }
                     OutlinedButton(onClick = onDismiss, enabled = !checking) { Text(stringResource(R.string.action_cancel)) }
                 }
             }

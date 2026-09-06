@@ -183,9 +183,11 @@ fun LiveScreen(
     }
 
     val heading = when {
-        favouritesOnly -> "Favourite channels"
-        selectedSourceId != null -> buckets.firstOrNull { it.id == selectedSourceId }?.title ?: "Live TV"
-        else -> "All live channels"
+        favouritesOnly -> stringResource(R.string.live_favourite_channels)
+        // The bucket's own title where it has one; that is the source's word, not ours.
+        selectedSourceId != null -> buckets.firstOrNull { it.id == selectedSourceId }?.title
+            ?: stringResource(R.string.live_tv)
+        else -> stringResource(R.string.live_all_channels)
     }
 
     /**
@@ -268,8 +270,8 @@ fun LiveScreen(
             // this runs to hundreds of entries, and a control past all of them may as well not exist.
             item("view") {
                 LiveSourceRow(
-                    label = if (listView) "List view" else "Card view",
-                    caption = "Press OK to switch",
+                    label = stringResource(if (listView) R.string.live_list_view else R.string.live_card_view),
+                    caption = stringResource(R.string.live_press_ok_switch),
                     count = null,
                     selected = false,
                     modifier = Modifier.focusProperties { right = contentFocusTarget },
@@ -347,12 +349,12 @@ fun LiveScreen(
                 }
 
                 visibleItems.isEmpty() -> TvEmptyState(
-                    title = if (favouritesOnly) "No favourite channels yet" else "No channels here",
-                    message = if (favouritesOnly) {
-                        "Hold OK on any channel to add it to your favourites."
-                    } else {
-                        "Pick another source from the list on the left."
-                    },
+                    title = stringResource(
+                        if (favouritesOnly) R.string.live_no_favourites_yet else R.string.live_no_channels_here,
+                    ),
+                    message = stringResource(
+                        if (favouritesOnly) R.string.live_hold_ok_favourite else R.string.live_pick_another_source,
+                    ),
                 )
 
                 listView -> LazyColumn(

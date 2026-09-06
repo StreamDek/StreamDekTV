@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -81,6 +82,9 @@ fun AuthScreen(
         sessionEndedMessage?.let { status = it }
     }
 
+    // Everything below reports its outcome from a coroutine, which is not a composition.
+    val authResources = LocalContext.current.resources
+
     LaunchedEffect(mode) {
         if (mode != AuthMode.TvCode) return@LaunchedEffect
         TvDebugLogger.i("AuthUi", "starting TV code flow")
@@ -89,7 +93,7 @@ fun AuthScreen(
         repository.clearSessionExpired()
         status = null
         tvSession = runCatching { repository.createTvSession() }
-            .onFailure { status = it.message ?: "Could not start TV sign-in" }
+            .onFailure { status = authResources.getString(R.string.auth_could_not_start) }
             .getOrNull()
         TvDebugLogger.i("AuthUi", "tvSession created code=${tvSession?.userCode ?: "none"}")
         busy = false
@@ -110,26 +114,26 @@ fun AuthScreen(
                         onSignedIn()
                     }.onFailure {
                         TvDebugLogger.e("AuthUi", "tvSession bootstrap completion failed", it)
-                        status = it.message ?: "TV sign-in finished, but account setup failed"
+                        status = authResources.getString(R.string.auth_setup_failed)
                     }
                     return@LaunchedEffect
                 }
                 "authorization_pending" -> {
                     TvDebugLogger.d("AuthUi", "tvSession pending")
-                    status = "Waiting for approval on your phone"
+                    status = authResources.getString(R.string.auth_waiting_approval)
                 }
                 "slow_down" -> {
                     TvDebugLogger.w("AuthUi", "tvSession slow_down")
-                    status = "Approval pending. Polling more slowly"
+                    status = authResources.getString(R.string.auth_approval_pending)
                 }
                 "expired_token" -> {
                     TvDebugLogger.w("AuthUi", "tvSession expired")
-                    status = "That code expired. Reload TV sign-in"
+                    status = authResources.getString(R.string.auth_code_expired)
                     return@LaunchedEffect
                 }
                 else -> {
                     TvDebugLogger.w("AuthUi", "tvSession failed status=${result.status}")
-                    status = "TV sign-in failed"
+                    status = authResources.getString(R.string.auth_tv_sign_in_failed)
                     return@LaunchedEffect
                 }
             }
@@ -182,9 +186,9 @@ fun AuthScreen(
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    FilterButton("TV Code", mode == AuthMode.TvCode) { mode = AuthMode.TvCode }
-                    FilterButton("Sign In", mode == AuthMode.SignIn) { mode = AuthMode.SignIn }
-                    FilterButton("Sign Up", mode == AuthMode.SignUp) { mode = AuthMode.SignUp }
+                    FilterButton(stringResource(R.string.auth_tv_code), mode == AuthMode.TvCode) { mode = AuthMode.TvCode }
+                    FilterButton(stringResource(R.string.action_sign_in), mode == AuthMode.SignIn) { mode = AuthMode.SignIn }
+                    FilterButton(stringResource(R.string.auth_sign_up), mode == AuthMode.SignUp) { mode = AuthMode.SignUp }
                 }
 
                 when (mode) {
@@ -197,20 +201,20 @@ fun AuthScreen(
                     AuthMode.SignIn -> CredentialPanel(
                         title = stringResource(R.string.auth_direct_sign_in),
                         fields = {
-                            TvField("Email", email) { email = it }
-                            TvPasswordField("Password", password) { password = it }
+                            TvField(stringResource(R.string.info_email), email) { email = it }
+                            TvPasswordField(stringResource(R.string.auth_password), password) { password = it }
                         },
                         busy = busy,
                         status = status,
-                        buttonLabel = "Sign In",
+                        buttonLabel = stringResource(R.string.action_sign_in),
                         onSubmit = {
                         busy = true
                             scope.launch {
                                 status = runCatching {
                                     repository.signIn(email.trim(), password)
                                     onSignedIn()
-                                    "Signed in"
-                                }.getOrElse { it.message ?: "Sign in failed" }
+                                    authResources.getString(R.string.auth_signed_in)
+                                }.getOrElse { authResources.getString(R.string.auth_sign_in_failed) }
                                 busy = false
                             }
                         },
@@ -218,9 +222,9 @@ fun AuthScreen(
                     AuthMode.SignUp -> CredentialPanel(
                         title = stringResource(R.string.auth_create_account),
                         fields = {
-                            TvField("Display Name", displayName) { displayName = it }
-                            TvField("Email", email) { email = it }
-                            TvPasswordField("Password", password) { password = it }
+                            TvField(stringResource(R.string.display_name_label), displayName) { displayName = it }
+                            TvField(stringResource(R.string.info_email), email) { email = it }
+                            TvPasswordField(stringResource(R.string.auth_password), password) { password = it }
                         },
                         busy = busy,
                         status = status,
@@ -231,8 +235,8 @@ fun AuthScreen(
                                 status = runCatching {
                                     repository.register(email.trim(), password, displayName.trim())
                                     onSignedIn()
-                                    "Account created"
-                                }.getOrElse { it.message ?: "Sign up failed" }
+                                    authResources.getString(R.string.auth_account_created)
+                                }.getOrElse { authResources.getString(R.string.auth_sign_up_failed) }
                                 busy = false
                             }
                         },
@@ -279,12 +283,13 @@ private fun TvCodePanel(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
-            text = session?.userCode ?: if (busy) "Loading code..." else "No code available",
+            text = session?.userCode
+                ?: stringResource(if (busy) R.string.auth_loading_code else R.string.auth_no_code),
             style = MaterialTheme.typography.displaySmall,
             color = Color(0xFFF0BA66),
         )
         Text(
-            text = session?.verificationUrl ?: "Open StreamDek on your phone and approve this TV.",
+            text = session?.verificationUrl ?: stringResource(R.string.auth_approve_on_phone),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
         )

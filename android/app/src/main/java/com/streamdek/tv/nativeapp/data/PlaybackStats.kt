@@ -1,5 +1,7 @@
 package com.streamdek.tv.nativeapp.data
 
+import androidx.annotation.StringRes
+import com.streamdek.tv.R
 import java.util.Locale
 
 /**
@@ -28,14 +30,14 @@ data class PlaybackStats(
 )
 
 /** How the bytes actually reach the player, which is not always what the source advertised. */
-enum class StreamTransport(val label: String) {
-    Torrent("Torrent"),
-    Usenet("Usenet"),
-    Hls("HLS"),
-    Dash("DASH"),
-    Http("Direct HTTP"),
-    LocalFile("Local file"),
-    Unknown("Stream"),
+enum class StreamTransport(@StringRes val labelRes: Int) {
+    Torrent(R.string.transport_torrent),
+    Usenet(R.string.transport_usenet),
+    Hls(R.string.transport_hls),
+    Dash(R.string.transport_dash),
+    Http(R.string.transport_direct_http),
+    LocalFile(R.string.transport_local_file),
+    Unknown(R.string.transport_stream),
 }
 
 /**
@@ -87,17 +89,26 @@ private const val PluginAddonIdPrefix = "plugin:"
  * mixes both, "Nuvio · Movies" next to "Torrentio" reads as two add-ons, so the viewer has no way
  * to know which screen to go to when one of them stops answering. Plugin sources therefore name
  * the collection they were installed from; add-ons simply say so.
+ *
+ * @param addonLabel what to call a stream from a plain add-on, and [pluginLabel] what to call one
+ * from a plugin collection. Both are words on the screen and both are passed in, because this file
+ * has no composition to read a resource from and the collection's own name must not be translated.
  */
-fun streamOriginLabel(stream: AddonStream?, plugins: ProfilePluginState): String? {
+fun streamOriginLabel(
+    stream: AddonStream?,
+    plugins: ProfilePluginState,
+    addonLabel: String,
+    pluginLabel: String,
+): String? {
     val addonId = stream?.addonId?.trim().orEmpty()
     if (addonId.isEmpty()) return null
-    if (!addonId.startsWith(PluginAddonIdPrefix)) return "Add-on"
+    if (!addonId.startsWith(PluginAddonIdPrefix)) return addonLabel
     val providerId = addonId.removePrefix(PluginAddonIdPrefix)
     val provider = plugins.providers.firstOrNull { it.id == providerId }
     val repoUrl = provider?.repoUrl.orEmpty()
     val collection = plugins.repos.firstOrNull { it.url == repoUrl }?.name?.takeIf { it.isNotBlank() }
         ?: pluginRepoShortLabel(repoUrl)
-    return listOfNotNull("Plugin", collection).joinToString(" · ")
+    return listOfNotNull(pluginLabel, collection).joinToString(" · ")
 }
 
 /** A repo with no name still has a URL; its host is enough to tell two collections apart. */

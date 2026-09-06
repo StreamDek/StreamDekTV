@@ -20,6 +20,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -30,6 +31,7 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
@@ -183,15 +185,17 @@ internal fun SearchQueryDisplay(
     modifier: Modifier = Modifier,
 ) {
     val hint = when {
-        editing -> "Typing — press Back when done"
-        focused -> "Press OK to type"
-        query.isBlank() -> "Search films, series and channels"
+        editing -> stringResource(R.string.search_hint_typing)
+        focused -> stringResource(R.string.search_hint_press_ok)
+        query.isBlank() -> stringResource(R.string.search_hint_default)
         else -> null
     }
     Box(modifier) {
         androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                text = query.ifBlank { "Search" },
+                // The page's own heading until something has been typed, at which point it becomes
+                // the query itself — which is the viewer's text and stays exactly as they wrote it.
+                text = query.ifBlank { stringResource(R.string.nav_search) },
                 style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
                 color = if (query.isBlank()) {
                     MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f)

@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.data
 
+import androidx.annotation.StringRes
 import com.google.gson.annotations.SerializedName
 
 data class SessionUser(
@@ -314,10 +315,26 @@ data class TraktCommentsResponse(
 
 data class HomeRail(
     val id: String,
+    /**
+     * What the rail is called, when the name came from outside StreamDek.
+     *
+     * An add-on's catalogue name, a playlist's own name: external metadata, shown as sent. For
+     * StreamDek's own rails this is left as a plain English fallback and [titleRes] is what the
+     * screen actually draws.
+     */
     val title: String,
     val items: List<MediaItem>,
     /** True for addon catalogs that carry live channels, which are grouped together on Home. */
     val isLive: Boolean = false,
+    /**
+     * StreamDek's own name for the rail, resolved when it is drawn.
+     *
+     * A resource rather than text because rails are built in the repository and cached: a string
+     * resolved there would be fixed to the language that happened to be set when the home screen
+     * loaded, and would not follow a change. Last in the list, and defaulted, so the positional
+     * construction used across the app and its tests is unaffected.
+     */
+    @StringRes val titleRes: Int? = null,
 )
 
 data class LiveCatalogRail(
@@ -349,9 +366,12 @@ data class HomeContent(
 /** A reserved slot for a row that has not resolved yet. */
 data class PendingRail(
     val id: String,
+    /** The add-on's own name for the catalogue, when the rail is an add-on's. Shown as sent. */
     val title: String,
     /** Matches the card shape the finished row will use, so the swap is not a visual jump. */
     val portrait: Boolean = false,
+    /** StreamDek's own name for the rail. See [HomeRail.titleRes]. */
+    @StringRes val titleRes: Int? = null,
 )
 
 data class AccountProfile(
