@@ -2651,7 +2651,12 @@ class StreamDekRepository(
             networkCache[cacheKey]?.let { return it }
         }
         val query = buildString {
-            append("/tmdb/network/$networkId?page=$page&type=$type&sort=$sort")
+            append("/tmdb/network/$networkId?page=$page&sort=$sort")
+            // "all" is this route's own default and is deliberately not one of the two values its
+            // querystring schema accepts, so it is left off rather than sent. Spelling it out had
+            // the request refused before the handler ran, which is an empty browse page on the
+            // filter the screen opens with -- every service tile led nowhere.
+            if (type != "all") append("&type=$type")
             if (!year.isNullOrBlank()) append("&year=${URLEncoder.encode(year, "UTF-8")}")
             if (genreId != null) append("&genre_id=$genreId")
         }
