@@ -471,6 +471,7 @@ fun PlayerScreen(
     var recommendationDismissed by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var queuedRecommendation by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<MediaItem?>(null) }
     var recommendationHasFocus by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var recommendationSavedIds by remember(request.mediaId, request.mediaType) { mutableStateOf(setOf<String>()) }
     var pendingEpisodeSelection by remember(request.mediaId, request.mediaType) { mutableStateOf<PendingEpisodeSelection?>(null) }
     var nextEpisodeTransitionInProgress by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
     var episodeLoadGeneration by remember(request.mediaId, request.mediaType) { mutableIntStateOf(0) }
@@ -1018,9 +1019,13 @@ fun PlayerScreen(
         val effectiveImdbId = request.imdbId ?: detail?.imdbId
         markSegmentHandled("outro")
         controlsVisible = false
-        // The next-episode card deliberately remains on the left. Only retire the completed
-        // episode's delayed synopsis overlay on the right while source discovery is in progress.
+        // Only retire the completed episode's delayed synopsis overlay while source discovery is
+        // in progress; the card itself owns the bottom-right corner from here.
         pauseInfoVisible = false
+        // One surface owns the end of playback. A late next-episode lookup upgrades the existing
+        // card instead of leaving the recommendation card mounted underneath it.
+        recommendationDialogVisible = false
+        queuedRecommendation = null
         nextEpisodeDialogVisible = true
         nextEpisodeLoading = true
         nextEpisodeCountdown = null
@@ -1047,6 +1052,15 @@ fun PlayerScreen(
                         stream = ranked.firstOrNull(),
                         streams = ranked,
                     )
+                    // Arming this is what auto-play *is*: the tick effect below counts it down and
+                    // calls beginNextEpisode at one. Without it the card sits over the credits
+                    // waiting for a button nobody has to press, the countdown row and its Cancel
+                    // never render, and the setting that promises to start the next episode near
+                    // the threshold only ever fires at the very end of the file. Set once, on the
+                    // first batch of sources -- later batches must not restart the count.
+                    if (playbackPreferences.isAutoPlayNextEpisodeEnabled() && nextEpisodeCountdown == null) {
+                        nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
+                    }
                 }
             }
         }
@@ -1840,6 +1854,25 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }
     }
 
+    LaunchedEffect(positionSec, durationSec, segments) {
+        val outroStart = segments.firstOrNull { it.segmentType == "outro" }?.startSec
+        val estimate = com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.estimate(
+            durationSec = durationSec,
+            timing = com.streamdek.tv.nativeapp.data.RecommendationTiming.fromKey(playbackPreferences.recommendationTiming),
+            structuralOutroStartSec = outroStart,
+        )
+        if (com.streamdek.tv.nativeapp.data.EndOfPlaybackCoordinator.shouldResetAfterSeek(positionSec, estimate?.triggerPositionSec) &&
+            (nextEpisodeDialogVisible || recommendationDialogVisible || recommendationDismissed)
+        ) {
+            nextEpisodeDialogVisible = false
+            recommendationDialogVisible = false
+            nextEpisodeCountdown = null
+            recommendationDismissed = false
+            queuedNextEpisode = false
+            queuedRecommendation = null
+        }
+    }
+
     LaunchedEffect(panel) {
         if (panel == null) return@LaunchedEffect
         delay(80)
@@ -2371,10 +2404,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         )
                         if (isLive) {
                             scheduleLiveReconnect("The feed ended")
-                        } else if (queuedNextEpisode && nextEpisode != null) {
-                            beginNextEpisode()
-                        } else if (queuedRecommendation != null) {
-                            completePlaybackWithRecommendation(queuedRecommendation!!)
                         } else if (nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled()) {
                             if (nextEpisodeCandidate?.stream != null) beginNextEpisode() else scope.launch { openNextEpisodeDialog() }
                         } else {
@@ -3020,6 +3049,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             }
         }
 
+        val recommendationPool = detail?.similarTitles.orEmpty()
+        val upNextDecision = com.streamdek.tv.nativeapp.data.EndOfPlaybackCoordinator.decide(
+            nextEpisodeId = nextEpisode?.let { "${request.mediaId}:${it.seasonNumber}:${it.episodeNumber}" },
+            currentMediaId = request.mediaId,
+            recommendationIds = recommendationPool.map { it.id },
+            recommendationLimit = playbackPreferences.recommendationItemCount,
+        )
+        val recommendationById = recommendationPool.associateBy { it.id }
+        val recommendedItems = buildList {
+            if (upNextDecision?.primaryKind == com.streamdek.tv.nativeapp.data.UpNextKind.Recommendation) {
+                upNextDecision.primaryId?.let(recommendationById::get)?.let(::add)
+            }
+            upNextDecision?.alternativeIds.orEmpty().mapNotNullTo(this, recommendationById::get)
+        }
         if (nextEpisodeDialogVisible && nextEpisode != null) {
             NextEpisodeDialog(
                 detail = detail,
@@ -3029,20 +3072,34 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 countdown = nextEpisodeCountdown,
                 playRequester = nextEpisodePlayRequester,
                 cancelRequester = nextEpisodeCancelRequester,
+                recommendations = recommendedItems,
+                currentTitle = detail?.title ?: request.title.orEmpty(),
+                savedRecommendationIds = recommendationSavedIds,
                 onPlayNow = {
-                    queuedNextEpisode = true
-                    nextEpisodeDialogVisible = false
+                    // Starts now. Queueing it behind the end of the file meant a button marked
+                    // Play next sat there doing nothing visible for the length of the credits,
+                    // which reads as a dead button rather than as a decision that has been taken.
                     recommendationDismissed = true
-                    scheduleControlsHide()
+                    beginNextEpisode()
                 },
                 onSelectStream = { index ->
                     nextEpisodeCandidate = nextEpisodeCandidate?.copy(
                         stream = nextEpisodeCandidate?.streams?.getOrNull(index),
                     )
-                    queuedNextEpisode = true
+                    recommendationDismissed = true
+                    beginNextEpisode(index)
+                },
+                onPlayRecommendation = { item ->
+                    nextEpisodeCountdown = null
                     nextEpisodeDialogVisible = false
                     recommendationDismissed = true
-                    scheduleControlsHide()
+                    completePlaybackWithRecommendation(item)
+                },
+                onAddRecommendationToWatchlist = { item ->
+                    if (item.id !in recommendationSavedIds) {
+                        recommendationSavedIds = recommendationSavedIds + item.id
+                        scope.launch { repository.addToWatchlist(item) }
+                    }
                 },
                 onCancel = {
                     nextEpisodeDialogVisible = false
@@ -3054,10 +3111,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        val recommendedItems = detail?.similarTitles
-            ?.filter { it.id != request.mediaId }
-            ?.take(playbackPreferences.recommendationItemCount.coerceIn(1, 2))
-            .orEmpty()
         PlayerOverlayVisibility(
             visible = recommendationDialogVisible && recommendedItems.isNotEmpty(),
             modifier = Modifier.fillMaxSize(),
@@ -3067,9 +3120,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     currentTitle = detail?.title ?: request.title.orEmpty(),
                     items = recommendedItems,
                     queuedItemId = queuedRecommendation?.id,
+                    savedItemIds = recommendationSavedIds,
                     playRequester = nextEpisodePlayRequester,
                     cancelRequester = nextEpisodeCancelRequester,
-                    onPlayNext = { item -> queuedRecommendation = item },
+                    onPlayNext = { item ->
+                        recommendationDialogVisible = false
+                        recommendationDismissed = true
+                        completePlaybackWithRecommendation(item)
+                    },
+                    onAddToWatchlist = { item ->
+                        if (item.id !in recommendationSavedIds) {
+                            recommendationSavedIds = recommendationSavedIds + item.id
+                            scope.launch { repository.addToWatchlist(item) }
+                        }
+                    },
                     onDismiss = {
                         val restorePlayerFocus = recommendationHasFocus
                         recommendationDialogVisible = false

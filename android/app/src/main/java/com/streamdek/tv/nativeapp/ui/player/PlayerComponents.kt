@@ -49,6 +49,8 @@ import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -1430,6 +1432,21 @@ internal fun PlayerSkipActionChip(
     }
 }
 
+/**
+ * The up-next card is drawn to the same measurements as an episode card on the title page: 268dp
+ * over a 150dp still, which is 16:9 exactly.
+ *
+ * One shape for "here is an episode", wherever the viewer meets it. It was built at 700dp, which
+ * is a third of the screen standing over the credits it interrupts. The padding and type inside
+ * follow the same card too -- 12dp and 9dp, a bold titleSmall over bodySmall -- so the two read as
+ * the same object rather than as two designs that happen to share a width.
+ *
+ * Kept in step with the episode band in DetailComponents by hand: they are two screens with no
+ * shared layout between them, and a stray dp is invisible until they sit side by side.
+ */
+private val NextEpisodeCardWidth = 268.dp
+private val NextEpisodeCardStillHeight = 150.dp
+
 @Composable
 internal fun NextEpisodeDialog(
     detail: MediaDetail?,
@@ -1439,25 +1456,33 @@ internal fun NextEpisodeDialog(
     countdown: Int?,
     playRequester: FocusRequester,
     cancelRequester: FocusRequester,
+    recommendations: List<MediaItem>,
+    currentTitle: String,
+    savedRecommendationIds: Set<String>,
     onPlayNow: () -> Unit,
     onSelectStream: (Int) -> Unit,
+    onPlayRecommendation: (MediaItem) -> Unit,
+    onAddRecommendationToWatchlist: (MediaItem) -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier = modifier
             .fillMaxSize(),
-        contentAlignment = Alignment.BottomStart,
+        contentAlignment = Alignment.BottomEnd,
     ) {
         PlayerGlassSurface(
-            modifier = Modifier.width(700.dp).padding(start = 36.dp, bottom = 36.dp),
+            // Inset first, then width: the 36dp is the card's distance from the screen edge, and
+            // applying it after the width would take those 36dp out of the card instead.
+            modifier = Modifier.padding(end = 36.dp, bottom = 36.dp)
+                .width(if (recommendations.isEmpty()) NextEpisodeCardWidth else 500.dp),
             contentPadding = PaddingValues(0.dp),
         ) {
             Column {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(150.dp),
+                        .height(NextEpisodeCardStillHeight),
                 ) {
                     val heroArt = episode.still ?: detail?.backdrop ?: detail?.poster
                     if (!heroArt.isNullOrBlank()) {
@@ -1482,13 +1507,15 @@ internal fun NextEpisodeDialog(
                     Column(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
-                            .padding(horizontal = 24.dp, vertical = 20.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         Text(
                             text = detail?.title ?: stringResource(R.string.player_next_episode),
-                            style = androidx.tv.material3.MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                            style = androidx.tv.material3.MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             text = buildString {
@@ -1498,8 +1525,10 @@ internal fun NextEpisodeDialog(
                                     append(it)
                                 }
                             },
-                            style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
+                            style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.82f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -1508,16 +1537,20 @@ internal fun NextEpisodeDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 24.dp, vertical = 14.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             text = pluralStringResource(R.plurals.player_autoplay_countdown, countdown, countdown),
-                            style = androidx.tv.material3.MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                             color = Color.White.copy(alpha = 0.9f),
                         )
-                        OutlinedButton(onClick = onCancel) {
+                        OutlinedButton(
+                            onClick = onCancel,
+                            modifier = Modifier.height(32.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        ) {
                             Text(stringResource(R.string.action_cancel))
                         }
                     }
@@ -1531,29 +1564,53 @@ internal fun NextEpisodeDialog(
                             else -> R.string.player_next_will_continue
                         },
                     ),
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.76f),
                 )
 
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     OutlinedButton(
                         onClick = onCancel,
-                        modifier = Modifier.focusRequester(cancelRequester),
+                        modifier = Modifier.height(32.dp).focusRequester(cancelRequester),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                     ) {
-                        Text(stringResource(R.string.action_cancel))
+                        Text(stringResource(R.string.action_cancel), style = androidx.tv.material3.MaterialTheme.typography.labelMedium)
                     }
                     Button(
                         onClick = onPlayNow,
                         enabled = streams.isNotEmpty(),
-                        modifier = Modifier.focusRequester(playRequester),
+                        modifier = Modifier.height(32.dp).focusRequester(playRequester),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                     ) {
-                        Text(stringResource(R.string.player_play_next))
+                        Text(stringResource(R.string.player_play_next), style = androidx.tv.material3.MaterialTheme.typography.labelMedium)
+                    }
+                }
+
+                if (recommendations.isNotEmpty()) {
+                    Text(
+                        text = "You might also like",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp),
+                        style = androidx.tv.material3.MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.58f),
+                    )
+                    recommendations.forEach { item ->
+                        TvRecommendationChoice(
+                            item = item,
+                            reason = stringResource(R.string.player_recommendation_reason, currentTitle),
+                            queued = false,
+                            saved = item.id in savedRecommendationIds,
+                            focusRequester = null,
+                            onClick = { onPlayRecommendation(item) },
+                            onAddToWatchlist = { onAddRecommendationToWatchlist(item) },
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp),
+                        )
                     }
                 }
             }
@@ -1566,9 +1623,11 @@ internal fun NextRecommendationDialog(
     currentTitle: String,
     items: List<MediaItem>,
     queuedItemId: String?,
+    savedItemIds: Set<String>,
     playRequester: FocusRequester,
     cancelRequester: FocusRequester,
     onPlayNext: (MediaItem) -> Unit,
+    onAddToWatchlist: (MediaItem) -> Unit,
     onDismiss: () -> Unit,
     onFocusChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -1599,8 +1658,10 @@ internal fun NextRecommendationDialog(
                             item = item,
                             reason = stringResource(R.string.player_recommendation_reason, currentTitle),
                             queued = queuedItemId == item.id,
+                            saved = item.id in savedItemIds,
                             focusRequester = playRequester.takeIf { index == 0 },
                             onClick = { onPlayNext(item) },
+                            onAddToWatchlist = { onAddToWatchlist(item) },
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -1620,10 +1681,13 @@ private fun TvRecommendationChoice(
     item: MediaItem,
     reason: String?,
     queued: Boolean,
+    saved: Boolean,
     focusRequester: FocusRequester?,
     onClick: () -> Unit,
+    onAddToWatchlist: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var watchlistFocused by remember(item.id) { mutableStateOf(false) }
     Row(
         modifier = modifier
             .widthIn(min = 380.dp)
@@ -1651,16 +1715,47 @@ private fun TvRecommendationChoice(
                 Text(it, color = Color.White.copy(alpha = 0.54f), style = androidx.tv.material3.MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (queued) Text(stringResource(R.string.player_queued_next), color = Color(0xFFF0BA66), style = androidx.tv.material3.MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-            Button(
-                onClick = onClick,
-                modifier = if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier,
-                colors = ButtonDefaults.colors(
-                    containerColor = if (queued) Color(0x18FFFFFF) else Color(0xFFF0BA66),
-                    focusedContainerColor = Color.White,
-                    contentColor = if (queued) Color.White else Color(0xFF171A20),
-                    focusedContentColor = Color.Black,
-                ),
-            ) { Text(stringResource(if (queued) R.string.a11y_selected else R.string.player_watch_after_this), fontWeight = FontWeight.Bold) }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(
+                    onClick = onClick,
+                    modifier = if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier,
+                    colors = ButtonDefaults.colors(
+                        containerColor = if (queued) Color(0x18FFFFFF) else Color(0xFFF0BA66),
+                        focusedContainerColor = Color.White,
+                        contentColor = if (queued) Color.White else Color(0xFF171A20),
+                        focusedContentColor = Color.Black,
+                    ),
+                ) { Text(if (queued) stringResource(R.string.a11y_selected) else "Play Now", fontWeight = FontWeight.Bold) }
+                OutlinedButton(
+                    onClick = onAddToWatchlist,
+                    enabled = !saved,
+                    modifier = Modifier.onFocusChanged { watchlistFocused = it.isFocused },
+                    contentPadding = PaddingValues(horizontal = 11.dp, vertical = 8.dp),
+                    colors = ButtonDefaults.colors(
+                        containerColor = Color.Transparent,
+                        focusedContainerColor = Color.White,
+                        contentColor = Color.White.copy(alpha = 0.88f),
+                        focusedContentColor = Color.Black,
+                        disabledContentColor = Color.White.copy(alpha = 0.42f),
+                    ),
+                ) {
+                    Icon(
+                        imageVector = if (saved) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
+                        contentDescription = stringResource(R.string.action_add_to_watchlist),
+                        modifier = Modifier.size(18.dp),
+                    )
+                    AnimatedVisibility(visible = watchlistFocused && !saved) {
+                        Text(
+                            text = stringResource(R.string.action_add_to_watchlist),
+                            modifier = Modifier.padding(start = 7.dp),
+                            style = androidx.tv.material3.MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            }
         }
     }
 }

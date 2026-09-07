@@ -225,6 +225,7 @@ fun DetailScreen(
     var episodeAction by remember(mediaType, mediaId) { mutableStateOf<SeasonEpisodeEntry?>(null) }
     var episodeActionLoading by remember(mediaType, mediaId) { mutableStateOf(false) }
     var episodeActionError by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
+    var episodeActionRestartAvailable by remember(mediaType, mediaId) { mutableStateOf(false) }
     /** Full synopsis the viewer asked to read, shown over the screen until they close it. */
     var expandedSynopsis by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var similarArtworkReady by remember(mediaType, mediaId) { mutableStateOf(false) }
@@ -1139,6 +1140,20 @@ fun DetailScreen(
                                 onEpisodeMenu = { entry ->
                                     episodeActionError = null
                                     episodeAction = entry
+                                    val context = entry.episode.toEpisodeContext(entry.seasonNumber)
+                                    episodeActionRestartAvailable = watchedEpisodeKey(
+                                        entry.seasonNumber,
+                                        entry.episode.episodeNumber,
+                                    ) in watchedEpisodeKeys
+                                    scope.launch {
+                                        val progress = runCatching {
+                                            repository.fetchProgress(d.type, d.id, context)
+                                        }.getOrNull()
+                                        if (episodeAction == entry) {
+                                            episodeActionRestartAvailable = episodeActionRestartAvailable ||
+                                                (progress != null && progress.status != "unwatched" && progress.positionSec > 0.0)
+                                        }
+                                    }
                                 },
                             )
                             }
@@ -1263,6 +1278,7 @@ fun DetailScreen(
                     watched = watchedEpisodeKeys.contains(
                         watchedEpisodeKey(entry.seasonNumber, entry.episode.episodeNumber),
                     ),
+                    restartAvailable = episodeActionRestartAvailable,
                     loading = episodeActionLoading,
                     error = episodeActionError,
                     onDismiss = {
@@ -1301,6 +1317,19 @@ fun DetailScreen(
                                 episodeActionLoading = false
                             }
                         }
+                    },
+                    onRestart = {
+                        episodeAction = null
+                        onPlay(
+                            PlaybackRequest(
+                                mediaId = currentDetail.id,
+                                mediaType = currentDetail.type,
+                                imdbId = currentDetail.imdbId,
+                                episode = entry.episode.toEpisodeContext(entry.seasonNumber),
+                                title = currentDetail.title,
+                                startPositionSec = 0.0,
+                            ),
+                        )
                     },
                     onMarkPreviousWatched = {
                         if (!episodeActionLoading) {
@@ -1953,10 +1982,12 @@ private fun EpisodeActionDialog(
     episode: SeasonEpisode,
     seasonNumber: Int,
     watched: Boolean,
+    restartAvailable: Boolean,
     loading: Boolean,
     error: String?,
     onDismiss: () -> Unit,
     onToggleWatched: () -> Unit,
+    onRestart: () -> Unit,
     onMarkPreviousWatched: () -> Unit,
 ) {
     val actionRequester = remember { FocusRequester() }
@@ -2010,6 +2041,14 @@ private fun EpisodeActionDialog(
                         },
                     ),
                 )
+            }
+            if (restartAvailable) {
+                OutlinedButton(
+                    onClick = onRestart,
+                    enabled = !loading,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = ButtonDefaults.shape(AppPillShape),
+                ) { Text(stringResource(R.string.action_restart_episode)) }
             }
             OutlinedButton(
                 onClick = onMarkPreviousWatched,

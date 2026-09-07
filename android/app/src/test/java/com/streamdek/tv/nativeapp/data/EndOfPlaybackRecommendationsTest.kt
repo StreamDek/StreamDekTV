@@ -35,4 +35,22 @@ class EndOfPlaybackRecommendationsTest {
         assertFalse(AdaptiveEndOfPlaybackTrigger.isReached(estimate.triggerPositionSec - 1.0, estimate))
         assertTrue(AdaptiveEndOfPlaybackTrigger.isReached(estimate.triggerPositionSec, estimate))
     }
+
+    @Test fun `next episode is primary and duplicate recommendations are removed`() {
+        val result = EndOfPlaybackCoordinator.decide("series:7:2:6", "series:7", listOf("series:7:2:6", "movie:9", "movie:9"), 2)!!
+        assertEquals(UpNextKind.NextEpisode, result.primaryKind)
+        assertEquals(listOf("movie:9"), result.alternativeIds)
+    }
+
+    @Test fun `recommendation is primary when no episode follows`() {
+        val result = EndOfPlaybackCoordinator.decide(null, "movie:1", listOf("movie:1", "movie:2", "movie:3"), 2)!!
+        assertEquals(UpNextKind.Recommendation, result.primaryKind)
+        assertEquals("movie:2", result.primaryId)
+        assertEquals(listOf("movie:3"), result.alternativeIds)
+    }
+
+    @Test fun `backward seek rearms only outside the trigger region`() {
+        assertTrue(EndOfPlaybackCoordinator.shouldResetAfterSeek(2800.0, 2900.0))
+        assertFalse(EndOfPlaybackCoordinator.shouldResetAfterSeek(2890.0, 2900.0))
+    }
 }

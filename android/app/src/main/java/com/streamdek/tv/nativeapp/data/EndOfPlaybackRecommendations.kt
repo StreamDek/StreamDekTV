@@ -14,6 +14,45 @@ enum class RecommendationTiming(val key: String) {
 
 enum class MeaningfulEndSignal { CreditsMetadata, StructuralMetadata, RemainingTime, PercentageFallback }
 
+enum class EndOfPlaybackPhase {
+    Idle, Armed, Presented, Countdown, UserSelected, Resolving, Transitioning, Dismissed, Completed,
+}
+
+enum class UpNextKind { NextEpisode, Recommendation }
+
+data class UpNextDecision(
+    val primaryKind: UpNextKind,
+    val primaryId: String?,
+    val alternativeIds: List<String>,
+)
+
+/** The same deterministic ownership and deduplication policy used by Mobile. */
+object EndOfPlaybackCoordinator {
+    fun decide(
+        nextEpisodeId: String?,
+        currentMediaId: String,
+        recommendationIds: List<String>,
+        recommendationLimit: Int,
+    ): UpNextDecision? {
+        val current = currentMediaId.trim().lowercase()
+        val next = nextEpisodeId?.trim()?.takeIf { it.isNotEmpty() }
+        val seen = linkedSetOf<String>()
+        if (current.isNotEmpty()) seen += current
+        next?.lowercase()?.let(seen::add)
+        val recommendations = recommendationIds.mapNotNull { raw ->
+            raw.trim().takeIf { it.isNotEmpty() }?.takeIf { seen.add(it.lowercase()) }
+        }.take(recommendationLimit.coerceIn(1, 2))
+        return when {
+            next != null -> UpNextDecision(UpNextKind.NextEpisode, next, recommendations)
+            recommendations.isNotEmpty() -> UpNextDecision(UpNextKind.Recommendation, recommendations.first(), recommendations.drop(1))
+            else -> null
+        }
+    }
+
+    fun shouldResetAfterSeek(positionSec: Double, triggerPositionSec: Double?) =
+        triggerPositionSec != null && positionSec.isFinite() && positionSec < triggerPositionSec - 15.0
+}
+
 data class MeaningfulContentEnd(
     val triggerPositionSec: Double,
     val boundaryPositionSec: Double,

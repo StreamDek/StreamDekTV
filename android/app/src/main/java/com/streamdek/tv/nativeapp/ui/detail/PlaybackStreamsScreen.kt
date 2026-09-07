@@ -352,6 +352,7 @@ fun PlaybackStreamsScreen(
         )
     }
     var detail by remember(request) { mutableStateOf(cachedDetail) }
+    var restartAvailable by remember(request) { mutableStateOf(false) }
     var refreshGeneration by remember(request) { mutableIntStateOf(0) }
     val firstCardRequester = remember(request) { FocusRequester() }
     val firstTabRequester = remember(request) { FocusRequester() }
@@ -386,6 +387,18 @@ fun PlaybackStreamsScreen(
         if (detail == null) {
             detail = runCatching { repository.fetchDetail(request.mediaId, request.mediaType) }.getOrNull()
         }
+    }
+
+    LaunchedEffect(request.mediaType, request.mediaId, request.episode) {
+        if (request.mediaType == "live") return@LaunchedEffect
+        val progress = runCatching {
+            repository.fetchProgress(request.mediaType, request.mediaId, request.episode)
+        }.getOrNull()
+        val watched = runCatching {
+            repository.isWatched(request.mediaType, request.mediaId, request.episode, forceRefresh = false)
+        }.getOrDefault(false)
+        restartAvailable = watched ||
+            (progress != null && progress.status != "unwatched" && progress.positionSec > 0.0)
     }
 
     LaunchedEffect(request, refreshGeneration) {
@@ -597,6 +610,12 @@ fun PlaybackStreamsScreen(
                 request = request,
                 pendingSources = pendingSourceCount,
                 streamCount = filteredStreams.size,
+                restartLabel = if (restartAvailable) {
+                    stringResource(if (request.episode != null) R.string.action_restart_episode else R.string.action_restart_movie)
+                } else null,
+                onRestart = {
+                    onPlayRequest(request.copy(startPositionSec = 0.0))
+                },
                 onReload = {
                     selectedTab = "All"
                     initialFocusApplied = false
@@ -766,6 +785,8 @@ private fun StreamsHeader(
     request: PlaybackRequest,
     pendingSources: Int,
     streamCount: Int,
+    restartLabel: String?,
+    onRestart: () -> Unit,
     onReload: () -> Unit,
 ) {
     // `?:` does not catch an empty string, and a blank request title left the header showing
@@ -801,6 +822,14 @@ private fun StreamsHeader(
                     selected = false,
                     modifier = Modifier.width(186.dp),
                     onClick = onReload,
+                )
+            }
+            restartLabel?.let { label ->
+                SearchChip(
+                    label = label,
+                    selected = false,
+                    modifier = Modifier.width(186.dp),
+                    onClick = onRestart,
                 )
             }
         }

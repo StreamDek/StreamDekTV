@@ -168,6 +168,8 @@
   <string name="detail_go_to_episode_in_season">Season %1$d · go to episode</string>
   <string name="detail_episode_with_title">S%1$d E%2$d - %3$s</string>
   <string name="detail_mark_previous_watched">Mark all previous episodes as watched</string>
+  <string name="action_restart_episode">Restart Episode</string>
+  <string name="action_restart_movie">Restart Movie</string>
   <string name="detail_episodes">Episodes</string>
   <string name="detail_episodes_range">Episodes %1$d to %2$d</string>
   <string name="detail_go_to_specific_episode">Go to a specific episode</string>
