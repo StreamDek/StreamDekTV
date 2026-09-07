@@ -32,6 +32,17 @@ class PlayerUiPolicyTest {
     }
 
     @Test
+    fun `buffering callbacks caused by active scrubbing are not reported`() {
+        val seekAt = 10_000L
+
+        assertFalse(shouldReportPlaybackBuffering(isBuffering = true, seekTargetSec = 1_200.0, seekIssuedAtMs = seekAt, nowMs = seekAt + PlaybackSeekBufferingGraceMs))
+        assertFalse(shouldReportPlaybackBuffering(isBuffering = true, seekTargetSec = null, seekIssuedAtMs = seekAt, nowMs = seekAt + 1_000L))
+        assertTrue(shouldReportPlaybackBuffering(isBuffering = true, seekTargetSec = null, seekIssuedAtMs = seekAt, nowMs = seekAt + PlaybackSeekBufferingGraceMs))
+        assertTrue(shouldReportPlaybackBuffering(isBuffering = true, seekTargetSec = null, seekIssuedAtMs = 0L, nowMs = seekAt))
+        assertFalse(shouldReportPlaybackBuffering(isBuffering = false, seekTargetSec = null, seekIssuedAtMs = 0L, nowMs = seekAt))
+    }
+
+    @Test
     fun `long playback gets a larger but bounded seek step`() {
         assertEquals(12.0, tvSeekStepSeconds(5_400.0), 0.0)
         assertEquals(20.0, tvSeekStepSeconds(8_000.0), 0.0)

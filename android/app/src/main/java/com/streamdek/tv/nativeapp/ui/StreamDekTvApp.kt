@@ -154,6 +154,23 @@ private const val ExitBackPressWindowMs = 2500L
 
 private enum class NavigationFocusRegion { Content, SideNav }
 
+internal enum class AppBackAction { RestoreHome, ReturnHome, PopNested, Exit }
+
+/**
+ * The start destination is an anchor, not another entry to pop. NavController can remove its last
+ * entry even when popBackStack returns false, which leaves the shell visible around an empty host.
+ */
+internal fun appBackAction(
+    currentRoute: String?,
+    homeRoute: String,
+    topLevelRoutes: Set<String>,
+): AppBackAction = when {
+    currentRoute == null -> AppBackAction.RestoreHome
+    currentRoute == homeRoute -> AppBackAction.Exit
+    currentRoute in topLevelRoutes -> AppBackAction.ReturnHome
+    else -> AppBackAction.PopNested
+}
+
 /**
  * How far the expanded navigation rail is allowed to let the backdrop through.
  *
@@ -771,16 +788,33 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         navController.navigate("player")
     }
     BackHandler(enabled = !showUpdatePrompt && currentRoute != "player") {
-        val isTopLevelRoute = currentRoute in topLevelDestinations.map { it.route }
-        when {
-            isTopLevelRoute && currentRoute != TopLevelDestination.Home.route -> {
+        val homeRoute = TopLevelDestination.Home.route
+        val action = appBackAction(
+            currentRoute = currentRoute,
+            homeRoute = homeRoute,
+            topLevelRoutes = topLevelDestinations.mapTo(mutableSetOf()) { it.route },
+        )
+        when (action) {
+            AppBackAction.RestoreHome -> {
+                // Defensive recovery for a host already emptied by an older build.
+                prepareFreshHomeEntry()
+                navController.navigate(homeRoute) { launchSingleTop = true }
+            }
+            AppBackAction.ReturnHome -> {
                 navController.navigate(TopLevelDestination.Home.route) {
                     popUpTo(TopLevelDestination.Home.route) { inclusive = false }
                     launchSingleTop = true
                 }
             }
-            navController.popBackStack() -> Unit
-            else -> {
+            AppBackAction.PopNested -> {
+                // A nested route normally has Home beneath it. If its stack is malformed, restore
+                // the anchor immediately instead of leaving the permanent black shell state.
+                if (!navController.popBackStack()) {
+                    prepareFreshHomeEntry()
+                    navController.navigate(homeRoute) { launchSingleTop = true }
+                }
+            }
+            AppBackAction.Exit -> {
                 val now = System.currentTimeMillis()
                 if (exitHintVisible && now - lastExitBackPressAt <= ExitBackPressWindowMs) {
                     activity?.finish()

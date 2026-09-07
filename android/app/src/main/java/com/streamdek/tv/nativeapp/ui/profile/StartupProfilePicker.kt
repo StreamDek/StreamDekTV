@@ -5,10 +5,6 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
@@ -37,7 +33,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,7 +76,6 @@ import com.streamdek.tv.nativeapp.ui.ProfileAvatarCircle
 import com.streamdek.tv.nativeapp.ui.TvChromePanel
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -127,12 +122,6 @@ private object TvPickerCue {
      */
     const val MotionlessTotal = MotionDuration.motionlessCrossfade * 2f
 
-    /**
-     * How far into a card's own entrance it is worth handing the remote control to it. Early
-     * enough that nobody waits to press down, late enough that the highlight lands on something
-     * they can already see.
-     */
-    const val FocusAt = 0.7f
 }
 
 /**
@@ -180,8 +169,6 @@ internal class TvProfilePickerReveal(
         return TvMotion.EnterEasing.transform(raw.coerceIn(0f, 1f))
     }
 
-    fun settled(startMs: Float, durationMs: Float): Boolean =
-        progress(startMs, durationMs) >= TvPickerCue.FocusAt
 }
 
 /** Opacity, a small upward settle and an optional scale, all read from the page's single clock. */
@@ -208,32 +195,20 @@ private fun tvProfileCardCue(index: Int): Float =
     TvPickerCue.CardsStart + TvPickerCue.CardStagger * index.coerceAtMost(TvPickerCue.MaxStaggeredCards)
 
 /**
- * A slow breath of light on the app's black, used both by the bootstrap gate and behind the picker
- * as it opens. Deliberately not a spinner: it reads as the screen being dark rather than as
- * something being broken, and it is the only thing the real content has to replace.
+ * A soft light on the app's black, used both by the bootstrap gate and behind the picker as it
+ * opens. Deliberately static: animating an otherwise invisible full-screen gradient kept the
+ * render thread busy throughout the picker and could make the important card entrance less even.
  */
 @Composable
-private fun TvAmbientGlow(modifier: Modifier = Modifier, reduced: Boolean, alpha: () -> Float = { 1f }) {
-    val breathDuration = TvMotion.duration(2200).coerceAtLeast(1)
-    val breath = if (reduced) {
-        null
-    } else {
-        rememberInfiniteTransition(label = "tv_picker_glow").animateFloat(
-            initialValue = 0.34f,
-            targetValue = 0.72f,
-            animationSpec = infiniteRepeatable(tween(breathDuration, easing = TvMotion.StandardEasing), RepeatMode.Reverse),
-            label = "tv_picker_breath",
-        )
-    }
+private fun TvAmbientGlow(modifier: Modifier = Modifier, alpha: () -> Float = { 1f }) {
     Box(
         modifier = modifier
             .fillMaxSize()
             .graphicsLayer { this.alpha = alpha() }
             .drawBehind {
-                val strength = breath?.value ?: 0.5f
                 drawRect(
                     Brush.radialGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.10f * strength), Color.Transparent),
+                        colors = listOf(Color.White.copy(alpha = 0.05f), Color.Transparent),
                         center = Offset(size.width / 2f, size.height * 0.44f),
                         radius = size.maxDimension * 0.62f,
                     ),
@@ -255,12 +230,11 @@ private fun TvAmbientGlow(modifier: Modifier = Modifier, reduced: Boolean, alpha
  */
 @Composable
 internal fun StartupBootstrapGate() {
-    val reduced = LocalTvExperienceSettings.current.motion.motionless
     Box(
         modifier = Modifier.fillMaxSize().background(Color.Black),
         contentAlignment = Alignment.Center,
     ) {
-        TvAmbientGlow(reduced = reduced)
+        TvAmbientGlow()
         Text(
             "StreamDek",
             style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Black),
@@ -277,11 +251,10 @@ internal fun StartupProfilePicker(
     onVerifyPin: suspend (StreamProfile, String) -> Boolean,
     onChoose: (StreamProfile) -> Unit,
 ) {
-    val firstRequester = remember(profiles) { FocusRequester() }
+    val firstRequester = remember { FocusRequester() }
     val pinRequester = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
     val motion = LocalTvExperienceSettings.current.motion
-    val reducedMotion = motion.motionless
     // Created once, when this screen enters composition, and never keyed on anything that changes
     // while it is open - so no later state change, focus move or image load can rewind it.
     val reveal = remember { TvProfilePickerReveal(motion) }
@@ -290,7 +263,6 @@ internal fun StartupProfilePicker(
     var pinError by remember { mutableStateOf<String?>(null) }
     var checkingPin by remember { mutableStateOf(false) }
     var selectedProfileId by remember { mutableStateOf<String?>(null) }
-    var focusClaimed by remember { mutableStateOf(false) }
     val avatarBounds = remember { mutableStateMapOf<String, Rect>() }
     val selectedProfile = profiles.firstOrNull { it.id == selectedProfileId }
         ?: profiles.firstOrNull { it.id == activeProfileId }
@@ -303,17 +275,14 @@ internal fun StartupProfilePicker(
 
     BackHandler(enabled = true) { /* A profile is required before entering the app. */ }
 
-    // The profiles are already in hand by the time this screen composes - the bootstrap gate above
-    // is what waited for them - so there is nothing left to load and the reveal starts at once.
-    LaunchedEffect(reveal) { reveal.run() }
-
-    // Focus is handed over once, when the first card has carried far enough to be worth looking
-    // at, and never again: the cards still arriving behind it must not pull the highlight around.
+    // Establish focus while the page is still at alpha zero, then wait for Compose to commit the
+    // focused card before beginning the reveal. Previously focus arrived midway through the card's
+    // own alpha/scale entrance, making the border and TV Material focus animation visibly flash.
     LaunchedEffect(reveal, switching) {
-        if (switching || focusClaimed || profiles.isEmpty()) return@LaunchedEffect
-        snapshotFlow { reveal.settled(TvPickerCue.CardsStart, TvPickerCue.CardDuration) }.first { it }
-        focusClaimed = true
+        if (switching || profiles.isEmpty()) return@LaunchedEffect
         runCatching { firstRequester.requestFocus() }
+        withFrameNanos { }
+        reveal.run()
     }
 
     Box(
@@ -330,7 +299,6 @@ internal fun StartupProfilePicker(
         contentAlignment = Alignment.Center,
     ) {
         TvAmbientGlow(
-            reduced = reducedMotion,
             // The inverse of the headline's cue: the glow is gone by the time there is something
             // to read through it. Both sides of the handover run off the same clock.
             alpha = { 1f - reveal.progress(TvPickerCue.HeadingStart, TvPickerCue.HeadingDuration * 0.7f) },

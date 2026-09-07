@@ -135,9 +135,10 @@ private const val LiveControlsHideDelayMs = 2000L
 private const val LiveChannelInfoHideDelayMs = 5000L
 private const val LiveHintVisibleMs = 3_000L
 private const val LiveHintCycleMs = 15_000L
-private const val AutoPlayNextEpisodeCountdownSeconds = 5
-private const val NextEpisodeDiscoveryTimeoutMs = 8_000L
+private const val AutoPlayNextEpisodeCountdownSeconds = 20
+private const val NextEpisodeDiscoveryTimeoutMs = 30_000L
 internal const val NextEpisodeSourceResolveTimeoutMs = 12_000L
+internal const val PlaybackSeekBufferingGraceMs = 8_000L
 
 /**
  * Live feeds drop out routinely (upstream restarts, ad breaks, CDN switches). Mobile retries
@@ -220,6 +221,16 @@ internal fun playerInteractionLayer(
     controlsVisible -> PlayerInteractionLayer.Controls
     else -> PlayerInteractionLayer.Playback
 }
+
+/** Media3 can report BUFFERING during a seek and again just after the target position settles. */
+internal fun shouldReportPlaybackBuffering(
+    isBuffering: Boolean,
+    seekTargetSec: Double?,
+    seekIssuedAtMs: Long,
+    nowMs: Long,
+): Boolean = isBuffering &&
+    seekTargetSec == null &&
+    (seekIssuedAtMs <= 0L || nowMs - seekIssuedAtMs >= PlaybackSeekBufferingGraceMs)
 
 internal fun liveRetryAction(attempt: Int): LiveRetryAction = when (attempt) {
     in 1..2 -> LiveRetryAction.Reload
@@ -743,10 +754,10 @@ fun PlayerScreen(
             .coerceAtLeast(0.0)
             .coerceAtMost(durationSec.takeIf { it > 0.0 } ?: targetSeconds)
         seekTargetSec = target
-        seekIssuedAtMs = System.currentTimeMillis()
+        seekIssuedAtMs = android.os.SystemClock.elapsedRealtime()
         positionSec = target
         pendingSeekJob?.cancel()
-        val now = System.currentTimeMillis()
+        val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastSeekCommandAtMs >= 350L) {
             // Throttled immediate seek keeps held-button scrubbing responsive
             // instead of waiting for the key repeats to stop.
@@ -757,7 +768,7 @@ fun PlayerScreen(
         // including the last step of a held scrub.
         pendingSeekJob = scope.launch {
             delay(if (fast) 220 else 160)
-            lastSeekCommandAtMs = System.currentTimeMillis()
+            lastSeekCommandAtMs = android.os.SystemClock.elapsedRealtime()
             seekIssuedAtMs = lastSeekCommandAtMs
             playerView?.seekTo(target)
         }
@@ -994,8 +1005,8 @@ fun PlayerScreen(
         inWatchlist = false
     }
 
-    suspend fun openNextEpisodeDialog() {
-        if (nextEpisodeTransitionInProgress) return
+    suspend fun openNextEpisodeDialog(forceRefresh: Boolean = false) {
+        if (nextEpisodeTransitionInProgress || nextEpisodeLoading) return
         val targetEpisode = nextEpisode ?: return
         val currentStream = candidate?.stream
         val effectiveImdbId = request.imdbId ?: detail?.imdbId
@@ -1009,13 +1020,19 @@ fun PlayerScreen(
         recommendationDialogVisible = false
         queuedRecommendation = null
         nextEpisodeDialogVisible = true
+        if (nextEpisodeCountdown == null && playbackPreferences.isAutoPlayNextEpisodeEnabled() && !queuedNextEpisode) {
+            nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
+        }
+        if (!nextEpisodeCandidate?.streams.isNullOrEmpty()) {
+            TvDebugLogger.i("EpisodeTransition", "ready from cache target=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} streams=${nextEpisodeCandidate?.streams?.size}")
+            return
+        }
+
+        // Like Mobile, presentation is driven by the next-episode decision, not by network state.
+        // Discovery runs behind the visible countdown card and fulfils whichever claims playback
+        // first: the Play Next button or the countdown reaching zero.
         nextEpisodeLoading = true
-        nextEpisodeCountdown = null
-        nextEpisodeCandidate = null
-        // Discovery must never resolve every torrent before the dialog can render. The canonical
-        // progressive pipeline publishes provider results as they arrive; keep collecting briefly
-        // so late sources can join, but expose the first ranked batch immediately and put a hard
-        // ceiling on the otherwise unbounded provider fan-out.
+        TvDebugLogger.i("EpisodeTransition", "discovery started target=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} force=$forceRefresh")
         withTimeoutOrNull(NextEpisodeDiscoveryTimeoutMs) {
             repository.streamCandidates(
                 mediaType = request.mediaType,
@@ -1024,36 +1041,30 @@ fun PlayerScreen(
                 episode = targetEpisode,
                 preferredAddonName = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.addonName else null,
                 preferredQualityGroup = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.quality else null,
-                forceRefresh = false,
+                forceRefresh = forceRefresh,
             ).collect { progress ->
-                if (!nextEpisodeDialogVisible || nextEpisode != targetEpisode) return@collect
+                if (nextEpisode != targetEpisode || nextEpisodeTransitionInProgress) return@collect
                 if (progress.streams.isNotEmpty()) {
                     val ranked = progress.streams
+                    val firstPlayableBatch = nextEpisodeCandidate?.streams.isNullOrEmpty()
                     nextEpisodeCandidate = ResolvedPlaybackCandidate(
                         source = null,
                         stream = ranked.firstOrNull(),
                         streams = ranked,
                     )
-                    if (queuedNextEpisode) {
-                        nextEpisodeCountdown = null
-                    } else if (playbackPreferences.isAutoPlayNextEpisodeEnabled() && nextEpisodeCountdown == null) {
-                        // Arming this is what auto-play *is*: the tick effect below counts it down and
-                    // calls beginNextEpisode at one. Without it the card sits over the credits
-                    // waiting for a button nobody has to press, the countdown row and its Cancel
-                    // never render, and the setting that promises to start the next episode near
-                    // the threshold only ever fires at the very end of the file. Set once, on the
-                    // first batch of sources -- later batches must not restart the count.
-                        nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
+                    if (firstPlayableBatch) {
+                        TvDebugLogger.i("EpisodeTransition", "ready from discovery target=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} streams=${ranked.size}")
+                        nextEpisodeLoading = false
                     }
                 }
             }
         }
         nextEpisodeLoading = false
         if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
-            // Discovery finished without a playable result. Release a queued press so the card
-            // can show its no-source state and Cancel remains usable instead of saying Preparing
-            // forever.
+            // Keep the decision card mounted. A manual Play press can retry discovery, just as
+            // Mobile resolves after the user claims the transition instead of hiding the choice.
             queuedNextEpisode = false
+            TvDebugLogger.w("EpisodeTransition", "no playable source target=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber}")
         }
     }
 
@@ -1637,12 +1648,32 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     // Once playback has started, only sustained buffering with no position progress is a stall.
     // Ordinary short rebuffers remain untouched, including high-bitrate 4K streams filling their
     // forward buffer.
-    LaunchedEffect(media3Buffering, currentSourceUrl, loading, error) {
+    LaunchedEffect(media3Buffering, currentSourceUrl, loading, error, seekTargetSec, seekIssuedAtMs) {
         val source = currentSourceUrl
-        if (isLive || !media3Buffering || source.isNullOrBlank() || loading || error != null) return@LaunchedEffect
+        if (
+            isLive ||
+            !media3Buffering ||
+            source.isNullOrBlank() ||
+            loading ||
+            error != null
+        ) return@LaunchedEffect
+        val now = android.os.SystemClock.elapsedRealtime()
+        val seekRecoveryRemaining = if (seekIssuedAtMs > 0L) {
+            (PlaybackSeekBufferingGraceMs - (now - seekIssuedAtMs)).coerceAtLeast(0L)
+        } else 0L
+        if (seekRecoveryRemaining > 0L) delay(seekRecoveryRemaining)
+        if (!shouldReportPlaybackBuffering(media3Buffering, seekTargetSec, seekIssuedAtMs, android.os.SystemClock.elapsedRealtime())) {
+            return@LaunchedEffect
+        }
         val positionAtStall = positionSec
         delay(30_000L)
-        if (media3Buffering && currentSourceUrl == source && !loading && error == null && kotlin.math.abs(positionSec - positionAtStall) < 1.0) {
+        if (
+            shouldReportPlaybackBuffering(media3Buffering, seekTargetSec, seekIssuedAtMs, android.os.SystemClock.elapsedRealtime()) &&
+            currentSourceUrl == source &&
+            !loading &&
+            error == null &&
+            kotlin.math.abs(positionSec - positionAtStall) < 1.0
+        ) {
             TvDebugLogger.w("Player", "playback buffering stalled source=${source.substringBefore('?')} position=$positionSec")
             paused = true
             error = playerResources.getString(R.string.player_playback_stalled)
@@ -1653,8 +1684,16 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     // Several distinct rebuffers in a short window are a quality problem even when none lasts the
     // full hard-stall timeout. Offer the next already-ranked source once, excluding the current
     // source and anything that has failed in this episode.
-    LaunchedEffect(media3Buffering) {
-        if (isLive || !media3Buffering || loading || error != null || panel != null || nextEpisodeDialogVisible || watchlistPromptVisible) return@LaunchedEffect
+    LaunchedEffect(media3Buffering, seekIssuedAtMs) {
+        if (
+            isLive ||
+            !shouldReportPlaybackBuffering(media3Buffering, seekTargetSec, seekIssuedAtMs, android.os.SystemClock.elapsedRealtime()) ||
+            loading ||
+            error != null ||
+            panel != null ||
+            nextEpisodeDialogVisible ||
+            watchlistPromptVisible
+        ) return@LaunchedEffect
         val now = android.os.SystemClock.elapsedRealtime()
         recentPlaybackStalls = (recentPlaybackStalls + now).filter { now - it <= 120_000L }
         if (recentPlaybackStalls.size < 3 || now < smartSwitchCooldownUntil || smartSwitchCandidate != null) return@LaunchedEffect
@@ -1828,7 +1867,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         if (!nextEpisodeDialogVisible || countdown == null || countdown <= 0) return@LaunchedEffect
         delay(1000)
         if (countdown == 1) {
-            beginNextEpisode()
+            nextEpisodeCountdown = null
+            if (nextEpisodeCandidate?.stream != null) {
+                beginNextEpisode()
+            } else {
+                queuedNextEpisode = true
+                if (!nextEpisodeLoading) scope.launch { openNextEpisodeDialog(forceRefresh = true) }
+            }
         } else {
             nextEpisodeCountdown = countdown - 1
         }
@@ -2397,8 +2442,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         } else if (nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled() && !recommendationDismissed) {
                             if (nextEpisodeCandidate?.stream != null) {
                                 beginNextEpisode()
-                            } else if (!nextEpisodeDialogVisible) {
+                            } else {
+                                // EOF is an instruction to continue, even if discovery is already
+                                // in flight. The queued flag lets its first source complete playback
+                                // without exposing the internal Preparing state.
+                                queuedNextEpisode = true
+                                if (!nextEpisodeDialogVisible && !nextEpisodeLoading) {
                                 scope.launch { openNextEpisodeDialog() }
+                                }
                             }
                         } else {
                             completePlaybackAndExit()
@@ -3054,7 +3105,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 detail = detail,
                 episode = nextEpisode!!,
                 streams = nextEpisodeCandidate?.streams.orEmpty(),
-                loading = nextEpisodeLoading,
                 playRequested = queuedNextEpisode,
                 countdown = nextEpisodeCountdown,
                 playRequester = nextEpisodePlayRequester,
@@ -3066,9 +3116,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     recommendationDismissed = true
                     nextEpisodeCountdown = null
                     if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
-                        // Accept the press while discovery is still running. The first playable
-                        // source published by the progressive lookup completes the transition.
                         queuedNextEpisode = true
+                        if (!nextEpisodeLoading) scope.launch { openNextEpisodeDialog(forceRefresh = true) }
                     } else {
                         beginNextEpisode()
                     }

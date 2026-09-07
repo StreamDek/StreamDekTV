@@ -1452,7 +1452,6 @@ internal fun NextEpisodeDialog(
     detail: MediaDetail?,
     episode: EpisodeContext,
     streams: List<AddonStream>,
-    loading: Boolean,
     playRequested: Boolean,
     countdown: Int?,
     playRequester: FocusRequester,
@@ -1534,7 +1533,7 @@ internal fun NextEpisodeDialog(
                     }
                 }
 
-                if (countdown != null && countdown > 0 && streams.isNotEmpty()) {
+                if (countdown != null && countdown > 0) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1558,13 +1557,7 @@ internal fun NextEpisodeDialog(
                 }
 
                 Text(
-                    text = stringResource(
-                        when {
-                            loading && streams.isEmpty() -> R.string.player_next_preparing
-                            streams.isEmpty() -> R.string.player_next_no_source
-                            else -> R.string.player_next_will_continue
-                        },
-                    ),
+                    text = stringResource(R.string.player_next_will_continue),
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.76f),
@@ -1586,14 +1579,11 @@ internal fun NextEpisodeDialog(
                     }
                     Button(
                         onClick = onPlayNow,
-                        enabled = !playRequested && (loading || streams.isNotEmpty()),
+                        enabled = !playRequested,
                         modifier = Modifier.height(32.dp).focusRequester(playRequester),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                     ) {
-                        Text(
-                            stringResource(if (playRequested) R.string.player_next_preparing else R.string.player_play_next),
-                            style = androidx.tv.material3.MaterialTheme.typography.labelMedium,
-                        )
+                        Text(stringResource(R.string.player_play_next), style = androidx.tv.material3.MaterialTheme.typography.labelMedium)
                     }
                 }
 
