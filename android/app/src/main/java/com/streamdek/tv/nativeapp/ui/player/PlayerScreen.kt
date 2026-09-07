@@ -199,7 +199,6 @@ private class PlayerFocusRequesters {
 
 private enum class SegmentActionKind {
     Skip,
-    NextEpisode,
 }
 
 internal enum class ActivePlaybackEngine { Media3, MPV }
@@ -896,23 +895,6 @@ fun PlayerScreen(
     }
 
     fun activeSegmentAction(): SegmentAction? {
-        val outro = segments.firstOrNull { it.segmentType == "outro" }
-        val nextEpisodeAvailable = nextEpisode != null &&
-            playbackPreferences.isAutoPlayNextEpisodeEnabled() &&
-            !handledSegmentTypes.contains("outro") &&
-            playbackPreferences.isNextEpisodeThresholdReached(
-                positionSec = positionSec,
-                durationSec = durationSec,
-                segmentStartSec = outro?.startSec,
-            )
-        if (nextEpisodeAvailable) {
-            return SegmentAction(
-                kind = SegmentActionKind.NextEpisode,
-                segmentType = "outro",
-                labelRes = R.string.player_next_episode,
-            )
-        }
-
         val activeSegment = segments
             .filter { segment ->
                 playbackPreferences.isSegmentEnabled(segment.segmentType) &&
@@ -1052,19 +1034,27 @@ fun PlayerScreen(
                         stream = ranked.firstOrNull(),
                         streams = ranked,
                     )
-                    // Arming this is what auto-play *is*: the tick effect below counts it down and
+                    if (queuedNextEpisode) {
+                        nextEpisodeCountdown = null
+                    } else if (playbackPreferences.isAutoPlayNextEpisodeEnabled() && nextEpisodeCountdown == null) {
+                        // Arming this is what auto-play *is*: the tick effect below counts it down and
                     // calls beginNextEpisode at one. Without it the card sits over the credits
                     // waiting for a button nobody has to press, the countdown row and its Cancel
                     // never render, and the setting that promises to start the next episode near
                     // the threshold only ever fires at the very end of the file. Set once, on the
                     // first batch of sources -- later batches must not restart the count.
-                    if (playbackPreferences.isAutoPlayNextEpisodeEnabled() && nextEpisodeCountdown == null) {
                         nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
                     }
                 }
             }
         }
         nextEpisodeLoading = false
+        if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
+            // Discovery finished without a playable result. Release a queued press so the card
+            // can show its no-source state and Cancel remains usable instead of saying Preparing
+            // forever.
+            queuedNextEpisode = false
+        }
     }
 
     fun beginNextEpisode(streamIndex: Int? = null) {
@@ -1104,6 +1094,7 @@ fun PlayerScreen(
             streams = nextEpisodeCandidate?.streams.orEmpty(),
         )
         nextEpisodeTransitionInProgress = true
+        queuedNextEpisode = false
         nextEpisodeDialogVisible = false
         nextEpisodeCountdown = null
         // Retire the completed episode visually before any watched/sync write is allowed to wait.
@@ -1740,18 +1731,6 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }
     }
 
-    LaunchedEffect(positionSec, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, nextEpisode, playbackPreferences.isAutoPlayNextEpisodeEnabled()) {
-        val action = activeSegmentAction()
-        if (!playbackPreferences.isAutoPlayNextEpisodeEnabled() || action?.kind != SegmentActionKind.NextEpisode || nextEpisodeDialogVisible) {
-            return@LaunchedEffect
-        }
-        delay(1200)
-        val refreshedAction = activeSegmentAction()
-        if (playbackPreferences.isAutoPlayNextEpisodeEnabled() && refreshedAction?.kind == SegmentActionKind.NextEpisode && !nextEpisodeDialogVisible) {
-            openNextEpisodeDialog()
-        }
-    }
-
     LaunchedEffect(
         positionSec,
         durationSec,
@@ -1761,7 +1740,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         playbackPreferences.endOfPlaybackRecommendationsEnabled,
         playbackPreferences.recommendationTiming,
     ) {
-        if (!playbackPreferences.endOfPlaybackRecommendationsEnabled || isLive || loading || error != null ||
+        val hasEndCardContent = nextEpisode != null || playbackPreferences.endOfPlaybackRecommendationsEnabled
+        if (!hasEndCardContent || isLive || loading || error != null ||
             recommendationDismissed || nextEpisodeDialogVisible || recommendationDialogVisible ||
             queuedNextEpisode || queuedRecommendation != null
         ) return@LaunchedEffect
@@ -1851,6 +1831,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             beginNextEpisode()
         } else {
             nextEpisodeCountdown = countdown - 1
+        }
+    }
+
+    LaunchedEffect(queuedNextEpisode, nextEpisodeCandidate?.stream) {
+        if (queuedNextEpisode && nextEpisodeCandidate?.stream != null && !nextEpisodeTransitionInProgress) {
+            beginNextEpisode()
         }
     }
 
@@ -2005,12 +1991,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     LaunchedEffect(nextEpisodeDialogVisible, nextEpisodeLoading, nextEpisodeCandidate?.streams?.size) {
         if (!nextEpisodeDialogVisible) return@LaunchedEffect
         delay(80)
-        // Play Now is disabled until a stream lands, and a disabled button cannot take focus —
-        // Cancel holds it in the meantime so the dialog is never focus-less.
-        val requester = if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
-            nextEpisodeCancelRequester
-        } else {
+        // Play accepts a press while progressive discovery is running, so it owns initial focus.
+        // Cancel takes focus only after discovery has finished without finding a playable source.
+        val requester = if (nextEpisodeLoading || !nextEpisodeCandidate?.streams.isNullOrEmpty()) {
             nextEpisodePlayRequester
+        } else {
+            nextEpisodeCancelRequester
         }
         runCatching { requester.requestFocus() }
             .onFailure { TvDebugLogger.w("Player", "next episode focus request skipped: ${it.message}") }
@@ -2404,8 +2390,16 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         )
                         if (isLive) {
                             scheduleLiveReconnect("The feed ended")
-                        } else if (nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled()) {
-                            if (nextEpisodeCandidate?.stream != null) beginNextEpisode() else scope.launch { openNextEpisodeDialog() }
+                        } else if (nextEpisode != null && queuedNextEpisode) {
+                            // The viewer already pressed Play. Progressive discovery owns the
+                            // transition now; reaching EOF must not tear down its card or reopen it.
+                            Unit
+                        } else if (nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled() && !recommendationDismissed) {
+                            if (nextEpisodeCandidate?.stream != null) {
+                                beginNextEpisode()
+                            } else if (!nextEpisodeDialogVisible) {
+                                scope.launch { openNextEpisodeDialog() }
+                            }
                         } else {
                             completePlaybackAndExit()
                         }
@@ -2992,28 +2986,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             }
         }
 
-        // Skip intro / recap / ending, and the hand-off into the next episode.
+        // Skip intro / recap / ending. Next episode is owned exclusively by the end card.
         segmentAction?.let { action ->
             PlayerSkipActionChip(
                 label = stringResource(action.labelRes),
                 bottomPadding = if (controlsVisible) 112.dp else 24.dp,
                 focusRequester = segmentChipRequester,
                 onClick = {
-                    when (action.kind) {
-                        SegmentActionKind.Skip -> {
-                            val target = maxOf(action.targetTimeSec ?: positionSec, positionSec)
-                            scheduleSeek(target)
-                            markSegmentHandled(action.segmentType)
-                            // Released before showing the controls, or the guard this same press
-                            // relies on would swallow the call that puts them back.
-                            segmentPromptActive = false
-                            registerInteraction()
-                        }
-                        SegmentActionKind.NextEpisode -> {
-                            segmentPromptActive = false
-                            scope.launch { openNextEpisodeDialog() }
-                        }
-                    }
+                    val target = maxOf(action.targetTimeSec ?: positionSec, positionSec)
+                    scheduleSeek(target)
+                    markSegmentHandled(action.segmentType)
+                    // Released before showing the controls, or the guard this same press relies on
+                    // would swallow the call that puts them back.
+                    segmentPromptActive = false
+                    registerInteraction()
                 },
                 modifier = Modifier.align(Alignment.BottomEnd),
             )
@@ -3069,6 +3055,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 episode = nextEpisode!!,
                 streams = nextEpisodeCandidate?.streams.orEmpty(),
                 loading = nextEpisodeLoading,
+                playRequested = queuedNextEpisode,
                 countdown = nextEpisodeCountdown,
                 playRequester = nextEpisodePlayRequester,
                 cancelRequester = nextEpisodeCancelRequester,
@@ -3076,11 +3063,15 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 currentTitle = detail?.title ?: request.title.orEmpty(),
                 savedRecommendationIds = recommendationSavedIds,
                 onPlayNow = {
-                    // Starts now. Queueing it behind the end of the file meant a button marked
-                    // Play next sat there doing nothing visible for the length of the credits,
-                    // which reads as a dead button rather than as a decision that has been taken.
                     recommendationDismissed = true
-                    beginNextEpisode()
+                    nextEpisodeCountdown = null
+                    if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
+                        // Accept the press while discovery is still running. The first playable
+                        // source published by the progressive lookup completes the transition.
+                        queuedNextEpisode = true
+                    } else {
+                        beginNextEpisode()
+                    }
                 },
                 onSelectStream = { index ->
                     nextEpisodeCandidate = nextEpisodeCandidate?.copy(

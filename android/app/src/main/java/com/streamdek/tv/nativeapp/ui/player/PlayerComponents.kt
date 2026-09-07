@@ -1453,6 +1453,7 @@ internal fun NextEpisodeDialog(
     episode: EpisodeContext,
     streams: List<AddonStream>,
     loading: Boolean,
+    playRequested: Boolean,
     countdown: Int?,
     playRequester: FocusRequester,
     cancelRequester: FocusRequester,
@@ -1585,11 +1586,14 @@ internal fun NextEpisodeDialog(
                     }
                     Button(
                         onClick = onPlayNow,
-                        enabled = streams.isNotEmpty(),
+                        enabled = !playRequested && (loading || streams.isNotEmpty()),
                         modifier = Modifier.height(32.dp).focusRequester(playRequester),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                     ) {
-                        Text(stringResource(R.string.player_play_next), style = androidx.tv.material3.MaterialTheme.typography.labelMedium)
+                        Text(
+                            stringResource(if (playRequested) R.string.player_next_preparing else R.string.player_play_next),
+                            style = androidx.tv.material3.MaterialTheme.typography.labelMedium,
+                        )
                     }
                 }
 
