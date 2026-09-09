@@ -2012,6 +2012,8 @@ class StreamDekRepository(
             .getOrDefault(emptyList())
         if (statuses.isEmpty()) return emptyList()
 
+        val providerWatched = fetchWatchedKeys()
+
         val today = java.time.LocalDate.now()
         val earliest = today.minusDays(NEW_EPISODE_WINDOW_DAYS)
         val recent = statuses.mapNotNull { entry ->
@@ -2021,6 +2023,11 @@ class StreamDekRepository(
             // Dated in the future is a schedule, not a release: TMDB carries those on the last
             // episode of a series that is between seasons.
             if (airDate.isAfter(today) || airDate.isBefore(earliest)) return@mapNotNull null
+            val season = episode.season
+            val number = episode.episode
+            if (season != null && number != null) {
+                if (isNewEpisodeWatched(entry.tmdbId, season, number, providerWatched, library.progress)) return@mapNotNull null
+            }
             airDate to MediaItem(
                 id = entry.tmdbId.toString(),
                 tmdbId = entry.tmdbId,

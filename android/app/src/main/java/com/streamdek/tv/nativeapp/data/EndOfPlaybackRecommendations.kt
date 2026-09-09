@@ -1,5 +1,8 @@
 package com.streamdek.tv.nativeapp.data
 
+import java.time.LocalDate
+import kotlin.math.ceil
+
 /** Canonical timing choices shared conceptually with StreamDek Mobile. */
 enum class RecommendationTiming(val key: String) {
     Early("early"),
@@ -19,6 +22,18 @@ enum class EndOfPlaybackPhase {
 }
 
 enum class UpNextKind { NextEpisode, Recommendation }
+
+/** Metadata state only. A missing stream is not evidence that an episode is unaired. */
+enum class NextEpisodeAvailability { Aired, Unaired, None, Unknown }
+
+object NextEpisodeAvailabilityPolicy {
+    fun classify(exists: Boolean, airDate: String?, today: LocalDate = LocalDate.now()): NextEpisodeAvailability {
+        if (!exists) return NextEpisodeAvailability.None
+        val normalized = airDate?.trim()?.takeIf { it.isNotEmpty() } ?: return NextEpisodeAvailability.Unknown
+        val parsed = runCatching { LocalDate.parse(normalized) }.getOrNull() ?: return NextEpisodeAvailability.Unknown
+        return if (parsed.isAfter(today)) NextEpisodeAvailability.Unaired else NextEpisodeAvailability.Aired
+    }
+}
 
 data class UpNextDecision(
     val primaryKind: UpNextKind,
@@ -69,14 +84,16 @@ object AdaptiveEndOfPlaybackTrigger {
         timing: RecommendationTiming,
         creditsStartSec: Double? = null,
         structuralOutroStartSec: Double? = null,
+        structuralOutroEndSec: Double? = null,
     ): MeaningfulContentEnd? {
         if (!durationSec.isFinite() || durationSec < 180.0) return null
 
         validBoundary(creditsStartSec, durationSec)?.let { boundary ->
-            return structuralEstimate(boundary, durationSec, timing, MeaningfulEndSignal.CreditsMetadata)
+            return structuralEstimate(boundary, boundary, durationSec, timing, MeaningfulEndSignal.CreditsMetadata)
         }
-        validBoundary(structuralOutroStartSec, durationSec)?.let { boundary ->
-            return structuralEstimate(boundary, durationSec, timing, MeaningfulEndSignal.StructuralMetadata)
+        validBoundary(structuralOutroStartSec, durationSec)?.let { start ->
+            val endpoint = structuralOutroEndSec?.takeIf { it.isFinite() && it > start && it <= durationSec } ?: durationSec
+            return structuralEstimate(start, endpoint, durationSec, timing, MeaningfulEndSignal.StructuralMetadata)
         }
 
         val desiredRemaining = when (timing) {
@@ -102,12 +119,21 @@ object AdaptiveEndOfPlaybackTrigger {
     fun isReached(positionSec: Double, estimate: MeaningfulContentEnd?): Boolean =
         estimate != null && positionSec.isFinite() && positionSec >= estimate.triggerPositionSec
 
+    fun countdownSeconds(positionSec: Double, estimate: MeaningfulContentEnd?): Int? {
+        if (estimate == null || !positionSec.isFinite()) return null
+        return ceil((estimate.boundaryPositionSec - positionSec).coerceAtLeast(0.0)).toInt()
+    }
+
+    fun isIntendedEndReached(positionSec: Double, estimate: MeaningfulContentEnd?): Boolean =
+        estimate != null && positionSec.isFinite() && positionSec >= estimate.boundaryPositionSec
+
     private fun validBoundary(value: Double?, durationSec: Double): Double? = value?.takeIf {
         it.isFinite() && it >= durationSec * 0.2 && it <= durationSec - 5.0
     }
 
     private fun structuralEstimate(
-        boundary: Double,
+        triggerBoundary: Double,
+        endpoint: Double,
         durationSec: Double,
         timing: RecommendationTiming,
         signal: MeaningfulEndSignal,
@@ -118,8 +144,8 @@ object AdaptiveEndOfPlaybackTrigger {
             RecommendationTiming.Late -> 30.0
         }
         return MeaningfulContentEnd(
-            triggerPositionSec = (boundary + offset).coerceIn(0.0, durationSec - 5.0),
-            boundaryPositionSec = boundary,
+            triggerPositionSec = (triggerBoundary + offset).coerceIn(0.0, minOf(endpoint, durationSec - 5.0)),
+            boundaryPositionSec = endpoint,
             signal = signal,
         )
     }

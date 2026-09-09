@@ -99,6 +99,8 @@ import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
+import com.streamdek.tv.nativeapp.data.NextEpisodeAvailability
+import com.streamdek.tv.nativeapp.data.NextEpisodeAvailabilityPolicy
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
@@ -135,7 +137,6 @@ private const val LiveControlsHideDelayMs = 2000L
 private const val LiveChannelInfoHideDelayMs = 5000L
 private const val LiveHintVisibleMs = 3_000L
 private const val LiveHintCycleMs = 15_000L
-private const val AutoPlayNextEpisodeCountdownSeconds = 20
 private const val NextEpisodeDiscoveryTimeoutMs = 30_000L
 internal const val NextEpisodeSourceResolveTimeoutMs = 12_000L
 internal const val PlaybackSeekBufferingGraceMs = 8_000L
@@ -322,6 +323,10 @@ fun PlayerScreen(
     var detail by remember { mutableStateOf(if (isLive) null else repository.peekCachedDetail(request.mediaId, request.mediaType)) }
     var currentEpisode by remember(request) { mutableStateOf(request.episode) }
     var nextEpisode by remember { mutableStateOf<EpisodeContext?>(null) }
+    val nextEpisodeAvailability = NextEpisodeAvailabilityPolicy.classify(
+        exists = nextEpisode != null,
+        airDate = nextEpisode?.airDate,
+    )
     var candidate by remember { mutableStateOf<ResolvedPlaybackCandidate?>(null) }
     var currentSourceUrl by remember { mutableStateOf<String?>(null) }
     val defaultPlaybackHeaders = remember { mapOf("User-Agent" to "Mozilla/5.0 StreamDekTV") }
@@ -477,6 +482,7 @@ fun PlayerScreen(
     var nextEpisodeLoading by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var nextEpisodeCountdown by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<Int?>(null) }
     var queuedNextEpisode by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
+    var autoplayEndClaimed by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var recommendationDialogVisible by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var recommendationDismissed by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(false) }
     var queuedRecommendation by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf<MediaItem?>(null) }
@@ -1020,13 +1026,27 @@ fun PlayerScreen(
         recommendationDialogVisible = false
         queuedRecommendation = null
         nextEpisodeDialogVisible = true
-        if (nextEpisodeCountdown == null && playbackPreferences.isAutoPlayNextEpisodeEnabled() && !queuedNextEpisode) {
-            nextEpisodeCountdown = AutoPlayNextEpisodeCountdownSeconds
+        if (nextEpisodeCountdown == null && nextEpisodeAvailability == NextEpisodeAvailability.Aired &&
+            playbackPreferences.isAutoPlayNextEpisodeEnabled() && !queuedNextEpisode
+        ) {
+            val outro = segments.firstOrNull { it.segmentType == "outro" }
+            val endpoint = com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.estimate(
+                durationSec = durationSec,
+                timing = com.streamdek.tv.nativeapp.data.RecommendationTiming.fromKey(playbackPreferences.recommendationTiming),
+                structuralOutroStartSec = outro?.startSec,
+                structuralOutroEndSec = outro?.endSec,
+            )
+            nextEpisodeCountdown = com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.countdownSeconds(positionSec, endpoint)
         }
         if (!nextEpisodeCandidate?.streams.isNullOrEmpty()) {
             TvDebugLogger.i("EpisodeTransition", "ready from cache target=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} streams=${nextEpisodeCandidate?.streams?.size}")
             return
         }
+        // Future episodes never resolve sources. Unknown metadata may resolve only after an
+        // explicit button press (forceRefresh), never as autoplay/background preparation.
+        if (nextEpisodeAvailability == NextEpisodeAvailability.Unaired ||
+            (nextEpisodeAvailability == NextEpisodeAvailability.Unknown && !forceRefresh)
+        ) return
 
         // Like Mobile, presentation is driven by the next-episode decision, not by network state.
         // Discovery runs behind the visible countdown card and fulfils whichever claims playback
@@ -1106,6 +1126,7 @@ fun PlayerScreen(
         )
         nextEpisodeTransitionInProgress = true
         queuedNextEpisode = false
+        autoplayEndClaimed = false
         nextEpisodeDialogVisible = false
         nextEpisodeCountdown = null
         // Retire the completed episode visually before any watched/sync write is allowed to wait.
@@ -1784,11 +1805,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             recommendationDismissed || nextEpisodeDialogVisible || recommendationDialogVisible ||
             queuedNextEpisode || queuedRecommendation != null
         ) return@LaunchedEffect
-        val outroStart = segments.firstOrNull { it.segmentType == "outro" }?.startSec
+        val outro = segments.firstOrNull { it.segmentType == "outro" }
         val estimate = com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.estimate(
             durationSec = durationSec,
             timing = com.streamdek.tv.nativeapp.data.RecommendationTiming.fromKey(playbackPreferences.recommendationTiming),
-            structuralOutroStartSec = outroStart,
+            structuralOutroStartSec = outro?.startSec,
+            structuralOutroEndSec = outro?.endSec,
         )
         if (!com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.isReached(positionSec, estimate)) return@LaunchedEffect
         delay(450)
@@ -1818,7 +1840,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             .minWithOrNull(compareBy<PlaybackSegment>({ segmentPriority(it.segmentType) }, { it.startSec }))
             ?: return@LaunchedEffect
         // The next-episode dialog owns ending transitions, completion writes and source selection.
-        if (segment.segmentType == "outro" && nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled()) return@LaunchedEffect
+        if (segment.segmentType == "outro" && nextEpisodeAvailability == NextEpisodeAvailability.Aired &&
+            playbackPreferences.isAutoPlayNextEpisodeEnabled()
+        ) return@LaunchedEffect
         markSegmentHandled(segment.segmentType)
         scheduleSeek(maxOf(segment.endSec, positionSec))
         autoSkipNotice = playerResources.getString(
@@ -1862,20 +1886,30 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         TvPowerActions.startScreensaver()
     }
 
-    LaunchedEffect(nextEpisodeDialogVisible, nextEpisodeCountdown) {
-        val countdown = nextEpisodeCountdown
-        if (!nextEpisodeDialogVisible || countdown == null || countdown <= 0) return@LaunchedEffect
-        delay(1000)
-        if (countdown == 1) {
+    LaunchedEffect(nextEpisodeDialogVisible, nextEpisodeAvailability, positionSec, durationSec, segments, playbackPreferences.autoPlayNextEpisodeEnabled, playbackPreferences.autoplayNextEpisode) {
+        if (!nextEpisodeDialogVisible || nextEpisodeAvailability != NextEpisodeAvailability.Aired ||
+            !playbackPreferences.isAutoPlayNextEpisodeEnabled()
+        ) {
             nextEpisodeCountdown = null
+            return@LaunchedEffect
+        }
+        val outro = segments.firstOrNull { it.segmentType == "outro" }
+        val estimate = com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.estimate(
+            durationSec = durationSec,
+            timing = com.streamdek.tv.nativeapp.data.RecommendationTiming.fromKey(playbackPreferences.recommendationTiming),
+            structuralOutroStartSec = outro?.startSec,
+            structuralOutroEndSec = outro?.endSec,
+        )
+        val remaining = com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.countdownSeconds(positionSec, estimate) ?: return@LaunchedEffect
+        nextEpisodeCountdown = remaining
+        if (remaining == 0 && com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.isIntendedEndReached(positionSec, estimate) && !autoplayEndClaimed) {
+            autoplayEndClaimed = true
             if (nextEpisodeCandidate?.stream != null) {
                 beginNextEpisode()
             } else {
                 queuedNextEpisode = true
                 if (!nextEpisodeLoading) scope.launch { openNextEpisodeDialog(forceRefresh = true) }
             }
-        } else {
-            nextEpisodeCountdown = countdown - 1
         }
     }
 
@@ -1886,11 +1920,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     }
 
     LaunchedEffect(positionSec, durationSec, segments) {
-        val outroStart = segments.firstOrNull { it.segmentType == "outro" }?.startSec
+        val outro = segments.firstOrNull { it.segmentType == "outro" }
         val estimate = com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.estimate(
             durationSec = durationSec,
             timing = com.streamdek.tv.nativeapp.data.RecommendationTiming.fromKey(playbackPreferences.recommendationTiming),
-            structuralOutroStartSec = outroStart,
+            structuralOutroStartSec = outro?.startSec,
+            structuralOutroEndSec = outro?.endSec,
         )
         if (com.streamdek.tv.nativeapp.data.EndOfPlaybackCoordinator.shouldResetAfterSeek(positionSec, estimate?.triggerPositionSec) &&
             (nextEpisodeDialogVisible || recommendationDialogVisible || recommendationDismissed)
@@ -1900,6 +1935,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             nextEpisodeCountdown = null
             recommendationDismissed = false
             queuedNextEpisode = false
+            autoplayEndClaimed = false
             queuedRecommendation = null
         }
     }
@@ -2439,7 +2475,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             // The viewer already pressed Play. Progressive discovery owns the
                             // transition now; reaching EOF must not tear down its card or reopen it.
                             Unit
-                        } else if (nextEpisode != null && playbackPreferences.isAutoPlayNextEpisodeEnabled() && !recommendationDismissed) {
+                        } else if (nextEpisodeAvailability == NextEpisodeAvailability.Aired &&
+                            playbackPreferences.isAutoPlayNextEpisodeEnabled() && !recommendationDismissed
+                        ) {
                             if (nextEpisodeCandidate?.stream != null) {
                                 beginNextEpisode()
                             } else {
@@ -3107,15 +3145,24 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 streams = nextEpisodeCandidate?.streams.orEmpty(),
                 playRequested = queuedNextEpisode,
                 countdown = nextEpisodeCountdown,
+                availability = nextEpisodeAvailability,
                 playRequester = nextEpisodePlayRequester,
                 cancelRequester = nextEpisodeCancelRequester,
-                recommendations = recommendedItems,
+                // Aired continuations stay series-only. An unaired successor is the one episodic
+                // state allowed to include alternatives, inside this same unified card.
+                recommendations = if (
+                    nextEpisodeAvailability == NextEpisodeAvailability.Unaired &&
+                    playbackPreferences.endOfPlaybackRecommendationsEnabled
+                ) recommendedItems else emptyList(),
                 currentTitle = detail?.title ?: request.title.orEmpty(),
                 savedRecommendationIds = recommendationSavedIds,
                 onPlayNow = {
                     recommendationDismissed = true
                     nextEpisodeCountdown = null
-                    if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
+                    if (nextEpisodeAvailability == NextEpisodeAvailability.Unaired) {
+                        nextEpisodeDialogVisible = false
+                        completePlaybackAndExit()
+                    } else if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
                         queuedNextEpisode = true
                         if (!nextEpisodeLoading) scope.launch { openNextEpisodeDialog(forceRefresh = true) }
                     } else {

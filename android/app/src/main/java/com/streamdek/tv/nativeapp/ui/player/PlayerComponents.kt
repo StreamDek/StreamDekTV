@@ -101,6 +101,7 @@ import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
+import com.streamdek.tv.nativeapp.data.NextEpisodeAvailability
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
@@ -1454,6 +1455,7 @@ internal fun NextEpisodeDialog(
     streams: List<AddonStream>,
     playRequested: Boolean,
     countdown: Int?,
+    availability: NextEpisodeAvailability,
     playRequester: FocusRequester,
     cancelRequester: FocusRequester,
     recommendations: List<MediaItem>,
@@ -1557,7 +1559,12 @@ internal fun NextEpisodeDialog(
                 }
 
                 Text(
-                    text = stringResource(R.string.player_next_will_continue),
+                    text = when {
+                        availability == NextEpisodeAvailability.Unaired -> "The next episode has not aired yet. Skip this episode's ending now or dismiss to keep watching"
+                        availability == NextEpisodeAvailability.Unknown -> "The next episode's release date is unavailable. Select Next Episode to try it now."
+                        countdown != null -> "The next episode starts automatically when this episode ends. Select Next Episode to start now."
+                        else -> "Select Next Episode to start immediately, or keep watching."
+                    },
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.76f),
@@ -1583,7 +1590,10 @@ internal fun NextEpisodeDialog(
                         modifier = Modifier.height(32.dp).focusRequester(playRequester),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                     ) {
-                        Text(stringResource(R.string.player_play_next), style = androidx.tv.material3.MaterialTheme.typography.labelMedium)
+                        Text(
+                            if (availability == NextEpisodeAvailability.Unaired) "Skip Ending" else stringResource(R.string.player_next_episode),
+                            style = androidx.tv.material3.MaterialTheme.typography.labelMedium,
+                        )
                     }
                 }
 
