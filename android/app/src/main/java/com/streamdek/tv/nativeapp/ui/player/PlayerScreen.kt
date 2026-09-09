@@ -1053,33 +1053,38 @@ fun PlayerScreen(
         // first: the Play Next button or the countdown reaching zero.
         nextEpisodeLoading = true
         TvDebugLogger.i("EpisodeTransition", "discovery started target=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} force=$forceRefresh")
-        withTimeoutOrNull(NextEpisodeDiscoveryTimeoutMs) {
-            repository.streamCandidates(
-                mediaType = request.mediaType,
-                mediaId = request.mediaId,
-                imdbId = effectiveImdbId,
-                episode = targetEpisode,
-                preferredAddonName = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.addonName else null,
-                preferredQualityGroup = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.quality else null,
-                forceRefresh = forceRefresh,
-            ).collect { progress ->
-                if (nextEpisode != targetEpisode || nextEpisodeTransitionInProgress) return@collect
-                if (progress.streams.isNotEmpty()) {
-                    val ranked = progress.streams
-                    val firstPlayableBatch = nextEpisodeCandidate?.streams.isNullOrEmpty()
-                    nextEpisodeCandidate = ResolvedPlaybackCandidate(
-                        source = null,
-                        stream = ranked.firstOrNull(),
-                        streams = ranked,
-                    )
-                    if (firstPlayableBatch) {
-                        TvDebugLogger.i("EpisodeTransition", "ready from discovery target=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} streams=${ranked.size}")
-                        nextEpisodeLoading = false
+        try {
+            withTimeoutOrNull(NextEpisodeDiscoveryTimeoutMs) {
+                repository.streamCandidates(
+                    mediaType = request.mediaType,
+                    mediaId = request.mediaId,
+                    imdbId = effectiveImdbId,
+                    episode = targetEpisode,
+                    preferredAddonName = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.addonName else null,
+                    preferredQualityGroup = if (playbackPreferences.preferBingeGroupNextEpisode) currentStream?.quality else null,
+                    forceRefresh = forceRefresh,
+                ).collect { progress ->
+                    if (nextEpisode != targetEpisode || nextEpisodeTransitionInProgress) return@collect
+                    if (progress.streams.isNotEmpty()) {
+                        val ranked = progress.streams
+                        val firstPlayableBatch = nextEpisodeCandidate?.streams.isNullOrEmpty()
+                        nextEpisodeCandidate = ResolvedPlaybackCandidate(
+                            source = null,
+                            stream = ranked.firstOrNull(),
+                            streams = ranked,
+                        )
+                        if (firstPlayableBatch) {
+                            TvDebugLogger.i("EpisodeTransition", "ready from discovery target=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} streams=${ranked.size}")
+                            nextEpisodeLoading = false
+                        }
                     }
                 }
             }
+        } finally {
+            // Discovery can be cancelled when the screen leaves composition or another stream
+            // lookup supersedes it. Never leave the action permanently believing work is active.
+            nextEpisodeLoading = false
         }
-        nextEpisodeLoading = false
         if (nextEpisodeCandidate?.streams.isNullOrEmpty()) {
             // Keep the decision card mounted. A manual Play press can retry discovery, just as
             // Mobile resolves after the user claims the transition instead of hiding the choice.
@@ -1815,7 +1820,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         if (!com.streamdek.tv.nativeapp.data.AdaptiveEndOfPlaybackTrigger.isReached(positionSec, estimate)) return@LaunchedEffect
         delay(450)
         if (nextEpisode != null) {
-            openNextEpisodeDialog()
+            // Position updates restart this effect every second. Discovery must outlive that
+            // trigger effect or the next tick cancels it while leaving the visible card behind.
+            scope.launch { openNextEpisodeDialog() }
         } else if (detail?.similarTitles?.any { it.id != request.mediaId } == true) {
             controlsVisible = false
             recommendationDialogVisible = true
@@ -2472,9 +2479,14 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         if (isLive) {
                             scheduleLiveReconnect("The feed ended")
                         } else if (nextEpisode != null && queuedNextEpisode) {
-                            // The viewer already pressed Play. Progressive discovery owns the
-                            // transition now; reaching EOF must not tear down its card or reopen it.
-                            Unit
+                            // A claimed transition must always have either a candidate or an active
+                            // lookup. The old no-op assumed discovery was still alive, even though
+                            // it could already have timed out or been cancelled.
+                            if (nextEpisodeCandidate?.stream != null) {
+                                beginNextEpisode()
+                            } else if (!nextEpisodeLoading) {
+                                scope.launch { openNextEpisodeDialog(forceRefresh = true) }
+                            }
                         } else if (nextEpisodeAvailability == NextEpisodeAvailability.Aired &&
                             playbackPreferences.isAutoPlayNextEpisodeEnabled() && !recommendationDismissed
                         ) {
@@ -2482,11 +2494,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 beginNextEpisode()
                             } else {
                                 // EOF is an instruction to continue, even if discovery is already
-                                // in flight. The queued flag lets its first source complete playback
-                                // without exposing the internal Preparing state.
+                                // in flight. Claim the transition and guarantee a live lookup even
+                                // when the visible card's background preparation already ended.
                                 queuedNextEpisode = true
-                                if (!nextEpisodeDialogVisible && !nextEpisodeLoading) {
-                                scope.launch { openNextEpisodeDialog() }
+                                if (!nextEpisodeLoading) {
+                                    scope.launch { openNextEpisodeDialog(forceRefresh = true) }
                                 }
                             }
                         } else {

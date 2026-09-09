@@ -1536,26 +1536,14 @@ internal fun NextEpisodeDialog(
                 }
 
                 if (countdown != null && countdown > 0) {
-                    Row(
+                    Text(
+                        text = pluralStringResource(R.plurals.player_autoplay_countdown, countdown, countdown),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = pluralStringResource(R.plurals.player_autoplay_countdown, countdown, countdown),
-                            style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                            color = Color.White.copy(alpha = 0.9f),
-                        )
-                        OutlinedButton(
-                            onClick = onCancel,
-                            modifier = Modifier.height(32.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                        ) {
-                            Text(stringResource(R.string.action_cancel))
-                        }
-                    }
+                        style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White.copy(alpha = 0.9f),
+                    )
                 }
 
                 Text(
@@ -1593,6 +1581,8 @@ internal fun NextEpisodeDialog(
                         Text(
                             if (availability == NextEpisodeAvailability.Unaired) {
                                 stringResource(R.string.player_skip_ending)
+                            } else if (playRequested) {
+                                stringResource(R.string.player_next_preparing)
                             } else {
                                 stringResource(R.string.player_next_episode)
                             },
