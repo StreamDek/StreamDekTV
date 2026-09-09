@@ -17,6 +17,9 @@ internal fun isNewEpisodeWatched(
     return when (latest?.status?.lowercase()) {
         "unwatched" -> false
         "completed" -> true
-        else -> "tv:$tmdbId:s$seasonNumber:e$episodeNumber" in providerWatchedKeys
+        else -> newEpisodeWatchedKey(tmdbId, seasonNumber, episodeNumber) in providerWatchedKeys
     }
 }
+
+private fun newEpisodeWatchedKey(tmdbId: Int, seasonNumber: Int, episodeNumber: Int): String =
+    "tv:$tmdbId:s$seasonNumber:e$episodeNumber"

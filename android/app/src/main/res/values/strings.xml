@@ -1259,6 +1259,12 @@
   <string name="player_next_preparing">Preparing the next episode…</string>
   <string name="player_next_no_source">No playable source is available yet.</string>
   <string name="player_next_will_continue">The current episode will continue to its natural end.</string>
+  <string name="player_next_unaired_message">The next episode has not aired yet. Skip this episode\'s ending now or dismiss to keep watching.</string>
+  <string name="player_next_release_unknown_message">The next episode\'s release date is unavailable. Select Next Episode to try it now.</string>
+  <string name="player_next_autoplay_message">The next episode starts automatically when this episode ends. Select Next Episode to start now.</string>
+  <string name="player_next_manual_message">Select Next Episode to start immediately, or keep watching.</string>
+  <string name="player_recommendations_heading">You might also like</string>
+  <string name="action_play_now">Play now</string>
   <string name="player_recommendation_reason">Because you watched %1$s</string>
   <string name="player_watch_after_this">Watch after this</string>
   <string name="player_source_pinned_hint">Pinned source; hold OK to unpin</string>

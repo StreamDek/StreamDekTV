@@ -1296,6 +1296,12 @@
   <string name="player_next_preparing">Préparation de l\'épisode suivant…</string>
   <string name="player_next_no_source">Aucune source lisible n\'est encore disponible.</string>
   <string name="player_next_will_continue">L\'épisode en cours ira jusqu\'à sa fin.</string>
+  <string name="player_next_unaired_message">L’épisode suivant n’a pas encore été diffusé. Passez la fin de cet épisode maintenant ou fermez ce message pour continuer à regarder.</string>
+  <string name="player_next_release_unknown_message">La date de diffusion de l’épisode suivant n’est pas disponible. Sélectionnez Épisode suivant pour essayer de le lancer maintenant.</string>
+  <string name="player_next_autoplay_message">L’épisode suivant démarrera automatiquement à la fin de celui-ci. Sélectionnez Épisode suivant pour le lancer maintenant.</string>
+  <string name="player_next_manual_message">Sélectionnez Épisode suivant pour le lancer immédiatement, ou continuez à regarder.</string>
+  <string name="player_recommendations_heading">Vous aimerez peut-être aussi</string>
+  <string name="action_play_now">Lire maintenant</string>
   <string name="player_recommendation_reason">Parce que vous avez regardé %1$s</string>
   <string name="player_watch_after_this">Regarder ensuite</string>
   <string name="player_source_pinned_hint">Source épinglée ; maintenez OK pour la retirer</string>

@@ -1560,10 +1560,10 @@ internal fun NextEpisodeDialog(
 
                 Text(
                     text = when {
-                        availability == NextEpisodeAvailability.Unaired -> "The next episode has not aired yet. Skip this episode's ending now or dismiss to keep watching"
-                        availability == NextEpisodeAvailability.Unknown -> "The next episode's release date is unavailable. Select Next Episode to try it now."
-                        countdown != null -> "The next episode starts automatically when this episode ends. Select Next Episode to start now."
-                        else -> "Select Next Episode to start immediately, or keep watching."
+                        availability == NextEpisodeAvailability.Unaired -> stringResource(R.string.player_next_unaired_message)
+                        availability == NextEpisodeAvailability.Unknown -> stringResource(R.string.player_next_release_unknown_message)
+                        countdown != null -> stringResource(R.string.player_next_autoplay_message)
+                        else -> stringResource(R.string.player_next_manual_message)
                     },
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
@@ -1591,7 +1591,11 @@ internal fun NextEpisodeDialog(
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                     ) {
                         Text(
-                            if (availability == NextEpisodeAvailability.Unaired) "Skip Ending" else stringResource(R.string.player_next_episode),
+                            if (availability == NextEpisodeAvailability.Unaired) {
+                                stringResource(R.string.player_skip_ending)
+                            } else {
+                                stringResource(R.string.player_next_episode)
+                            },
                             style = androidx.tv.material3.MaterialTheme.typography.labelMedium,
                         )
                     }
@@ -1599,7 +1603,7 @@ internal fun NextEpisodeDialog(
 
                 if (recommendations.isNotEmpty()) {
                     Text(
-                        text = "You might also like",
+                        text = stringResource(R.string.player_recommendations_heading),
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp),
                         style = androidx.tv.material3.MaterialTheme.typography.labelSmall,
                         color = Color.White.copy(alpha = 0.58f),
@@ -1732,7 +1736,12 @@ private fun TvRecommendationChoice(
                         contentColor = if (queued) Color.White else Color(0xFF171A20),
                         focusedContentColor = Color.Black,
                     ),
-                ) { Text(if (queued) stringResource(R.string.a11y_selected) else "Play Now", fontWeight = FontWeight.Bold) }
+                ) {
+                    Text(
+                        if (queued) stringResource(R.string.a11y_selected) else stringResource(R.string.action_play_now),
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
                 OutlinedButton(
                     onClick = onAddToWatchlist,
                     enabled = !saved,
