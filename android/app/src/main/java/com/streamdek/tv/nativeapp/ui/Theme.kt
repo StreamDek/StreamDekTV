@@ -1,9 +1,13 @@
 package com.streamdek.tv.nativeapp.ui
 
+import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.tv.material3.ColorScheme
@@ -98,7 +102,36 @@ fun StreamDekTvTheme(
     )
     val density = LocalDensity.current
     val fontScale = if (experience.largeText) density.fontScale * 1.14f else density.fontScale
+    // Remembered on the device, so the next launch's version gate — composed before the account's
+    // preferences have loaded — can wear the same theme. See [StreamDekTvStartupTheme].
+    val appContext = LocalContext.current.applicationContext
+    val themeKey = appPreferences?.theme
+    LaunchedEffect(themeKey, experience.highContrast) {
+        themeKey ?: return@LaunchedEffect
+        appContext.getSharedPreferences(THEME_CACHE_PREFERENCES, Context.MODE_PRIVATE).edit()
+            .putString(THEME_CACHE_KEY, themeKey)
+            .putBoolean(THEME_CACHE_HIGH_CONTRAST_KEY, experience.highContrast)
+            .apply()
+    }
     CompositionLocalProvider(LocalTvExperienceSettings provides experience, LocalDensity provides Density(density.density, fontScale)) {
         MaterialTheme(colorScheme = streamDekColorScheme(appPreferences?.theme, experience.highContrast), content = content)
     }
+}
+
+private const val THEME_CACHE_PREFERENCES = "streamdek_tv_theme_cache"
+private const val THEME_CACHE_KEY = "theme"
+private const val THEME_CACHE_HIGH_CONTRAST_KEY = "high_contrast"
+
+/**
+ * The last theme this television showed, for screens composed before there are account
+ * preferences to ask — the version gate in particular. A first launch gets the default theme.
+ */
+@Composable
+fun StreamDekTvStartupTheme(content: @Composable () -> Unit) {
+    val appContext = LocalContext.current.applicationContext
+    val colorScheme = remember(appContext) {
+        val cache = appContext.getSharedPreferences(THEME_CACHE_PREFERENCES, Context.MODE_PRIVATE)
+        streamDekColorScheme(cache.getString(THEME_CACHE_KEY, null), cache.getBoolean(THEME_CACHE_HIGH_CONTRAST_KEY, false))
+    }
+    MaterialTheme(colorScheme = colorScheme, content = content)
 }

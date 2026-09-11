@@ -824,13 +824,36 @@ fun DetailScreen(
                     scaleY = pageScale
                 },
         ) {
-        detail?.backdrop?.takeIf { it.isNotBlank() }?.let { backdrop ->
-            AsyncImage(
-                model = backdrop,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
+        // A catalogue title — a TMDB id, or an IMDb id the details are resolved through — keeps its
+        // backdrop exactly as before. Any other id is an add-on's or a plugin's own, whose artwork can
+        // be any shape and may have no backdrop at all, so it adapts instead, falling back to the
+        // poster, fitted to the right of the reading column over a blurred copy of itself.
+        val catalogueTitle = mediaId.all(Char::isDigit) || Regex("tt\\d+", RegexOption.IGNORE_CASE).matches(mediaId)
+        if (catalogueTitle) {
+            detail?.backdrop?.takeIf { it.isNotBlank() }?.let { backdrop ->
+                AsyncImage(
+                    model = backdrop,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+        } else {
+            (detail?.backdrop?.takeIf { it.isNotBlank() } ?: detail?.poster?.takeIf { it.isNotBlank() })?.let { artwork ->
+                com.streamdek.tv.nativeapp.ui.AdaptiveArtwork(
+                    model = artwork,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    // Asked of the poster: an item described by its own source can carry its poster
+                    // in the backdrop field too, and a card is a card whichever field holds it.
+                    cropTolerance = if (artwork == detail?.poster) {
+                        com.streamdek.tv.nativeapp.ui.ArtworkCropTolerance.POSTER
+                    } else {
+                        com.streamdek.tv.nativeapp.ui.ArtworkCropTolerance.BACKDROP
+                    },
+                    fitAlignment = Alignment.CenterEnd,
+                )
+            }
         }
 
         // Two linear passes, tinted by the artwork's own palette. Linear gradients are far cheaper

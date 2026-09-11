@@ -5,8 +5,13 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
@@ -246,15 +251,17 @@ fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.reposit
             }
             when (val gate = versionGateState) {
                 AppVersionGateState.Checking -> StartupBootstrapGate()
-                is AppVersionGateState.Required -> AppVersionRequiredScreen(
-                    policy = gate.policy,
-                    updateState = appUpdateState,
-                    onUpdate = {
-                        if (appUpdateState.availableRelease != null) scope.launch { appUpdateManager.startUpdate() }
-                        else AppVersionPolicyRuntime.openUpdate(context.applicationContext, gate.policy)
-                    },
-                    onRetry = { scope.launch { AppVersionPolicyRuntime.refresh(context.applicationContext) } },
-                )
+                is AppVersionGateState.Required -> StreamDekTvStartupTheme {
+                    AppVersionRequiredScreen(
+                        policy = gate.policy,
+                        updateState = appUpdateState,
+                        onUpdate = {
+                            if (appUpdateState.availableRelease != null) scope.launch { appUpdateManager.startUpdate() }
+                            else AppVersionPolicyRuntime.openUpdate(context.applicationContext, gate.policy)
+                        },
+                        onRetry = { scope.launch { AppVersionPolicyRuntime.refresh(context.applicationContext) } },
+                    )
+                }
                 else -> StreamDekTvAppContent(repository)
             }
         }
@@ -1711,38 +1718,91 @@ private fun AppVersionRequiredScreen(
             runCatching { updateRequester.requestFocus() }
         }
     }
+    val colors = MaterialTheme.colorScheme
+    val cardShape = RoundedCornerShape(28.dp)
+    val buttonShape = ButtonDefaults.shape(RoundedCornerShape(16.dp))
+    // Resting buttons sit quietly on the card; the focused one takes the theme's accent, so the
+    // remote's position reads at a glance from across the room.
+    val buttonColors = ButtonDefaults.colors(
+        containerColor = colors.onSurface.copy(alpha = 0.08f),
+        contentColor = colors.onSurface,
+        focusedContainerColor = colors.primary,
+        focusedContentColor = colors.onPrimary,
+    )
     Box(
-        modifier = Modifier.fillMaxSize().background(Color(0xFF080A0F)).padding(48.dp),
+        modifier = Modifier.fillMaxSize().background(colors.background).padding(48.dp),
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(0.62f).clip(RoundedCornerShape(30.dp))
-                .background(TvChromePanel)
-                .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), RoundedCornerShape(30.dp))
-                .padding(horizontal = 42.dp, vertical = 38.dp),
+            modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth().clip(cardShape)
+                .background(colors.surface)
+                .border(1.dp, colors.onSurface.copy(alpha = 0.10f), cardShape)
+                .padding(horizontal = 40.dp, vertical = 36.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            Text(stringResource(R.string.app_version_brand), style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary)
-            Text(policy.requiredTitle, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.onBackground)
-            Text(policy.requiredMessage, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f))
+            Image(
+                painter = painterResource(R.drawable.streamdek_boot_logo),
+                contentDescription = stringResource(R.string.app_version_brand),
+                modifier = Modifier.size(84.dp),
+            )
+            Spacer(Modifier.height(24.dp))
+            Text(
+                // The server's own wording when it sent some; otherwise the app's, in the viewer's language.
+                policy.requiredTitle.ifBlank { stringResource(R.string.app_version_required_title) },
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                color = colors.onSurface,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                policy.requiredMessage.ifBlank { stringResource(R.string.app_version_required_message) },
+                style = MaterialTheme.typography.bodyLarge,
+                color = colors.onSurface.copy(alpha = 0.72f),
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(28.dp))
             Button(
                 onClick = onUpdate,
                 enabled = !updateState.isInstalling && (updateState.availableRelease != null || policy.updateUrl.isNotBlank()),
-                modifier = Modifier.focusRequester(updateRequester),
-                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+                modifier = Modifier.fillMaxWidth().focusRequester(updateRequester),
+                shape = buttonShape,
+                colors = buttonColors,
             ) {
-                Text(if (updateState.isInstalling) stringResource(R.string.app_version_preparing_update) else stringResource(R.string.update_now))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.SystemUpdate, contentDescription = null, tint = androidx.tv.material3.LocalContentColor.current, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        if (updateState.isInstalling) stringResource(R.string.app_version_preparing_update) else stringResource(R.string.update_now),
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
             }
-            OutlinedButton(onClick = onRetry, enabled = !updateState.isChecking, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) {
-                Text(if (updateState.isChecking) stringResource(R.string.content_services_checking) else stringResource(R.string.app_version_retry))
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onRetry,
+                enabled = !updateState.isChecking,
+                modifier = Modifier.fillMaxWidth(),
+                shape = buttonShape,
+                colors = buttonColors,
+            ) {
+                Text(
+                    if (updateState.isChecking) stringResource(R.string.content_services_checking) else stringResource(R.string.app_version_retry),
+                    modifier = Modifier.fillMaxWidth(),
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                )
             }
+            Spacer(Modifier.height(20.dp))
             Text(
                 stringResource(R.string.app_version_installed_required, com.streamdek.tv.BuildConfig.VERSION_NAME, policy.minimumSupportedVersion),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
+                color = colors.onSurface.copy(alpha = 0.5f),
+                textAlign = TextAlign.Center,
             )
-            updateState.errorMessage?.let { Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall) }
+            updateState.errorMessage?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+            }
         }
     }
 }

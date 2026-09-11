@@ -89,8 +89,9 @@ object AppVersionPolicyRuntime {
             updateMode = UpdateMode.REQUIRED,
             title = current?.title ?: "Update required",
             message = current?.message ?: "",
-            requiredTitle = "Update required",
-            requiredMessage = json.optString("message", "This version of StreamDek is no longer supported. Update to continue."),
+            // Left blank when the server does not say, so the gate shows its own translated wording.
+            requiredTitle = "",
+            requiredMessage = json.optString("message"),
             updateUrl = json.optString("updateUrl", current?.updateUrl ?: ""),
             releaseNotesUrl = current?.releaseNotesUrl,
         )
@@ -120,8 +121,9 @@ object AppVersionPolicyRuntime {
             updateMode = UpdateMode.valueOf(json.optString("updateMode", "OPTIONAL").uppercase()),
             title = json.optString("title", "Update available"),
             message = json.optString("message", "A newer version of StreamDek is available."),
-            requiredTitle = json.optString("requiredTitle", "Update required"),
-            requiredMessage = json.optString("requiredMessage", "This version is no longer supported. Update to continue."),
+            // Blank when absent: the gate falls back to its own translated title and message.
+            requiredTitle = json.optString("requiredTitle"),
+            requiredMessage = json.optString("requiredMessage"),
             updateUrl = json.optString("updateUrl"),
             releaseNotesUrl = json.optString("releaseNotesUrl").takeIf(String::isNotBlank),
         ).also {

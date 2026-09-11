@@ -423,6 +423,13 @@
   <string name="update_version_named">StreamDek %1$s</string>
   <string name="update_percent_downloaded">%1$s téléchargé</string>
   <string name="update_now">Mettre à jour</string>
+  <string name="action_restart_episode">Recommencer l’épisode</string>
+  <string name="action_restart_movie">Recommencer le film</string>
+  <string name="app_version_retry">Réessayer</string>
+  <string name="app_version_preparing_update">Préparation de la mise à jour…</string>
+  <string name="app_version_installed_required">Installée : %1$s   Requise : %2$s+</string>
+  <string name="app_version_required_title">Mise à jour requise</string>
+  <string name="app_version_required_message">Cette version de StreamDek n’est plus prise en charge. Mettez à jour pour continuer.</string>
   <string name="action_view_details">Voir la fiche</string>
   <string name="browse_no_matching_titles">Aucun titre correspondant</string>
   <string name="browse_change_search_or_filters">Essayez de modifier la recherche ou les filtres.</string>

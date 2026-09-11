@@ -412,6 +412,13 @@
   <string name="update_version_named">StreamDek %1$s</string>
   <string name="update_percent_downloaded">%1$s gedownload</string>
   <string name="update_now">Nu bijwerken</string>
+  <string name="action_restart_episode">Aflevering opnieuw starten</string>
+  <string name="action_restart_movie">Film opnieuw starten</string>
+  <string name="app_version_retry">Opnieuw proberen</string>
+  <string name="app_version_preparing_update">Update voorbereiden…</string>
+  <string name="app_version_installed_required">Geïnstalleerd: %1$s   Vereist: %2$s+</string>
+  <string name="app_version_required_title">Update vereist</string>
+  <string name="app_version_required_message">Deze versie van StreamDek wordt niet meer ondersteund. Werk bij om door te gaan.</string>
   <string name="action_view_details">Details bekijken</string>
   <string name="browse_no_matching_titles">Geen overeenkomende titels</string>
   <string name="browse_change_search_or_filters">Probeer de zoekopdracht of filters aan te passen.</string>

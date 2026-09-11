@@ -30,3 +30,60 @@
 # java.util.regex. R8 still sees the references and fails the release build over classes that are
 # deliberately absent, so they are declared as expected-missing rather than pulled in.
 -dontwarn com.google.re2j.**
+
+# --- CloudStream (.cs3) provider runtime ---
+# Mirrors the mobile app's rules. Loaded .cs3 plugins resolve their superclasses and call into this
+# API by its original names at runtime, so none of it may be renamed, shrunk or repackaged — which
+# includes StreamDek's own stand-ins for missing CloudStream classes (ui.settings.Globals), since
+# nothing in the app calls them and R8 would otherwise drop them.
+-keep class com.lagradost.** { *; }
+-keepclassmembers class com.lagradost.** { *; }
+-keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*,KotlinMetadata
+-keepclassmembers class com.lagradost.** {
+    *** Companion;
+    kotlinx.serialization.KSerializer serializer(...);
+}
+-keep,includedescriptorclasses class com.lagradost.**$$serializer { *; }
+
+# A .cs3 is dex compiled ahead of time against the original names of everything in its API surface,
+# so any type that appears in a signature a plugin calls has to survive R8 unrenamed and unshrunk.
+# That includes the AppCompatActivity a plugin's load() is handed (see CloudStreamRuntime.pluginHost)
+# and the Fragment/Lifecycle APIs plugins reach through it.
+-keep class kotlin.** { *; }
+-keep class kotlinx.** { *; }
+-keep class okhttp3.** { *; }
+-keep class okio.** { *; }
+-keep class org.jsoup.** { *; }
+-keep class org.json.** { *; }
+-keep class org.jetbrains.annotations.** { *; }
+-keep class com.fasterxml.jackson.** { *; }
+-keep class com.google.gson.** { *; }
+-keep class androidx.appcompat.app.** { *; }
+-keep class androidx.fragment.app.** { *; }
+-keep class androidx.lifecycle.** { *; }
+-keep class androidx.preference.** { *; }
+-dontwarn com.fasterxml.jackson.**
+# The trimmed runtime keeps method-body references to parts of the CloudStream app StreamDek does
+# not ship; those paths are unreachable from the provider API, so the dangling references are expected.
+-dontwarn com.lagradost.**
+-dontwarn org.schabi.newpipe.**
+-dontwarn org.conscrypt.**
+-dontwarn org.chromium.net.**
+-dontwarn com.google.android.material.**
+-dontwarn com.google.android.gms.cast.**
+-dontwarn androidx.navigation.**
+-dontwarn androidx.recyclerview.**
+-dontwarn androidx.viewbinding.**
+-dontwarn androidx.viewpager2.**
+-dontwarn androidx.palette.**
+-dontwarn androidx.tvprovider.**
+-dontwarn androidx.work.**
+-dontwarn androidx.biometric.**
+-dontwarn coil3.**
+-dontwarn io.ktor.**
+-dontwarn kotlinx.datetime.**
+-dontwarn kotlinx.io.**
+-dontwarn com.fleeksoft.ksoup.**
+-dontwarn dev.whyoleg.cryptography.**
+-dontwarn org.mozilla.javascript.**
+-dontwarn org.mozilla.universalchardet.**
