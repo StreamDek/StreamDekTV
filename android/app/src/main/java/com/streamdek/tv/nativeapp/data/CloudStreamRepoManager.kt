@@ -280,7 +280,17 @@ class CloudStreamRepoManager(private val context: Context) {
         },
       )
       save()
-    }
+    }.also { notifyProvidersChanged() }
+  }
+
+  /**
+   * Called whenever the set of loaded providers changes — a source switched on or off, or the
+   * enabled ones finishing loading — so Home can fetch or drop their rows.
+   */
+  @Volatile var onProvidersChanged: (() -> Unit)? = null
+
+  private fun notifyProvidersChanged() {
+    runCatching { onProvidersChanged?.invoke() }.onFailure { Log.w(TAG, "Providers-changed listener failed", it) }
   }
 
   /**
@@ -317,6 +327,7 @@ class CloudStreamRepoManager(private val context: Context) {
       save()
     }
     Log.i(TAG, "CloudStream sources ready: ${activeProviders().size} provider(s) from ${wanted.size} enabled source(s)")
+    notifyProvidersChanged()
   }
 
   /**

@@ -6,16 +6,21 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
@@ -81,6 +86,7 @@ fun AdaptiveArtwork(
     fitShape: Shape = RectangleShape,
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val painter = rememberAsyncImagePainter(model = model, contentScale = ContentScale.Crop)
     val blurRequest = remember(model) {
         ImageRequest.Builder(context)
@@ -111,11 +117,33 @@ fun AdaptiveArtwork(
             )
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = backgroundDim)))
         }
+        val imageModifier = if (fit == ArtworkFit.Crop || loaded == null) {
+            Modifier.fillMaxSize()
+        } else {
+            val imageAspect = loaded.width / loaded.height
+            val frameAspect = constraints.maxWidth.toFloat() / constraints.maxHeight.toFloat()
+            val scale = fitScale.coerceIn(0.1f, 1f)
+            val fittedWidthPx: Float
+            val fittedHeightPx: Float
+            if (imageAspect >= frameAspect) {
+                fittedWidthPx = constraints.maxWidth * scale
+                fittedHeightPx = fittedWidthPx / imageAspect
+            } else {
+                fittedHeightPx = constraints.maxHeight * scale
+                fittedWidthPx = fittedHeightPx * imageAspect
+            }
+            with(density) {
+                Modifier
+                    .align(fitAlignment)
+                    .size(fittedWidthPx.toDp(), fittedHeightPx.toDp())
+                    .clip(fitShape)
+            }
+        }
         Image(
             painter = painter,
             contentDescription = contentDescription,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = if (fit == ArtworkFit.Crop) ContentScale.Crop else ContentScale.Fit,
+            modifier = imageModifier,
+            contentScale = if (fit == ArtworkFit.Crop) ContentScale.Crop else ContentScale.FillBounds,
             alignment = if (fit == ArtworkFit.Crop) cropAlignment else fitAlignment,
         )
     }

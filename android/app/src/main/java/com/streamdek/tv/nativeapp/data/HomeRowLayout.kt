@@ -21,6 +21,11 @@ import java.util.Locale
  * `…:trending:3` on one and `…:trending:17` on the other, so an exact-id comparison never matched
  * and the layout was quietly ignored. Matching on everything but that number is what makes one
  * saved arrangement mean the same thing on both.
+ *
+ * CloudStream providers' main-page rows share the add-on shape — `addon:cloudstream.<provider>:…`,
+ * see [isCloudStreamHomeRowId] — with one difference: they are off unless switched on, where every
+ * other row is on unless switched off. One collection can bring dozens of providers, each with
+ * several rows, and showing all of them would bury Home.
  */
 
 private val AddonRowIdPattern = Regex("""^addon:""", RegexOption.IGNORE_CASE)
@@ -74,11 +79,15 @@ data class HomeRowOption(
  * the phone numbers them. The match key makes that agreement unnecessary, but writing the same
  * spelling keeps a layout saved here readable by an older phone build that still compares ids
  * exactly.
+ *
+ * @param cloudStreamRows the rows the CloudStream providers loaded on this television offer; see
+ * [cloudStreamHomeRowOptions].
  */
 internal fun homeRowOptions(
     definitions: List<CatalogDefinition>,
     addons: List<AddonManifest>,
     layout: List<HomeCatalogRowPreference>,
+    cloudStreamRows: List<HomeRowOption> = emptyList(),
 ): List<HomeRowOption> {
     val builtins = definitions.map { definition ->
         HomeRowOption(
@@ -113,8 +122,11 @@ internal fun homeRowOptions(
             }
         }
 
-    return applyLayoutToOptions(builtins + addonRows, layout)
+    return applyLayoutToOptions(builtins + addonRows + cloudStreamRows, layout)
 }
+
+/** Whether a row the layout says nothing about is on: every row is, except a CloudStream one. */
+private fun onByDefault(id: String): Boolean = !isCloudStreamHomeRowId(id)
 
 private fun applyLayoutToOptions(
     options: List<HomeRowOption>,
@@ -122,7 +134,7 @@ private fun applyLayoutToOptions(
 ): List<HomeRowOption> {
     val saved = layoutByMatchKey(layout)
     val withState = options.map { option ->
-        option.copy(enabled = saved[homeCatalogRowMatchKey(option.id)]?.enabled ?: true)
+        option.copy(enabled = saved[homeCatalogRowMatchKey(option.id)]?.enabled ?: onByDefault(option.id))
     }
     if (saved.isEmpty()) return withState
     return withState.sortedBy { option ->
@@ -144,13 +156,18 @@ private fun layoutByMatchKey(layout: List<HomeCatalogRowPreference>): Map<String
     return byKey
 }
 
+/** The CloudStream rows the layout switches on, which are the only ones Home fetches. */
+internal fun enabledCloudStreamRowIds(layout: List<HomeCatalogRowPreference>): List<String> =
+    layout.filter { it.enabled && isCloudStreamHomeRowId(it.id) }.sortedBy { it.position }.map { it.id }
+
 /**
  * Applies the layout to rows that have actually been fetched.
  *
  * A row the layout says nothing about is shown: a catalogue the viewer has never seen is new, not
  * unwanted, and hiding it would mean an add-on they just installed appeared to do nothing. An empty
  * layout leaves the rails exactly as they were, so a profile that has never arranged anything — or
- * one whose preferences have not loaded yet — is never a reason to hide a row.
+ * one whose preferences have not loaded yet — is never a reason to hide a row. CloudStream rows are
+ * the exception, off unless switched on, though Home only fetches the switched-on ones anyway.
  */
 internal fun applyHomeRowLayout(
     rails: List<HomeRail>,
@@ -159,7 +176,7 @@ internal fun applyHomeRowLayout(
     val saved = layoutByMatchKey(layout)
     if (saved.isEmpty()) return rails
     val visible = rails.filter { rail ->
-        saved[homeCatalogRowMatchKey(rail.id)]?.enabled ?: true
+        saved[homeCatalogRowMatchKey(rail.id)]?.enabled ?: onByDefault(rail.id)
     }
     // Stable: rows the layout knows sit in its order, and anything it does not know keeps the order
     // the home assembly gave it, after them.
@@ -195,6 +212,26 @@ internal fun homeRowLayoutOf(options: List<HomeRowOption>): List<HomeCatalogRowP
         )
     }
 
+/**
+ * The layout to store for [options], keeping everything [layout] holds that the list did not show.
+ *
+ * The list only offers rows from sources present on this television, and a CloudStream source
+ * switched off here — or installed only on the phone — is not among them. Saving just what was
+ * listed erased those rows from the synced layout, switching them off on every device the next time
+ * anything was changed here. They are carried through, after the listed rows, as they were.
+ */
+internal fun homeRowLayoutKeepingUnlisted(
+    options: List<HomeRowOption>,
+    layout: List<HomeCatalogRowPreference>,
+): List<HomeCatalogRowPreference> {
+    val listed = homeRowLayoutOf(options)
+    val listedKeys = listed.mapTo(mutableSetOf()) { homeCatalogRowMatchKey(it.id) }
+    val unlisted = layout
+        .filter { it.id.isNotBlank() && homeCatalogRowMatchKey(it.id) !in listedKeys }
+        .sortedBy { it.position }
+    return listed + unlisted.mapIndexed { index, row -> row.copy(position = listed.size + index) }
+}
+
 /** The key StreamDek's own rows group under; no add-on id can collide with it. */
 internal const val STREAMDEK_ROW_GROUP_KEY = "__streamdek__"
 
@@ -205,6 +242,8 @@ internal data class HomeRowGroup(
     /** Why this group's rows cannot reach Home, as a resource, or null when they can. */
     @StringRes val gatedNoteRes: Int?,
     val rows: List<HomeRowOption>,
+    /** Where the source itself comes from — "CloudStream · CNC Repo" for a CloudStream plugin. */
+    val sourceLabel: String? = null,
 )
 
 /**
@@ -214,6 +253,10 @@ internal data class HomeRowGroup(
  * than two. Two things can switch a whole group off from elsewhere -- the built-in catalogue
  * setting for StreamDek's own rows, and an add-on's own switch for its rows -- and in both cases
  * the group is listed greyed rather than removed, so the rows are visibly kept.
+ *
+ * @param cloudStreamGroups the group each CloudStream provider's rows go in, keyed by the row-id
+ * source, as a group key and title — the plugin that registered it; see [cloudStreamRowGroups].
+ * @param cloudStreamLabels where each of those groups comes from, keyed by group key.
  */
 internal fun buildHomeRowGroups(
     options: List<HomeRowOption>,
@@ -226,18 +269,27 @@ internal fun buildHomeRowGroups(
      * Context to look a string up with would be the only reason it needed one.
      */
     fallbackAddonName: String,
+    cloudStreamGroups: Map<String, Pair<String, String>> = emptyMap(),
+    cloudStreamLabels: Map<String, String> = emptyMap(),
 ): List<HomeRowGroup> {
     val addonsById = addons.associateBy { it.id }
+    val cloudStreamGroupTitles = cloudStreamGroups.values.associate { (key, title) -> key to title }
     return options
         .groupBy { option ->
-            if (option.builtin) STREAMDEK_ROW_GROUP_KEY else homeCatalogRowAddonId(option.id) ?: STREAMDEK_ROW_GROUP_KEY
+            val addonId = if (option.builtin) null else homeCatalogRowAddonId(option.id)
+            when {
+                addonId == null -> STREAMDEK_ROW_GROUP_KEY
+                isCloudStreamHomeRowId(option.id) -> cloudStreamGroups[addonId]?.first ?: addonId
+                else -> addonId
+            }
         }
         .map { (key, rows) ->
             val addon = addonsById[key]
             val title = if (key == STREAMDEK_ROW_GROUP_KEY) {
                 "StreamDek"
             } else {
-                addon?.manifest?.name?.trim()?.takeIf { it.isNotEmpty() }
+                cloudStreamGroupTitles[key]?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: addon?.manifest?.name?.trim()?.takeIf { it.isNotEmpty() }
                     // The add-on's own name, read from the row that carries it. This used to strip
                     // "From " off the front of the subtitle, which recovered the right answer only
                     // for as long as that subtitle was English.
@@ -249,6 +301,6 @@ internal fun buildHomeRowGroups(
                 addon != null && !addon.enabled -> R.string.home_row_group_hidden_addon_off
                 else -> null
             }
-            HomeRowGroup(key = key, title = title, gatedNoteRes = gatedNoteRes, rows = rows)
+            HomeRowGroup(key = key, title = title, gatedNoteRes = gatedNoteRes, rows = rows, sourceLabel = cloudStreamLabels[key])
         }
 }

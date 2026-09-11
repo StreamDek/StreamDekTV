@@ -80,6 +80,7 @@ fun streamProviderLabel(stream: AddonStream?, fallback: String?): String? {
 }
 
 private const val PluginAddonIdPrefix = "plugin:"
+private const val CloudStreamAddonIdPrefix = "cloudstream:"
 
 /**
  * Where a source came from, named the way the viewer installed it.
@@ -102,6 +103,10 @@ fun streamOriginLabel(
 ): String? {
     val addonId = stream?.addonId?.trim().orEmpty()
     if (addonId.isEmpty()) return null
+    // A CloudStream provider names the collection it came from, as the phone does.
+    if (addonId.startsWith(CloudStreamAddonIdPrefix)) {
+        return cloudStreamProviderOriginLabel(addonId.removePrefix(CloudStreamAddonIdPrefix))
+    }
     if (!addonId.startsWith(PluginAddonIdPrefix)) return addonLabel
     val providerId = addonId.removePrefix(PluginAddonIdPrefix)
     val provider = plugins.providers.firstOrNull { it.id == providerId }

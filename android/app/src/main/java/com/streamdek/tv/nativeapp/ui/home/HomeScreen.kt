@@ -266,8 +266,11 @@ fun HomeScreen(
             .joinToString("|")
         "$builtIns:$addons"
     }
-    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration) {
-        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration"
+    // CloudStream sources load after Home first draws, and can be switched on or off at any time;
+    // their rows follow as soon as they do rather than at the next poll.
+    val cloudStreamVersion by repository.cloudStreamProvidersVersion.collectAsState()
+    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration, cloudStreamVersion) {
+        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration:cs$cloudStreamVersion"
     }
     LaunchedEffect(loadKey) {
         // A retained HomeViewModel must not turn its first snapshot into a session-long cache.

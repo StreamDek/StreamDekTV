@@ -47,8 +47,12 @@ import com.streamdek.tv.nativeapp.data.CatalogDefinition
 import com.streamdek.tv.nativeapp.data.HomeCatalogRowPreference
 import com.streamdek.tv.nativeapp.data.HomeRowOption
 import com.streamdek.tv.nativeapp.data.buildHomeRowGroups
-import com.streamdek.tv.nativeapp.data.homeRowLayoutOf
+import com.streamdek.tv.nativeapp.data.cloudStreamGroupLabels
+import com.streamdek.tv.nativeapp.data.cloudStreamHomeRowOptions
+import com.streamdek.tv.nativeapp.data.cloudStreamRowGroups
+import com.streamdek.tv.nativeapp.data.homeRowLayoutKeepingUnlisted
 import com.streamdek.tv.nativeapp.data.homeRowOptions
+import com.streamdek.tv.nativeapp.data.loadedCloudStreamProviders
 import com.streamdek.tv.nativeapp.ui.AppFormats
 import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 
@@ -74,14 +78,24 @@ internal fun HomeRowsSettings(
     leftRequester: FocusRequester,
     onSave: (List<HomeCatalogRowPreference>, (Boolean) -> Unit) -> Unit,
 ) {
+    // CloudStream rows come from the sources loaded on this television, and only those: a source
+    // switched off has nothing to put on Home, so its rows are not listed — the layout keeps them.
+    // Read on every pass and keyed below by which providers are loaded, so the list catches up as
+    // soon as they finish loading rather than keeping whatever it saw first.
+    val cloudStreamProviders = loadedCloudStreamProviders()
+    val cloudStreamSignature = cloudStreamProviders.joinToString("|") { it.name }
+
     // Seeded from the layout once, and deliberately not keyed on it.
     //
     // Saving a switch writes the layout, which comes back through this parameter — so keying the
     // list on it rebuilt and re-sorted the list on every press. Every row then had a position where
     // before only some did, the order changed underneath the viewer, the focused row was disposed
     // mid-press and the sidebar took the highlight back. Pressing one switch threw you out of the
-    // screen. What rows exist depends on the registry and the add-ons; only those rebuild it.
-    val available = remember(definitions, addons) { homeRowOptions(definitions, addons, layout) }
+    // screen. What rows exist depends on the registry, the add-ons and the loaded CloudStream
+    // sources; only those rebuild it.
+    val available = remember(definitions, addons, cloudStreamSignature) {
+        homeRowOptions(definitions, addons, layout, cloudStreamHomeRowOptions(cloudStreamProviders))
+    }
     var rows by remember(available) { mutableStateOf(available) }
 
     if (rows.isEmpty()) {
@@ -125,10 +139,13 @@ internal fun HomeRowsSettings(
     )
 
     // One fold per source, the shape the phone shows. A viewer running several catalogue add-ons
-    // has one list of seventy rows otherwise, and no way to tell whose row is whose.
+    // has one list of seventy rows otherwise, and no way to tell whose row is whose. CloudStream
+    // rows fold under the plugin that provides them, with the collection it came from beneath.
     val fallbackAddonName = stringResource(R.string.home_row_group_unknown_addon)
-    val groups = remember(rows, addons, streamDekRowsEnabled, fallbackAddonName) {
-        buildHomeRowGroups(rows, addons, streamDekRowsEnabled, fallbackAddonName)
+    val cloudStreamGroups = remember(cloudStreamSignature) { cloudStreamRowGroups() }
+    val cloudStreamLabels = remember(cloudStreamSignature) { cloudStreamGroupLabels() }
+    val groups = remember(rows, addons, streamDekRowsEnabled, fallbackAddonName, cloudStreamGroups, cloudStreamLabels) {
+        buildHomeRowGroups(rows, addons, streamDekRowsEnabled, fallbackAddonName, cloudStreamGroups, cloudStreamLabels)
     }
     var expandedGroups by remember { mutableStateOf(emptySet<String>()) }
 
@@ -137,6 +154,7 @@ internal fun HomeRowsSettings(
             val open = group.gatedNoteRes == null && group.key in expandedGroups
             HomeRowsDisclosure(
                 title = group.title,
+                sourceLabel = group.sourceLabel,
                 summary = if (group.gatedNoteRes != null) {
                     pluralStringResource(R.plurals.home_row_group_kept, group.rows.size, group.rows.size)
                 } else {
@@ -163,7 +181,9 @@ internal fun HomeRowsSettings(
                                 // By id rather than by index: the groups are a view of this list,
                                 // not a copy of its order.
                                 rows = rows.map { if (it.id == option.id) it.copy(enabled = next) else it }
-                                onSave(homeRowLayoutOf(rows)) { saved ->
+                                // Rows this list does not show — a CloudStream source switched off
+                                // here, or one only on the phone — are carried through untouched.
+                                onSave(homeRowLayoutKeepingUnlisted(rows, layout)) { saved ->
                                     if (!saved) rows = previous
                                     complete(saved)
                                 }
@@ -214,6 +234,8 @@ private fun HomeRowsDisclosure(
     detail: String? = null,
     /** Switched off from elsewhere: greyed, and it does not open. */
     gated: Boolean = false,
+    /** Where the source comes from, on its own line under the name so the name keeps its width. */
+    sourceLabel: String? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
     val alpha = if (gated) 0.4f else 1f
@@ -246,6 +268,15 @@ private fun HomeRowsDisclosure(
                 color = Color.White.copy(alpha = alpha),
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
             )
+            sourceLabel?.let {
+                Text(
+                    text = it,
+                    color = Color.White.copy(alpha = alpha * 0.5f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 text = detail
                     ?: stringResource(if (expanded) R.string.home_rows_close_list else R.string.home_rows_choose_which),

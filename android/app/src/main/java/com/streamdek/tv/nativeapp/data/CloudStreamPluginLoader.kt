@@ -54,6 +54,14 @@ object CloudStreamPluginLoader {
   /** Every provider currently registered by a loaded plugin, in load order. */
   fun allProviders(): List<MainAPI> = loadedPlugins().flatMap { it.providers }
 
+  /**
+   * The plugin file each provider was registered by, keyed by provider name. A provider's name need
+   * not match its plugin's, and one plugin can register several, so the file is the dependable way
+   * back to the collection a stream result or Home row came from.
+   */
+  fun providerFiles(): Map<String, String> =
+    loadedPlugins().flatMap { plugin -> plugin.providers.map { provider -> provider.name to plugin.filePath } }.toMap()
+
   fun load(context: Context, file: File): Result<LoadedCsPlugin> = runCatching {
     val filePath = file.absolutePath
     synchronized(loaded) { loaded[filePath] }?.let { return@runCatching it }

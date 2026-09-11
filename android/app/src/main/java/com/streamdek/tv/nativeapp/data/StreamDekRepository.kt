@@ -403,6 +403,10 @@ internal fun isUsableAddonMeta(meta: AddonMetaItem, requestedId: String): Boolea
 
 /** Add-on rows are identified by prefix so they can be ordered as a group. */
 private const val ADDON_RAIL_PREFIX = "addon:"
+/** How long a filled CloudStream Home row is reused before its provider is asked again. */
+private const val CLOUDSTREAM_ROW_TTL_MS = 10 * 60_000L
+/** How soon a CloudStream Home row that came back empty is asked for again. */
+private const val CLOUDSTREAM_ROW_RETRY_MS = 30_000L
 
 /**
  * Display order of the Home slots, independent of the order they finish loading in.
@@ -704,6 +708,17 @@ class StreamDekRepository(
     private val movieSegmentCache = lruCache<String, List<PlaybackSegment>>(24)
     private val watchedHistoryCache = lruCache<String, Set<String>>(4)
     private val libraryRevisionState = MutableStateFlow(0L)
+    /** Bumped whenever the loaded CloudStream sources change, so Home fetches or drops their rows. */
+    private val cloudStreamProvidersState = MutableStateFlow(0L)
+    val cloudStreamProvidersVersion: StateFlow<Long> = cloudStreamProvidersState
+    /**
+     * A TMDB page opened from a CloudStream title, by its id, to the provider and link it came from —
+     * so that provider's own sources are asked for it by link, not only by a search for its name.
+     */
+    private val cloudStreamOrigins = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String>>()
+    /** One CloudStream Home row's fetch, shared by every Home load that wants it; see [fetchCloudStreamRails]. */
+    private class CloudStreamRowFetch(val startedAt: Long, val job: kotlinx.coroutines.Deferred<HomeRail?>)
+    private val cloudStreamRowFetches = java.util.concurrent.ConcurrentHashMap<String, CloudStreamRowFetch>()
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
     /** Prevent an older bootstrap response from publishing after a newer settings mutation. */
     private val bootstrapRefreshMutex = kotlinx.coroutines.sync.Mutex()
@@ -1846,8 +1861,12 @@ class StreamDekRepository(
         val rowLayout = homePreferences?.homeCatalogRows.orEmpty()
             .sortedBy { it.position }
             .joinToString("|") { "${it.id}:${it.enabled}" }
+        // CloudStream rows are off unless switched on, so only the switched-on ones are fetched —
+        // and only from sources loaded now, which is part of the key so Home catches up as they load.
+        val cloudStreamRowIds = enabledCloudStreamRowIds(homePreferences?.homeCatalogRows.orEmpty())
+        val cloudStreamSources = if (cloudStreamRowIds.isEmpty()) "" else loadedCloudStreamProviders().joinToString(",") { it.name }
         val cacheKey = buildSessionProfileCacheKey() +
-            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout"
+            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout:$cloudStreamSources"
         if (!forceRefresh) {
             homeCache[cacheKey]?.let {
                 send(it)
@@ -1890,6 +1909,9 @@ class StreamDekRepository(
             reserve("recommended", "Recommended For You", titleRes = R.string.home_rail_recommended)
         }
         reserve("addon-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
+        if (cloudStreamRowIds.isNotEmpty()) {
+            reserve("cloudstream-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
+        }
 
         // Display order, which with the registry is only known at runtime. The pre-registry slots
         // still come from [HOME_SLOT_ORDER], so the fallback path is unchanged.
@@ -1897,11 +1919,13 @@ class StreamDekRepository(
             add("continue-watching")
             add("new-episodes")
             addAll(HOME_SLOT_ORDER.filterNot { it == "continue-watching" })
+            add("cloudstream-catalogs")
         } else buildList {
             add("continue-watching")
             add("new-episodes")
             catalogRows.forEach { add(it.id) }
             add("addon-catalogs")
+            add("cloudstream-catalogs")
         }
 
         val resolved = linkedMapOf<String, List<HomeRail>>()
@@ -1963,6 +1987,18 @@ class StreamDekRepository(
             launch {
                 val addonRails = runCatching { fetchAddonCatalogRails() }.getOrDefault(emptyList())
                 publish("addon-catalogs", addonRails)
+            }
+
+            if (cloudStreamRowIds.isNotEmpty()) {
+                launch {
+                    val rails = runCatching { fetchCloudStreamRails(cloudStreamRowIds) }
+                        .onFailure {
+                            if (it is kotlinx.coroutines.CancellationException) throw it
+                            TvDebugLogger.w("CloudStream", "home rows failed", it)
+                        }
+                        .getOrDefault(emptyList())
+                    publish("cloudstream-catalogs", rails)
+                }
             }
         }
 
@@ -2283,12 +2319,97 @@ class StreamDekRepository(
         )
     }
 
+    /**
+     * The switched-on CloudStream rows, each from its provider's own main page.
+     *
+     * Rows whose source is not loaded — switched off, or still loading — are skipped rather than
+     * failed; Home refreshes when the sources change, so they arrive once there is something to ask.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private suspend fun fetchCloudStreamRails(rowIds: List<String>): List<HomeRail> {
+        val providers = loadedCloudStreamProviders()
+        if (providers.isEmpty()) return emptyList()
+        // Each row is fetched in the repository's scope and shared, not in the Home load's own.
+        //
+        // Home reloads every fifteen seconds and whenever a source comes up, and each reload cancels
+        // the one before it. A provider that takes longer than that to answer — CNC Verse's Netflix
+        // and Prime Video rows do — was cancelled every time and never reached Home. Shared, a reload
+        // picks up the fetch already under way; a filled row is kept for a while, an empty one retried.
+        val now = android.os.SystemClock.elapsedRealtime()
+        val jobs = rowIds.map { id ->
+            val existing = cloudStreamRowFetches[id]
+            val fresh = existing != null && (
+                !existing.job.isCompleted ||
+                    now - existing.startedAt < if (runCatching { existing.job.getCompleted() }.getOrNull()?.items?.isNotEmpty() == true) {
+                        CLOUDSTREAM_ROW_TTL_MS
+                    } else {
+                        CLOUDSTREAM_ROW_RETRY_MS
+                    }
+                )
+            if (fresh) {
+                existing!!.job
+            } else {
+                repositoryScope.async { loadCloudStreamRail(id, providers) }
+                    .also { cloudStreamRowFetches[id] = CloudStreamRowFetch(now, it) }
+            }
+        }
+        return jobs.awaitAll().filterNotNull()
+    }
+
+    private suspend fun loadCloudStreamRail(id: String, providers: List<com.lagradost.cloudstream3.MainAPI>): HomeRail? {
+        val row = resolveCloudStreamHomeRow(id, providers) ?: return null
+        val items = runCatching { CloudStreamCatalog.mainPageItems(row.provider, row.page) }
+            .onFailure { TvDebugLogger.w("CloudStream", "row ${row.page.name} from ${row.provider.name} failed", it) }
+            .getOrDefault(emptyList())
+        TvDebugLogger.i("CloudStream", "home row ${row.provider.name} ${row.page.name}: ${items.size} item(s)")
+        return HomeRail(
+            id = id,
+            title = buildAddonRailTitle(row.provider.name, row.page.name.ifBlank { null }),
+            items = items.take(CloudStreamCatalog.ROW_MAX_ITEMS),
+            isLive = id.split(":").getOrNull(2) == "live",
+        )
+    }
+
+    /**
+     * A title from a CloudStream provider's own catalogue, described by that provider.
+     *
+     * A provider that recorded the title's TMDB or IMDb id gets the full TMDB page — cast, trailers,
+     * artwork — with the provider remembered as where it came from, so its sources are still asked
+     * for it by link. Anything else is shown as the provider describes it, its seasons included.
+     */
+    private suspend fun fetchCloudStreamDetail(id: String, type: String, forceRefresh: Boolean): MediaDetail? {
+        val canonicalType = if (type == "series") "tv" else type
+        if (!forceRefresh) {
+            detailsCache["$canonicalType:$id"]?.let { return it }
+        }
+        val (providerName, url) = decodeCloudStreamMediaId(id) ?: return null
+        val provider = loadedCloudStreamProviders().firstOrNull { it.name == providerName } ?: return null
+        val loaded = runCatching { CloudStreamProviderBridge.loadItem(provider, url) }
+            .onFailure { TvDebugLogger.w("CloudStream", "could not load a title from $providerName", it) }
+            .getOrNull() ?: return null
+        val native = CloudStreamCatalog.toMediaDetail(id, loaded) { season ->
+            label(R.string.detail_season_number, "Season $season", season)
+        }
+        val matchedId = CloudStreamCatalog.tmdbId(loaded) ?: CloudStreamCatalog.imdbId(loaded)
+        val matched = matchedId?.let { runCatching { fetchDetail(it, native.type, forceRefresh) }.getOrNull() }
+        if (matched != null) {
+            cloudStreamOrigins[matched.id] = providerName to url
+            detailsCache["$canonicalType:$id"] = matched
+            return matched
+        }
+        detailsCache["$canonicalType:$id"] = native
+        detailsCache["${native.type}:$id"] = native
+        Telemetry.contentOpened(mediaId = native.id, mediaType = native.type, title = native.title)
+        return native
+    }
+
     /** The finished screen. Callers that cannot render progressively still get one value. */
     suspend fun fetchHomeContent(forceRefresh: Boolean = false): HomeContent =
         homeContentStream(forceRefresh).last()
 
 
     suspend fun fetchDetail(id: String, type: String, forceRefresh: Boolean = false): MediaDetail? {
+        if (isCloudStreamMediaId(id)) return fetchCloudStreamDetail(id, type, forceRefresh)
         val perf = Perf.span("detail", "$type:$id")
         try {
         val canonicalType = if (type == "series") "tv" else type
@@ -2390,6 +2511,17 @@ class StreamDekRepository(
         val cacheKey = "$id:$seasonNumber"
         if (!forceRefresh) {
             seasonCache[cacheKey]?.let { return it }
+        }
+        // A CloudStream title's seasons are the provider's own episode list.
+        decodeCloudStreamMediaId(id)?.let { (providerName, url) ->
+            val provider = loadedCloudStreamProviders().firstOrNull { it.name == providerName } ?: return null
+            val loaded = runCatching { CloudStreamProviderBridge.loadItem(provider, url) }.getOrNull() ?: return null
+            return CloudStreamCatalog.seasonDetail(
+                loaded,
+                seasonNumber,
+                seasonLabel = { label(R.string.detail_season_number, "Season $it", it) },
+                episodeLabel = { label(R.string.new_episode_number, "Episode $it", it) },
+            ).also { seasonCache[cacheKey] = it }
         }
         val detail = api.get<SeasonDetail>("/tmdb/season/$id/$seasonNumber")
         if (detail != null) {
@@ -3852,6 +3984,7 @@ class StreamDekRepository(
     private fun applyCloudStreamCollections(plugins: ProfilePluginState?) {
         if (!CloudStreamPlugins.isInitialized) return
         val ownerKey = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: "guest"
+        CloudStreamPlugins.manager.onProvidersChanged = { cloudStreamProvidersState.value = cloudStreamProvidersState.value + 1 }
         CloudStreamPlugins.manager.selectProfileStorage(ownerKey)
         val section = plugins?.cloudstream?.let { com.google.gson.Gson().toJson(it) }
         val changed = runCatching { CloudStreamPlugins.manager.restoreCloudState(section) }.getOrDefault(false)
@@ -4132,6 +4265,26 @@ class StreamDekRepository(
             return@channelFlow
         }
 
+        // A title from a CloudStream provider's own catalogue has no id any add-on knows; the
+        // provider that listed it is the one that can play it, by its own link.
+        decodeCloudStreamMediaId(mediaId)?.let { (providerName, url) ->
+            send(StreamCandidatesProgress(emptyList(), pendingSources = 1, done = false))
+            val provider = loadedCloudStreamProviders().firstOrNull { it.name == providerName }
+            val streams = provider?.let {
+                runCatching { CloudStreamProviderBridge.originStreams(it, url, episode?.seasonNumber, episode?.episodeNumber) }
+                    .onFailure { failure -> TvDebugLogger.w("CloudStream", "no sources from $providerName", failure) }
+                    .getOrNull()
+            }.orEmpty()
+            send(
+                StreamCandidatesProgress(
+                    streams = rankStreams(streams, preferredStreamKey, preferredAddonName, preferredQualityGroup),
+                    pendingSources = 0,
+                    done = true,
+                ),
+            )
+            return@channelFlow
+        }
+
         val perf = Perf.span("streams", "$mediaType:$mediaId")
         val firstResultLogged = java.util.concurrent.atomic.AtomicBoolean(false)
         val episodeKey = buildEpisodeKey(episode)
@@ -4178,10 +4331,15 @@ class StreamDekRepository(
         // Counted as one source rather than one per extension: the bridge fans out internally and
         // reports once, so a per-extension count would never come back down.
         val cloudStreamPending = if (cloudStreamSources.isEmpty()) 0 else 1
+        // A TMDB page opened from a CloudStream title also asks the provider it came from, by link.
+        val cloudStreamOrigin = cloudStreamOrigins[mediaId]?.let { (name, url) ->
+            loadedCloudStreamProviders().firstOrNull { it.name == name }?.let { it to url }
+        }
+        val originPending = if (cloudStreamOrigin == null) 0 else 1
 
         val merged = java.util.concurrent.ConcurrentHashMap<String, AddonStream>()
         val order = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginProviderCount + cloudStreamPending)
+        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginProviderCount + cloudStreamPending + originPending)
         val mutex = kotlinx.coroutines.sync.Mutex()
         // Snapshot creation and channel publication must be one serialized operation. Otherwise
         // an earlier, smaller snapshot can suspend in send() and arrive after a later, larger one.
@@ -4235,6 +4393,16 @@ class StreamDekRepository(
 
         supervisorScope {
             activeDiscovery = coroutineContext[Job]
+            if (cloudStreamOrigin != null) {
+                launch {
+                    val (provider, url) = cloudStreamOrigin
+                    runCatching { CloudStreamProviderBridge.originStreams(provider, url, episode?.seasonNumber, episode?.episodeNumber) }
+                        .onSuccess { mergeStreams(it) }
+                        .onFailure { TvDebugLogger.w("CloudStream", "no sources from ${provider.name}", it) }
+                    remaining.decrementAndGet()
+                    publish(done = false)
+                }
+            }
             if (cloudStreamPending > 0 && cloudStreamTitle != null) {
                 launch {
                     runCatching {

@@ -852,6 +852,8 @@ fun DetailScreen(
                         com.streamdek.tv.nativeapp.ui.ArtworkCropTolerance.BACKDROP
                     },
                     fitAlignment = Alignment.CenterEnd,
+                    fitScale = 0.6f,
+                    fitShape = com.streamdek.tv.nativeapp.ui.AppCardShape,
                 )
             }
         }
