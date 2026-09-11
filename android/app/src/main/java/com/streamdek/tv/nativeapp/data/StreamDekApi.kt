@@ -16,6 +16,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import com.streamdek.tv.nativeapp.update.AppVersionPolicyRuntime
 
 /** The version prefix every canonical StreamDek API path carries. */
 const val API_PATH_PREFIX = "/api/v1"
@@ -458,6 +459,7 @@ class StreamDekApi(
                 }
 
                 val errorBody = runCatching { it.body?.string() }.getOrNull().orEmpty()
+                if (it.code == 426) AppVersionPolicyRuntime.acceptUnsupportedResponse(errorBody)
                 TvDebugLogger.w(
                     "Api",
                     "response method=$method path=$path code=${it.code} body=${errorBody.take(240)}",
@@ -619,6 +621,9 @@ class StreamDekApi(
             .header("x-device-name", sessionStore.deviceName())
             .header("x-device-type", "tv")
             .header("x-app-version", BuildConfig.VERSION_NAME)
+            .header("X-StreamDek-Platform", "android-tv")
+            .header("X-StreamDek-Version", BuildConfig.VERSION_NAME)
+            .header("X-StreamDek-Build", BuildConfig.VERSION_CODE.toString())
             // Which language this television would like its *metadata* in - synopses, genres,
             // certification labels - for the backend to pass on to TMDB. Interface text does not
             // come from here; it comes from the app's own resources. Read per request rather than

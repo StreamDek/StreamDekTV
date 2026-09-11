@@ -1668,4 +1668,8 @@
     <item quantity="one">%1$d source still loading</item>
     <item quantity="other">%1$d sources still loading</item>
   </plurals>
+  <string name="app_version_brand" translatable="false">StreamDek</string>
+  <string name="app_version_retry">Retry</string>
+  <string name="app_version_preparing_update">Preparing update…</string>
+  <string name="app_version_installed_required">Installed: %1$s   Required: %2$s+</string>
 </resources>

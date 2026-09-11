@@ -116,6 +116,10 @@ import com.streamdek.tv.nativeapp.ui.profile.StartupProfilePicker
 import com.streamdek.tv.nativeapp.ui.search.SearchScreen
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
 import com.streamdek.tv.nativeapp.update.AppUpdateUiState
+import com.streamdek.tv.nativeapp.update.AppVersionGateState
+import com.streamdek.tv.nativeapp.update.AppVersionPolicy
+import com.streamdek.tv.nativeapp.update.AppVersionPolicyRuntime
+import com.streamdek.tv.nativeapp.update.UpdateMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -217,12 +221,42 @@ private fun detailRoute(mediaType: String, mediaId: String): String {
 @Composable
 fun StreamDekTvApp(repository: StreamDekRepository = remember { AppGraph.repository }) {
     val context = LocalContext.current
+    val appUpdateManager = remember { AppGraph.appUpdateManager }
+    val appUpdateState by appUpdateManager.uiState.collectAsState()
+    val versionGateState by AppVersionPolicyRuntime.state.collectAsState()
+    val scope = rememberCoroutineScope()
     // Device-local, and read here so that choosing a language in Settings recomposes the tree on the
     // spot. See AppLanguage.kt for why this setting does not travel with the account.
     val languagePreferences = remember(context) { TvAppLanguagePreferences(context) }
     CompositionLocalProvider(LocalTvAppLanguagePreferences provides languagePreferences) {
         ProvideAppLocale(languagePreferences.selection) {
-            StreamDekTvAppContent(repository)
+            LaunchedEffect(Unit) { AppVersionPolicyRuntime.refresh(context.applicationContext) }
+            LaunchedEffect(versionGateState) {
+                when (val gate = versionGateState) {
+                    is AppVersionGateState.Required -> appUpdateManager.checkForUpdates(showPromptOnAvailable = false, force = true)
+                    is AppVersionGateState.Ready -> if (gate.effectiveMode != UpdateMode.NONE) {
+                        delay(if (gate.effectiveMode == UpdateMode.RECOMMENDED) 800 else 3500)
+                        appUpdateManager.checkForUpdates(
+                            showPromptOnAvailable = gate.effectiveMode == UpdateMode.RECOMMENDED || appUpdateState.autoCheckEnabled,
+                            force = true,
+                        )
+                    }
+                    else -> Unit
+                }
+            }
+            when (val gate = versionGateState) {
+                AppVersionGateState.Checking -> StartupBootstrapGate()
+                is AppVersionGateState.Required -> AppVersionRequiredScreen(
+                    policy = gate.policy,
+                    updateState = appUpdateState,
+                    onUpdate = {
+                        if (appUpdateState.availableRelease != null) scope.launch { appUpdateManager.startUpdate() }
+                        else AppVersionPolicyRuntime.openUpdate(context.applicationContext, gate.policy)
+                    },
+                    onRetry = { scope.launch { AppVersionPolicyRuntime.refresh(context.applicationContext) } },
+                )
+                else -> StreamDekTvAppContent(repository)
+            }
         }
     }
 }
@@ -241,6 +275,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     val bootstrap by repository.bootstrap.collectAsState()
     val sessionExpired by repository.sessionExpired.collectAsState()
     val appUpdateState by appUpdateManager.uiState.collectAsState()
+    val activeVersionPolicy = (AppVersionPolicyRuntime.state.collectAsState().value as? AppVersionGateState.Ready)?.policy
     val favouriteChannels by repository.favouriteChannels.collectAsState()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
@@ -491,12 +526,6 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         repository.watchProfilePlugins(this)
     }
 
-    LaunchedEffect(Unit) {
-        // Defer non-critical OTA work until the shell has painted and the user
-        // has had a chance to begin navigating.
-        delay(3500)
-        appUpdateManager.runAutomaticCheck()
-    }
 
     // Trailer housekeeping, once the bootstrap has said how often the household wants it.
     //
@@ -1272,6 +1301,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                 AppUpdatePrompt(
                     state = appUpdateState,
                     updateManager = appUpdateManager,
+                    policy = activeVersionPolicy,
                     modifier = Modifier
                         .fillMaxSize(),
                 )
@@ -1419,6 +1449,7 @@ private fun ExitBackHint(
 private fun AppUpdatePrompt(
     state: AppUpdateUiState,
     updateManager: AppUpdateManager,
+    policy: AppVersionPolicy? = null,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -1467,7 +1498,7 @@ private fun AppUpdatePrompt(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
-                    text = stringResource(R.string.update_available),
+                    text = policy?.title ?: stringResource(R.string.update_available),
                     style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onBackground,
                 )
@@ -1593,6 +1624,14 @@ private fun AppUpdatePrompt(
                     }
                 }
 
+                policy?.message?.takeIf { it.isNotBlank() }?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
+                    )
+                }
+
                 state.statusText?.let { status ->
                     Text(
                         text = status,
@@ -1653,6 +1692,57 @@ private fun AppUpdatePrompt(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AppVersionRequiredScreen(
+    policy: AppVersionPolicy,
+    updateState: AppUpdateUiState,
+    onUpdate: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    val updateRequester = remember(policy.minimumSupportedVersion) { FocusRequester() }
+    BackHandler(enabled = true) { /* A required update cannot be bypassed. */ }
+    LaunchedEffect(policy.minimumSupportedVersion, updateState.isInstalling) {
+        if (!updateState.isInstalling) {
+            delay(80)
+            runCatching { updateRequester.requestFocus() }
+        }
+    }
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color(0xFF080A0F)).padding(48.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(0.62f).clip(RoundedCornerShape(30.dp))
+                .background(TvChromePanel)
+                .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), RoundedCornerShape(30.dp))
+                .padding(horizontal = 42.dp, vertical = 38.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Text(stringResource(R.string.app_version_brand), style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary)
+            Text(policy.requiredTitle, style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.onBackground)
+            Text(policy.requiredMessage, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f))
+            Button(
+                onClick = onUpdate,
+                enabled = !updateState.isInstalling && (updateState.availableRelease != null || policy.updateUrl.isNotBlank()),
+                modifier = Modifier.focusRequester(updateRequester),
+                shape = ButtonDefaults.shape(RoundedCornerShape(999.dp)),
+            ) {
+                Text(if (updateState.isInstalling) stringResource(R.string.app_version_preparing_update) else stringResource(R.string.update_now))
+            }
+            OutlinedButton(onClick = onRetry, enabled = !updateState.isChecking, shape = ButtonDefaults.shape(RoundedCornerShape(999.dp))) {
+                Text(if (updateState.isChecking) stringResource(R.string.content_services_checking) else stringResource(R.string.app_version_retry))
+            }
+            Text(
+                stringResource(R.string.app_version_installed_required, com.streamdek.tv.BuildConfig.VERSION_NAME, policy.minimumSupportedVersion),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
+            )
+            updateState.errorMessage?.let { Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall) }
         }
     }
 }
