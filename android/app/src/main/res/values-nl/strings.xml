@@ -1261,6 +1261,12 @@
   <string name="player_next_preparing">Volgende aflevering voorbereiden…</string>
   <string name="player_next_no_source">Er is nog geen afspeelbare bron beschikbaar.</string>
   <string name="player_next_will_continue">De huidige aflevering loopt door tot het einde.</string>
+  <string name="player_next_unaired_message">De volgende aflevering is nog niet uitgezonden. Sla nu het einde van deze aflevering over of sluit dit bericht om verder te kijken.</string>
+  <string name="player_next_release_unknown_message">De releasedatum van de volgende aflevering is niet beschikbaar. Selecteer Volgende aflevering om deze nu te proberen.</string>
+  <string name="player_next_autoplay_message">De volgende aflevering start automatisch wanneer deze aflevering eindigt. Selecteer Volgende aflevering om nu te starten.</string>
+  <string name="player_next_manual_message">Selecteer Volgende aflevering om meteen te starten of kijk verder.</string>
+  <string name="player_recommendations_heading">Dit vind je misschien ook leuk</string>
+  <string name="action_play_now">Nu afspelen</string>
   <string name="player_recommendation_reason">Omdat je %1$s hebt gekeken</string>
   <string name="player_watch_after_this">Hierna kijken</string>
   <string name="player_source_pinned_hint">Vastgezette bron; houd OK ingedrukt om los te maken</string>

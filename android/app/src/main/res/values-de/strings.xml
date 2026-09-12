@@ -1261,6 +1261,12 @@
   <string name="player_next_preparing">Nächste Folge wird vorbereitet …</string>
   <string name="player_next_no_source">Es ist noch keine abspielbare Quelle verfügbar.</string>
   <string name="player_next_will_continue">Die aktuelle Folge läuft bis zu ihrem Ende weiter.</string>
+  <string name="player_next_unaired_message">Die nächste Folge wurde noch nicht ausgestrahlt. Überspringe jetzt das Ende dieser Folge oder schließe den Hinweis, um weiterzuschauen.</string>
+  <string name="player_next_release_unknown_message">Das Veröffentlichungsdatum der nächsten Folge ist nicht verfügbar. Wähle „Nächste Folge“, um sie jetzt zu versuchen.</string>
+  <string name="player_next_autoplay_message">Die nächste Folge startet automatisch, wenn diese Folge endet. Wähle „Nächste Folge“, um jetzt zu starten.</string>
+  <string name="player_next_manual_message">Wähle „Nächste Folge“, um sofort zu starten, oder schaue weiter.</string>
+  <string name="player_recommendations_heading">Das könnte dir auch gefallen</string>
+  <string name="action_play_now">Jetzt abspielen</string>
   <string name="player_recommendation_reason">Weil du %1$s gesehen hast</string>
   <string name="player_watch_after_this">Danach ansehen</string>
   <string name="player_source_pinned_hint">Angeheftete Quelle; halte OK gedrückt, um sie zu lösen</string>

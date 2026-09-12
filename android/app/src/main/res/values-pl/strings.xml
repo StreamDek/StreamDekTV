@@ -1345,6 +1345,12 @@
   <string name="player_next_preparing">Przygotowywanie następnego odcinka…</string>
   <string name="player_next_no_source">Nie ma jeszcze dostępnego źródła do odtworzenia.</string>
   <string name="player_next_will_continue">Bieżący odcinek będzie odtwarzany do końca.</string>
+  <string name="player_next_unaired_message">Następny odcinek nie został jeszcze wyemitowany. Pomiń teraz zakończenie tego odcinka albo zamknij komunikat, aby oglądać dalej.</string>
+  <string name="player_next_release_unknown_message">Data premiery następnego odcinka jest niedostępna. Wybierz Następny odcinek, aby spróbować odtworzyć go teraz.</string>
+  <string name="player_next_autoplay_message">Następny odcinek rozpocznie się automatycznie po zakończeniu tego odcinka. Wybierz Następny odcinek, aby rozpocząć teraz.</string>
+  <string name="player_next_manual_message">Wybierz Następny odcinek, aby rozpocząć od razu, albo oglądaj dalej.</string>
+  <string name="player_recommendations_heading">Może Ci się również spodobać</string>
+  <string name="action_play_now">Odtwórz teraz</string>
   <string name="player_recommendation_reason">Ponieważ oglądano %1$s</string>
   <string name="player_watch_after_this">Obejrzyj po tym</string>
   <string name="player_source_pinned_hint">Przypięte źródło; przytrzymaj OK, aby odpiąć</string>
