@@ -148,7 +148,8 @@ internal suspend fun loadPlaybackPreflight(
     ).joinToString(":")
     val resumePositionSec = if (isLive) null else contentScopedResumePosition(
         mediaType = request.mediaType,
-        explicitPosition = request.startPositionSec,
+        explicitPosition = request.startPositionSec ?: if (request.mediaType == "movie" &&
+            (progress?.status == "completed" || (progress?.progress ?: 0.0) >= 95.0 || progress?.status == "unwatched")) 0.0 else null,
         exactProgressPosition = progress?.positionSec,
         continuePosition = continueWatchingItem?.positionSec ?: continueWatchingItem?.resumeAt,
         continueSeason = continueWatchingItem?.episode?.seasonNumber ?: continueWatchingItem?.seasonNumber,

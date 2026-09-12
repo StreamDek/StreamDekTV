@@ -158,7 +158,7 @@ internal enum class StreamQualityTier(
     Hd("720p"),
     Sd("480p"),
     Ld("360p"),
-    Unknown("Other", labelRes = R.string.quality_tier_other),
+    Unknown("", labelRes = R.string.quality_tier_other),
     // Last whatever else is present. A camera recording is not a quality tier so much as a
     // warning, and it belongs under the results somebody actually wants.
     Cam("CAM"),
@@ -502,20 +502,8 @@ fun PlaybackStreamsScreen(
         is PlaybackStreamsUiState.Ready -> state.pendingSources
         is PlaybackStreamsUiState.Error -> 0
     }
-    val streamRows = ready?.candidate?.streams.orEmpty().filter { stream ->
-        if (!repository.isPlayableStreamOption(stream)) {
-            false
-        } else if (request.mediaType == "live") {
-            true
-        } else {
-            val url = stream.url
-            if (url != null && stream.infoHash == null && stream.size == null) {
-                !url.substringBefore('?').lowercase().endsWith(".m3u8")
-            } else {
-                true
-            }
-        }
-    }
+    // HLS is valid for movies and episodes too; torrent hash and file size are optional.
+    val streamRows = ready?.candidate?.streams.orEmpty().filter(repository::isPlayableStreamOption)
     val otherSourceLabel = stringResource(R.string.source_group_other)
     val addonNames = remember(streamRows, otherSourceLabel) {
         streamRows.map { it.addonName.ifBlank { otherSourceLabel } }.distinct()
@@ -564,6 +552,10 @@ fun PlaybackStreamsScreen(
         )
     }
 
+    LaunchedEffect(ready?.candidate?.streams, streamRows.size, filteredStreams.size, streamEntries.size) {
+        TvDebugLogger.i("Streams", "stage=display stored=${ready?.candidate?.streams?.size ?: 0} playable=${streamRows.size} selected=${filteredStreams.size} rows=${streamEntries.count { it is StreamListEntry.Result }}")
+    }
+
     LaunchedEffect(refocusListAfterFilter) {
         if (refocusListAfterFilter == 0) return@LaunchedEffect
         // Back to the top of the new source and onto its first result: a different provider is a
@@ -610,8 +602,8 @@ fun PlaybackStreamsScreen(
                 request = request,
                 pendingSources = pendingSourceCount,
                 streamCount = filteredStreams.size,
-                restartLabel = if (restartAvailable) {
-                    stringResource(if (request.episode != null) R.string.action_restart_episode else R.string.action_restart_movie)
+                restartLabel = if (restartAvailable && request.episode != null) {
+                    stringResource(R.string.action_restart_episode)
                 } else null,
                 onRestart = {
                     onPlayRequest(request.copy(startPositionSec = 0.0))

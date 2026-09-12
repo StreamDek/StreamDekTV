@@ -16,4 +16,15 @@ class PlaybackResumePolicyTest {
     @Test fun `the exact continue watching episode resumes`() {
         assertEquals(1122.0, contentScopedResumePosition("tv", null, null, 1122.0, 2, 4, 2, 4)!!, 0.0)
     }
+    @Test fun `play again zero overrides completed progress and continue watching`() {
+        assertEquals(0.0, contentScopedResumePosition("movie", 0.0, 5900.0, 5900.0, null, null, null, null)!!, 0.0)
+    }
+
+    @Test fun `partial movies retain their exact saved position`() {
+        assertEquals(1500.0, contentScopedResumePosition("movie", null, 1500.0, 1400.0, null, null, null, null)!!, 0.0)
+    }
+
+    @Test fun `invalid explicit positions do not replace valid saved progress`() {
+        assertEquals(1500.0, contentScopedResumePosition("movie", Double.NaN, 1500.0, null, null, null, null, null)!!, 0.0)
+    }
 }

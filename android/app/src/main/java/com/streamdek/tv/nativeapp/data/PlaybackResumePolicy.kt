@@ -11,7 +11,7 @@ internal fun contentScopedResumePosition(
     targetSeason: Int?,
     targetEpisode: Int?,
 ): Double? {
-    explicitPosition?.takeIf { it > 0.0 }?.let { return it }
+    explicitPosition?.takeIf { it.isFinite() && it >= 0.0 }?.let { return it }
     exactProgressPosition?.takeIf { it > 0.0 }?.let { return it }
     if (mediaType == "tv" && (continueSeason != targetSeason || continueEpisode != targetEpisode)) return null
     return continuePosition?.takeIf { it > 0.0 }

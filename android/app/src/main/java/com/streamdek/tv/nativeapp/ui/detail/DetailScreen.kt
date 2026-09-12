@@ -1,5 +1,14 @@
 package com.streamdek.tv.nativeapp.ui.detail
 
+import com.streamdek.tv.nativeapp.data.MoviePlaybackAction
+import com.streamdek.tv.nativeapp.data.moviePlaybackAction
+import com.streamdek.tv.nativeapp.data.PlaybackProgressRecord
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.togetherWith
@@ -217,6 +226,25 @@ fun DetailScreen(
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
     var markedWatched by remember(mediaType, mediaId) { mutableStateOf(false) }
+    var movieProgress by remember(mediaType, mediaId) { mutableStateOf<PlaybackProgressRecord?>(null) }
+    val libraryRevision by repository.libraryRevision.collectAsState()
+    var lifecycleRefresh by remember(mediaType, mediaId) { mutableIntStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) lifecycleRefresh++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val movieAction = moviePlaybackAction(
+        watched = markedWatched,
+        progressPercent = movieProgress?.progress ?: 0.0,
+        positionSec = movieProgress?.positionSec ?: 0.0,
+        completed = movieProgress?.status == "completed",
+        unwatched = movieProgress?.status == "unwatched",
+    )
+
     /** Watched episodes across every loaded season, keyed by [watchedEpisodeKey]. */
     var watchedEpisodeKeys by remember(mediaType, mediaId) { mutableStateOf<Set<String>>(emptySet()) }
     var suppressRemoteWatchedRefreshUntil by remember(mediaType, mediaId) { mutableStateOf(0L) }
@@ -709,9 +737,11 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext) {
+    LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, reloadToken, libraryRevision, lifecycleRefresh) {
         val progressEpisode = if (mediaType == "tv") resumeEpisodeContext ?: selectedEpisodeContext else selectedEpisodeContext
         val progress = repository.fetchProgress(mediaType, mediaId, progressEpisode)
+        currentCoroutineContext().ensureActive()
+        if (mediaType == "movie") movieProgress = progress
         progressFraction = progress?.progress?.div(100.0)?.toFloat()?.coerceIn(0f, 1f)
         progressLabel = progress?.takeIf { it.positionSec > 0 && it.durationSec > 0 }?.let {
             "${formatTime(it.positionSec)} / ${formatTime(it.durationSec)}"
@@ -739,14 +769,16 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, progressFraction, detail?.id) {
+    LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, progressFraction, detail?.id, reloadToken, libraryRevision, lifecycleRefresh) {
         val currentDetail = detail ?: return@LaunchedEffect
-        markedWatched = repository.isWatched(
+        val refreshedWatched = repository.isWatched(
             mediaType = mediaType,
             mediaId = mediaId,
             episode = playbackEpisodeContext(currentDetail, progressFraction, resumeEpisodeContext, selectedEpisodeContext),
             forceRefresh = true,
         )
+        currentCoroutineContext().ensureActive()
+        markedWatched = refreshedWatched
     }
 
     LaunchedEffect(mediaType, mediaId, detail?.id) {
@@ -972,6 +1004,7 @@ fun DetailScreen(
                             progressLabel = progressLabel,
                             inWatchlist = inWatchlist,
                             markedWatched = markedWatched,
+                            movieAction = movieAction,
                             playRequester = playRequester,
                             onPlay = {
                                 if (repository.currentSession() == null) {
@@ -986,6 +1019,7 @@ fun DetailScreen(
                                                 d, progressFraction, resumeEpisodeContext, selectedEpisodeContext,
                                             ),
                                             title = d.title,
+                                            startPositionSec = if (d.type == "movie" && movieAction != MoviePlaybackAction.Resume) 0.0 else null,
                                         ),
                                     )
                                 }
@@ -1026,7 +1060,8 @@ fun DetailScreen(
                                         )
                                         if (ok) {
                                             markedWatched = true
-                                            repository.clearProgress(d.type, d.id, episodeContext)
+                                            if (d.type == "movie") movieProgress = PlaybackProgressRecord(0.0, 0.0, 0.0, status = "completed")
+                                            if (d.type != "movie") repository.clearProgress(d.type, d.id, episodeContext)
                                             progressFraction = null
                                             progressLabel = null
                                             episodeContext?.takeIf { d.type == "tv" }?.let {
@@ -1415,6 +1450,7 @@ private fun DetailHero(
     progressLabel: String?,
     inWatchlist: Boolean,
     markedWatched: Boolean,
+    movieAction: MoviePlaybackAction,
     playRequester: FocusRequester,
     onPlay: () -> Unit,
     onToggleWatchlist: () -> Unit,
@@ -1639,7 +1675,11 @@ private fun DetailHero(
                     ),
                 ) {
                     Text(
-                        text = if ((progressFraction ?: 0f) > 0f) {
+                        text = if (detail.type == "movie" && movieAction == MoviePlaybackAction.PlayAgain) {
+                            stringResource(R.string.action_play_again)
+                        } else if (detail.type == "movie" && movieAction == MoviePlaybackAction.Play) {
+                            stringResource(R.string.action_play)
+                        } else if ((progressFraction ?: 0f) > 0f || detail.type == "movie" && movieAction == MoviePlaybackAction.Resume) {
                             progressLabel?.substringBefore(" / ")?.takeIf { it.isNotBlank() }
                                 ?.let { stringResource(R.string.detail_resume_at, it) }
                                 ?: stringResource(R.string.detail_resume)

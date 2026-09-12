@@ -146,11 +146,23 @@ private fun JsonObject.streamStringMap(): Map<String, String> = entrySet().mapNo
     runCatching { value.asString.trim().takeIf(String::isNotBlank)?.let { key to it } }.getOrNull()
 }.toMap()
 
+/** Compare requests without logging configured addon URLs or their credentials. */
+internal fun streamDiagnosticKey(value: String): String = java.security.MessageDigest.getInstance("SHA-256")
+    .digest(value.toByteArray(Charsets.UTF_8)).take(12).joinToString("") { "%02x".format(it) }
+
 /** Parses loose Stremio stream JSON without dropping nested direct URLs or proxy headers. */
-internal fun parseAddonStreamsPayload(raw: String): List<AddonStream> {
-    val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return emptyList()
-    val streams = root.getAsJsonArray("streams") ?: return emptyList()
-    return streams.mapNotNull { element ->
+internal fun parseAddonStreamsPayload(
+    raw: String,
+    onCounts: (returned: Int, parsed: Int) -> Unit = { _, _ -> },
+): List<AddonStream> {
+    val root = com.google.gson.JsonParser.parseString(raw)
+    val streams = when {
+        root.isJsonArray -> root.asJsonArray
+        root.isJsonObject -> listOf("streams", "results", "items", "__array")
+            .firstNotNullOfOrNull { root.asJsonObject.get(it)?.takeIf { value -> value.isJsonArray }?.asJsonArray }
+        else -> null
+    } ?: throw IllegalArgumentException("Addon response has no result array")
+    val parsed = streams.mapNotNull { element ->
         val item = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
         // One malformed provider row must not discard every other result in a large AIO response.
         runCatching {
@@ -230,6 +242,8 @@ internal fun parseAddonStreamsPayload(raw: String): List<AddonStream> {
             )
         }.getOrNull()
     }
+    onCounts(streams.size(), parsed.size)
+    return parsed
 }
 
 private fun streamSingleLine(value: String?): String? = value?.trim()
@@ -453,6 +467,39 @@ internal fun effectiveRememberedStreamKey(
     storedKey: String?,
     rememberLastSource: Boolean,
 ): String? = explicitKey ?: storedKey.takeIf { rememberLastSource }
+
+/** Reject archive/download payloads that addons occasionally mislabel as playable videos. */
+internal fun isPlayableAddonStream(stream: AddonStream): Boolean {
+    // Usenet results are playable: resolveStreamToUrl assembles them on the device and hands
+    // the player a loopback URL. They carry neither a direct url nor an info hash, so they
+    // have to be admitted here explicitly.
+    if (isUsenetAddonStream(stream)) return true
+    if (!effectiveInfoHash(stream).isNullOrBlank()) return true
+    val url = normalizedDirectUrl(stream) ?: return false
+    val decodedUrl = runCatching { java.net.URLDecoder.decode(url, "UTF-8") }.getOrDefault(url)
+    val evidence = listOfNotNull(
+        decodedUrl,
+        stream.filename,
+        stream.behaviorHints?.filename,
+        stream.title,
+        stream.name,
+    ).joinToString(" ").lowercase(Locale.US)
+    return !Regex("\\.(zip|rar|7z|tar|gz)(?:$|[?&#\\\" ]|\\.)").containsMatchIn(evidence)
+}
+
+/** Direct playback URL, excluding magnet links which must be resolved via debrid/torrent. */
+private fun normalizedDirectUrl(stream: AddonStream): String? {
+    val url = stream.url?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) } ?: return null
+    return url.takeUnless { it.startsWith("magnet:", ignoreCase = true) }
+}
+
+/** Info hash from the stream, or parsed out of a magnet url when absent. */
+private fun effectiveInfoHash(stream: AddonStream): String? {
+    stream.infoHash?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+    val url = stream.url?.trim().orEmpty()
+    if (!url.startsWith("magnet:?", ignoreCase = true)) return null
+    return Regex("btih:([A-Fa-f0-9]{32,40})").find(url)?.groupValues?.getOrNull(1)
+}
 
 /** Identity used while progressively merging results from independently completing add-ons. */
 internal fun streamAggregationKey(stream: AddonStream): String = listOf(
@@ -2784,13 +2831,16 @@ class StreamDekRepository(
         sort: String = "year",
         page: Int = 1,
         forceRefresh: Boolean = false,
+        search: String = "",
     ): PagedRailResponse {
-        val cacheKey = listOf(networkId, type, year.orEmpty(), genreId?.toString().orEmpty(), sort, page.toString()).joinToString(":")
+        val normalizedSearch = search.trim()
+        val cacheKey = listOf(networkId, catalogRegion, type, year.orEmpty(), genreId?.toString().orEmpty(), sort, page.toString(), normalizedSearch).joinToString(":")
         if (!forceRefresh) {
             networkCache[cacheKey]?.let { return it }
         }
         val query = buildString {
-            append("/tmdb/network/$networkId?page=$page&sort=$sort")
+            append("/tmdb/network/$networkId?page=$page&sort=$sort&region=$catalogRegion")
+            if (normalizedSearch.isNotEmpty()) append("&search=${URLEncoder.encode(normalizedSearch, "UTF-8")}")
             // "all" is this route's own default and is deliberately not one of the two values its
             // querystring schema accepts, so it is left off rather than sent. Spelling it out had
             // the request refused before the handler ran, which is an empty browse page on the
@@ -2799,7 +2849,7 @@ class StreamDekRepository(
             if (!year.isNullOrBlank()) append("&year=${URLEncoder.encode(year, "UTF-8")}")
             if (genreId != null) append("&genre_id=$genreId")
         }
-        val response = api.get<PagedRailResponse>(query) ?: PagedRailResponse()
+        val response = api.get<PagedRailResponse>(query) ?: error("Network catalogue request failed")
         networkCache[cacheKey] = response
         return response
     }
@@ -3956,7 +4006,8 @@ class StreamDekRepository(
         if (!usesServerSideStreams()) return lookupTypes.firstOrNull() to emptyList()
         for (lookupType in lookupTypes) {
             val aggregated = runCatching {
-                api.get<AddonStreamsResponse>("/addons/streams/$lookupType/${encodePathSegment(videoId)}")?.streams
+                api.executeRaw("GET", "/addons/streams/$lookupType/${encodePathSegment(videoId)}", null, currentSession())
+                    ?.let { raw -> parseAddonStreamsPayload(raw) }
             }.getOrNull().orEmpty()
             if (aggregated.isNotEmpty()) {
                 return lookupType to dedupeStreams(aggregated)
@@ -4072,9 +4123,16 @@ class StreamDekRepository(
         // device; in server-side mode this client never contacts the add-on itself.
         if (usesServerSideStreams()) {
             return runCatching {
-                api.get<AddonStreamsResponse>(
+                val raw = api.executeRaw("GET",
                     "/addons/streams/single/${encodePathSegment(addon.id)}/$lookupType/${encodePathSegment(videoId)}",
-                )?.streams.orEmpty().map { it.withAddonIdentity(addon) }
+                    body = null, session = currentSession(),
+                ) ?: error("Backend stream request failed")
+                parseAddonStreamsPayload(raw) { returned, parsed ->
+                    TvDebugLogger.i("Streams", "stage=response mode=backend addon=${addon.id} mediaKey=${streamDiagnosticKey("$lookupType:$videoId")} type=$lookupType returned=$returned parsed=$parsed rejected=${returned - parsed}")
+                }.map { it.withAddonIdentity(addon) }
+            }.onFailure {
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                TvDebugLogger.w("Streams", "stage=response mode=backend addon=${addon.id} outcome=failed error=${it.javaClass.simpleName}")
             }.getOrDefault(emptyList())
         }
 
@@ -4209,13 +4267,18 @@ class StreamDekRepository(
             .apply { if (forceNetwork) cacheControl(okhttp3.CacheControl.FORCE_NETWORK) }
             .build()
         runCatching {
+            TvDebugLogger.i("Streams", "stage=request mode=direct addon=${addon.id} type=$streamType mediaKey=${streamDiagnosticKey("$streamType:$videoId")} requestKey=${streamDiagnosticKey(request.url.toString())} forceNetwork=$forceNetwork")
             directStreamClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use emptyList()
-                val raw = response.body?.string()?.takeIf { it.isNotBlank() } ?: return@use emptyList()
-                parseAddonStreamsPayload(raw).map { it.withAddonIdentity(addon) }
+                TvDebugLogger.i("Streams", "stage=http mode=direct addon=${addon.id} type=$streamType status=${response.code} cache=${response.cacheResponse != null} bytes=${response.body?.contentLength()}")
+                check(response.isSuccessful) { "Addon HTTP ${response.code}" }
+                val raw = response.body?.string()?.takeIf { it.isNotBlank() } ?: error("Empty addon response")
+                parseAddonStreamsPayload(raw) { returned, parsed ->
+                    TvDebugLogger.i("Streams", "stage=response mode=direct addon=${addon.id} type=$streamType returned=$returned parsed=$parsed rejected=${returned - parsed}")
+                }.map { it.withAddonIdentity(addon) }
             }
         }.onFailure {
-            TvDebugLogger.w("Playback", "fetchFreshStreamsFromAddon failed addon=${addon.id} type=$streamType id=$videoId")
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            TvDebugLogger.w("Streams", "stage=response mode=direct addon=${addon.id} type=$streamType outcome=failed error=${it.javaClass.simpleName}")
         }.getOrDefault(emptyList())
     }
 
@@ -4338,7 +4401,9 @@ class StreamDekRepository(
         val originPending = if (cloudStreamOrigin == null) 0 else 1
 
         val merged = java.util.concurrent.ConcurrentHashMap<String, AddonStream>()
-        val order = java.util.concurrent.CopyOnWriteArrayList<String>()
+        // All access is under mutex; copying the entire array for every inserted row made large
+        // responses quadratic without adding any thread safety beyond that lock.
+        val order = mutableListOf<String>()
         val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginProviderCount + cloudStreamPending + originPending)
         val mutex = kotlinx.coroutines.sync.Mutex()
         // Snapshot creation and channel publication must be one serialized operation. Otherwise
@@ -4350,10 +4415,12 @@ class StreamDekRepository(
 
         suspend fun mergeStreams(streams: List<AddonStream>) {
             mutex.withLock {
+                val before = merged.size
                 streams.forEach { stream ->
                     val key = streamMergeKey(stream)
                     if (merged.putIfAbsent(key, stream) == null) order.add(key)
                 }
+                TvDebugLogger.i("Streams", "stage=merge mediaKey=${streamDiagnosticKey("${primaryType.orEmpty()}:$videoId")} incoming=${streams.size} added=${merged.size - before} duplicate=${streams.size - (merged.size - before)} retained=${merged.size}")
             }
         }
 
@@ -4374,9 +4441,11 @@ class StreamDekRepository(
                 if (snapshot.isNotEmpty() && firstResultLogged.compareAndSet(false, true)) {
                     perf.mark("firstResult", "count=${snapshot.size}")
                 }
+                val ranked = rankStreams(snapshot, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup)
+                TvDebugLogger.i("Streams", "stage=aggregate retained=${snapshot.size} ranked=${ranked.size} policyExcluded=${snapshot.size - ranked.size} pending=${remaining.get()} done=$done")
                 send(
                     StreamCandidatesProgress(
-                        streams = rankStreams(snapshot, effectivePreferredStreamKey, preferredAddonName, preferredQualityGroup),
+                        streams = ranked,
                         pendingSources = remaining.get().coerceAtLeast(0),
                         done = done,
                     ),
@@ -4455,6 +4524,9 @@ class StreamDekRepository(
                         val began = android.os.SystemClock.uptimeMillis()
                         val streams = runCatching {
                             gate.withPermit { fetchStreamsFromSingleAddon(addon, primaryType, videoId, baseId, isLive, forceRefresh) }
+                        }.onFailure {
+                            if (it is kotlinx.coroutines.CancellationException) throw it
+                            TvDebugLogger.w("Streams", "stage=provider addon=${addon.id} outcome=failed error=${it.javaClass.simpleName}")
                         }.getOrDefault(emptyList())
                         perf.mark("addon:${addon.id}", "took=${android.os.SystemClock.uptimeMillis() - began} results=${streams.size}")
                         mergeStreams(streams)
@@ -5710,38 +5782,7 @@ class StreamDekRepository(
     var lastUsenetFailureMessage: String? = null
         private set
 
-    /** Reject archive/download payloads that addons occasionally mislabel as playable videos. */
-    fun isPlayableStreamOption(stream: AddonStream): Boolean {
-        // Usenet results are playable: resolveStreamToUrl assembles them on the device and hands
-        // the player a loopback URL. They carry neither a direct url nor an info hash, so they
-        // have to be admitted here explicitly.
-        if (isUsenetStream(stream)) return true
-        if (!effectiveInfoHash(stream).isNullOrBlank()) return true
-        val url = normalizedDirectUrl(stream) ?: return false
-        val decodedUrl = runCatching { java.net.URLDecoder.decode(url, "UTF-8") }.getOrDefault(url)
-        val evidence = listOfNotNull(
-            decodedUrl,
-            stream.filename,
-            stream.behaviorHints?.filename,
-            stream.title,
-            stream.name,
-        ).joinToString(" ").lowercase(Locale.US)
-        return !Regex("\\.(zip|rar|7z|tar|gz)(?:$|[?&#\\\" ]|\\.)").containsMatchIn(evidence)
-    }
-
-    /** Direct playback URL, excluding magnet links which must be resolved via debrid/torrent. */
-    private fun normalizedDirectUrl(stream: AddonStream): String? {
-        val url = stream.url?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) } ?: return null
-        return url.takeUnless { it.startsWith("magnet:", ignoreCase = true) }
-    }
-
-    /** Info hash from the stream, or parsed out of a magnet url when absent. */
-    private fun effectiveInfoHash(stream: AddonStream): String? {
-        stream.infoHash?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
-        val url = stream.url?.trim().orEmpty()
-        if (!url.startsWith("magnet:?", ignoreCase = true)) return null
-        return Regex("btih:([A-Fa-f0-9]{32,40})").find(url)?.groupValues?.getOrNull(1)
-    }
+    fun isPlayableStreamOption(stream: AddonStream): Boolean = isPlayableAddonStream(stream)
 
     private fun effectiveFilename(stream: AddonStream): String? =
         stream.behaviorHints?.filename?.takeIf { it.isNotBlank() }

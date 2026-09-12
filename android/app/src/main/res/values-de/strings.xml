@@ -413,7 +413,6 @@
   <string name="update_percent_downloaded">%1$s heruntergeladen</string>
   <string name="update_now">Jetzt aktualisieren</string>
   <string name="action_restart_episode">Folge neu starten</string>
-  <string name="action_restart_movie">Film neu starten</string>
   <string name="app_version_retry">Erneut versuchen</string>
   <string name="app_version_preparing_update">Update wird vorbereitet…</string>
   <string name="app_version_installed_required">Installiert: %1$s   Erforderlich: %2$s+</string>
@@ -1676,4 +1675,6 @@
     <item quantity="one">%1$d Quelle wird noch geladen</item>
     <item quantity="other">%1$d Quellen werden noch geladen</item>
   </plurals>
+  <string name="action_play_again">Erneut abspielen</string>
+  <string name="network_search_placeholder">%1$s durchsuchen</string>
 </resources>

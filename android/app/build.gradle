@@ -8,11 +8,15 @@ def envFile = new File(projectRoot, ".env")
 if (envFile.exists()) {
     envFile.withInputStream { stream -> envProperties.load(stream) }
 }
+// -P and the environment win over .env, so a local build can point at a dev backend
+// without editing the checked-in file.
 def streamDekApiUrl = (
-    envProperties.getProperty("STREAMDEK_API_URL")
+    findProperty("STREAMDEK_API_URL")
+        ?: System.getenv("STREAMDEK_API_URL")
+        ?: envProperties.getProperty("STREAMDEK_API_URL")
         ?: envProperties.getProperty("EXPO_PUBLIC_API_BASE_URL")
         ?: "http://192.168.0.2:3000"
-).trim()
+).toString().trim()
 def otaManifestPath = (
     envProperties.getProperty("STREAMDEK_OTA_MANIFEST_PATH")
         ?: "/public/updates/android-tv/latest"

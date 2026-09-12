@@ -1,5 +1,19 @@
 package com.streamdek.tv.nativeapp.ui.network
 
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.streamdek.tv.nativeapp.data.PagedRailResponse
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Job
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.horizontalScroll
@@ -107,85 +121,103 @@ fun NetworkBrowseScreen(
     val scope = rememberCoroutineScope()
     val gridColumns = LocalTvExperienceSettings.current.gridColumns
 
-    var mediaType by remember { mutableStateOf("all") }
-    var year by remember { mutableStateOf<String?>(null) }
-    var genreId by remember { mutableStateOf<Int?>(null) }
-    var minRating by remember { mutableStateOf<Int?>(null) }
-    var genres by remember { mutableStateOf<List<GenreItem>>(emptyList()) }
-    var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
-    var page by remember { mutableIntStateOf(1) }
-    var totalPages by remember { mutableIntStateOf(1) }
-    var loading by remember { mutableStateOf(true) }
-    var loadingMore by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
-    var reloadToken by remember { mutableIntStateOf(0) }
-    var openTray by remember { mutableStateOf(OpenTray.None) }
-    var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
+    var query by rememberSaveable(networkId) { mutableStateOf("") }
+    var editing by remember(networkId) { mutableStateOf(false) }
+    var mediaType by rememberSaveable(networkId) { mutableStateOf("all") }
+    var year by rememberSaveable(networkId) { mutableStateOf<String?>(null) }
+    var genreId by rememberSaveable(networkId) { mutableStateOf<Int?>(null) }
+    var minRating by rememberSaveable(networkId) { mutableStateOf<Int?>(null) }
+    var genres by remember(networkId) { mutableStateOf<List<GenreItem>>(emptyList()) }
+    var catalogue by remember(networkId) { mutableStateOf(NetworkCatalogPages()) }
+    var searchResults by remember(networkId) { mutableStateOf(NetworkCatalogPages()) }
+    var catalogFilters by remember(networkId) { mutableStateOf<String?>(null) }
+    var searchKey by remember(networkId) { mutableStateOf<String?>(null) }
+    var loading by remember(networkId) { mutableStateOf(true) }
+    var loadingMore by remember(networkId) { mutableStateOf(false) }
+    var failed by remember(networkId) { mutableStateOf(false) }
+    var reloadToken by remember(networkId) { mutableIntStateOf(0) }
+    var handledReload by remember(networkId) { mutableIntStateOf(0) }
+    var openTray by remember(networkId) { mutableStateOf(OpenTray.None) }
+    var actionState by remember(networkId) { mutableStateOf<BrowseActionState?>(null) }
 
-    val localChipRequester = remember { FocusRequester() }
-    // The filter chips are the top of this page, so they are what "back to the page" means here.
-    val firstChipRequester = entryFocusRequester ?: localChipRequester
+    val queryRequester = entryFocusRequester ?: remember { FocusRequester() }
+    val firstChipRequester = remember { FocusRequester() }
     val firstCardRequester = remember { FocusRequester() }
     val trayRequester = remember { FocusRequester() }
-    val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
+    val cardRequesters = remember(networkId) { mutableMapOf<String, FocusRequester>() }
     val gridState = rememberLazyGridState()
     val yearOptions = remember { listOf<String?>(null) + (0..14).map { (Year.now().value - it).toString() } }
-
-    LaunchedEffect(networkId, mediaType, year, genreId, reloadToken) {
-        loading = true
-        failed = false
-        genres = runCatching { repository.fetchGenres(if (mediaType == "tv") "tv" else "movie") }
-            .getOrDefault(emptyList())
-        val payload = runCatching {
-            repository.fetchNetworkCatalog(
-                networkId = networkId, type = mediaType, year = year,
-                genreId = genreId, sort = "year", page = 1, forceRefresh = true,
-            )
-        }.getOrNull()
-        if (payload == null) {
-            failed = true
-            results = emptyList()
-        } else {
-            results = payload.results.distinctBy { "${it.type}:${it.id}" }
-            page = payload.page
-            totalPages = payload.total_pages
-        }
-        loading = false
+    val filters = listOf(mediaType, year, genreId).joinToString(":")
+    val normalizedQuery = query.trim()
+    val currentSearchKey = "$filters:$normalizedQuery"
+    val selectedPages = if (normalizedQuery.isEmpty()) {
+        if (catalogFilters == filters) catalogue else NetworkCatalogPages()
+    } else {
+        if (searchKey == currentSearchKey) searchResults else NetworkCatalogPages()
     }
-
-    // Paged catalogue: pull the next page a couple of rows before the viewer reaches the end.
-    LaunchedEffect(gridState, results.size, page, totalPages) {
-        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
-            .collect { lastVisible ->
-                if (loading || loadingMore || page >= totalPages || results.isEmpty()) return@collect
-                if (lastVisible < results.size - gridColumns * 2) return@collect
-                loadingMore = true
-                val payload = runCatching {
-                    repository.fetchNetworkCatalog(
-                        networkId = networkId, type = mediaType, year = year,
-                        genreId = genreId, sort = "year", page = page + 1,
-                    )
-                }.getOrNull()
-                if (payload != null) {
-                    results = (results + payload.results).distinctBy { "${it.type}:${it.id}" }
-                    page = payload.page
-                    totalPages = payload.total_pages
-                }
-                loadingMore = false
-            }
-    }
-
+    val results = selectedPages.items
+    val page = selectedPages.page
+    val totalPages = selectedPages.totalPages
     val visibleResults = remember(results, minRating) {
         results.filter { minRating == null || (it.rating ?: 0.0) >= minRating!!.toDouble() }
     }
 
+    LaunchedEffect(networkId, mediaType) {
+        val loaded = runCatching { repository.fetchGenres(if (mediaType == "tv") "tv" else "movie") }
+        currentCoroutineContext().ensureActive()
+        genres = loaded.getOrDefault(emptyList())
+    }
+    LaunchedEffect(networkId, filters, normalizedQuery, reloadToken) {
+        val retrying = reloadToken != handledReload
+        handledReload = reloadToken
+        val searching = normalizedQuery.isNotEmpty()
+        if (catalogFilters != filters) { catalogue = NetworkCatalogPages(); catalogFilters = filters }
+        if (searchKey != currentSearchKey) { searchResults = NetworkCatalogPages(); searchKey = currentSearchKey }
+        fun currentPages() = if (searching) searchResults else catalogue
+        failed = false
+        loadingMore = false
+        loading = currentPages().page == 0
+        gridState.scrollToItem(0)
+        if (searching) delay(350)
+
+        suspend fun loadNext(): Boolean {
+            loading = currentPages().items.isEmpty()
+            loadingMore = !loading
+            failed = false
+            try {
+                do {
+                    val previous = currentPages()
+                    val result = runCatching {
+                        repository.fetchNetworkCatalog(
+                            networkId, mediaType, year, genreId, "year", previous.page + 1,
+                            forceRefresh = retrying, search = normalizedQuery,
+                        )
+                    }
+                    currentCoroutineContext().ensureActive()
+                    val next = result.getOrNull() ?: run { failed = true; return false }
+                    val updated = previous.append(next)
+                    if (searching) searchResults = updated else catalogue = updated
+                    if (next.results.isNotEmpty() || !updated.hasMore) return true
+                    delay(150)
+                } while (true)
+            } finally {
+                if (currentCoroutineContext()[Job]?.isActive == true) { loading = false; loadingMore = false }
+            }
+        }
+        if ((currentPages().page == 0 || retrying && currentPages().hasMore) && !loadNext()) return@LaunchedEffect
+        snapshotFlow {
+            (gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) to gridState.layoutInfo.totalItemsCount
+        }.collect { (lastVisible, _) ->
+            val visibleCount = currentPages().items.count { minRating == null || (it.rating ?: 0.0) >= minRating!!.toDouble() }
+            if (!failed && currentPages().hasMore && lastVisible >= visibleCount - gridColumns * 2) loadNext()
+        }
+    }
+
     val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
 
-    LaunchedEffect(loading, failed) {
-        if (loading) return@LaunchedEffect
+    LaunchedEffect(networkId) {
         delay(160)
-        // Not while the side navigation owns the D-pad — see LocalSideNavOwnsFocus.
-        if (!sideNavOwnsFocus) runCatching { firstChipRequester.requestFocus() }
+        if (!sideNavOwnsFocus) runCatching { queryRequester.requestFocus() }
     }
 
     LaunchedEffect(openTray) {
@@ -248,6 +280,35 @@ fun NetworkBrowseScreen(
             }
 
             Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = NetworkInset, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    readOnly = !editing,
+                    placeholder = { Text(stringResource(R.string.network_search_placeholder, networkName)) },
+                    keyboardActions = KeyboardActions(onDone = {
+                        editing = false
+                        runCatching { firstChipRequester.requestFocus() }
+                    }),
+                    modifier = Modifier.weight(1f).height(56.dp).focusRequester(queryRequester)
+                        .focusProperties { down = firstChipRequester }
+                        .onFocusChanged { if (!it.isFocused) editing = false }
+                        .onPreviewKeyEvent { event ->
+                            val select = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
+                            if (!editing && select && event.type == KeyEventType.KeyUp) { editing = true; true } else false
+                        },
+                )
+                SearchChip(
+                    label = stringResource(R.string.action_clear), selected = false,
+                    onClick = { query = ""; editing = false; runCatching { queryRequester.requestFocus() } },
+                )
+            }
+
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
@@ -266,7 +327,7 @@ fun NetworkBrowseScreen(
                     selected = openTray == OpenTray.Type,
                     leading = "Show",
                     modifier = Modifier.focusRequester(firstChipRequester)
-                        .focusProperties { down = firstCardRequester },
+                        .focusProperties { up = queryRequester; down = firstCardRequester },
                     onClick = { openTray = if (openTray == OpenTray.Type) OpenTray.None else OpenTray.Type },
                 )
                 SearchChip(
@@ -333,9 +394,12 @@ fun NetworkBrowseScreen(
                 )
             }
 
+            if (failed && results.isNotEmpty()) {
+                SearchChip(label = stringResource(R.string.action_try_again), selected = false, onClick = { reloadToken++ })
+            }
             val contentPhase = when {
                 loading && results.isEmpty() -> TvContentPhase.Loading
-                failed -> TvContentPhase.Error
+                failed && results.isEmpty() -> TvContentPhase.Error
                 visibleResults.isEmpty() -> TvContentPhase.Empty
                 else -> TvContentPhase.Content
             }
@@ -354,7 +418,7 @@ fun NetworkBrowseScreen(
                     title = stringResource(R.string.filters_no_match),
                     message = stringResource(R.string.filters_no_match_detail),
                     actionLabel = stringResource(R.string.action_clear_filters),
-                    onAction = { mediaType = "all"; year = null; genreId = null; minRating = null },
+                    onAction = { query = ""; mediaType = "all"; year = null; genreId = null; minRating = null },
                 )
 
                 TvContentPhase.Content -> LazyVerticalGrid(
