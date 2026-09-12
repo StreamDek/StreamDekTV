@@ -349,6 +349,19 @@ data class LiveCatalogSection(
     val rails: List<LiveCatalogRail>,
 )
 
+/** One position on Home: a row that has arrived, or the slot one is still resolving into. */
+sealed interface HomeShelfSlot {
+    val id: String
+
+    data class Loaded(val rail: HomeRail) : HomeShelfSlot {
+        override val id: String get() = rail.id
+    }
+
+    data class Pending(val rail: PendingRail) : HomeShelfSlot {
+        override val id: String get() = rail.id
+    }
+}
+
 data class HomeContent(
     val featured: MediaItem?,
     val rails: List<HomeRail>,
@@ -358,9 +371,44 @@ data class HomeContent(
      * otherwise shove it down mid-browse, which on a remote reads as the app losing your place.
      */
     val pendingRails: List<PendingRail> = emptyList(),
+    /**
+     * Every position Home draws — arrived and still-resolving together, in final display order.
+     *
+     * The two lists above are what each half *is*; this is where they *go*. Handed only the two,
+     * Home drew every reserved slot after every arrived row, so a row reserved at the top and
+     * resolved late spent its loading life as a skeleton at the foot of the page and then jumped
+     * to the top, shifting everything the viewer was already looking at down by a shelf. Ordered
+     * together, a slot sits where its row will be and the row lands in the space held for it.
+     */
+    val shelves: List<HomeShelfSlot> =
+        rails.map(HomeShelfSlot::Loaded) + pendingRails.map(HomeShelfSlot::Pending),
 ) {
     /** True once every row has either arrived or been ruled out. */
     val isComplete: Boolean get() = pendingRails.isEmpty()
+
+    /**
+     * True once nothing still resolving sits above the row the opening highlight would land on.
+     *
+     * This, not [isComplete], is what Home waits for before it commits to a first frame and a
+     * focus target. Completeness is the wrong bar in both directions: it holds the screen behind
+     * the slowest add-on or CloudStream row, which resolve into reserved slots far below where
+     * they disturb nothing — and on its own it says nothing about the rows that do matter.
+     *
+     * What matters is position, not which row it happens to be. A row that is still resolving
+     * *above* the entry row can still become the entry row, so committing the highlight before it
+     * lands is what produced the visible correction: focus on the catalogue, then Continue
+     * Watching arrives and takes it. A row still resolving *below* it cannot, and is no reason to
+     * wait — which is why a Continue Watching row that has arrived with cards settles Home even
+     * while New Episodes beneath it is outstanding.
+     */
+    val priorityResolved: Boolean
+        get() {
+            val entry = shelves.indexOfFirst { it is HomeShelfSlot.Loaded && it.rail.items.isNotEmpty() }
+            // Nothing to hand the highlight to yet. Only a Home that has finished and found
+            // nothing is settled; otherwise the row that will take it is still on its way.
+            if (entry < 0) return isComplete
+            return shelves.take(entry).none { it is HomeShelfSlot.Pending }
+        }
 }
 
 /** A reserved slot for a row that has not resolved yet. */

@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp.ui.network
 
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -51,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
@@ -60,6 +62,7 @@ import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.GenreItem
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
@@ -86,6 +89,9 @@ private data class BrowseActionState(
 private enum class OpenTray { None, Type, Year, Genre, Rating }
 
 private val NetworkInset = TvSpacing.ScreenHorizontal
+
+/** Query field and its Clear button share one height, so the row reads as a single control. */
+private val SearchRowHeight = 52.dp
 
 /**
  * One streaming service's catalogue.
@@ -114,6 +120,11 @@ fun NetworkBrowseScreen(
      * menu fell through to whatever spatial search happened to find.
      */
     entryFocusRequester: FocusRequester? = null,
+    /**
+     * Pressing left off the query field opens the navigation rail, the gesture Home and Search
+     * already use. Without it the read-only field starts cursor navigation instead.
+     */
+    onOpenNavigation: () -> Unit = {},
     onBack: () -> Unit,
     onOpenDetail: (String, String) -> Unit,
 ) {
@@ -142,6 +153,7 @@ fun NetworkBrowseScreen(
 
     val queryRequester = entryFocusRequester ?: remember { FocusRequester() }
     val firstChipRequester = remember { FocusRequester() }
+    val clearRequester = remember { FocusRequester() }
     val firstCardRequester = remember { FocusRequester() }
     val trayRequester = remember { FocusRequester() }
     val cardRequesters = remember(networkId) { mutableMapOf<String, FocusRequester>() }
@@ -167,6 +179,16 @@ fun NetworkBrowseScreen(
         currentCoroutineContext().ensureActive()
         genres = loaded.getOrDefault(emptyList())
     }
+    // Its own effect, deliberately not part of the load below.
+    //
+    // LazyGridState.scroll waits for the grid's first layout, and the grid is only composed in
+    // the Content phase. Sitting in the load path ahead of the first fetch, it waited on a grid
+    // that could not appear until that fetch had returned: the page parked on its skeleton and
+    // never asked the backend for anything, and every later query parked with it. Here it blocks
+    // nothing, and it is cancelled and replaced whenever the filters or the query change.
+    LaunchedEffect(networkId, filters, normalizedQuery) {
+        runCatching { gridState.scrollToItem(0) }
+    }
     LaunchedEffect(networkId, filters, normalizedQuery, reloadToken) {
         val retrying = reloadToken != handledReload
         handledReload = reloadToken
@@ -177,7 +199,6 @@ fun NetworkBrowseScreen(
         failed = false
         loadingMore = false
         loading = currentPages().page == 0
-        gridState.scrollToItem(0)
         if (searching) delay(350)
 
         suspend fun loadNext(): Boolean {
@@ -289,21 +310,51 @@ fun NetworkBrowseScreen(
                     onValueChange = { query = it },
                     singleLine = true,
                     readOnly = !editing,
-                    placeholder = { Text(stringResource(R.string.network_search_placeholder, networkName)) },
+                    shape = AppPillShape,
+                    placeholder = {
+                        Text(
+                            text = stringResource(R.string.network_search_placeholder, networkName),
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    // Search states its palette and this screen did not, so the field fell back to
+                    // the stock Material one: a light-theme container over the brand wash, with the
+                    // placeholder sitting too close to it to be read from the sofa.
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.White.copy(alpha = 0.10f),
+                        unfocusedContainerColor = Color.White.copy(alpha = 0.05f),
+                        focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedPlaceholderColor = Color.White.copy(alpha = 0.68f),
+                        unfocusedPlaceholderColor = Color.White.copy(alpha = 0.55f),
+                        cursorColor = MaterialTheme.colorScheme.primary,
+                    ),
                     keyboardActions = KeyboardActions(onDone = {
                         editing = false
                         runCatching { firstChipRequester.requestFocus() }
                     }),
-                    modifier = Modifier.weight(1f).height(56.dp).focusRequester(queryRequester)
-                        .focusProperties { down = firstChipRequester }
+                    modifier = Modifier.weight(1f).height(SearchRowHeight).focusRequester(queryRequester)
+                        .focusProperties { right = clearRequester; down = firstChipRequester }
                         .onFocusChanged { if (!it.isFocused) editing = false }
                         .onPreviewKeyEvent { event ->
+                            if (!editing && event.key == Key.DirectionLeft) {
+                                if (event.type == KeyEventType.KeyDown) onOpenNavigation()
+                                // Consume both edges, so the read-only field can neither start
+                                // cursor navigation nor strand focus on the boundary.
+                                return@onPreviewKeyEvent true
+                            }
                             val select = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
                             if (!editing && select && event.type == KeyEventType.KeyUp) { editing = true; true } else false
                         },
                 )
                 SearchChip(
                     label = stringResource(R.string.action_clear), selected = false,
+                    modifier = Modifier.width(132.dp).height(SearchRowHeight).focusRequester(clearRequester)
+                        .focusProperties { left = queryRequester; down = firstChipRequester },
                     onClick = { query = ""; editing = false; runCatching { queryRequester.requestFocus() } },
                 )
             }

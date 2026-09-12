@@ -1992,6 +1992,7 @@ class StreamDekRepository(
                     featured = ready.heroCandidate(),
                     rails = orderHomeRails(ready),
                     pendingRails = ordered.mapNotNull { pending[it] },
+                    shelves = homeShelfOrder(slotOrder, resolved, pending, ::orderHomeRails),
                 )
             }
             perf.mark("publish:$slot", "rails=${rails.size} items=${rails.sumOf { it.items.size }} pending=${snapshot.pendingRails.size}")

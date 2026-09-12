@@ -27,6 +27,22 @@ data class HomeScreenUiState(
 class HomeViewModel(
     private val repository: StreamDekRepository,
 ) : ViewModel() {
+    private companion object {
+        /**
+         * How long a cold Home holds its skeleton for the rows that decide its order and its
+         * opening highlight.
+         *
+         * A safety valve, not a schedule: the ordinary path is decided by the data arriving, and
+         * on a stick reading a populated account that lands comfortably inside this. It is set
+         * above the measured worst case so the clock does not routinely pre-empt the data, and low
+         * enough that a stalled account read is a pause rather than a stuck screen. When it does
+         * fire, the page appears with its reserved slots in place and the late rows drop into
+         * them, so the cost is a plainer first frame rather than the jump this all exists to
+         * prevent.
+         */
+        const val PriorityBudgetMs = 3_500L
+    }
+
     private val _uiState = MutableStateFlow(HomeScreenUiState())
     val uiState: StateFlow<HomeScreenUiState> = _uiState
 
@@ -62,24 +78,42 @@ class HomeViewModel(
             // is already populated swaps in one go instead: tearing rows out from under someone
             // who is mid-browse to rebuild them is worse than a moment of stale content.
             val progressive = cachedContent == null
+            // The first frame a cold Home shows is the one it keeps.
+            //
+            // Rows are held back until the ones that decide the page's order and its opening
+            // highlight have arrived or been ruled out. Publishing before that is what made Home
+            // appear to load twice: the catalogue drew, the highlight landed on it, and Continue
+            // Watching then had to be inserted above rows the viewer was already looking at,
+            // taking the highlight and the hero with it.
+            //
+            // It is a hold, not a block. Everything below the priority rows still streams into the
+            // slots reserved for it, and the hold is bounded: once [PriorityBudgetMs] is spent
+            // whatever has arrived is shown, and a late library read drops into the space being
+            // kept for it. A slow account request costs a moment, never the screen.
+            var priorityBudgetSpent = false
+            var held: HomeContent? = null
+            val budget = if (progressive) {
+                launch {
+                    delay(PriorityBudgetMs)
+                    priorityBudgetSpent = true
+                    held?.let(::publishContent)
+                }
+            } else {
+                null
+            }
             runCatching {
                 repository.homeContentStream(forceRefresh = forceRefresh).collect { content ->
                     if (!progressive && !content.isComplete) return@collect
-                    // A cold screen used to publish the first single rail, then the second and
-                    // third a few milliseconds later. That made the initial frame look assembled
-                    // piece by piece even though the core TMDB requests already run together.
-                    // Hold the skeleton until a useful first batch exists; slower rows below the
-                    // fold can still arrive progressively without delaying Home indefinitely.
-                    if (progressive && _uiState.value.content == null && !content.isComplete && content.rails.size < 3) {
+                    if (progressive && _uiState.value.content == null &&
+                        !content.isComplete && !content.priorityResolved && !priorityBudgetSpent
+                    ) {
+                        held = content
                         return@collect
                     }
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = !content.isComplete,
-                        content = content,
-                        error = null,
-                    )
+                    publishContent(content)
                 }
             }
+                .also { budget?.cancel() }
                 .onSuccess {
                     val content = _uiState.value.content
                     TvDebugLogger.i("HomeVm", "load ok rails=${content?.rails?.size ?: 0} forceRefresh=$forceRefresh")
@@ -104,6 +138,14 @@ class HomeViewModel(
                 }
         }
     }
+    private fun publishContent(content: HomeContent) {
+        _uiState.value = _uiState.value.copy(
+            isLoading = !content.isComplete,
+            content = content,
+            error = null,
+        )
+    }
+
     fun setHeroCandidate(item: MediaItem?) {
         val nextKey = item?.let { "${it.type}:${it.id}" } ?: "none"
         if (nextKey == heroKey) return

@@ -201,6 +201,53 @@ internal fun applyHomeRowLayoutKeepingPersonalRows(
     return personal + applyHomeRowLayout(catalogues, layout)
 }
 
+/**
+ * The arrived rows and the slots still resolving as one list, in the order Home draws them.
+ *
+ * Home is built from two lists — the rows that have landed and the slots reserved for the ones that
+ * have not — and it used to draw the second after the whole of the first. A row reserved at the top
+ * and resolved late therefore spent its loading life as a skeleton at the foot of the page and then
+ * jumped to the top, shifting every row the viewer was already looking at down by a shelf. Continue
+ * Watching does exactly that on nearly every cold start: it is reserved first and built from an
+ * account read that is routinely slower than the catalogue requests beside it.
+ *
+ * Ordering both halves together puts a reserved slot where its row will actually be, so the row
+ * replaces its own skeleton instead of being inserted above the page.
+ *
+ * Reserved slots are ordered as empty rails, which is what makes one saved layout govern arrived
+ * and reserved rows alike — [applyHomeRowLayoutKeepingPersonalRows] pins a reserved Continue
+ * Watching to the top for the same reason it pins the arrived one — rather than being
+ * reimplemented for each half. Walking [slotOrder] first is what keeps a reserved slot in its
+ * declared position for a profile with no saved layout, which the layout sort alone cannot order.
+ *
+ * @param orderRails the caller's own row ordering, applied to the two halves together.
+ */
+internal fun homeShelfOrder(
+    slotOrder: List<String>,
+    resolved: Map<String, List<HomeRail>>,
+    pending: Map<String, PendingRail>,
+    orderRails: (List<HomeRail>) -> List<HomeRail>,
+): List<HomeShelfSlot> {
+    fun bySlotOrder(keys: Collection<String>) = keys.sortedBy { slotOrder.indexOf(it) }
+    fun arrived(key: String) = resolved[key]?.filter { it.items.isNotEmpty() }
+
+    if (pending.isEmpty()) {
+        return orderRails(bySlotOrder(resolved.keys).flatMap { arrived(it).orEmpty() })
+            .map(HomeShelfSlot::Loaded)
+    }
+    val combined = bySlotOrder(resolved.keys + pending.keys).flatMap { key ->
+        arrived(key)
+            // A slot with nothing in it yet stands in as an empty rail carrying its own id, so the
+            // ordering below places it exactly as it will place the row that replaces it.
+            ?: pending[key]?.let { listOf(HomeRail(it.id, it.title, emptyList(), titleRes = it.titleRes)) }
+            ?: emptyList()
+    }
+    return orderRails(combined).map { rail ->
+        val reserved = if (rail.id in pending.keys) pending[rail.id] else null
+        reserved?.let(HomeShelfSlot::Pending) ?: HomeShelfSlot.Loaded(rail)
+    }
+}
+
 /** The layout to store for [options], numbered from their current order on screen. */
 internal fun homeRowLayoutOf(options: List<HomeRowOption>): List<HomeCatalogRowPreference> =
     options.mapIndexed { index, option ->

@@ -27,6 +27,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,6 +58,7 @@ import coil.request.ImageRequest
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.ApiReachability
 import com.streamdek.tv.nativeapp.data.HomeRail
+import com.streamdek.tv.nativeapp.data.HomeShelfSlot
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppPillShape
@@ -283,8 +285,26 @@ fun HomeScreen(
             homeViewModel.forceRefresh(loadKey)
         }
     }
-    LaunchedEffect(loadKey, libraryRevision) {
-        if (libraryRevision > 0L) homeViewModel.forceRefresh(loadKey)
+    /**
+     * A library write elsewhere — finishing an episode on the phone, removing a card here — makes
+     * Continue Watching stale, so Home refetches.
+     *
+     * Not while the first load is still running, though. That load reads the library itself, and
+     * its read is what publishes the first revision: firing here on that revision cancelled the
+     * load that produced it and started the whole fetch again, which on a cold start threw away
+     * three or four seconds of work and made Home visibly begin a second time. Revisions seen
+     * before Home has content are recorded as already covered by the load in flight.
+     */
+    var handledLibraryRevision by remember(loadKey) { mutableLongStateOf(0L) }
+    LaunchedEffect(loadKey, libraryRevision, screenState.content != null) {
+        if (libraryRevision <= 0L) return@LaunchedEffect
+        if (screenState.content == null) {
+            handledLibraryRevision = libraryRevision
+            return@LaunchedEffect
+        }
+        if (libraryRevision == handledLibraryRevision) return@LaunchedEffect
+        handledLibraryRevision = libraryRevision
+        homeViewModel.forceRefresh(loadKey)
     }
 
     val content = screenState.content
@@ -438,7 +458,10 @@ fun HomeScreen(
             // while the menu was open, and scrolling them again is precisely the jump being fixed.
             if (!resumingInPlace) {
                 rowStates[targetRow.id]?.scrollToItem(itemIndex)
-                shelfListState.scrollToItem(targetIndex)
+                // The row's place in the drawn list, which counts the slots still resolving.
+                shelfListState.scrollToItem(
+                    content?.shelves?.indexOfFirst { it.id == targetRow.id }?.takeIf { it >= 0 } ?: targetIndex,
+                )
             }
             if (itemIndex > 0 || targetIndex != firstEntryRowIndex) {
                 // Any card other than the one the shell's entry requester is attached to is reached
@@ -557,12 +580,21 @@ fun HomeScreen(
 
             content != null -> {
                 val rows = content.rails
+                // What the list actually draws: arrived rows and reserved slots in one order, so a
+                // row that resolves late replaces its own skeleton instead of being inserted.
+                val shelves = content.shelves
+                val railIndexById = remember(rows) {
+                    rows.withIndex().associate { (index, row) -> row.id to index }
+                }
+                val shelfIndexById = remember(shelves) {
+                    shelves.withIndex().associate { (index, slot) -> slot.id to index }
+                }
                 val firstFocusableRowIndex = remember(rows) { firstFocusableHomeRowIndex(rows) }
                 val firstFocusableRow = rows.getOrNull(firstFocusableRowIndex)
                 // Complete is the normal readiness signal. A partial load that has stopped after
                 // an error is also ready enough to navigate; waiting forever for vanished pending
                 // rows would leave an otherwise useful Home screen with no focus owner.
-                val homeEntryReady = content.isComplete || !screenState.isLoading
+                val homeEntryReady = content.priorityResolved || !screenState.isLoading
 
                 LaunchedEffect(content.rails.size, screenState.prefetchedTitleLogos) {
                     // Only the first few images of the visible rows; a stick has little memory to
@@ -646,7 +678,7 @@ fun HomeScreen(
                     val targetItem = row.items.getOrNull(itemIndex)
                     homeViewModel.setHeroCandidate(targetItem)
                     focusedItem = targetItem
-                    shelfListState.scrollToItem(rowIndex)
+                    shelfListState.scrollToItem(shelfIndexById[row.id] ?: rowIndex)
                     // Let the navigation transition finish restoring its outgoing focus before
                     // applying Home's saved card. Otherwise the rail can win the final focus pass
                     // and remain expanded even though the viewer has already returned Home.
@@ -670,6 +702,35 @@ fun HomeScreen(
                 // that moment had focus taken off them 150ms later: the rail collapsed mid-press,
                 // and because re-entering restores the last focused item, the highlight sat one
                 // step further down each time. Down, collapse, re-open one lower, over and over.
+                // The row Home's entry requester is attached to, decided once.
+                //
+                // This used to be "whichever row currently has items", read fresh on every
+                // composition. While the page was still filling that answer changed underneath
+                // the highlight: Continue Watching arrived, became the first row, and the entry
+                // requester moved to it — so the opening focus, the floor beneath it and the menu
+                // hand-back all pointed somewhere new, and the hero followed. Pinning the answer
+                // to a row id means late data cannot move it. It is re-picked only if that row
+                // genuinely leaves the page.
+                var entryRowId by remember(loadKey) { mutableStateOf<String?>(null) }
+                LaunchedEffect(homeEntryReady, firstFocusableRow?.id, rows) {
+                    if (!homeEntryReady) return@LaunchedEffect
+                    val current = entryRowId
+                    if (current != null && rows.any { it.id == current && it.items.isNotEmpty() }) {
+                        return@LaunchedEffect
+                    }
+                    val row = firstFocusableRow ?: return@LaunchedEffect
+                    entryRowId = row.id
+                    // The hero is drawn from the highlighted card, so naming the entry card before
+                    // the reveal means the first frame already carries the artwork focus is about
+                    // to confirm — rather than showing the featured title and changing to it a
+                    // moment later. Same reason for the active row: the shelves below it open at
+                    // their settled compact size instead of animating down to it.
+                    if (focusedItem == null) {
+                        focusedItem = row.items.first()
+                        activeRowId = row.id
+                    }
+                }
+
                 var openingFocusApplied by remember { mutableStateOf(false) }
                 LaunchedEffect(homeEntryReady, firstFocusableRow?.id, canRestore) {
                     if (openingFocusApplied) return@LaunchedEffect
@@ -744,7 +805,18 @@ fun HomeScreen(
                         contentPadding = PaddingValues(bottom = heroHeight + 48.dp),
                         verticalArrangement = Arrangement.spacedBy(ShelfSpacing),
                     ) {
-                        itemsIndexed(rows, key = { _, row -> row.id }) { rowIndex, row ->
+                        itemsIndexed(shelves, key = { _, slot -> slot.id }) { _, slot ->
+                            // A slot that has not resolved holds its place, in the position its row
+                            // will occupy, so the row lands in the space already being kept for it.
+                            if (slot is HomeShelfSlot.Pending) {
+                                HomeSkeletonShelf(pending = slot.rail, portraitCards = portraitCards)
+                                return@itemsIndexed
+                            }
+                            val row = (slot as HomeShelfSlot.Loaded).rail
+                            // Positions among the rows that have items, which is what the focus
+                            // policy and the saved position are expressed in; the list's own index
+                            // counts reserved slots too and is only used for scrolling.
+                            val rowIndex = railIndexById[row.id] ?: 0
                             val rowState = rowStates.getOrPut(row.id) {
                                 LazyListState(firstVisibleItemIndex = rowFocusIndices[row.id] ?: 0)
                             }
@@ -754,7 +826,7 @@ fun HomeScreen(
                                 compact = activeRowId != null && activeRowId != row.id,
                                 portraitCards = portraitCards,
                                 hideCardTitles = hideCardTitles,
-                                firstCardRequester = if (rowIndex == firstFocusableRowIndex) firstCardRequester else null,
+                                firstCardRequester = if (row.id == entryRowId) firstCardRequester else null,
                                 focusItemKey = pendingRestoreKey?.takeIf { it.startsWith("${row.id}:") },
                                 onFocusItemHandled = { pendingRestoreKey = null },
                                 onItemFocused = { index, item ->
@@ -789,20 +861,13 @@ fun HomeScreen(
                                 onOpenNavigation = onOpenNavigation,
                             )
                         }
-
-                        // Rows still loading, held in the position they will occupy so the shelves
-                        // above keep their place when one lands.
-                        items(content.pendingRails, key = { it.id }) { pending ->
-                            HomeSkeletonShelf(pending = pending, portraitCards = portraitCards)
-                        }
                     }
                     }
                 }
 
                 LaunchedEffect(activeRowId, rows.size) {
                     if (rows.isEmpty()) return@LaunchedEffect
-                    val target = rows.indexOfFirst { it.id == activeRowId }.takeIf { it >= 0 }
-                        ?: return@LaunchedEffect
+                    val target = shelfIndexById[activeRowId] ?: return@LaunchedEffect
                     // The focused shelf is pinned to the top of the viewport, so the row being
                     // left goes fully out of view rather than lingering half on screen. Anything
                     // partly visible above the active row reads as clutter on a TV and makes the

@@ -56,6 +56,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.TrailerPlaybackSource
+import com.streamdek.tv.nativeapp.data.TrailerSourceKind
 import com.streamdek.tv.nativeapp.data.TrailerResetSignal
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.trailerDataSourceFactory
@@ -158,6 +159,7 @@ internal fun TrailerStage(
                 TrailerSurface(
                     url = playback.source.url,
                     audioUrl = playback.source.audioUrl,
+                    kind = playback.source.kind,
                     requestHeaders = playback.source.requestHeaders,
                     maxHeight = playback.source.height ?: maxHeight,
                     playing = active && !paused,
@@ -235,6 +237,8 @@ internal fun TrailerStage(
 private fun TrailerSurface(
     url: String,
     audioUrl: String?,
+    /** What the resolver produced, so this does not have to infer it from the URL. */
+    kind: TrailerSourceKind,
     requestHeaders: Map<String, String>,
     maxHeight: Int,
     playing: Boolean,
@@ -249,7 +253,7 @@ private fun TrailerSurface(
     val latestOnFailed = rememberUpdatedState(onFailed)
     var attachedContainer by remember(url) { mutableStateOf<TrailerTextureContainer?>(null) }
 
-    val player = remember(url, audioUrl, requestHeaders, maxHeight, startPositionMs) {
+    val player = remember(url, audioUrl, kind, requestHeaders, maxHeight, startPositionMs) {
         val trackSelector = DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
                 .setMaxVideoSize(Int.MAX_VALUE, maxHeight.coerceAtLeast(360))
@@ -264,22 +268,21 @@ private fun TrailerSurface(
         val dataSourceFactory = trailerDataSourceFactory(context, requestHeaders)
         ExoPlayer.Builder(context).setTrackSelector(trackSelector).setLoadControl(loadControl).build().apply {
             val factory = ProgressiveMediaSource.Factory(dataSourceFactory)
-            // YouTube HLS manifests come from manifest.googlevideo.com without a .m3u8 extension,
-            // so detect HLS explicitly — a progressive source cannot parse them.
-            val looksLikeHls = url.contains(".m3u8", ignoreCase = true) ||
-                url.contains("/hls_", ignoreCase = true) ||
-                url.contains("api/manifest/hls", ignoreCase = true)
-            when {
-                !audioUrl.isNullOrBlank() -> setMediaSource(
-                    MergingMediaSource(
-                        factory.createMediaSource(ExoMediaItem.fromUri(url)),
-                        factory.createMediaSource(ExoMediaItem.fromUri(audioUrl)),
-                    ),
-                )
-                looksLikeHls -> setMediaSource(
+            // Which source to build is stated by the resolver rather than guessed at from the URL.
+            // Guessing was unreliable in the one case it existed for: YouTube's HLS manifests come
+            // from manifest.googlevideo.com with no `.m3u8` anywhere in them, so the sniffing had to
+            // be taught each new shape by hand.
+            when (kind) {
+                TrailerSourceKind.HLS -> setMediaSource(
                     HlsMediaSource.Factory(dataSourceFactory).createMediaSource(ExoMediaItem.fromUri(url)),
                 )
-                else -> setMediaSource(factory.createMediaSource(ExoMediaItem.fromUri(url)))
+                TrailerSourceKind.ADAPTIVE -> setMediaSource(
+                    MergingMediaSource(
+                        factory.createMediaSource(ExoMediaItem.fromUri(url)),
+                        factory.createMediaSource(ExoMediaItem.fromUri(audioUrl.orEmpty())),
+                    ),
+                )
+                TrailerSourceKind.PROGRESSIVE -> setMediaSource(factory.createMediaSource(ExoMediaItem.fromUri(url)))
             }
             repeatMode = Player.REPEAT_MODE_OFF
             // Sound on, unlike the phone's muted hero loop. This has the screen; a silent trailer

@@ -1109,6 +1109,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                         networkId = backStackEntryInner.arguments?.getString("id").orEmpty(),
                         networkName = Uri.decode(backStackEntryInner.arguments?.getString("name").orEmpty()),
                         entryFocusRequester = networkContentRequester,
+                        onOpenNavigation = ::openSideNavigation,
                         onBack = { navController.popBackStack() },
                         onOpenDetail = openDetail,
                     )

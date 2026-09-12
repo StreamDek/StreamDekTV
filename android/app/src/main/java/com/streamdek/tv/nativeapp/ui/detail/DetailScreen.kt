@@ -89,6 +89,8 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.DetailPreferences
+import com.streamdek.tv.nativeapp.data.MediaTrailer
+import com.streamdek.tv.nativeapp.data.orderTrailerCandidates
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.MediaDetail
@@ -426,9 +428,13 @@ fun DetailScreen(
      */
     val trailerCandidateUrls = remember(detail?.id, detail?.trailerKey, detail?.trailerKeys) {
         val current = detail ?: return@remember emptyList()
-        (listOfNotNull(current.trailerKey?.takeIf { it.isNotBlank() }) + current.trailerKeys)
+        val listed = (listOfNotNull(current.trailerKey?.takeIf { it.isNotBlank() }) + current.trailerKeys)
             .filter { it.isNotBlank() }
-            .distinct()
+        // Run through the shared ranking rather than taking the list as it arrives. With bare keys
+        // there is little for it to rank on, but it normalises every URL form to an id and drops
+        // the duplicates that come of the same video being listed once as a watch link and once as
+        // a key — which the resolver would otherwise probe twice.
+        orderTrailerCandidates(listed.map { MediaTrailer(key = it) })
             .map { key -> "https://www.youtube.com/watch?v=$key" }
     }
     val hasTrailer = trailerCandidateUrls.isNotEmpty()
