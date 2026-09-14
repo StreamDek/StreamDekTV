@@ -35,10 +35,12 @@ import com.streamdek.tv.nativeapp.data.TvDebugLogger
 internal fun TrailerEmbedSurface(
     youtubeKey: String,
     playing: Boolean,
+    onStarted: () -> Unit,
     onEnded: () -> Unit,
     onFailed: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val latestStarted = rememberUpdatedState(onStarted)
     val latestEnded = rememberUpdatedState(onEnded)
     val latestFailed = rememberUpdatedState(onFailed)
     var webView by remember(youtubeKey) { mutableStateOf<WebView?>(null) }
@@ -68,6 +70,7 @@ internal fun TrailerEmbedSurface(
                 setOnTouchListener { _, _ -> true }
                 webChromeClient = WebChromeClient()
                 webViewClient = trailerEmbedClient(
+                    onStarted = { latestStarted.value() },
                     onEnded = { latestEnded.value() },
                     onFailed = { latestFailed.value() },
                 )
@@ -107,7 +110,7 @@ internal fun TrailerEmbedSurface(
  * has not started yet is given fifteen seconds of one-second attempts before it is called a failure,
  * which covers a cold WebView on a streaming stick without leaving a viewer looking at black.
  */
-private fun trailerEmbedClient(onEnded: () -> Unit, onFailed: () -> Unit): WebViewClient =
+private fun trailerEmbedClient(onStarted: () -> Unit, onEnded: () -> Unit, onFailed: () -> Unit): WebViewClient =
     object : WebViewClient() {
         private fun inspect(view: WebView, attempt: Int) {
             view.evaluateJavascript(
@@ -118,6 +121,10 @@ private fun trailerEmbedClient(onEnded: () -> Unit, onFailed: () -> Unit): WebVi
                     state.contains("ERROR") -> {
                         TvDebugLogger.w("Trailer", "embed reported an error")
                         onFailed()
+                    }
+                    state.contains("PLAYING") -> {
+                        onStarted()
+                        view.postDelayed({ inspect(view, 0) }, 1_000)
                     }
                     state.contains("READY") -> view.postDelayed({ inspect(view, 0) }, 1_000)
                     attempt < 15 -> view.postDelayed({ inspect(view, attempt + 1) }, 1_000)
@@ -199,7 +206,7 @@ internal fun trailerEmbedHtml(youtubeKey: String): String = """
                 onReady: function(event) { event.target.unMute(); event.target.playVideo(); streamdekState = 'READY'; },
                 onStateChange: function(event) {
                   if (event.data === YT.PlayerState.ENDED) streamdekState = 'ENDED';
-                  else if (event.data === YT.PlayerState.PLAYING || event.data === YT.PlayerState.BUFFERING) streamdekState = 'READY';
+                  else if (event.data === YT.PlayerState.PLAYING) streamdekState = 'PLAYING';
                 },
                 onError: function() { streamdekState = 'ERROR'; }
               }

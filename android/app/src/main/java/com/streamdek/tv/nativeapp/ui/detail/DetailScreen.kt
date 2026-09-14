@@ -171,19 +171,7 @@ private fun Modifier.bandRestorePoint(active: Boolean, requester: FocusRequester
  *    (two of them large radial shaders) that was redrawn every frame over a full-bleed image.
  *    That stack was the main reason this screen felt heavier than the rest of the app on a stick.
  */
-/** How long the title's own card holds the screen before the trailer starts. */
-private const val TrailerIntroMs = 1_000L
 
-/**
- * How long the card stays up once the trailer is behind it.
- *
- * The stage has to attach a surface, buffer and decode before there is a frame to show. Clearing
- * the card on the same tick showed black through the gap, which is the thing the card exists to
- * prevent — and at 300ms it was still doing it on a cold start. Six hundred covers it, and costs
- * nothing visible: the trailer's audio has already started, so the picture arriving under a
- * dissolving card reads as the card getting out of the way rather than as waiting.
- */
-private const val TrailerIntroHandoverMs = 600L
 
 @OptIn(
     androidx.compose.foundation.ExperimentalFoundationApi::class,
@@ -283,8 +271,9 @@ fun DetailScreen(
     var trailerUnavailable by remember(mediaType, mediaId) { mutableStateOf(false) }
     /** Seconds left of the wait, or null when nothing is being waited for. Drives the action's label. */
     var trailerCountdown by remember(mediaType, mediaId) { mutableStateOf<Int?>(null) }
-    /** The title's own card, held between the page leaving and the trailer starting. */
-    var trailerIntroVisible by remember(mediaType, mediaId) { mutableStateOf(false) }
+    /** Reveal motion only after the playback surface has a picture to show. */
+    var trailerFrameReady by remember(mediaType, mediaId) { mutableStateOf(false) }
+    var trailerCopyHidden by remember(mediaType, mediaId) { mutableStateOf(false) }
     /** Whether the trailer should be on screen. Cleared by Back; the source outlives it by one fade. */
     var trailerRunning by remember(mediaType, mediaId) { mutableStateOf(false) }
     var trailerResolving by remember(mediaType, mediaId) { mutableStateOf(false) }
@@ -438,50 +427,36 @@ fun DetailScreen(
             .map { key -> "https://www.youtube.com/watch?v=$key" }
     }
     val hasTrailer = trailerCandidateUrls.isNotEmpty()
-    // The card counts as the trailer having arrived, so the page runs its existing leaving movement
-    // underneath it rather than being cut away by an opaque slab dropped on top.
-    val trailerVisible = (trailerPlayback != null && trailerRunning) || trailerIntroVisible
-
-    // One value drives the whole handover, and the two halves of it do not overlap: the page leaves
-    // over the first half and the trailer arrives over the second. A straight crossfade had both
-    // half-visible in the middle, which on a full-screen takeover reads as a dissolve between two
-    // things rather than one making way for the other. Reversing the same value on the way out
-    // gives the trailer leaving before the page returns, for free.
-    val trailerTransition by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (trailerVisible) 1f else 0f,
-        animationSpec = TvMotion.standardSpec(TvMotion.Expand * 2),
-        // Held in composition until it has finished leaving, or the picture would cut out on the
-        // frame Back was pressed and only the page would animate.
-        finishedListener = { progress -> if (progress <= 0.001f) trailerPlayback = null },
-        label = "trailer-transition",
+    val trailerVisible = trailerPlayback != null && trailerRunning
+    val trailerStageAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (trailerVisible && trailerFrameReady) 1f else 0f,
+        animationSpec = androidx.compose.animation.core.tween(1200),
+        label = "trailer-picture",
     )
-    val pageAlpha = (1f - trailerTransition * 2f).coerceIn(0f, 1f)
-    val trailerStageAlpha = ((trailerTransition - 0.5f) * 2f).coerceIn(0f, 1f)
-    /**
-     * The card's own fade, on its own curve in each direction.
-     *
-     * Arriving, it decelerates into place as the page recedes — the two halves of one movement. It
-     * leaves more slowly than it came, and over a trailer that is already playing at full opacity
-     * behind it, so the reveal is a dissolve into moving picture rather than a cut to it.
-     */
-    val trailerIntroAlpha by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (trailerIntroVisible) 1f else 0f,
-        animationSpec = if (trailerIntroVisible) {
-            TvMotion.enterSpec(TvMotion.Expand)
-        } else {
-            TvMotion.standardSpec(TvMotion.Expand + 160)
-        },
-        label = "trailer-intro",
+    val pageAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (trailerVisible && trailerCopyHidden) 0f else 1f,
+        animationSpec = androidx.compose.animation.core.tween(1400),
+        label = "trailer-hero-copy",
     )
-    // A little way back into the screen as it goes, so the page reads as making room rather than
-    // simply dimming.
-    val pageScale = 1f - 0.04f * (1f - pageAlpha)
+    LaunchedEffect(trailerRunning, trailerFrameReady) {
+        trailerCopyHidden = false
+        if (trailerRunning && trailerFrameReady) {
+            delay(4_000L)
+            trailerCopyHidden = true
+        }
+    }
+    // Keep the last frame mounted throughout the return dissolve, including an early Back.
+    LaunchedEffect(trailerRunning) {
+        if (!trailerRunning) {
+            delay(1400L)
+            trailerPlayback = null
+            trailerFrameReady = false
+        }
+    }
 
     fun dismissTrailer() {
-        if (!trailerRunning && !trailerIntroVisible) return
-        // Cleared first: it is also how the raising sequence learns it has been called off, so a
-        // Back pressed during the card does not have the trailer arrive a second later anyway.
-        trailerIntroVisible = false
+        if (!trailerRunning) return
+        trailerCopyHidden = false
         trailerRunning = false
         scope.launch {
             // Focus goes back once the page is on its way in. Any earlier and the request lands on
@@ -586,30 +561,14 @@ fun DetailScreen(
         }
         trailerCountdown = null
         // Three overlapping stages rather than three steps.
-        //
-        // The card is raised first, and the page runs its own leaving movement underneath it — the
-        // card fades up as the page recedes, so what the viewer sees is one handover. The trailer
-        // is then started *behind* the still-opaque card, given a moment to produce its first
-        // frame, and only then is the card dissolved off it. Nothing here cuts: at no point does
-        // something opaque appear or disappear on a single frame.
-        trailerIntroVisible = true
-        delay(TrailerIntroMs)
-        // Back during the card cancels the whole thing, and the flag is how that arrives here.
-        if (!trailerIntroVisible) return@LaunchedEffect
+        trailerFrameReady = false
         trailerPlayback = playback
         trailerRunning = true
         trailerPlayed = true
-        delay(TrailerIntroHandoverMs)
-        trailerIntroVisible = false
     }
 
-    // Flipped on the same two edges the page's own fade turns on, so the shell can run the rail and
-    // the clock out and back on the same curve rather than blinking them off over a page that is
-    // still there.
-    // The card counts as the trailer having started, as far as the shell is concerned: the rail and
-    // the clock should already be leaving while it is up, not arrive with the film.
-    DisposableEffect(trailerVisible || trailerIntroVisible) {
-        setImmersiveContent(trailerVisible || trailerIntroVisible)
+    DisposableEffect(trailerVisible) {
+        setImmersiveContent(trailerVisible)
         onDispose { setImmersiveContent(false) }
     }
 
@@ -851,17 +810,7 @@ fun DetailScreen(
     val backgroundColor = MaterialTheme.colorScheme.background
 
     Box(Modifier.fillMaxSize().background(backgroundColor)) {
-        // The page as one layer, so the trailer exchanges with the whole thing — artwork, scrims,
-        // hero and rows together — instead of each part fading on its own schedule.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    alpha = pageAlpha
-                    scaleX = pageScale
-                    scaleY = pageScale
-                },
-        ) {
+        Box(Modifier.fillMaxSize()) {
         // A catalogue title — a TMDB id, or an IMDb id the details are resolved through — keeps its
         // backdrop exactly as before. Any other id is an add-on's or a plugin's own, whose artwork can
         // be any shape and may have no backdrop at all, so it adapts instead, falling back to the
@@ -896,6 +845,35 @@ fun DetailScreen(
             }
         }
 
+        trailerPlayback?.let { playback ->
+            TrailerStage(
+                playback = playback,
+                maxHeight = trailerMaxHeight,
+                active = trailerRunning,
+                onStarted = { trailerFrameReady = true },
+                focusRequester = trailerRequester,
+                onEnded = { dismissTrailer() },
+                onFailed = {
+                    // A resolved file that then fails is worth one more try by the other route
+                    // before the viewer is put back on the page. These links are short-lived and
+                    // single-use, so one that was good when it was resolved can be refused a moment
+                    // later — and the embed does not depend on them at all.
+                    val embedKey = trailerCandidateUrls.firstNotNullOfOrNull { youtubeTrailerKey(it) }
+                    if (playback is TrailerPlayback.Native && embedKey != null) {
+                        TvDebugLogger.w("Trailer", "native playback failed; falling back to the embed")
+                        trailerFrameReady = false
+                        trailerPlayback = TrailerPlayback.Embed(embedKey)
+                    } else {
+                        trailerUnavailable = true
+                        dismissTrailer()
+                    }
+                },
+                onBack = { dismissTrailer() },
+                modifier = Modifier.graphicsLayer { alpha = trailerStageAlpha },
+            )
+        }
+        // Keep scrims, copy and rows in place; only their composited opacity changes.
+        Box(Modifier.fillMaxSize().graphicsLayer { alpha = pageAlpha }) {
         // Two linear passes, tinted by the artwork's own palette. Linear gradients are far cheaper
         // than the radial ones this replaced, which matters when they cover the whole screen.
         Box(
@@ -1283,44 +1261,6 @@ fun DetailScreen(
         }
         }
 
-        // Above the stage, so the trailer mounts behind it rather than beside it. Kept in
-        // composition until it has finished leaving — removing it on the flag would put the cut
-        // back in, at the other end.
-        if (trailerIntroAlpha > 0.001f) {
-            detail?.let { current ->
-                TrailerIntroCard(
-                    backdropUrl = current.backdrop ?: current.poster,
-                    titleLogoUrl = current.titleLogo,
-                    title = current.title,
-                    progress = trailerIntroAlpha,
-                )
-            }
-        }
-
-        trailerPlayback?.let { playback ->
-            TrailerStage(
-                playback = playback,
-                maxHeight = trailerMaxHeight,
-                active = trailerRunning,
-                focusRequester = trailerRequester,
-                onEnded = { dismissTrailer() },
-                onFailed = {
-                    // A resolved file that then fails is worth one more try by the other route
-                    // before the viewer is put back on the page. These links are short-lived and
-                    // single-use, so one that was good when it was resolved can be refused a moment
-                    // later — and the embed does not depend on them at all.
-                    val embedKey = trailerCandidateUrls.firstNotNullOfOrNull { youtubeTrailerKey(it) }
-                    if (playback is TrailerPlayback.Native && embedKey != null) {
-                        TvDebugLogger.w("Trailer", "native playback failed; falling back to the embed")
-                        trailerPlayback = TrailerPlayback.Embed(embedKey)
-                    } else {
-                        trailerUnavailable = true
-                        dismissTrailer()
-                    }
-                },
-                onBack = { dismissTrailer() },
-                modifier = Modifier.graphicsLayer { alpha = trailerStageAlpha },
-            )
         }
 
         if (showEpisodeJump) {

@@ -96,6 +96,7 @@ internal fun TrailerStage(
     /** False while the trailer is leaving, which stops the sound before the picture has gone. */
     active: Boolean,
     focusRequester: FocusRequester,
+    onStarted: () -> Unit,
     onEnded: () -> Unit,
     onFailed: () -> Unit,
     onBack: () -> Unit,
@@ -164,6 +165,7 @@ internal fun TrailerStage(
                     maxHeight = playback.source.height ?: maxHeight,
                     playing = active && !paused,
                     startPositionMs = if (retryNativeFromStart) 0L else playback.source.startPositionMs,
+                    onStarted = onStarted,
                     onEnded = onEnded,
                     onFailed = { positionMs ->
                         if (!retryNativeFromStart && playback.source.startPositionMs > 0L && positionMs < 10_000L) {
@@ -184,6 +186,7 @@ internal fun TrailerStage(
                 TrailerEmbedSurface(
                     youtubeKey = playback.youtubeKey,
                     playing = active && !paused,
+                    onStarted = onStarted,
                     onEnded = onEnded,
                     onFailed = onFailed,
                     modifier = Modifier.fillMaxSize(),
@@ -244,11 +247,13 @@ private fun TrailerSurface(
     playing: Boolean,
     /** Where to begin, for sources that carry a lead-in worth skipping. */
     startPositionMs: Long = 0L,
+    onStarted: () -> Unit,
     onEnded: () -> Unit,
     onFailed: (positionMs: Long) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val latestOnStarted = rememberUpdatedState(onStarted)
     val latestOnEnded = rememberUpdatedState(onEnded)
     val latestOnFailed = rememberUpdatedState(onFailed)
     var attachedContainer by remember(url) { mutableStateOf<TrailerTextureContainer?>(null) }
@@ -306,6 +311,7 @@ private fun TrailerSurface(
         // bytes have been read, so the seek is an ordinary one and its span is accepted.
         var startApplied = startPositionMs <= 0L
         val listener = object : Player.Listener {
+            override fun onRenderedFirstFrame() { latestOnStarted.value() }
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY && !startApplied) {
                     startApplied = true
