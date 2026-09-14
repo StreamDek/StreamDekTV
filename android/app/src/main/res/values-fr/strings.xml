@@ -1728,4 +1728,11 @@
   </plurals>
   <string name="action_play_again">Rejouer</string>
   <string name="network_search_placeholder">Rechercher sur %1$s</string>
+  <string name="action_done">Terminé</string>
+  <string name="hint_search_this_list">Rechercher dans cette liste</string>
+  <string name="cloudstream_settings_failed">Impossible d’ouvrir les paramètres de ce plugin.</string>
+  <string name="plugin_settings_apply_on_close">Enregistré. Vos modifications s\'appliquent à la fermeture de ces réglages.</string>
+  <string name="player_live_connecting_source">Connexion à la source %1$s sur %2$s…</string>
+  <string name="player_live_trying_source">La source n\'a pas démarré. Essai de la source %1$s sur %2$s…</string>
+  <string name="player_live_channel_not_responding">Cette chaîne ne répond pas. Réessayez ou choisissez une autre chaîne.</string>
 </resources>

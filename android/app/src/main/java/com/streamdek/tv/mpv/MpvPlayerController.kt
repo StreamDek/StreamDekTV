@@ -35,6 +35,13 @@ interface MpvPlayerController {
     fun setDecoderMode(mode: String?)
 
     /**
+     * Whether "loaded" waits until decoded media is on screen rather than until the stream has been
+     * opened. On for live channels, so a feed that opens but never plays is noticed; see MPVView.
+     * Media3 already reports loaded at READY, which is that point, so it keeps the default.
+     */
+    fun setLoadWaitsForPlayback(waits: Boolean) = Unit
+
+    /**
      * Subtitle appearance, adjustable from the player itself.
      *
      * Both engines already implemented these; they were simply not reachable from the screen, so

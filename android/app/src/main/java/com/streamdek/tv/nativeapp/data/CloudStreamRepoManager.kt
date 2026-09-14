@@ -122,7 +122,11 @@ internal fun isLocalNetworkHost(host: String): Boolean {
     }
 }
 
-data class CsRepo(val url: String, val name: String, val description: String?, val iconUrl: String?, val enabled: Boolean = true)
+/**
+ * One installed collection. [favourite] is set on the phone, where favourite collections' sources are
+ * asked first; it is carried here so a change saved on this television does not clear it.
+ */
+data class CsRepo(val url: String, val name: String, val description: String?, val iconUrl: String?, val enabled: Boolean = true, val favourite: Boolean = false)
 data class CsProviderEntry(
   val repoUrl: String,
   val internalName: String,
@@ -136,19 +140,6 @@ data class CsProviderEntry(
   val installedFilePath: String? = null,
 )
 data class CsPluginState(val repos: List<CsRepo> = emptyList(), val providers: List<CsProviderEntry> = emptyList(), val updatedAt: Long = 0L)
-
-/** A known title used to check that a CloudStream source still scrapes. */
-data class CsTestMedia(
-  val label: String,
-  val title: String,
-  val year: Int?,
-  val type: String,
-  val season: Int? = null,
-  val episode: Int? = null,
-) {
-  fun toRequest(): CloudStreamProviderBridge.StreamRequest =
-    CloudStreamProviderBridge.StreamRequest(title = title, year = year, type = type, season = season, episode = episode)
-}
 
 class CloudStreamRepoManager(private val context: Context) {
   private companion object {
@@ -235,7 +226,7 @@ class CloudStreamRepoManager(private val context: Context) {
       }
       val existingRepo = state.repos.firstOrNull { it.url == url }
       state = state.copy(
-        repos = state.repos.map { if (it.url == url) repo.copy(enabled = existingRepo?.enabled ?: true) else it },
+        repos = state.repos.map { if (it.url == url) repo.copy(enabled = existingRepo?.enabled ?: true, favourite = existingRepo?.favourite ?: false) else it },
         providers = state.providers.filterNot { it.repoUrl == url } + merged,
       )
       save()
@@ -330,50 +321,13 @@ class CloudStreamRepoManager(private val context: Context) {
     notifyProvidersChanged()
   }
 
-  /**
-   * A well-known title to probe a source with, chosen from the types the source advertises.
-   * Returns null for sources StreamDek cannot meaningfully test by title — live/IPTV scrapers
-   * answer with channels rather than titles, so searching one for a film proves nothing.
-   */
-  fun testMediaForProvider(repoUrl: String, internalName: String): CsTestMedia? {
-    val entry = state.providers.firstOrNull { it.repoUrl == repoUrl && it.internalName == internalName } ?: return null
-    val types = entry.tvTypes.map { it.lowercase() }
-    val anime = types.any { "anime" in it } || entry.name.contains("anime", ignoreCase = true)
-    val hasSeries = types.any { it in setOf("tvseries", "anime", "ova", "asiandrama", "cartoon") }
-    val hasMovie = types.any { it in setOf("movie", "animemovie", "documentary") }
-    return when {
-      anime && hasSeries -> CsTestMedia("Attack on Titan S1 E1", "Attack on Titan", 2013, "tv", 1, 1)
-      anime -> CsTestMedia("Spirited Away (2001)", "Spirited Away", 2001, "movie")
-      hasMovie -> CsTestMedia("The Matrix (1999)", "The Matrix", 1999, "movie")
-      hasSeries -> CsTestMedia("Breaking Bad S1 E1", "Breaking Bad", 2008, "tv", 1, 1)
-      // Sources that declare nothing usable are still worth a films probe; live-only ones are not.
-      types.isEmpty() -> CsTestMedia("The Matrix (1999)", "The Matrix", 1999, "movie")
-      else -> null
-    }
-  }
-
-  /** Runs [testMediaForProvider] through this one source and returns a few sample results. */
-  suspend fun testProvider(repoUrl: String, internalName: String): Result<List<AddonStream>> = withContext(Dispatchers.IO) {
-    runCatching {
-      val entry = state.providers.firstOrNull { it.repoUrl == repoUrl && it.internalName == internalName }
-        ?: throw IllegalStateException("This source is no longer listed in its collection.")
-      val media = testMediaForProvider(repoUrl, internalName)
-        ?: throw IllegalStateException("${entry.name} serves live channels, which cannot be checked with a test title.")
-      val file = entry.installedFilePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
-        ?: throw IllegalStateException("Turn ${entry.name} on before testing it.")
-      // Normally already loaded; loading here keeps the button working right after an enable.
-      CloudStreamPluginLoader.load(context.applicationContext, file).getOrThrow()
-      val providers = CloudStreamPluginLoader.providersFor(file.absolutePath)
-      require(providers.isNotEmpty()) { "${entry.name} did not register any provider to test." }
-      CloudStreamProviderBridge.streams(providers, media.toRequest()).take(5)
-    }
-  }
-
   /** The providers usable right now — loaded, and belonging to an enabled source in an enabled repo. */
   fun activeProviders(): List<com.lagradost.cloudstream3.MainAPI> {
-    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
+    val enabledRepos = state.repos.filter { it.enabled }.associateBy { it.url }
     return state.providers
       .filter { it.enabled && it.repoUrl in enabledRepos }
+      // Favourite collections first, as the phone orders them, so their sources answer first.
+      .sortedWith(compareByDescending<CsProviderEntry> { enabledRepos[it.repoUrl]?.favourite == true }.thenBy { it.name.lowercase() })
       .mapNotNull { it.installedFilePath }
       .flatMap(CloudStreamPluginLoader::providersFor)
   }
@@ -484,7 +438,7 @@ class CloudStreamRepoManager(private val context: Context) {
     state = state.copy(updatedAt = System.currentTimeMillis())
     val root = JSONObject().put("updatedAt", state.updatedAt)
     root.put("repos", JSONArray().apply {
-      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled)) }
+      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled).put("favourite", it.favourite)) }
     })
     root.put("providers", JSONArray().apply {
       state.providers.forEach {
@@ -517,7 +471,7 @@ class CloudStreamRepoManager(private val context: Context) {
   fun snapshotJson(): String {
     val root = JSONObject().put("updatedAt", state.updatedAt)
     root.put("repos", JSONArray().apply {
-      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled)) }
+      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled).put("favourite", it.favourite)) }
     })
     root.put("providers", JSONArray().apply {
       state.providers.forEach {
@@ -594,7 +548,7 @@ class CloudStreamRepoManager(private val context: Context) {
     val providers = root.optJSONArray("providers") ?: JSONArray()
     return CsPluginState(
       repos = List(repos.length()) {
-        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true)) }
+        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true), optBoolean("favourite", false)) }
       },
       providers = List(providers.length()) { index ->
         providers.getJSONObject(index).run {
@@ -624,7 +578,7 @@ class CloudStreamRepoManager(private val context: Context) {
     val providers = root.optJSONArray("providers") ?: JSONArray()
     CsPluginState(
       repos = List(repos.length()) {
-        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true)) }
+        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true), optBoolean("favourite", false)) }
       },
       providers = List(providers.length()) { index ->
         providers.getJSONObject(index).run {

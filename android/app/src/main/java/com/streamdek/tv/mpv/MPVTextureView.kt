@@ -23,6 +23,7 @@ class MPVTextureView @JvmOverloads constructor(
         private const val TAG = "StreamDekMPVView"
         private const val MPV_EVENT_END_FILE = 7
         private const val MPV_EVENT_FILE_LOADED = 8
+        private const val MPV_EVENT_PLAYBACK_RESTART = 21
         private const val MPV_FORMAT_NONE = 0
         private const val MPV_FORMAT_FLAG = 3
         private const val MPV_FORMAT_INT64 = 4
@@ -55,6 +56,30 @@ class MPVTextureView @JvmOverloads constructor(
      * stale false and incorrectly surface a suppressed END_FILE as an error.
      */
     @Volatile private var isSwitchingSource = false
+
+    /**
+     * Whether the current source has actually begun to play, as opposed to having been opened.
+     *
+     * mpv reports a duration as soon as it has read a stream's playlist - a live HLS feed announces
+     * its window before a single segment has downloaded - and that used to be taken as "loaded". A
+     * feed whose playlist answered but whose segments never did then looked loaded: the loading
+     * screen went away, the start watchdog stood down, and the viewer was left in front of a black
+     * player with nothing trying another source. Loaded now waits for mpv's playback-restart, which
+     * only comes once decoded media is being presented; the duration seen before it is held until then.
+     */
+    @Volatile private var playbackStarted = false
+    @Volatile private var pendingLoadDuration: Double? = null
+
+    /**
+     * Whether "loaded" waits for playback to start. On for live channels, where a feed that opens but
+     * never plays is common. Off for films and episodes: their resume seek is applied on load, and
+     * applied before the first frame it lands without showing the opening moment first.
+     */
+    @Volatile private var loadWaitsForPlayback = false
+
+    override fun setLoadWaitsForPlayback(waits: Boolean) {
+        loadWaitsForPlayback = waits
+    }
 
     override var onLoadCallback: ((duration: Double, width: Int, height: Int) -> Unit)? = null
     override var onProgressCallback: ((position: Double, duration: Double) -> Unit)? = null
@@ -282,6 +307,8 @@ class MPVTextureView @JvmOverloads constructor(
         // Any END_FILE that fires for the outgoing source will be suppressed
         // until FILE_LOADED confirms the new source has started.
         isSwitchingSource = true
+        playbackStarted = false
+        pendingLoadDuration = null
         // Asked for at the moment playback actually starts rather than when the view is built, so
         // a screen that never plays anything does not silence the room.
         audioFocus.acquire()
@@ -726,6 +753,10 @@ class MPVTextureView @JvmOverloads constructor(
             }
 
             "duration/full", "duration" -> {
+                if (loadWaitsForPlayback && !playbackStarted) {
+                    pendingLoadDuration = value
+                    return
+                }
                 val width = MPVLib.getPropertyInt("width") ?: 0
                 val height = MPVLib.getPropertyInt("height") ?: 0
                 Log.i(
@@ -763,6 +794,22 @@ class MPVTextureView @JvmOverloads constructor(
                 if (!paused) {
                     MPVLib.setPropertyBoolean("pause", false)
                 }
+            }
+
+            MPV_EVENT_PLAYBACK_RESTART -> {
+                // Also sent after every seek; only the first one per source means "it started".
+                if (playbackStarted) return
+                playbackStarted = true
+                if (!loadWaitsForPlayback) return
+                val duration = pendingLoadDuration
+                    ?: MPVLib.getPropertyDouble("duration/full")
+                    ?: MPVLib.getPropertyDouble("duration")
+                    ?: 0.0
+                pendingLoadDuration = null
+                val width = MPVLib.getPropertyInt("width") ?: 0
+                val height = MPVLib.getPropertyInt("height") ?: 0
+                Log.i(TAG, "Playback started duration=${duration}s video=${width}x${height}")
+                dispatchOnMain("onLoadCallback(playbackRestart)") { onLoadCallback?.invoke(duration, width, height) }
             }
 
             MPV_EVENT_END_FILE -> {

@@ -148,6 +148,10 @@ internal const val PlaybackSeekBufferingGraceMs = 8_000L
  */
 private const val LiveReconnectMaxAttempts = 6
 private const val LiveStallTimeoutMs = 15_000L
+/** How long a live source may take to show a picture before the channel's next source is tried. */
+internal const val LiveSourceStartTimeoutMs = 10_000L
+/** How long a live feed must go without needing a retry before its retry budget starts over. */
+private const val LiveRetryBudgetResetMs = 60_000L
 
 private data class SegmentAction(
     val kind: SegmentActionKind,
@@ -450,6 +454,15 @@ fun PlayerScreen(
     var lastWorkingRequestHeaders by remember { mutableStateOf(defaultPlaybackHeaders) }
     var liveReconnectJob by remember { mutableStateOf<Job?>(null) }
     var liveReconnectAttempt by remember { mutableIntStateOf(0) }
+    var lastLiveRetryAtMs by remember { mutableStateOf(0L) }
+    /**
+     * A channel's sources that did not start, so a channel with three dead sources walks through them
+     * once instead of bouncing between the first two. Keyed on the channel, so a switch starts afresh.
+     */
+    var liveFailedSourceKeys by remember(playbackRequest.mediaId) { mutableStateOf(emptySet<String>()) }
+    /** The live URL that last produced a picture; the current source has started when it matches. */
+    var liveStartedSourceUrl by remember { mutableStateOf<String?>(null) }
+    var liveFailoverJob by remember { mutableStateOf<Job?>(null) }
     var pauseInfoVisible by remember { mutableStateOf(false) }
     var lastSeekInputAt by remember { mutableStateOf(0L) }
     var lastSeekDirection by remember { mutableIntStateOf(0) }
@@ -707,10 +720,66 @@ fun PlayerScreen(
         activeLiveRequest = nextRequest
     }
 
+    /**
+     * Moves a live channel on to a source it has not tried yet, from the list its lookup already
+     * ranked. False when there is no such source, so the caller can fall back to reconnecting.
+     */
+    fun failOverToNextLiveSource(reason: String): Boolean {
+        if (!isLive || liveFailoverJob?.isActive == true) return false
+        val current = candidate ?: return false
+        val streams = current.streams
+        if (streams.size < 2) return false
+        val failed = liveFailedSourceKeys + listOfNotNull(current.stream?.let(repository::streamSelectionKey))
+        liveFailedSourceKeys = failed
+        if (streams.none { repository.streamSelectionKey(it) !in failed }) {
+            TvDebugLogger.w("Player", "$reason for ${playbackRequest.mediaId}; every live source has been tried")
+            return false
+        }
+        TvDebugLogger.w("Player", "$reason for ${playbackRequest.mediaId}; trying the next live source")
+        liveReconnectJob?.cancel()
+        liveReconnectJob = null
+        loading = true
+        error = null
+        controlsVisible = false
+        liveChannelRowVisible = false
+        liveFailoverJob = scope.launch {
+            val selected = repository.resolveFirstPlayableSource(
+                request = playbackRequest,
+                streams = streams,
+                skipKeys = failed,
+                onAttemptFailed = { _, key -> liveFailedSourceKeys = liveFailedSourceKeys + key },
+            )
+            val source = selected?.source
+            if (selected != null && source != null) {
+                // The whole list stays with the channel, so the walk can go on from here.
+                candidate = selected.copy(streams = streams)
+                currentRequestHeaders = defaultPlaybackHeaders + source.requestHeaders
+                currentSourceUrl = source.url
+                currentLabel = source.label
+                liveReconnectAttempt = 0
+                sourcesTried += 1
+                resetPlaybackEngineForNewSource()
+            } else {
+                error = playerResources.getString(R.string.player_live_channel_not_responding)
+                loading = false
+                controlsVisible = true
+            }
+        }
+        return true
+    }
+
     fun scheduleLiveReconnect(message: String) {
         if (!isLive || liveReconnectJob?.isActive == true) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        // A long gap since the previous retry means the feed recovered in between, so the budget starts
+        // over. It used to start over on every load instead, and a feed that opens and ends at once - a
+        // plugin's placeholder for an event that has not begun - reloaded every second, forever.
+        if (now - lastLiveRetryAtMs > LiveRetryBudgetResetMs) liveReconnectAttempt = 0
+        lastLiveRetryAtMs = now
         val attempt = liveReconnectAttempt + 1
         val retryAction = liveRetryAction(attempt)
+        // Retrying a source cannot help once its budget is spent; another of the channel's sources can.
+        if (retryAction == LiveRetryAction.GiveUp && failOverToNextLiveSource("live retries exhausted")) return
         if (retryAction == LiveRetryAction.GiveUp) {
             if (!playbackOutcomeReported) {
                 playbackOutcomeReported = true
@@ -1249,6 +1318,9 @@ fun PlayerScreen(
     suspend fun loadPlayback(forceRefresh: Boolean = false, resetReconnectBudget: Boolean = true) {
         liveReconnectJob?.cancel()
         liveReconnectJob = null
+        // A walk through the previous channel's sources must not land its pick on this one.
+        liveFailoverJob?.cancel()
+        liveFailoverJob = null
         if (resetReconnectBudget) liveReconnectAttempt = 0
         pendingSeekJob?.cancel()
         pendingSeekJob = null
@@ -1434,6 +1506,19 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }.getOrDefault(emptyList())
         liveChannelsLoading = false
         TvDebugLogger.i("Player", "live channel row loaded addon=${playbackRequest.sourceAddonId} count=${liveChannels.size}")
+    }
+
+    // A live source that connects but never produces a picture raises no error at all, so nothing
+    // else would ever move on from it and the loading screen would stay up. Past the start window the
+    // channel's next source is tried, or - with none left - the ordinary reconnect budget takes over.
+    // Restarted by every reconnect and engine swap, each of which is a fresh attempt at starting.
+    LaunchedEffect(isLive, currentSourceUrl, activePlaybackEngine, liveReconnectAttempt) {
+        val source = currentSourceUrl
+        if (!isLive || source.isNullOrBlank() || liveStartedSourceUrl == source) return@LaunchedEffect
+        delay(LiveSourceStartTimeoutMs)
+        if (liveStartedSourceUrl == source || currentSourceUrl != source || error != null || liveFailoverJob?.isActive == true) return@LaunchedEffect
+        val reason = "no picture after ${LiveSourceStartTimeoutMs / 1000}s"
+        if (!failOverToNextLiveSource(reason)) scheduleLiveReconnect(reason)
     }
 
     LaunchedEffect(isLive, currentSourceUrl, loading, error) {
@@ -2338,6 +2423,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 }
                 val controller = player as MpvPlayerController
                 controller.apply {
+                    // Before any source is set, so the first load already knows what counts as loaded.
+                    setLoadWaitsForPlayback(isLive)
                     setDecoderMode(playbackPreferences.decoderMode)
                     setHeaders(currentRequestHeaders)
                     onRemoteCenterCallback = {
@@ -2395,7 +2482,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         sourceFallbackNotice = null
                         liveReconnectJob?.cancel()
                         liveReconnectJob = null
-                        liveReconnectAttempt = 0
+                        // The reconnect budget is not reset here: loading is not proof of recovery.
+                        // See scheduleLiveReconnect.
                         lastWorkingSourceUrl = currentSourceUrl
                         lastWorkingLabel = currentLabel
                         lastWorkingRequestHeaders = currentRequestHeaders
@@ -2414,6 +2502,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             }
                         }
                         if (isLive) {
+                            // The load signal repeats while a live window moves, so only a new source
+                            // is written down - after a switch, or after the player worked its way
+                            // past sources that did not start.
+                            if (liveStartedSourceUrl != currentSourceUrl) {
+                                liveStartedSourceUrl = currentSourceUrl
+                                candidate?.stream?.let { repository.rememberLiveSource(playbackRequest.mediaId, it) }
+                            }
                             lastLiveProgressAtMs = System.currentTimeMillis()
                             lastLiveProgressPositionSec = positionSec
                             controlsVisible = false
@@ -2603,7 +2698,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             TvDebugLogger.w("Player", "Media3 failed; falling back to libMPV at ${positionSec}s: $message")
                             activePlaybackEngine = ActivePlaybackEngine.MPV
                         } else if (isLive) {
-                            scheduleLiveReconnect(message)
+                            // A source that has never played gets one reconnect before the next source
+                            // is tried: one that is rejected outright fails the same way every time.
+                            val neverStarted = liveStartedSourceUrl != currentSourceUrl
+                            if (!(neverStarted && liveReconnectAttempt >= 1 && failOverToNextLiveSource(message))) {
+                                scheduleLiveReconnect(message)
+                            }
                         } else {
                             // A stored URL that will not open has gone stale — a debrid link that
                             // expired, a signed CDN URL that lapsed. Drop it before recovering, so
@@ -2675,6 +2775,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             update = { view: android.view.View ->
                 val controller = view as MpvPlayerController
                 playerView = controller
+                controller.setLoadWaitsForPlayback(isLive)
                 controller.setDecoderMode(playbackPreferences.decoderMode)
                 controller.onRemoteCenterCallback = {
                     if (segmentPromptActive) {
@@ -2758,8 +2859,19 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                // A channel with several sources says which one it is on, so a switch reads as the
+                // player working through them rather than as a stall that happens to recover.
+                val liveAttemptLabel = if (!isLive || liveReconnectAttempt > 0) null else candidate?.let { current ->
+                    val key = current.stream?.let(repository::streamSelectionKey)
+                    val index = current.streams.indexOfFirst { repository.streamSelectionKey(it) == key }
+                    if (current.streams.size < 2 || index < 0 || current.source?.url != currentSourceUrl) null else playerResources.getString(
+                        if (liveFailedSourceKeys.isEmpty()) R.string.player_live_connecting_source else R.string.player_live_trying_source,
+                        AppFormats.number(appLanguage, index + 1),
+                        AppFormats.number(appLanguage, current.streams.size),
+                    )
+                }
                 Text(
-                    text = sourceFallbackNotice ?: continueSourceNotice ?: currentLabel,
+                    text = sourceFallbackNotice ?: continueSourceNotice ?: liveAttemptLabel ?: currentLabel,
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                     color = if (sourceFallbackNotice != null || continueSourceNotice != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f),
                     maxLines = 2,

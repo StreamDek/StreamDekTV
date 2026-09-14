@@ -1681,4 +1681,11 @@
   <string name="app_version_required_message">This version of StreamDek is no longer supported. Update to continue.</string>
   <string name="action_play_again">Play Again</string>
   <string name="network_search_placeholder">Search %1$s</string>
+  <string name="action_done">Done</string>
+  <string name="hint_search_this_list">Search this list</string>
+  <string name="cloudstream_settings_failed">Could not open this plugin’s settings.</string>
+  <string name="plugin_settings_apply_on_close">Saved. Your changes apply when you close these settings.</string>
+  <string name="player_live_connecting_source">Connecting to source %1$s of %2$s…</string>
+  <string name="player_live_trying_source">Source didn\'t start. Trying source %1$s of %2$s…</string>
+  <string name="player_live_channel_not_responding">This channel isn\'t responding. Try again or choose another channel.</string>
 </resources>

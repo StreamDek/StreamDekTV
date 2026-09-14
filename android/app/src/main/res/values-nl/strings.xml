@@ -1677,4 +1677,11 @@
   </plurals>
   <string name="action_play_again">Opnieuw afspelen</string>
   <string name="network_search_placeholder">Zoeken in %1$s</string>
+  <string name="action_done">Klaar</string>
+  <string name="hint_search_this_list">Zoeken in deze lijst</string>
+  <string name="cloudstream_settings_failed">De instellingen van deze plugin konden niet worden geopend.</string>
+  <string name="plugin_settings_apply_on_close">Opgeslagen. Je wijzigingen worden toegepast wanneer je deze instellingen sluit.</string>
+  <string name="player_live_connecting_source">Verbinden met bron %1$s van %2$s…</string>
+  <string name="player_live_trying_source">Bron startte niet. Bron %1$s van %2$s proberen…</string>
+  <string name="player_live_channel_not_responding">Dit kanaal reageert niet. Probeer het opnieuw of kies een ander kanaal.</string>
 </resources>

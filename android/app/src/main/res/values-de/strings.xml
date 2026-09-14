@@ -1677,4 +1677,11 @@
   </plurals>
   <string name="action_play_again">Erneut abspielen</string>
   <string name="network_search_placeholder">%1$s durchsuchen</string>
+  <string name="action_done">Fertig</string>
+  <string name="hint_search_this_list">In dieser Liste suchen</string>
+  <string name="cloudstream_settings_failed">Die Einstellungen dieses Plugins konnten nicht geöffnet werden.</string>
+  <string name="plugin_settings_apply_on_close">Gespeichert. Deine Änderungen werden übernommen, wenn du diese Einstellungen schließt.</string>
+  <string name="player_live_connecting_source">Verbindung mit Quelle %1$s von %2$s…</string>
+  <string name="player_live_trying_source">Quelle startete nicht. Versuche Quelle %1$s von %2$s…</string>
+  <string name="player_live_channel_not_responding">Dieser Sender reagiert nicht. Versuche es erneut oder wähle einen anderen Sender.</string>
 </resources>

@@ -45,6 +45,10 @@ object CloudStreamPluginLoader {
 
   private val loaded = LinkedHashMap<String, LoadedCsPlugin>()
 
+  /** Moves on every load and unload, so answers derived from the loaded set know when to refresh. */
+  @Volatile var generation = 0
+    private set
+
   fun loadedPlugins(): List<LoadedCsPlugin> = synchronized(loaded) { loaded.values.toList() }
 
   fun isLoaded(filePath: String): Boolean = synchronized(loaded) { loaded.containsKey(filePath) }
@@ -62,11 +66,18 @@ object CloudStreamPluginLoader {
   fun providerFiles(): Map<String, String> =
     loadedPlugins().flatMap { plugin -> plugin.providers.map { provider -> provider.name to plugin.filePath } }.toMap()
 
+  @Synchronized
   fun load(context: Context, file: File): Result<LoadedCsPlugin> = runCatching {
     val filePath = file.absolutePath
     synchronized(loaded) { loaded[filePath] }?.let { return@runCatching it }
 
     CloudStreamRuntime.initialize(context)
+    // Plugins can read CommonActivity.activity in their constructor, before load() runs; optional
+    // providers in particular may be selected through its SharedPreferences.
+    val pluginHost = if (context is AppCompatActivity) context else CloudStreamRuntime.pluginHost(context)
+    (pluginHost as? android.app.Activity)?.let {
+      com.lagradost.cloudstream3.CommonActivity.setActivityInstance(it)
+    }
 
     // Android 14+ refuses to load code the app itself wrote unless the file is read-only.
     runCatching { if (!file.setReadOnly()) Log.w(TAG, "Failed to set ${file.name} read-only") }
@@ -103,17 +114,27 @@ object CloudStreamPluginLoader {
     // belong to this particular plugin.
     val before = APIHolder.allProviders.toList()
     // An AppCompatActivity, as CloudStream itself hands over; see CloudStreamRuntime.pluginHost.
-    if (instance is Plugin) instance.load(CloudStreamRuntime.pluginHost(context)) else instance.load()
+    try {
+      if (instance is Plugin) instance.load(pluginHost) else instance.load()
+    } catch (failure: Throwable) {
+      // A plugin may register its default provider before failing to load optional ones. Leaving
+      // those registrations behind would duplicate them on the next attempt.
+      APIHolder.allProviders.removeAll { candidate -> before.none { it === candidate } }
+      throw failure
+    }
     val registered = APIHolder.allProviders.toList().filter { candidate -> before.none { it === candidate } }
 
     val record = LoadedCsPlugin(filePath, name, version, instance, registered)
     synchronized(loaded) { loaded[filePath] = record }
+    generation += 1
     Log.i(TAG, "Loaded $name (v$version) with ${registered.size} provider(s): ${registered.joinToString { it.name }}")
     record
   }.onFailure { Log.e(TAG, "Failed to load CloudStream plugin ${file.name}", it) }
 
+  @Synchronized
   fun unload(filePath: String) {
     val record = synchronized(loaded) { loaded.remove(filePath) } ?: return
+    generation += 1
     runCatching { record.instance.beforeUnload() }
       .onFailure { Log.w(TAG, "beforeUnload failed for ${record.name}", it) }
     runCatching {
@@ -163,9 +184,9 @@ object CloudStreamRuntime {
    * StreamDek's own activity is not an AppCompatActivity, and making it one would change how the app
    * applies its language and night mode. So plugins get a stand-in: a real AppCompatActivity that is
    * never started or shown, whose Context is the application. Anything a plugin does with it as a
-   * Context behaves exactly as before. What it keeps it for — its own settings screen, or a donation
-   * dialog — StreamDek never opens, and a plugin that tries anyway fails inside its own error
-   * handling, since there is no window behind it.
+   * Context behaves exactly as before. Opening a plugin's settings instead reloads that plugin with
+   * CloudStreamSettingsActivity, a real host window. Background loading keeps this stand-in so it
+   * cannot hold the main activity alive or unexpectedly show a window.
    *
    * An Activity must be constructed on the main thread (its lifecycle insists), while plugins load on
    * an IO thread; so it is built there once and shared. Should that ever fail, plugins get the

@@ -63,6 +63,20 @@ class ProfilePluginStateTest {
     }
 
     @Test
+    fun `a CloudStream collection marked favourite on the phone stays favourite through a write here`() {
+        // Switching a CloudStream source on or off here sends the whole document back. Before the
+        // flag was on the model, that write dropped it and un-favourited the collection everywhere.
+        val json = """
+            {"cloudstream":{"repos":[{"url":"https://cs.example/repo.json","name":"CNC","enabled":true,"favourite":true}],"providers":[],"updatedAt":7}}
+        """.trimIndent()
+
+        val state = Gson().fromJson(json, ProfilePluginState::class.java)
+        val rewritten = Gson().fromJson(Gson().toJson(state), ProfilePluginState::class.java)
+
+        assertTrue(rewritten.cloudstream!!.repos.single().favourite)
+    }
+
+    @Test
     fun `a provider that has never been configured parses without settings`() {
         val state = Gson().fromJson(
             """{"providers":[{"id":"pynvix","repo":"r","name":"Pynvix","types":["movie"],"enabled":true}]}""",

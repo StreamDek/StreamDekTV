@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.AnimeLoadResponse
 import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.LiveStreamLoadResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.getImdbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.getTMDbId
@@ -59,22 +60,33 @@ object CloudStreamCatalog {
     // whole page at once still has its named list picked out when there is one.
     val lists = response.items
     val chosen = lists.firstOrNull { it.name.equals(page.name, ignoreCase = true) }?.let(::listOf) ?: lists
-    chosen.flatMap { it.list }.distinctBy { it.url }.map { toMediaItem(provider, it) }
+    chosen.flatMap { it.list }.distinctBy { it.url }.map { toMediaItem(provider, it, rowName = page.name) }
   }
 
-  fun toMediaItem(provider: MainAPI, result: SearchResponse): MediaItem {
+  /**
+   * A provider's title as a StreamDek card.
+   *
+   * A channel is typed "live", so Home opens it in the live player rather than on a detail page,
+   * favourites accept it, and the player's channel row is the rest of [rowName].
+   */
+  fun toMediaItem(provider: MainAPI, result: SearchResponse, rowName: String? = null): MediaItem {
     val year = when (result) {
       is MovieSearchResponse -> result.year
       is TvSeriesSearchResponse -> result.year
       is AnimeSearchResponse -> result.year
       else -> null
     }
+    val live = result.type == TvType.Live || isLiveSource(provider.name)
     return MediaItem(
       id = cloudStreamMediaId(provider.name, result.url),
       title = result.name,
-      type = streamDekType(result.type),
+      type = if (live) "live" else streamDekType(result.type),
       poster = result.posterUrl,
       year = year?.toString(),
+      sourceAddonId = if (live) cloudStreamAddonId(provider) else null,
+      sourceAddonName = if (live) provider.name else null,
+      sourceCatalogId = if (live) rowName?.takeIf { it.isNotBlank() } else null,
+      sourceCatalogName = if (live) rowName?.takeIf { it.isNotBlank() } else null,
     )
   }
 
@@ -86,6 +98,51 @@ object CloudStreamCatalog {
   private fun streamDekType(type: TvType?): String = when (type) {
     TvType.TvSeries, TvType.Cartoon, TvType.Anime, TvType.OVA, TvType.AsianDrama, TvType.Podcast, TvType.AudioBook -> "tv"
     else -> "movie"
+  }
+
+  /**
+   * Whether a title plays as a live channel: the provider described it as live, or - when there is
+   * no description to go on - the provider serves nothing but live channels.
+   */
+  fun isLive(provider: MainAPI, detail: LoadResponse?): Boolean {
+    if (detail != null && (detail is LiveStreamLoadResponse || detail.type == TvType.Live)) return true
+    return isLiveSource(provider.name) && (detail == null || seriesEpisodes(detail).isEmpty())
+  }
+
+  /**
+   * Whether a provider serves live channels, by its own declaration or its plugin's.
+   *
+   * A provider's own types are not always enough. CNCVerse's Sportzx lists its channel groups -
+   * Music among them - through a provider that calls every entry a movie while declaring films,
+   * series and live together; the plugin as published in its repository says Live and nothing else.
+   * Either declaration counts.
+   */
+  fun isLiveSource(providerName: String): Boolean = liveSources().first.contains(providerName)
+
+  /** Row-id sources ([cloudStreamRowSourceId]) of the providers [isLiveSource] answers true for. */
+  fun liveRowSources(): Set<String> = liveSources().second
+
+  private class LiveSourceCache(val state: CsPluginState, val generation: Int, val names: Set<String>, val rowSources: Set<String>)
+  @Volatile private var liveSourceCache: LiveSourceCache? = null
+
+  private fun liveSources(): Pair<Set<String>, Set<String>> {
+    if (!CloudStreamPlugins.isInitialized) return emptySet<String>() to emptySet()
+    val state = CloudStreamPlugins.manager.state
+    val generation = CloudStreamPluginLoader.generation
+    // By identity: the manager replaces its state on every change, and this is asked per card.
+    liveSourceCache?.takeIf { it.state === state && it.generation == generation }?.let { return it.names to it.rowSources }
+    val liveOnlyPlugins = state.providers
+      .filter { entry -> entry.tvTypes.isNotEmpty() && entry.tvTypes.all { it.equals(TvType.Live.name, ignoreCase = true) } }
+      .mapNotNullTo(hashSetOf()) { it.installedFilePath }
+    val names = CloudStreamPluginLoader.loadedPlugins().flatMap { plugin ->
+      plugin.providers.filter { provider ->
+        plugin.filePath in liveOnlyPlugins ||
+          runCatching { provider.supportedTypes }.getOrDefault(emptySet()).let { types -> types.isNotEmpty() && types.all { it == TvType.Live } }
+      }.map { it.name }
+    }.toSet()
+    val rowSources = names.mapTo(hashSetOf(), ::cloudStreamRowSourceId)
+    liveSourceCache = LiveSourceCache(state, generation, names, rowSources)
+    return names to rowSources
   }
 
   /** A loaded title as StreamDek's detail page shows it, seasons included. */
@@ -209,6 +266,38 @@ private fun cloudStreamHomeRowId(provider: MainAPI, index: Int, name: String): S
 
 internal fun isCloudStreamHomeRowId(id: String): Boolean =
   homeCatalogRowAddonId(id)?.startsWith(CLOUDSTREAM_ROW_SOURCE_PREFIX) == true
+
+/**
+ * A CloudStream row of channels: its id says so, or its provider or plugin declares itself live even
+ * though the id - fixed when the row was first offered - does not.
+ */
+internal fun isLiveCloudStreamHomeRowId(id: String): Boolean =
+  isCloudStreamHomeRowId(id) &&
+    (id.split(":").getOrNull(2) == "live" || homeCatalogRowAddonId(id) in CloudStreamCatalog.liveRowSources())
+
+/** The provider name in a live CloudStream card's source id ([cloudStreamAddonId]), or null. */
+internal fun cloudStreamProviderNameFromAddonId(addonId: String?): String? =
+  addonId?.takeIf { it.startsWith("cloudstream:") }?.removePrefix("cloudstream:")?.takeIf { it.isNotBlank() }
+
+/**
+ * A favourite channel with the source a CloudStream card here carries.
+ *
+ * The phone saves a CloudStream channel without one - it routes these by media id alone - while
+ * favourites here are matched on source and id together. Filled in, a channel starred on the phone
+ * shows as starred here and starring it again cannot add a second copy.
+ */
+internal fun withCloudStreamChannelSource(item: MediaItem): MediaItem {
+  if (!item.sourceAddonId.isNullOrBlank()) return item
+  val providerName = decodeCloudStreamMediaId(item.id)?.first ?: return item
+  return item.copy(sourceAddonId = "cloudstream:$providerName", sourceAddonName = item.sourceAddonName ?: providerName)
+}
+
+/**
+ * Whether a saved card is really a CloudStream channel, which has nowhere to carry on from. Entries
+ * written before a plugin's channels were recognised as live were saved as films.
+ */
+internal fun isCloudStreamLiveChannelId(id: String): Boolean =
+  decodeCloudStreamMediaId(id)?.let { (provider, _) -> CloudStreamCatalog.isLiveSource(provider) } == true
 
 /**
  * The rows every loaded provider offers, for the Home rows list. Only loaded providers offer any: a

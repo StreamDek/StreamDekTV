@@ -98,6 +98,8 @@ import com.streamdek.tv.nativeapp.data.APP_IDLE_CHOICES_MINUTES
 import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
 import com.streamdek.tv.nativeapp.data.AppLanguage
+import com.streamdek.tv.nativeapp.data.CloudStreamPluginLoader
+import com.streamdek.tv.nativeapp.data.CloudStreamPlugins
 import com.streamdek.tv.nativeapp.data.DefaultTrailerCacheClearHours
 import com.streamdek.tv.nativeapp.data.DefaultTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.DoHSettings
@@ -1379,6 +1381,8 @@ fun SettingsScreen(
                     // fetches a multi-megabyte extension, so it is worth being clear which is which.
                     val cloudStream = pluginState?.cloudstream
                     if (cloudStream != null && cloudStream.repos.isNotEmpty()) {
+                        // Recomposed as sources finish loading, so a settings row appears once its plugin is up.
+                        val cloudStreamProvidersVersion by repository.cloudStreamProvidersVersion.collectAsState()
                         SettingsPanel(stringResource(R.string.settings_tv_cloudstream_sources)) {
                             InfoLine(
                                 stringResource(R.string.info_collections),
@@ -1441,6 +1445,21 @@ fun SettingsScreen(
                                                             else -> settingsResources.getString(R.string.settings_named_off, sourceName)
                                                         }
                                                         complete(updated != null)
+                                                    }
+                                                }
+                                                // Some plugins, PlayZTV and SKTech among them, only offer their
+                                                // channels once sub-sources are chosen in their own settings.
+                                                val pluginPath = remember(cloudStreamProvidersVersion, source.enabled) {
+                                                    cloudStreamSettingsPath(source.repoUrl, source.internalName).takeIf { source.enabled }
+                                                }
+                                                if (pluginPath != null) {
+                                                    SettingsActionRow(
+                                                        stringResource(R.string.plugin_source_settings),
+                                                        source.name.ifBlank { source.internalName },
+                                                        stringResource(R.string.action_open),
+                                                        selectedRequester,
+                                                    ) {
+                                                        context.startActivity(CloudStreamSettingsActivity.intent(context, pluginPath))
                                                     }
                                                 }
                                             }
@@ -2319,6 +2338,21 @@ private fun ThemeColorSwatch(color: Color) {
             .background(color, androidx.compose.foundation.shape.CircleShape)
             .border(1.dp, Color.White.copy(alpha = 0.24f), androidx.compose.foundation.shape.CircleShape),
     )
+}
+
+/**
+ * The loaded file of a CloudStream source that offers settings of its own, or null.
+ *
+ * Only a source loaded on this television can be asked: its settings are the plugin's own screen,
+ * and the plugin keeps them on this device.
+ */
+private fun cloudStreamSettingsPath(repoUrl: String, internalName: String): String? {
+    if (!CloudStreamPlugins.isInitialized) return null
+    val path = CloudStreamPlugins.manager.state.providers
+        .firstOrNull { it.repoUrl == repoUrl && it.internalName == internalName }
+        ?.installedFilePath ?: return null
+    val plugin = CloudStreamPluginLoader.loadedPlugins().firstOrNull { it.filePath == path } ?: return null
+    return path.takeIf { (plugin.instance as? com.lagradost.cloudstream3.plugins.Plugin)?.openSettings != null }
 }
 
 @Composable

@@ -1693,4 +1693,11 @@
   </plurals>
   <string name="action_play_again">Reproduzir novamente</string>
   <string name="network_search_placeholder">Pesquisar em %1$s</string>
+  <string name="action_done">Concluído</string>
+  <string name="hint_search_this_list">Pesquisar nesta lista</string>
+  <string name="cloudstream_settings_failed">Não foi possível abrir as definições deste plugin.</string>
+  <string name="plugin_settings_apply_on_close">Guardado. As alterações são aplicadas quando fechar estas definições.</string>
+  <string name="player_live_connecting_source">A ligar à fonte %1$s de %2$s…</string>
+  <string name="player_live_trying_source">A fonte não arrancou. A tentar a fonte %1$s de %2$s…</string>
+  <string name="player_live_channel_not_responding">Este canal não está a responder. Tente novamente ou escolha outro canal.</string>
 </resources>

@@ -2,6 +2,7 @@
 .env
 .expo
 .gradle
+/android/.kotlin
 .idea
 .vscode
 .DS_Store

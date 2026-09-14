@@ -421,6 +421,8 @@ private const val ADDON_RAIL_PREFIX = "addon:"
 private const val CLOUDSTREAM_ROW_TTL_MS = 10 * 60_000L
 /** How soon a CloudStream Home row that came back empty is asked for again. */
 private const val CLOUDSTREAM_ROW_RETRY_MS = 30_000L
+/** The preference slot a channel's working source is remembered under; see rememberLiveSource. */
+private const val LIVE_SOURCE_PREFERENCE_TYPE = "live-source"
 
 /**
  * Display order of the Home slots, independent of the order they finish loading in.
@@ -758,6 +760,22 @@ class StreamDekRepository(
     /** Bumped whenever the loaded CloudStream sources change, so Home fetches or drops their rows. */
     private val cloudStreamProvidersState = MutableStateFlow(0L)
     val cloudStreamProvidersVersion: StateFlow<Long> = cloudStreamProvidersState
+
+    /**
+     * The CloudStream providers [cloudStreamProvidersState] last announced, by name.
+     *
+     * The provider list is announced again on every profile switch whether or not it changed, and
+     * each announcement used to reload Home in full - a second complete load behind every switch,
+     * arriving a moment after Home first appeared. Only a different set is announced now.
+     */
+    @Volatile private var announcedCloudStreamSignature: String? = null
+
+    private fun announceCloudStreamProviders() {
+        val signature = loadedCloudStreamProviders().map { it.name }.sorted().joinToString("|")
+        if (signature == announcedCloudStreamSignature) return
+        announcedCloudStreamSignature = signature
+        cloudStreamProvidersState.value = cloudStreamProvidersState.value + 1
+    }
     /**
      * A TMDB page opened from a CloudStream title, by its id, to the provider and link it came from —
      * so that provider's own sources are asked for it by link, not only by a search for its name.
@@ -787,7 +805,7 @@ class StreamDekRepository(
      */
     private val profilePreferencesState = MutableStateFlow(JsonObject())
     private val fusionBadgeSourcesState = MutableStateFlow<Map<String, FusionBadgeSource>>(emptyMap())
-    private val favouriteChannelsState = MutableStateFlow(sessionStore.loadFavouriteChannels())
+    private val favouriteChannelsState = MutableStateFlow(sessionStore.loadFavouriteChannels().map(::withCloudStreamChannelSource))
     private var lastPlaybackRequest: PlaybackRequest? = null
 
     val session: StateFlow<AuthSession?> = sessionStore.session
@@ -845,8 +863,21 @@ class StreamDekRepository(
         syncFavouriteChannels(current)
     }
 
+    /**
+     * Whether a Continue Watching card is really a live channel, which has no place to carry on from.
+     *
+     * Not every card arrives marked as one: entries written before a plugin's channels were recognised
+     * as live were saved as films, and the account's list is filled by other devices too. So the answer
+     * is taken from everything that can know it - the card's type, a live-only CloudStream provider,
+     * and the channels this profile already has as favourites.
+     */
+    internal fun isLiveChannelResumeItem(item: ContinueWatchingItem): Boolean =
+        item.type.lowercase(Locale.US) in setOf("live", "channel", "sport", "sports", "iptv", "events") ||
+            isCloudStreamLiveChannelId(item.id) ||
+            favouriteChannelsState.value.any { it.id == item.id }
+
     private fun reloadFavouriteChannels() {
-        favouriteChannelsState.value = sessionStore.loadFavouriteChannels()
+        favouriteChannelsState.value = sessionStore.loadFavouriteChannels().map(::withCloudStreamChannelSource)
     }
 
     private fun syncFavouriteChannels(items: List<MediaItem>) {
@@ -888,7 +919,7 @@ class StreamDekRepository(
         ) ?: return
         if (cloud.updatedAt > 0L) {
             sessionStore.saveFavouriteChannels(cloud.items)
-            favouriteChannelsState.value = cloud.items
+            favouriteChannelsState.value = cloud.items.map(::withCloudStreamChannelSource)
         } else if (local.isNotEmpty()) {
             api.put<LiveFavouriteChannelsEnvelope>(
                 "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/live-favourites",
@@ -1777,6 +1808,18 @@ class StreamDekRepository(
         catalogId: String?,
     ): List<MediaItem> {
         if (addonId.isNullOrBlank()) return emptyList()
+        // A CloudStream channel's neighbours are the rest of the provider row it came from; no add-on
+        // on the account knows that source, so asking the backend would only come back empty.
+        cloudStreamProviderNameFromAddonId(addonId)?.let { providerName ->
+            val provider = loadedCloudStreamProviders().firstOrNull { it.name == providerName } ?: return emptyList()
+            val rows = CloudStreamCatalog.mainPageRows(provider)
+            val row = rows.firstOrNull { it.page.name == catalogId } ?: rows.firstOrNull() ?: return emptyList()
+            return runCatching { CloudStreamCatalog.mainPageItems(provider, row.page) }
+                .onFailure { TvDebugLogger.w("CloudStream", "channel row from $providerName failed", it) }
+                .getOrDefault(emptyList())
+                .filter { it.type == "live" }
+                .take(CloudStreamCatalog.ROW_MAX_ITEMS)
+        }
         val collections = fetchAddonCatalogCollections(addonId = addonId) { _, mappedType -> mappedType == "live" }
             .filter { collection ->
                 collection.addonId == addonId &&
@@ -2405,16 +2448,28 @@ class StreamDekRepository(
     }
 
     private suspend fun loadCloudStreamRail(id: String, providers: List<com.lagradost.cloudstream3.MainAPI>): HomeRail? {
-        val row = resolveCloudStreamHomeRow(id, providers) ?: return null
+        val row = resolveCloudStreamHomeRow(id, providers) ?: run {
+            TvDebugLogger.i("CloudStream", "home row $id has no loaded provider (loaded: ${providers.joinToString { cloudStreamRowSourceId(it.name) }})")
+            return null
+        }
         val items = runCatching { CloudStreamCatalog.mainPageItems(row.provider, row.page) }
-            .onFailure { TvDebugLogger.w("CloudStream", "row ${row.page.name} from ${row.provider.name} failed", it) }
+            // The cause is named in the message too: Log drops the whole stack for an UnknownHostException.
+            .onFailure {
+                TvDebugLogger.w(
+                    "CloudStream",
+                    "row ${row.page.name} from ${row.provider.name} failed: " +
+                        generateSequence(it) { cause -> cause.cause }.joinToString(" <- ") { cause -> "${cause.javaClass.simpleName}: ${cause.message}" },
+                    it,
+                )
+            }
             .getOrDefault(emptyList())
         TvDebugLogger.i("CloudStream", "home row ${row.provider.name} ${row.page.name}: ${items.size} item(s)")
         return HomeRail(
             id = id,
             title = buildAddonRailTitle(row.provider.name, row.page.name.ifBlank { null }),
             items = items.take(CloudStreamCatalog.ROW_MAX_ITEMS),
-            isLive = id.split(":").getOrNull(2) == "live",
+            // By the provider as well as the id: a plugin can declare itself live after its rows were offered.
+            isLive = isLiveCloudStreamHomeRowId(id),
         )
     }
 
@@ -2438,7 +2493,10 @@ class StreamDekRepository(
         val native = CloudStreamCatalog.toMediaDetail(id, loaded) { season ->
             label(R.string.detail_season_number, "Season $season", season)
         }
-        val matchedId = CloudStreamCatalog.tmdbId(loaded) ?: CloudStreamCatalog.imdbId(loaded)
+        // A channel is not a film: matching "Al Jazeera" against the catalogue would dress it up as
+        // one, with a runtime and a resume point. It stays the provider's own page.
+        val live = CloudStreamCatalog.isLive(provider, loaded)
+        val matchedId = if (live) null else CloudStreamCatalog.tmdbId(loaded) ?: CloudStreamCatalog.imdbId(loaded)
         val matched = matchedId?.let { runCatching { fetchDetail(it, native.type, forceRefresh) }.getOrNull() }
         if (matched != null) {
             cloudStreamOrigins[matched.id] = providerName to url
@@ -2618,7 +2676,8 @@ class StreamDekRepository(
             // Removing one progress row is an optimistic, targeted edit. A tracking provider may
             // still return its pre-dismissal snapshot for a short time, so keep the local removal
             // over that response instead of replacing the whole Library grid with stale state.
-            continueWatching = applyPendingContinueDismissals(cacheKey, mergedContinueWatching),
+            continueWatching = applyPendingContinueDismissals(cacheKey, mergedContinueWatching)
+                .filterNot { isLiveChannelResumeItem(it) },
             // A provider can briefly return its pre-write snapshot. Keep confirmed edits over
             // that answer long enough for Trakt/SIMKL/MDBList to converge, including when the
             // viewer leaves Library and comes straight back.
@@ -3857,6 +3916,9 @@ class StreamDekRepository(
                 streams = listOf(directStream),
             )
         }
+        decodeCloudStreamMediaId(mediaId)?.let { (providerName, url) ->
+            return resolveCloudStreamPlayback(mediaType, mediaId, providerName, url, episode, preferredStreamKey, preferredAddonName, preferredQualityGroup)
+        }
         val perf = Perf.span("resolve", "$mediaType:$mediaId")
         val episodeKey = buildEpisodeKey(episode)
         val effectivePreferredStreamKey = effectiveRememberedStreamKey(
@@ -3951,6 +4013,79 @@ class StreamDekRepository(
     }
 
     /**
+     * Playback for a title from a CloudStream provider's own catalogue, which only that provider can
+     * play, by its own link. Without this a channel opened in the live player, or a film started with
+     * the streams list turned off, asked every add-on for an id none of them know and found nothing.
+     *
+     * A channel's source that last actually started is tried first; see [rememberLiveSource].
+     */
+    private suspend fun resolveCloudStreamPlayback(
+        mediaType: String,
+        mediaId: String,
+        providerName: String,
+        url: String,
+        episode: EpisodeContext?,
+        preferredStreamKey: String?,
+        preferredAddonName: String?,
+        preferredQualityGroup: String?,
+    ): ResolvedPlaybackCandidate {
+        val provider = loadedCloudStreamProviders().firstOrNull { it.name == providerName }
+            ?: return ResolvedPlaybackCandidate(null, null, emptyList())
+        val streams = runCatching {
+            CloudStreamProviderBridge.originStreams(provider, url, episode?.seasonNumber, episode?.episodeNumber)
+        }.onFailure { TvDebugLogger.w("CloudStream", "no sources from $providerName", it) }.getOrDefault(emptyList())
+        val ranked = preferRememberedLiveSource(
+            mediaType,
+            mediaId,
+            rankStreams(streams, preferredStreamKey, preferredAddonName, preferredQualityGroup),
+        )
+        for (stream in ranked) {
+            val resolvedUrl = runCatching {
+                // No lookup type: that would ask an add-on to refresh the link, and no add-on owns these.
+                resolveStreamToUrl(stream, seasonNumber = episode?.seasonNumber, episodeNumber = episode?.episodeNumber)
+            }.getOrNull()
+            if (!resolvedUrl.isNullOrBlank()) {
+                return ResolvedPlaybackCandidate(
+                    source = ResolvedPlaybackSource(
+                        url = resolvedUrl,
+                        contentType = guessContentType(resolvedUrl),
+                        label = describeStream(stream),
+                        filename = effectiveFilename(stream),
+                        requestHeaders = stream.requestHeaders,
+                    ),
+                    stream = stream,
+                    streams = ranked,
+                )
+            }
+        }
+        return ResolvedPlaybackCandidate(null, null, ranked)
+    }
+
+    /**
+     * A live source as it is remembered: its add-on and its label, not its link. A channel's links are
+     * often re-signed between visits, so the exact URL would rarely match again.
+     */
+    private fun liveSourceIdentity(stream: AddonStream): String =
+        listOf(stream.addonId, stream.source ?: stream.name ?: stream.title).joinToString("|") { it.orEmpty().trim().lowercase(Locale.US) }
+
+    /**
+     * A channel's source has started showing a picture: it is tried first next time. Called on every
+     * live start, including after the player has worked its way past sources that did not start.
+     */
+    fun rememberLiveSource(mediaId: String, stream: AddonStream) {
+        if (!rememberLastSourceEnabled()) return
+        sessionStore.savePreferredStreamKey(LIVE_SOURCE_PREFERENCE_TYPE, mediaId, null, liveSourceIdentity(stream))
+    }
+
+    /** [streams] with the channel's remembered source moved to the front; see [rememberLiveSource]. */
+    private fun preferRememberedLiveSource(mediaType: String, mediaId: String, streams: List<AddonStream>): List<AddonStream> {
+        if (mediaType != "live" || streams.size < 2 || !rememberLastSourceEnabled()) return streams
+        val saved = sessionStore.preferredStreamKey(LIVE_SOURCE_PREFERENCE_TYPE, mediaId, null) ?: return streams
+        val remembered = streams.firstOrNull { liveSourceIdentity(it) == saved } ?: return streams
+        return listOf(remembered) + streams.filterNot { it === remembered }
+    }
+
+    /**
      * Fetches candidate streams the same way the mobile app does: ask the backend for each
      * enabled addon individually (ordered by addon position), fall back to querying the addon
      * directly for a fresh response, and only then fall back to the aggregated backend route.
@@ -4036,7 +4171,7 @@ class StreamDekRepository(
     private fun applyCloudStreamCollections(plugins: ProfilePluginState?) {
         if (!CloudStreamPlugins.isInitialized) return
         val ownerKey = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: "guest"
-        CloudStreamPlugins.manager.onProvidersChanged = { cloudStreamProvidersState.value = cloudStreamProvidersState.value + 1 }
+        CloudStreamPlugins.manager.onProvidersChanged = ::announceCloudStreamProviders
         CloudStreamPlugins.manager.selectProfileStorage(ownerKey)
         val section = plugins?.cloudstream?.let { com.google.gson.Gson().toJson(it) }
         val changed = runCatching { CloudStreamPlugins.manager.restoreCloudState(section) }.getOrDefault(false)
@@ -4341,7 +4476,7 @@ class StreamDekRepository(
             }.orEmpty()
             send(
                 StreamCandidatesProgress(
-                    streams = rankStreams(streams, preferredStreamKey, preferredAddonName, preferredQualityGroup),
+                    streams = preferRememberedLiveSource(mediaType, mediaId, rankStreams(streams, preferredStreamKey, preferredAddonName, preferredQualityGroup)),
                     pendingSources = 0,
                     done = true,
                 ),

@@ -1049,6 +1049,8 @@ data class ProfileCloudStreamRepo(
     val description: String? = null,
     val iconUrl: String? = null,
     val enabled: Boolean = true,
+    /** Set on the phone. Modelled so that saving the document here does not drop it; see [cloudstream]. */
+    val favourite: Boolean = false,
 )
 
 data class ProfileCloudStreamProvider(

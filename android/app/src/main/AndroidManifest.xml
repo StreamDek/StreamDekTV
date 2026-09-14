@@ -39,5 +39,6 @@
         <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
       </intent-filter>
     </activity>
+    <activity android:name=".nativeapp.ui.account.CloudStreamSettingsActivity" android:exported="false" android:theme="@style/Theme.StreamDek.PluginSettings" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|smallestScreenSize" />
   </application>
 </manifest>

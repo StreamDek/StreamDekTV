@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
@@ -113,8 +114,23 @@ fun StreamDekTvTheme(
             .putBoolean(THEME_CACHE_HIGH_CONTRAST_KEY, experience.highContrast)
             .apply()
     }
+    val colorScheme = streamDekColorScheme(appPreferences?.theme, experience.highContrast)
+    // CloudStream plugin settings open in a window of their own; it paints with the same colours.
+    // That window is built from Compose Material rather than TV Material, so the palette is carried across.
+    SideEffect {
+        com.streamdek.tv.nativeapp.ui.account.PluginSettingsTheme.colorScheme = androidx.compose.material3.darkColorScheme(
+            primary = colorScheme.primary,
+            onPrimary = colorScheme.onPrimary,
+            secondary = colorScheme.secondary,
+            onSecondary = colorScheme.onSecondary,
+            surface = colorScheme.surface,
+            onSurface = colorScheme.onSurface,
+            background = colorScheme.background,
+            onBackground = colorScheme.onBackground,
+        )
+    }
     CompositionLocalProvider(LocalTvExperienceSettings provides experience, LocalDensity provides Density(density.density, fontScale)) {
-        MaterialTheme(colorScheme = streamDekColorScheme(appPreferences?.theme, experience.highContrast), content = content)
+        MaterialTheme(colorScheme = colorScheme, content = content)
     }
 }
 

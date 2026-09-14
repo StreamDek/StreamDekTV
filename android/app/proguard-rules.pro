@@ -58,10 +58,27 @@
 -keep class org.jetbrains.annotations.** { *; }
 -keep class com.fasterxml.jackson.** { *; }
 -keep class com.google.gson.** { *; }
+# Libraries the runtime's own helpers are built on, which extensions also call directly: ksoup and Rhino
+# for scraping and script evaluation, ktor's HTTP types and the cryptography provider for decrypting
+# stream payloads. All four ship with the app, so without these rules they were renamed in release.
+-keep class org.xmlpull.** { *; }
+-keep class com.fleeksoft.ksoup.** { *; }
+-keep class io.ktor.** { *; }
+-keep class dev.whyoleg.cryptography.** { *; }
+-keep class org.mozilla.javascript.** { *; }
 -keep class androidx.appcompat.app.** { *; }
+# CNCVerse settings screens (PlayZTV, SKTech, Sportzx, Cricify, LivXow, PlayFy...) load their icons
+# through androidx.core's ResourcesCompat. Renamed by R8, opening those settings threw
+# NoClassDefFoundError in release builds only - found on the mobile app's v2.1.18. Kept whole:
+# ContextCompat, ViewCompat and the rest of core are as likely to be reached by other extensions.
+-keep class androidx.core.** { *; }
 -keep class androidx.fragment.app.** { *; }
 -keep class androidx.lifecycle.** { *; }
+-keep class androidx.recyclerview.widget.** { *; }
 -keep class androidx.preference.** { *; }
+# Extensions' settings screens extend Material's BottomSheetDialogFragment, compiled against its
+# original name; a renamed or stripped Material leaves those settings unable to open.
+-keep class com.google.android.material.** { *; }
 -dontwarn com.fasterxml.jackson.**
 # The trimmed runtime keeps method-body references to parts of the CloudStream app StreamDek does
 # not ship; those paths are unreachable from the provider API, so the dangling references are expected.
@@ -69,7 +86,6 @@
 -dontwarn org.schabi.newpipe.**
 -dontwarn org.conscrypt.**
 -dontwarn org.chromium.net.**
--dontwarn com.google.android.material.**
 -dontwarn com.google.android.gms.cast.**
 -dontwarn androidx.navigation.**
 -dontwarn androidx.recyclerview.**
