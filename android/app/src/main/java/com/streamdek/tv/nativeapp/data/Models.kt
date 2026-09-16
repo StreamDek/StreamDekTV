@@ -97,6 +97,13 @@ data class MediaItem(
     val sourceCatalogName: String? = null,
     val directStreamUrl: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+    /**
+     * ClearKey DRM from a playlist's `#KODIPROP:inputstream.adaptive.license_type` / `license_key`
+     * lines: hex key id -> hex key. Only "clearkey" is understood by the player. Nullable because
+     * Gson restores stored items field by field and leaves anything missing as null.
+     */
+    val drmLicenseType: String? = null,
+    val drmClearKeys: Map<String, String>? = null,
 ) {
     /** TMDB detail routes require the numeric TMDB id, while add-ons often expose IMDb as id. */
     fun detailLookupId(): String = tmdbId.takeIf { it > 0 }?.toString() ?: id
@@ -1331,6 +1338,9 @@ data class AddonStream(
     val bingeGroup: String? = null,
     val source: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+    /** See [MediaItem.drmClearKeys]. */
+    val drmLicenseType: String? = null,
+    val drmClearKeys: Map<String, String>? = null,
 )
 
 data class BehaviorHints(
@@ -1367,6 +1377,9 @@ data class ResolvedPlaybackSource(
     val label: String,
     val filename: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+    /** See [MediaItem.drmClearKeys]. */
+    val drmLicenseType: String? = null,
+    val drmClearKeys: Map<String, String>? = null,
 )
 
 /**
@@ -1432,6 +1445,9 @@ data class PlaybackRequest(
     val sourceCatalogName: String? = null,
     val directStreamUrl: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+    /** See [MediaItem.drmClearKeys]. */
+    val drmLicenseType: String? = null,
+    val drmClearKeys: Map<String, String>? = null,
     val startPositionSec: Double? = null,
     val returnToDetailOnBack: Boolean = false,
     /** Launched from a Continue Watching card, so stale-source recovery can explain itself. */

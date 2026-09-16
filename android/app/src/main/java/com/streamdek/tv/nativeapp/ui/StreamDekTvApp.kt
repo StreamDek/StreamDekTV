@@ -804,6 +804,8 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                 sourceCatalogName = item.sourceCatalogName,
                 directStreamUrl = item.directStreamUrl,
                 requestHeaders = item.requestHeaders,
+                drmLicenseType = item.drmLicenseType,
+                drmClearKeys = item.drmClearKeys,
             ),
         )
         navController.navigate("player")

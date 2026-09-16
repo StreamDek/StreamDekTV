@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.net.Uri
 import android.util.AttributeSet
+import android.util.Base64
 import android.util.Log
 import android.view.KeyEvent
 import androidx.annotation.OptIn
@@ -24,6 +25,9 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
+import androidx.media3.exoplayer.drm.FrameworkMediaDrm
+import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -38,6 +42,8 @@ import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.localizedContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -90,6 +96,8 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var exoPlayer: ExoPlayer? = null
   private var source: String? = null
   private var requestHeaders: Map<String, String> = emptyMap()
+  private var drmLicenseType: String? = null
+  private var drmClearKeys: Map<String, String> = emptyMap()
   private var pendingPaused = false
   private var pendingSpeed = 1.0
   private var preferredAudioLanguage = "en"
@@ -163,6 +171,36 @@ class ExoPlaybackView @JvmOverloads constructor(
       key.trim().takeIf { it.isNotBlank() && !it.equals("Range", true) }
         ?.let { cleanKey -> value.trim().takeIf(String::isNotBlank)?.let { cleanKey to it } }
     }.toMap()
+  }
+
+  /** Only "clearkey" (hex key-id -> hex key, as published by IPTV playlists via
+   * #KODIPROP:inputstream.adaptive.license_* lines) is supported. Anything else is ignored -
+   * the stream will fail to decrypt exactly as it did before this existed. Takes effect on the
+   * next source prepared, so it is set before [setSource]. */
+  fun setDrmClearKeys(licenseType: String?, keys: Map<String, String>?) {
+    drmLicenseType = licenseType
+    drmClearKeys = keys.orEmpty()
+  }
+
+  /** Builds a local (offline, no license server) ClearKey session from key-id/key pairs
+   * published in plaintext by the playlist itself. ExoPlayer's ClearKey implementation expects a
+   * JSON Web Key Set with base64url (no padding) values, so the playlist's hex pairs are
+   * re-encoded here. */
+  private fun clearKeyDrmSessionManager(keys: Map<String, String>): DefaultDrmSessionManager {
+    fun hexToBase64Url(hex: String): String {
+      val clean = hex.trim().removePrefix("0x")
+      val bytes = ByteArray(clean.length / 2) { i -> ((Character.digit(clean[i * 2], 16) shl 4) + Character.digit(clean[i * 2 + 1], 16)).toByte() }
+      return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+    }
+    val keyArray = JSONArray()
+    keys.forEach { (keyId, key) ->
+      keyArray.put(JSONObject().put("kty", "oct").put("kid", hexToBase64Url(keyId)).put("k", hexToBase64Url(key)))
+    }
+    val jwkSet = JSONObject().put("keys", keyArray).put("type", "temporary").toString()
+    val drmCallback = LocalMediaDrmCallback(jwkSet.toByteArray(Charsets.UTF_8))
+    return DefaultDrmSessionManager.Builder()
+      .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+      .build(drmCallback)
   }
 
   override fun setSource(url: String?) {
@@ -340,7 +378,8 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setUserAgent(DEFAULT_USER_AGENT)
       .setAllowCrossProtocolRedirects(true)
       .setDefaultRequestProperties(requestHeaders)
-    val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+    // A fresh jar per player: cookies one stream's CDN hands out never reach another channel.
+    val dataSourceFactory = DefaultDataSource.Factory(context, CookieJarDataSourceFactory(httpFactory, requestHeaders))
     val renderers = DefaultRenderersFactory(context)
       .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
       .setEnableDecoderFallback(true)
@@ -359,11 +398,20 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setBufferDurationsMs(10_000, 50_000, 750, 2_500)
       .setBackBuffer(15_000, true)
       .build()
+    val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+    if (drmLicenseType.equals("clearkey", ignoreCase = true) && drmClearKeys.isNotEmpty()) {
+      runCatching { clearKeyDrmSessionManager(drmClearKeys) }
+        .onSuccess { manager ->
+          mediaSourceFactory.setDrmSessionManagerProvider { manager }
+          Log.i(TAG, "ClearKey DRM set up with ${drmClearKeys.size} key(s) for ${url.substringBefore('?')}")
+        }
+        .onFailure { Log.w(TAG, "Unable to set up ClearKey DRM for ${url.substringBefore('?')}, playback will likely fail to decrypt", it) }
+    }
     val active = ExoPlayer.Builder(context)
       .setRenderersFactory(renderers)
       .setTrackSelector(trackSelector)
       .setLoadControl(loadControl)
-      .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+      .setMediaSourceFactory(mediaSourceFactory)
       .setBandwidthMeter(bandwidthMeter)
       // Takes the television's audio away from whatever else was using it.
       //

@@ -13,6 +13,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.BufferedOutputStream
 import java.io.BufferedReader
 import java.io.File
@@ -35,8 +37,8 @@ import java.util.zip.GZIPOutputStream
  * lines come off the socket and become items as they arrive, and the body is teed into a gzip file
  * on the way past so the next launch costs no download at all.
  *
- * Not carried over from the phone: KODIPROP ClearKey DRM. The TV's [MediaItem] has nowhere to put
- * a licence key, so those entries play only if they are not actually encrypted.
+ * `#KODIPROP` ClearKey licences are carried on the item as they are on the phone, for Media3 to
+ * decrypt with; other licence types are kept but cannot be played.
  */
 /**
  * What the engine is doing right now, for the screen to show.
@@ -308,6 +310,23 @@ private val m3uVodExtensions = setOf("mp4", "m4v", "mkv", "avi", "mov", "webm", 
 private val m3uVodTypeMarkers = listOf("vod", "movie", "film", "series", "episode", "show")
 private val m3uVodCategoryMarkers = listOf("vod", "movies", "movie", "films", "film", "series", "tv shows", "episodes")
 
+/** Playlists spell the common headers several ways; folding them to one spelling means the same
+ * header arriving from two directives (say `#EXTHTTP` and a `|cookie=` suffix) replaces rather
+ * than duplicates - a second Cookie header is sent as-is and servers reject the pair. */
+private fun canonicalM3uHeaderName(name: String): String = when (name.lowercase()) {
+    "user-agent", "useragent" -> "User-Agent"
+    "referer", "referrer" -> "Referer"
+    "origin" -> "Origin"
+    "cookie" -> "Cookie"
+    else -> name
+}
+
+/** Sets [name], first dropping any entry that differs from it only by case. */
+private fun MutableMap<String, String>.putM3uHeader(name: String, value: String) {
+    keys.firstOrNull { it != name && it.equals(name, ignoreCase = true) }?.let(::remove)
+    this[name] = value
+}
+
 /** `url|User-Agent=…&Referer=…`, the convention IPTV providers use to pin playback headers. */
 private fun parseInlineM3uHeaders(raw: String): Pair<String, Map<String, String>> {
     val url = raw.substringBefore('|').trim()
@@ -318,15 +337,29 @@ private fun parseInlineM3uHeaders(raw: String): Pair<String, Map<String, String>
         val key = pair.substringBefore('=', "").trim()
         val value = pair.substringAfter('=', "").trim()
         if (key.isBlank() || value.isBlank()) return@forEach
-        val headerName = when (key.lowercase()) {
-            "user-agent", "useragent" -> "User-Agent"
-            "referer", "referrer" -> "Referer"
-            "origin" -> "Origin"
-            else -> key
-        }
-        headers[headerName] = runCatching { URLDecoder.decode(value, StandardCharsets.UTF_8.name()) }.getOrDefault(value)
+        headers[canonicalM3uHeaderName(key)] = runCatching { URLDecoder.decode(value, StandardCharsets.UTF_8.name()) }.getOrDefault(value)
     }
     return url to headers
+}
+
+/**
+ * Headers from an `#EXTHTTP:{"User-Agent":"...","Cookie":"..."}` line (the JSON object form used by
+ * TiviMate/OTT Navigator playlists). Values are taken literally - unlike the `|key=value` suffix,
+ * nothing here is URL-encoded. A malformed object is ignored rather than failing the playlist, and
+ * anything carrying a line break is dropped since it cannot be sent as a header.
+ */
+private fun parseExtHttpHeaders(raw: String): Map<String, String> {
+    val json = runCatching { JSONObject(raw.trim()) }.getOrNull() ?: return emptyMap()
+    val headers = linkedMapOf<String, String>()
+    json.keys().forEach { key ->
+        val value = json.opt(key)
+        if (value == null || value == JSONObject.NULL || value is JSONObject || value is JSONArray) return@forEach
+        val name = key.trim()
+        val text = value.toString().trim()
+        if (name.isEmpty() || text.isEmpty() || name.any { it == '\r' || it == '\n' } || text.any { it == '\r' || it == '\n' }) return@forEach
+        headers.putM3uHeader(canonicalM3uHeaderName(name), text)
+    }
+    return headers
 }
 
 /**
@@ -349,6 +382,18 @@ private fun m3uUrlPath(url: String): String {
     }
     return url.substring(afterAuthority, end).lowercase()
 }
+
+/** Parses a Kodi-style `#KODIPROP:inputstream.adaptive.license_key=` value into key-id -> key
+ * pairs. Real playlists hex-encode both halves; multiple pairs for multi-key content are
+ * separated by `&` (e.g. `keyid1:key1&keyid2:key2`), matching inputstream.adaptive's convention. */
+private fun parseClearKeyPairs(value: String): Map<String, String> =
+    value.split('&').mapNotNull { pair ->
+        val separator = pair.indexOf(':')
+        if (separator <= 0) return@mapNotNull null
+        val keyId = pair.substring(0, separator).trim().lowercase()
+        val key = pair.substring(separator + 1).trim().lowercase()
+        if (keyId.isBlank() || key.isBlank()) null else keyId to key
+    }.toMap()
 
 /**
  * Whether an entry is on-demand rather than a live channel.
@@ -401,6 +446,8 @@ internal fun parseM3uLines(
     var pendingMediaType: String? = null
     var pendingDuration: Double? = null
     val pendingHeaders = linkedMapOf<String, String>()
+    var pendingDrmLicenseType: String? = null
+    val pendingDrmClearKeys = linkedMapOf<String, String>()
     var index = 0
     var processedLines = 0
     var charactersSeen = 0L
@@ -439,6 +486,19 @@ internal fun parseM3uLines(
                 pendingHeaders["Referer"] = line.substringAfter('=').trim()
             line.startsWith("#EXTVLCOPT:http-origin=", ignoreCase = true) ->
                 pendingHeaders["Origin"] = line.substringAfter('=').trim()
+            // Only the first '=' separates the option from its value; cookie values carry their own.
+            line.startsWith("#EXTVLCOPT:http-cookie=", ignoreCase = true) ->
+                line.substringAfter('=').trim().takeIf { it.isNotEmpty() }?.let { pendingHeaders.putM3uHeader("Cookie", it) }
+            // Scoped like #EXTVLCOPT: a later directive for the same header wins.
+            line.startsWith("#EXTHTTP:", ignoreCase = true) ->
+                parseExtHttpHeaders(line.substring("#EXTHTTP:".length)).forEach { (name, value) -> pendingHeaders.putM3uHeader(name, value) }
+            // KODIPROP directives can precede or follow their entry's #EXTINF line (both conventions
+            // appear in the wild), so unlike the #EXTINF-scoped fields above they're only cleared once
+            // an entry is actually emitted below - never on #EXTINF itself.
+            line.startsWith("#KODIPROP:inputstream.adaptive.license_type=", ignoreCase = true) ->
+                pendingDrmLicenseType = line.substringAfter('=').trim().takeIf { it.isNotEmpty() }
+            line.startsWith("#KODIPROP:inputstream.adaptive.license_key=", ignoreCase = true) ->
+                pendingDrmClearKeys.putAll(parseClearKeyPairs(line.substringAfter('=').trim()))
             line.startsWith("#") -> Unit
             else -> {
                 // Anything before the playlist announces itself is not an entry, whatever it looks
@@ -469,8 +529,13 @@ internal fun parseM3uLines(
                         requestHeaders = if (pendingHeaders.isEmpty() && inlineHeaders.isEmpty()) {
                             emptyMap()
                         } else {
-                            LinkedHashMap<String, String>(pendingHeaders).apply { putAll(inlineHeaders) }
+                            // The `|key=value` suffix still takes precedence over directive lines.
+                            LinkedHashMap<String, String>(pendingHeaders).apply {
+                                inlineHeaders.forEach { (name, value) -> putM3uHeader(name, value) }
+                            }
                         },
+                        drmLicenseType = pendingDrmLicenseType,
+                        drmClearKeys = if (pendingDrmClearKeys.isEmpty()) null else pendingDrmClearKeys.toMap(),
                     ),
                 )
                 pendingTitle = null
@@ -479,6 +544,8 @@ internal fun parseM3uLines(
                 pendingMediaType = null
                 pendingDuration = null
                 pendingHeaders.clear()
+                pendingDrmLicenseType = null
+                pendingDrmClearKeys.clear()
                 // Reported off the entry count rather than per line: the caller throttles on bytes
                 // or thousands of items, so this stays a comparison in the hot loop.
                 onProgress(index)

@@ -426,6 +426,8 @@ fun PlaybackStreamsScreen(
                 streamType = request.streamType,
                 directStreamUrl = request.directStreamUrl,
                 requestHeaders = request.requestHeaders,
+                drmLicenseType = request.drmLicenseType,
+                drmClearKeys = request.drmClearKeys,
                 sourceAddonId = request.sourceAddonId,
                 sourceAddonName = request.sourceAddonName,
                 forceRefresh = refreshGeneration > 0,

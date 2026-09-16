@@ -335,6 +335,8 @@ fun PlayerScreen(
     var currentSourceUrl by remember { mutableStateOf<String?>(null) }
     val defaultPlaybackHeaders = remember { mapOf("User-Agent" to "Mozilla/5.0 StreamDekTV") }
     var currentRequestHeaders by remember { mutableStateOf(defaultPlaybackHeaders) }
+    // ClearKey licence type and keys for each source URL this screen has played.
+    val drmBySourceUrl = remember { HashMap<String, Pair<String?, Map<String, String>>>() }
     var currentLabel by remember { mutableStateOf(playerResources.getString(R.string.player_selecting_stream)) }
     var paused by remember { mutableStateOf(false) }
     var positionSec by remember { mutableDoubleStateOf(0.0) }
@@ -664,6 +666,8 @@ fun PlayerScreen(
             // those have no add-on to resolve a stream from, only this URL.
             directStreamUrl = playbackRequest.directStreamUrl,
             requestHeaders = playbackRequest.requestHeaders,
+            drmLicenseType = playbackRequest.drmLicenseType,
+            drmClearKeys = playbackRequest.drmClearKeys,
         )
 
     val currentChannelIsFavourite = isLive &&
@@ -704,6 +708,8 @@ fun PlayerScreen(
             sourceCatalogName = item.sourceCatalogName,
             directStreamUrl = item.directStreamUrl,
             requestHeaders = item.requestHeaders,
+            drmLicenseType = item.drmLicenseType,
+            drmClearKeys = item.drmClearKeys,
         )
         TvDebugLogger.i("Player", "switch live channel from=${playbackRequest.mediaId} to=${item.id} addon=${item.sourceAddonName}")
         liveChannelHistory = (liveChannelHistory + playbackRequest).takeLast(20)
@@ -946,6 +952,8 @@ fun PlayerScreen(
                     streamType = playbackRequest.streamType,
                     directStreamUrl = playbackRequest.directStreamUrl,
                     requestHeaders = playbackRequest.requestHeaders,
+                    drmLicenseType = playbackRequest.drmLicenseType,
+                    drmClearKeys = playbackRequest.drmClearKeys,
                     sourceAddonId = playbackRequest.sourceAddonId,
                     sourceAddonName = playbackRequest.sourceAddonName,
                     forceRefresh = forceRefresh,
@@ -1549,6 +1557,15 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             externalSubtitlesPreparedForSource != source
         ) return@LaunchedEffect
         playerView?.setHeaders(currentRequestHeaders)
+        if (!source.isNullOrBlank()) {
+            // Keyed by URL rather than read off whichever candidate is current: resuming the last
+            // working source puts back its URL without its candidate, and needs its keys too.
+            candidate?.source?.takeIf { it.url == source }?.let { resolved ->
+                drmBySourceUrl[source] = resolved.drmLicenseType to resolved.drmClearKeys.orEmpty()
+            }
+            val drm = drmBySourceUrl[source]
+            (playerView as? ExoPlaybackView)?.setDrmClearKeys(drm?.first, drm?.second)
+        }
         if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
             playerView?.setExternalSubtitleTracks(
                 externalSubtitles.filter { it.id == selectedExternalSubtitleId },

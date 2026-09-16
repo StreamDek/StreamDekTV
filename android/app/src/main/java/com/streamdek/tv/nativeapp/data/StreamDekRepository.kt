@@ -572,6 +572,8 @@ internal fun playbackRequestFromHandoff(payload: PlaybackHandoffPayload): Playba
         availableStreams = listOf(stream),
         directStreamUrl = stream.url,
         requestHeaders = stream.requestHeaders,
+        drmLicenseType = stream.drmLicenseType,
+        drmClearKeys = stream.drmClearKeys,
         startPositionSec = payload.positionSeconds.coerceAtLeast(0.0),
         returnToDetailOnBack = false,
     )
@@ -3893,6 +3895,8 @@ class StreamDekRepository(
         streamType: String? = null,
         directStreamUrl: String? = null,
         requestHeaders: Map<String, String> = emptyMap(),
+        drmLicenseType: String? = null,
+        drmClearKeys: Map<String, String>? = null,
         sourceAddonId: String? = null,
         sourceAddonName: String? = null,
     ): ResolvedPlaybackCandidate {
@@ -3904,6 +3908,8 @@ class StreamDekRepository(
                 title = label(R.string.stream_direct_live, "Direct live stream"),
                 url = directStreamUrl,
                 requestHeaders = requestHeaders,
+                drmLicenseType = drmLicenseType,
+                drmClearKeys = drmClearKeys,
             )
             return ResolvedPlaybackCandidate(
                 source = ResolvedPlaybackSource(
@@ -3911,6 +3917,8 @@ class StreamDekRepository(
                     contentType = guessContentType(directStreamUrl),
                     label = sourceAddonName ?: "Live stream",
                     requestHeaders = requestHeaders,
+                    drmLicenseType = drmLicenseType,
+                    drmClearKeys = drmClearKeys,
                 ),
                 stream = directStream,
                 streams = listOf(directStream),
@@ -3994,6 +4002,8 @@ class StreamDekRepository(
                         label = describeStream(stream),
                         filename = effectiveFilename(stream),
                         requestHeaders = stream.requestHeaders,
+                        drmLicenseType = stream.drmLicenseType,
+                        drmClearKeys = stream.drmClearKeys,
                     ),
                     stream = stream,
                     streams = streams,
@@ -4052,6 +4062,8 @@ class StreamDekRepository(
                         label = describeStream(stream),
                         filename = effectiveFilename(stream),
                         requestHeaders = stream.requestHeaders,
+                        drmLicenseType = stream.drmLicenseType,
+                        drmClearKeys = stream.drmClearKeys,
                     ),
                     stream = stream,
                     streams = ranked,
@@ -4446,6 +4458,8 @@ class StreamDekRepository(
         streamType: String? = null,
         directStreamUrl: String? = null,
         requestHeaders: Map<String, String> = emptyMap(),
+        drmLicenseType: String? = null,
+        drmClearKeys: Map<String, String>? = null,
         sourceAddonId: String? = null,
         sourceAddonName: String? = null,
         forceRefresh: Boolean = false,
@@ -4459,6 +4473,8 @@ class StreamDekRepository(
                 title = label(R.string.stream_direct_live, "Direct live stream"),
                 url = directStreamUrl,
                 requestHeaders = requestHeaders,
+                drmLicenseType = drmLicenseType,
+                drmClearKeys = drmClearKeys,
             )
             send(StreamCandidatesProgress(listOf(directStream), pendingSources = 0, done = true))
             return@channelFlow
@@ -5056,6 +5072,8 @@ class StreamDekRepository(
                     label = describeStream(playbackStream),
                     filename = effectiveFilename(playbackStream),
                     requestHeaders = playbackStream.requestHeaders,
+                    drmLicenseType = playbackStream.drmLicenseType,
+                    drmClearKeys = playbackStream.drmClearKeys,
                 ),
                 stream = playbackStream,
                 streams = allStreams,
@@ -5141,6 +5159,8 @@ class StreamDekRepository(
             label = describeStream(stream),
             filename = effectiveFilename(stream),
             requestHeaders = stream.requestHeaders,
+            drmLicenseType = stream.drmLicenseType,
+            drmClearKeys = stream.drmClearKeys,
         )
     }
 

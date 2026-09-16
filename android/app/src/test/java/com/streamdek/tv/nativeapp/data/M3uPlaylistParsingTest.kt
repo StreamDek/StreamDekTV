@@ -136,6 +136,187 @@ class M3uPlaylistParsingTest {
     }
 
     @Test
+    fun `a vlc cookie directive reaches the item`() {
+        val items = parse(
+            """
+            #EXTM3U
+            #EXTINF:-1 group-title="News",Cookie Channel
+            #EXTVLCOPT:http-user-agent=Provider Player
+            #EXTVLCOPT:http-cookie=__hdnea__=st=1789548446~exp=1789570046~acl=/*~hmac=2e3de672
+            https://provider.example/live/index.mpd
+            """.trimIndent(),
+        )
+
+        val headers = items.single().requestHeaders
+        // Only the first '=' belongs to the directive; the cookie value keeps its own.
+        assertEquals("__hdnea__=st=1789548446~exp=1789570046~acl=/*~hmac=2e3de672", headers["Cookie"])
+        assertEquals("Provider Player", headers["User-Agent"])
+    }
+
+    @Test
+    fun `exthttp headers are read literally`() {
+        val items = parse(
+            """
+            #EXTM3U
+            #EXTINF:-1 group-title="Sports",Json Channel
+            #EXTHTTP:{"origin":"https://www.provider.example","Referer":"https://www.provider.example/","Cookie":"hdntl=exp=1789629904~acl=%2f*~hmac=68cd","X-Custom":"a, b"}
+            https://provider.example/live/master.m3u8
+            """.trimIndent(),
+        )
+
+        val headers = items.single().requestHeaders
+        // JSON values are not URL-encoded; a literal %2f in a signed token must survive untouched.
+        assertEquals("https://www.provider.example", headers["Origin"])
+        assertEquals("https://www.provider.example/", headers["Referer"])
+        assertEquals("hdntl=exp=1789629904~acl=%2f*~hmac=68cd", headers["Cookie"])
+        assertEquals("a, b", headers["X-Custom"])
+        assertEquals(4, headers.size)
+    }
+
+    @Test
+    fun `a premium plugx style entry carries one of each header`() {
+        // KODIPROP, EXTVLCOPT and EXTHTTP all describing one channel, as PremiumPlugX serves it.
+        val items = parse(
+            """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="255" group-title="Jio TV+ | News",NDTV 24x7
+            #KODIPROP:inputstream.adaptive.manifest_type=mpd
+            #KODIPROP:inputstream.adaptive.license_type=clearkey
+            #KODIPROP:inputstream.adaptive.license_key=9b5f31aacf4f57758fb654a54b5aafec:e7ff670f95103a87bdb0ede3689f257b
+            #EXTVLCOPT:http-user-agent=Premium Plugx
+            #EXTVLCOPT:http-referrer=https://www.jiotv.com/
+            #EXTVLCOPT:http-cookie=__hdnea__=st=1~exp=2~acl=/*~hmac=abc
+            #EXTHTTP:{"User-Agent":"Premium Plugx","Referer":"https://www.jiotv.com/","Origin":"https://www.jiotv.com/","Cookie":"__hdnea__=st=1~exp=2~acl=/*~hmac=abc"}
+            https://jiotvmblive.cdn.jio.com/bpk-tv/NDTV_24x7_MOB/WDVLive/index.mpd
+            #EXTINF:-1 group-title="Jio TV+ | News",No Headers Channel
+            https://provider.example/plain.m3u8
+            """.trimIndent(),
+        )
+
+        assertEquals(2, items.size)
+        assertEquals(
+            mapOf(
+                "User-Agent" to "Premium Plugx",
+                "Referer" to "https://www.jiotv.com/",
+                "Cookie" to "__hdnea__=st=1~exp=2~acl=/*~hmac=abc",
+                "Origin" to "https://www.jiotv.com/",
+            ),
+            items[0].requestHeaders,
+        )
+        assertTrue("headers carried over", items[1].requestHeaders.isEmpty())
+    }
+
+    @Test
+    fun `the inline suffix still wins without duplicating header names`() {
+        val items = parse(
+            """
+            #EXTM3U
+            #EXTINF:-1 group-title="Sports",Both Forms
+            #EXTHTTP:{"Cookie":"from=json","Referer":"https://json.example/","X-Token":"json"}
+            https://provider.example/live.m3u8?|cookie=from%3Dsuffix&referer=https://suffix.example/&x-token=suffix
+            """.trimIndent(),
+        )
+
+        assertEquals("https://provider.example/live.m3u8?", items.single().directStreamUrl)
+        assertEquals(
+            mapOf("Cookie" to "from=suffix", "Referer" to "https://suffix.example/", "x-token" to "suffix"),
+            items.single().requestHeaders,
+        )
+    }
+
+    @Test
+    fun `malformed or unsendable exthttp values are ignored`() {
+        val items = parse(
+            """
+            #EXTM3U
+            #EXTINF:-1 group-title="News",Broken Json
+            #EXTVLCOPT:http-user-agent=Provider Player
+            #EXTHTTP:{"Cookie":"unterminated
+            https://provider.example/broken.m3u8
+            #EXTINF:-1 group-title="News",Odd Values
+            #EXTHTTP:{"Cookie":"a\r\nX-Injected: 1","Nested":{"a":1},"List":[1],"Empty":"","Missing":null,"Port":8080}
+            https://provider.example/odd.m3u8
+            #EXTINF:-1 group-title="News",Not An Object
+            #EXTHTTP:["Cookie","x"]
+            https://provider.example/array.m3u8
+            """.trimIndent(),
+        )
+
+        assertEquals(3, items.size)
+        assertEquals(mapOf("User-Agent" to "Provider Player"), items[0].requestHeaders)
+        assertEquals(mapOf("Port" to "8080"), items[1].requestHeaders)
+        assertTrue(items[2].requestHeaders.isEmpty())
+    }
+
+    @Test
+    fun `clearkey licence is read when kodiprop precedes extinf`() {
+        // Real playlists (e.g. Tamil IPTV lists) put #KODIPROP directives before the #EXTINF line
+        // they belong to, not after.
+        val item = parse(
+            """
+            #EXTM3U
+            #KODIPROP:inputstream.adaptive.license_type=clearkey
+            #KODIPROP:inputstream.adaptive.license_key=3891557F1CB14DEDB7545BF52499D748:FB662F742E5F5E0C61A7C1C66D2B019A
+            #EXTINF:-1 group-title="Entertainment",Sun TV HD
+            https://livestream.example/SunTVHDB_IN_index.mpd
+            """.trimIndent(),
+        ).single()
+
+        assertEquals("clearkey", item.drmLicenseType)
+        // Hex is lowercased so the player sees one spelling.
+        assertEquals(mapOf("3891557f1cb14dedb7545bf52499d748" to "fb662f742e5f5e0c61a7c1c66d2b019a"), item.drmClearKeys)
+    }
+
+    @Test
+    fun `clearkey licence is read when kodiprop follows extinf`() {
+        val item = parse(
+            """
+            #EXTM3U
+            #EXTINF:-1 group-title="Jio TV+ | News",NDTV 24x7
+            #KODIPROP:inputstream.adaptive.license_type=clearkey
+            #KODIPROP:inputstream.adaptive.license_key=9b5f31aacf4f57758fb654a54b5aafec:e7ff670f95103a87bdb0ede3689f257b
+            #EXTVLCOPT:http-user-agent=Premium Plugx
+            https://jiotvmblive.cdn.jio.com/bpk-tv/NDTV_24x7_MOB/WDVLive/index.mpd
+            """.trimIndent(),
+        ).single()
+
+        assertEquals("clearkey", item.drmLicenseType)
+        assertEquals("e7ff670f95103a87bdb0ede3689f257b", item.drmClearKeys?.get("9b5f31aacf4f57758fb654a54b5aafec"))
+        assertEquals("Premium Plugx", item.requestHeaders["User-Agent"])
+    }
+
+    @Test
+    fun `multiple clearkey pairs are read and do not leak to the next entry`() {
+        val items = parse(
+            """
+            #EXTM3U
+            #KODIPROP:inputstream.adaptive.license_type=clearkey
+            #KODIPROP:inputstream.adaptive.license_key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:11111111111111111111111111111111&bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:22222222222222222222222222222222
+            #EXTINF:-1 group-title="Entertainment",Multi Key Channel
+            https://provider.example/multikey.mpd
+            #EXTINF:-1 group-title="Entertainment",Plain Channel
+            https://provider.example/plain.mpd
+            #EXTINF:-1 group-title="Entertainment",Malformed Key
+            #KODIPROP:inputstream.adaptive.license_key=notapair
+            https://provider.example/malformed.mpd
+            """.trimIndent(),
+        )
+
+        assertEquals(3, items.size)
+        assertEquals(
+            mapOf(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" to "11111111111111111111111111111111",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" to "22222222222222222222222222222222",
+            ),
+            items[0].drmClearKeys,
+        )
+        // The second entry has no KODIPROP of its own - it must not inherit the first entry's keys.
+        assertNull(items[1].drmLicenseType)
+        assertNull(items[1].drmClearKeys)
+        assertNull(items[2].drmClearKeys)
+    }
+
+    @Test
     fun `entries without a title still parse`() {
         val items = parse("#EXTM3U\n#EXTINF:-1,\nhttps://provider.example/nameless.ts")
 
