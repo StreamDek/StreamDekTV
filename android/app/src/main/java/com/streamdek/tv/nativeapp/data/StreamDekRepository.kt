@@ -852,13 +852,13 @@ class StreamDekRepository(
         return playbackRequestFromHandoff(payload)
     }
     fun isFavouriteChannel(item: MediaItem): Boolean = favouriteChannelsState.value.any {
-        it.id == item.id && it.sourceAddonId == item.sourceAddonId
+        favouriteChannelIdMatches(it.id, item.id) && it.sourceAddonId == item.sourceAddonId
     }
 
     fun toggleFavouriteChannel(item: MediaItem) {
         if (item.type != "live") return
         val current = favouriteChannelsState.value.toMutableList()
-        val index = current.indexOfFirst { it.id == item.id && it.sourceAddonId == item.sourceAddonId }
+        val index = current.indexOfFirst { favouriteChannelIdMatches(it.id, item.id) && it.sourceAddonId == item.sourceAddonId }
         if (index >= 0) current.removeAt(index) else current.add(0, item)
         sessionStore.saveFavouriteChannels(current)
         favouriteChannelsState.value = current
@@ -877,6 +877,21 @@ class StreamDekRepository(
         item.type.lowercase(Locale.US) in setOf("live", "channel", "sport", "sports", "iptv", "events") ||
             isCloudStreamLiveChannelId(item.id) ||
             favouriteChannelsState.value.any { it.id == item.id }
+
+    /**
+     * Gives back the full id of any favourite the account cut short, from a CloudStream channel list
+     * just loaded. The drawer, the live pages and the player all key favourites on the exact id, so
+     * the list is repaired rather than every one of those taught to match a cut id.
+     */
+    private fun repairFavouriteChannelIds(known: List<MediaItem>) {
+        if (known.isEmpty() || favouriteChannelsState.value.none { it.id.length == ACCOUNT_FAVOURITE_ID_LIMIT }) return
+        val stored = sessionStore.loadFavouriteChannels()
+        val repaired = restoreTruncatedFavouriteIds(stored, known)
+        if (repaired === stored) return
+        sessionStore.saveFavouriteChannels(repaired)
+        favouriteChannelsState.value = repaired.map(::withCloudStreamChannelSource)
+        syncFavouriteChannels(repaired)
+    }
 
     private fun reloadFavouriteChannels() {
         favouriteChannelsState.value = sessionStore.loadFavouriteChannels().map(::withCloudStreamChannelSource)
@@ -920,8 +935,11 @@ class StreamDekRepository(
             "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/live-favourites",
         ) ?: return
         if (cloud.updatedAt > 0L) {
-            sessionStore.saveFavouriteChannels(cloud.items)
-            favouriteChannelsState.value = cloud.items.map(::withCloudStreamChannelSource)
+            // Read against the TV's own copy: the account cut long CloudStream ids short and dropped
+            // stream links, and taking its list as it came left favourites matching no channel.
+            val merged = mergeAccountFavourites(cloud.items, local)
+            sessionStore.saveFavouriteChannels(merged)
+            favouriteChannelsState.value = merged.map(::withCloudStreamChannelSource)
         } else if (local.isNotEmpty()) {
             api.put<LiveFavouriteChannelsEnvelope>(
                 "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/live-favourites",
@@ -1820,6 +1838,7 @@ class StreamDekRepository(
                 .onFailure { TvDebugLogger.w("CloudStream", "channel row from $providerName failed", it) }
                 .getOrDefault(emptyList())
                 .filter { it.type == "live" }
+                .also(::repairFavouriteChannelIds)
                 .take(CloudStreamCatalog.ROW_MAX_ITEMS)
         }
         val collections = fetchAddonCatalogCollections(addonId = addonId) { _, mappedType -> mappedType == "live" }
@@ -2466,6 +2485,7 @@ class StreamDekRepository(
             }
             .getOrDefault(emptyList())
         TvDebugLogger.i("CloudStream", "home row ${row.provider.name} ${row.page.name}: ${items.size} item(s)")
+        repairFavouriteChannelIds(items)
         return HomeRail(
             id = id,
             title = buildAddonRailTitle(row.provider.name, row.page.name.ifBlank { null }),

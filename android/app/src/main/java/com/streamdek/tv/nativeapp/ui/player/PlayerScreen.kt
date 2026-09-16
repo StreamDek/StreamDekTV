@@ -149,7 +149,7 @@ internal const val PlaybackSeekBufferingGraceMs = 8_000L
 private const val LiveReconnectMaxAttempts = 6
 private const val LiveStallTimeoutMs = 15_000L
 /** How long a live source may take to show a picture before the channel's next source is tried. */
-internal const val LiveSourceStartTimeoutMs = 10_000L
+internal const val LiveSourceStartTimeoutMs = 13_000L
 /** How long a live feed must go without needing a retry before its retry budget starts over. */
 private const val LiveRetryBudgetResetMs = 60_000L
 

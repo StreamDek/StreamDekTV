@@ -237,6 +237,18 @@ internal fun decodeCloudStreamMediaId(id: String): Pair<String, String>? {
   return raw.substring(0, separator) to raw.substring(separator + 1)
 }
 
+/**
+ * The provider named at the start of a CloudStream id the account cut short (see
+ * [ACCOUNT_FAVOURITE_ID_LIMIT]). The whole id no longer decodes, but the provider comes first in it,
+ * so the part that still does is enough to give the favourite back its source.
+ */
+internal fun cloudStreamProviderNameFromCutId(id: String): String? {
+  if (!isCloudStreamMediaId(id) || id.length != ACCOUNT_FAVOURITE_ID_LIMIT) return null
+  val encoded = id.removePrefix(CLOUDSTREAM_MEDIA_ID_PREFIX).let { it.take(it.length / 4 * 4) }
+  val raw = runCatching { String(android.util.Base64.decode(encoded, CLOUDSTREAM_MEDIA_ID_FLAGS), Charsets.UTF_8) }.getOrNull() ?: return null
+  return raw.substringBefore('\n', missingDelimiterValue = "").takeIf { it.isNotBlank() }
+}
+
 // --- Home rows --------------------------------------------------------------------------------
 
 internal const val CLOUDSTREAM_ROW_SOURCE_PREFIX = "cloudstream."
@@ -288,7 +300,7 @@ internal fun cloudStreamProviderNameFromAddonId(addonId: String?): String? =
  */
 internal fun withCloudStreamChannelSource(item: MediaItem): MediaItem {
   if (!item.sourceAddonId.isNullOrBlank()) return item
-  val providerName = decodeCloudStreamMediaId(item.id)?.first ?: return item
+  val providerName = (decodeCloudStreamMediaId(item.id)?.first ?: cloudStreamProviderNameFromCutId(item.id)) ?: return item
   return item.copy(sourceAddonId = "cloudstream:$providerName", sourceAddonName = item.sourceAddonName ?: providerName)
 }
 
