@@ -52,6 +52,7 @@ import com.streamdek.tv.nativeapp.data.LibraryResponse
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
+import com.streamdek.tv.nativeapp.data.continueWatchingCardSubtitle
 import com.streamdek.tv.nativeapp.ui.BrowseItemActionMenu
 import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
@@ -153,6 +154,8 @@ fun LibraryScreen(
     var error by remember { mutableStateOf<String?>(null) }
     // Read here rather than in the effect below, which is a coroutine and not a composition.
     val libraryLoadFailed = stringResource(R.string.library_load_failed)
+    val nextUpLabel = stringResource(R.string.detail_next_up)
+    val resumeLabel = stringResource(R.string.detail_resume)
     var loading by remember { mutableStateOf(true) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
@@ -224,7 +227,7 @@ fun LibraryScreen(
 
     val continueItems = remember(library, typeFilter) {
         library?.continueWatching.orEmpty()
-            .map(ContinueWatchingItem::asLibraryMediaItem)
+            .map { it.asLibraryMediaItem().copy(cardSubtitle = continueWatchingCardSubtitle(it, nextUpLabel, resumeLabel)) }
             .filter { typeFilter == "all" || it.type == typeFilter }
             .distinctBy(::libraryItemKey)
     }

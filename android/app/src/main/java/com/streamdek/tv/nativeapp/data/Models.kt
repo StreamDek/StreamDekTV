@@ -1181,9 +1181,13 @@ data class ContinueWatchingItem(
     val episode: EpisodeContext? = null,
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
+    /** SyncDek's `updatedAt`, or a tracking service's `pausedAt` -- without it those rows sort last. */
+    @SerializedName(value = "updatedAt", alternate = ["pausedAt", "paused_at"])
     val updatedAt: String? = null,
     val lastDevice: String? = null,
     val lastPlatform: String? = null,
+    /** Built on this device from a finished episode, not a position the account holds. See NextUpPolicy.kt. */
+    @Transient val nextUp: Boolean = false,
 ) {
     /**
      * The exact episode represented by this progress row.
@@ -1268,6 +1272,12 @@ data class PlaybackProgressRecord(
      */
     val tmdbId: Int? = null,
     val imdbId: String? = null,
+    /** What `/sync/progress` sends to draw a card, so an unfinished row can stand in Continue Watching. */
+    val title: String? = null,
+    val poster: String? = null,
+    val backdrop: String? = null,
+    val description: String? = null,
+    val year: String? = null,
 )
 
 data class PlaybackProgressResponse(

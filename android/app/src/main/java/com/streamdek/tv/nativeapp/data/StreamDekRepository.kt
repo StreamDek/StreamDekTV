@@ -713,6 +713,11 @@ class StreamDekRepository(
     private val seasonCache = lruCache<String, SeasonDetail>(32)
     private val homeCache = lruCache<String, HomeContent>(4)
     private val libraryCache = lruCache<String, LibraryResponse>(4)
+    /** Absent in unit tests, which have no [appContext]; the watchlist is then the service's alone. */
+    private val localWatchlistStore: LocalWatchlistStore? by lazy { appContext?.let(::LocalWatchlistStore) }
+    /** Resolved "episode after this one" per series position, so each library read is not a TMDB walk. */
+    private data class NextUpResolution(val at: Long, val detail: MediaDetail, val episode: EpisodeContext?)
+    private val nextUpCache = lruCache<String, NextUpResolution>(64)
     private data class PendingWatchlistMutation(val item: MediaItem, val remove: Boolean, val recordedAt: Long)
     private val pendingWatchlistMutations = mutableMapOf<String, MutableList<PendingWatchlistMutation>>()
     private val pendingWatchlistLock = Any()
@@ -2197,7 +2202,8 @@ class StreamDekRepository(
             .getOrDefault(emptyList())
         if (statuses.isEmpty()) return emptyList()
 
-        val providerWatched = fetchWatchedKeys()
+        // Trakt's history speaks for the profile only when Trakt is the source it chose.
+        val providerWatched = if (traktHistoryApplies(primarySyncService())) fetchWatchedKeys() else emptySet()
 
         val today = java.time.LocalDate.now()
         val earliest = today.minusDays(NEW_EPISODE_WINDOW_DAYS)
@@ -2247,6 +2253,15 @@ class StreamDekRepository(
 
     /** How far back the New Episodes row reaches. A week covers a weekly show plus a late look. */
     private val NEW_EPISODE_WINDOW_DAYS = 8L
+
+    /** The most progress records SyncDek returns in one request; the phone reads the same number. */
+    private val PROGRESS_READ_LIMIT = 500
+
+    /** Series checked for Next Up per library read, newest activity first. */
+    private val NEXT_UP_MAX_SERIES = 24
+
+    /** Air dates and season lists move slowly; watched state is still re-read on every library load. */
+    private val NEXT_UP_CACHE_MS = 15 * 60_000L
 
     /** Batched on purpose: one request for the whole followed list, capped and cached server-side. */
     private suspend fun fetchSeriesEpisodeStatus(tmdbIds: List<Int>): List<SeriesEpisodeStatus> {
@@ -2315,13 +2330,13 @@ class StreamDekRepository(
         positionSec = item.positionSec ?: item.resumeAt,
         durationSec = item.durationSec,
         episode = item.exactEpisode(),
-        // Which episode you are part-way through, said the same way the phone says it. The card
+        // Resume or Next Up, then which episode, said the same way the phone says it. The card
         // otherwise leant on the episode title, which many series do not carry.
-        cardSubtitle = item.exactEpisode()?.let { ep ->
-            val season = ep.seasonNumber
-            val number = ep.episodeNumber
-            if (season != null && number != null) "S$season E$number" else null
-        },
+        cardSubtitle = continueWatchingCardSubtitle(
+            item,
+            nextUpLabel = label(R.string.detail_next_up, "Next up"),
+            resumeLabel = label(R.string.detail_resume, "Resume"),
+        ),
     )
 
     /**
@@ -2910,28 +2925,42 @@ class StreamDekRepository(
         }.onFailure {
             TvDebugLogger.e("Library", "fetchLibrary failed", it)
         }.getOrNull() ?: LibraryResponse()
+        // The same read the phone makes: every record SyncDek serves in one request, not the 100
+        // /sync/library includes, so a bulk "mark season watched" cannot push unfinished titles off
+        // the television's Continue Watching while the phone still lists them.
+        val allProgress = runCatching {
+            api.get<PlaybackProgressListResponse>("/sync/progress?limit=$PROGRESS_READ_LIMIT")?.results
+        }.onFailure {
+            TvDebugLogger.w("Library", "full progress read failed; using the library page", it)
+        }.getOrNull()
+        val progress = allProgress ?: library.progress
         val servicePlayback = fetchServicePlayback()
         val mergedContinueWatching = mergeContinueWatching(
-            primary = library.continueWatching,
-            secondary = servicePlayback,
-            progressRecords = library.progress,
-        )
-        // /sync/library follows the profile's tracking service, so its watchlist is normally the
-        // right one already. The direct read stays as a safety net for a TV running ahead of a
-        // backend that still answers with Trakt's list only.
-        // SyncDek is served by /sync/library itself, so an empty answer there is a genuinely
-        // empty watchlist. Falling through would show a connected provider list instead, which
-        // reads as the setting having been ignored.
-        val watchlist = if (
-            library.watchlist.isNotEmpty() ||
-            primarySyncService() == SyncServiceId.TRAKT ||
-            primarySyncService() == SyncServiceId.SYNCDEK
-        ) {
-            library.watchlist
-        } else {
-            fetchServiceWatchlist() ?: library.watchlist
+            primary = allProgress?.let(::unfinishedPositions) ?: library.continueWatching,
+            // A provider's paused session is older news than a mark this account made since.
+            secondary = servicePlayback.filterNot { continueRowSupersededByProgress(it, progress) },
+            progressRecords = progress,
+        ).let { resume ->
+            // Built from the same progress read, so Home and Library show the same Next Up cards.
+            val nextUp = runCatching { resolveNextUp(progress) }
+                .onFailure { TvDebugLogger.w("Library", "next up lookup failed", it) }
+                .getOrDefault(emptyList())
+            mergeNextUpContinueWatching(resume, nextUp)
+        }
+        // The selected service's watchlist and nothing else, as on the phone. SyncDek and Trakt are
+        // what /sync/library reads for those selections; any other service is read from its own
+        // route, because the library read falls back to Trakt when that service fails. A selection
+        // that is not connected shows an empty watchlist rather than somebody else's.
+        val watchlist = when (val service = watchlistReadService(primarySyncService(), ::isSyncServiceConnected)) {
+            null -> emptyList()
+            SyncServiceId.SYNCDEK, SyncServiceId.TRAKT -> library.watchlist
+            else -> fetchServiceWatchlist(service)
+        }.let { serviceList ->
+            // Merged with this television's own copy, as the phone merges its local watchlist.
+            mergeWatchlistWithLocal(serviceList, localWatchlistStore?.load(cacheKey).orEmpty())
         }
         val merged = library.copy(
+            progress = progress,
             // Removing one progress row is an optimistic, targeted edit. A tracking provider may
             // still return its pre-dismissal snapshot for a short time, so keep the local removal
             // over that response instead of replacing the whole Library grid with stale state.
@@ -3239,7 +3268,8 @@ class StreamDekRepository(
         // StreamDek's own list is written every time, whatever the profile tracks with, so that
         // choosing SyncDek later reveals a watchlist that is already there. It leads the chain
         // because it is the one write that cannot fail for want of a linked account.
-        val services = listOf(SyncServiceId.SYNCDEK) + syncServiceChain { it.watchlistWrite }
+        // distinct(): a SyncDek profile's chain can name SyncDek again, which wrote the same edit twice.
+        val services = (listOf(SyncServiceId.SYNCDEK) + syncServiceChain { it.watchlistWrite }).distinct()
         val sourceService = services.first()
         var sourceUpdated = false
         for (service in services) {
@@ -3264,6 +3294,11 @@ class StreamDekRepository(
         // consistent; force-reading in the same frame used to replace the whole grid with a
         // transient empty response and later resurrect the item that had just been removed.
         val cacheKey = buildSessionProfileCacheKey()
+        // This television's own copy, as the phone keeps one. Written only once the edit is accepted,
+        // so it never disagrees with the error the viewer was just shown.
+        localWatchlistStore?.let { store ->
+            store.save(cacheKey, mutateLocalWatchlist(store.load(cacheKey), item, remove, System.currentTimeMillis()))
+        }
         rememberPendingWatchlistMutation(cacheKey, item, remove)
         libraryCache[cacheKey]?.let { current ->
             libraryCache[cacheKey] = current.copy(
@@ -3272,19 +3307,10 @@ class StreamDekRepository(
         }
     }
 
-    /**
-     * Watchlist for the profile's tracking service. `/sync/library` enriches Trakt only, so any
-     * other primary service has to be read from its own route.
-     */
-    private suspend fun fetchServiceWatchlist(): List<MediaItem>? {
-        val services = syncServiceChain { it.watchlist }
-        for (service in services) {
-            val results = api.get<WatchlistEnvelope>("/$service/sync/watchlist/enriched")?.results
-            if (results != null) return results
-            TvDebugLogger.w("Watchlist", "could not read the $service watchlist")
-        }
-        return null
-    }
+    /** One tracking service's own watchlist. A failed read is an empty list, never another service's. */
+    private suspend fun fetchServiceWatchlist(service: String): List<MediaItem> =
+        runCatching { api.get<WatchlistEnvelope>("/$service/sync/watchlist/enriched")?.results }.getOrNull()
+            ?: emptyList<MediaItem>().also { TvDebugLogger.w("Watchlist", "could not read the $service watchlist") }
 
     suspend fun markWatched(
         mediaType: String,
@@ -6580,21 +6606,104 @@ class StreamDekRepository(
     }
 
     /**
-     * Resume points held by the tracking service, which complement the ones this account recorded
-     * itself. MDBList has no playback API, so a profile using it simply contributes nothing here
-     * and falls back to Trakt if that is still connected.
+     * Resume points held by the profile's selected tracking service, which complement the ones this
+     * account recorded itself.
+     *
+     * Only the selected service, as on the phone. This used to walk a chain with Trakt as a backstop,
+     * and SyncDek -- which has no provider playback route -- was skipped out of that chain, so a
+     * SyncDek profile still had every paused Trakt session merged into Continue Watching.
      */
     private suspend fun fetchServicePlayback(): List<ContinueWatchingItem> {
         val session = currentSession() ?: return emptyList()
-        for (service in syncServiceChain { it.playback }) {
-            val results = runCatching {
-                api.get<TraktPlaybackResponse>("/$service/sync/playback", session)?.results
-            }.onFailure {
-                TvDebugLogger.e("Library", "continue-watching read failed on $service", it)
-            }.getOrNull()
-            if (results != null) return results
+        val service = continueWatchingPlaybackService(primarySyncService(), ::isSyncServiceConnected) ?: return emptyList()
+        return runCatching {
+            api.get<TraktPlaybackResponse>("/$service/sync/playback", session)?.results
+        }.onFailure {
+            TvDebugLogger.e("Library", "continue-watching read failed on $service", it)
+        }.getOrNull().orEmpty()
+    }
+
+    /**
+     * The next aired episode for each series whose latest activity is a finished episode.
+     *
+     * Reads TMDB directly rather than through [fetchDetail], which counts every call as the viewer
+     * opening the title, and [fetchSeason], whose shared cache is not built for concurrent writers.
+     */
+    private suspend fun resolveNextUp(progress: List<PlaybackProgressRecord>): List<ContinueWatchingItem> {
+        val anchors = nextUpAnchors(progress).take(NEXT_UP_MAX_SERIES)
+        if (anchors.isEmpty()) return emptyList()
+        val providerWatched = if (traktHistoryApplies(primarySyncService())) fetchWatchedKeys() else emptySet()
+        val gate = Semaphore(4)
+        return supervisorScope {
+            anchors.map { anchor ->
+                async {
+                    gate.withPermit {
+                        runCatching { nextUpItem(anchor, progress, providerWatched) }
+                            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                            .getOrNull()
+                    }
+                }
+            }.awaitAll().filterNotNull()
         }
-        return emptyList()
+    }
+
+    private suspend fun nextUpItem(
+        anchor: PlaybackProgressRecord,
+        progress: List<PlaybackProgressRecord>,
+        providerWatched: Set<String>,
+    ): ContinueWatchingItem? {
+        val season = anchor.seasonNumber ?: return null
+        val number = anchor.episodeNumber ?: return null
+        val identity = mediaIdentityOf("tv", anchor.entityId, anchor.tmdbId, anchor.imdbId)
+        val seriesId = identity.tmdbId?.toString() ?: anchor.entityId ?: return null
+        if (isCloudStreamMediaId(seriesId)) return null
+        val cacheKey = "$seriesId:$season:$number"
+        val now = System.currentTimeMillis()
+        val resolution = synchronized(nextUpCache) { nextUpCache[cacheKey] }?.takeIf { now - it.at < NEXT_UP_CACHE_MS }
+            ?: run {
+                val detail = api.get<MediaDetail>("/tmdb/details/tv/${encodePathSegment(seriesId)}") ?: return null
+                val current = api.get<SeasonDetail>("/tmdb/season/${detail.id}/$season") ?: return null
+                val nextSeason = detail.seasons.filter { it.seasonNumber > season }.minByOrNull { it.seasonNumber }
+                val needsNextSeason = current.episodes.none { it.episodeNumber == number + 1 } &&
+                    number == detail.seasons.firstOrNull { it.seasonNumber == season }?.episodeCount
+                val following = if (needsNextSeason && nextSeason != null) {
+                    api.get<SeasonDetail>("/tmdb/season/${detail.id}/${nextSeason.seasonNumber}") ?: return null
+                } else null
+                val episodes = buildMap {
+                    put(season, current.episodes)
+                    if (following != null && nextSeason != null) put(nextSeason.seasonNumber, following.episodes)
+                }
+                NextUpResolution(now, detail, immediateNextUpEpisode(season, number, detail.seasons, episodes))
+                    .also { synchronized(nextUpCache) { nextUpCache[cacheKey] = it } }
+            }
+        val detail = resolution.detail
+        val episode = resolution.episode?.takeIf { nextUpHasReleased(it.airDate) } ?: return null
+        val tmdbId = detail.tmdbId.takeIf { it > 0 } ?: detail.id.toIntOrNull() ?: identity.tmdbId ?: 0
+        val ids = setOfNotNull(anchor.entityId, detail.id, tmdbId.takeIf { it > 0 }?.toString())
+        val latest = progress.filter { record ->
+            record.entityType.equals("tv", ignoreCase = true) &&
+                (record.entityId in ids || (tmdbId > 0 && record.tmdbId == tmdbId)) &&
+                record.seasonNumber == episode.seasonNumber && record.episodeNumber == episode.episodeNumber
+        }.maxByOrNull { progressUpdatedAtMillis(it.updatedAt) }
+        val watchedElsewhere = ids.any { "tv:$it:s${episode.seasonNumber}:e${episode.episodeNumber}" in providerWatched }
+        if (nextUpTargetIsWatched(latest, watchedElsewhere)) return null
+        return ContinueWatchingItem(
+            id = detail.id,
+            tmdbId = tmdbId,
+            title = detail.title,
+            type = "tv",
+            poster = detail.poster,
+            backdrop = episode.still ?: detail.backdrop,
+            description = episode.overview ?: detail.description,
+            rating = detail.rating,
+            year = detail.year,
+            episodeKey = buildEpisodeKey(episode),
+            episode = episode,
+            seasonNumber = episode.seasonNumber,
+            episodeNumber = episode.episodeNumber,
+            updatedAt = anchor.updatedAt,
+            nextUp = true,
+        )
     }
 
     private fun mergeContinueWatching(
