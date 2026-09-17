@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.VideoLibrary
@@ -115,6 +116,7 @@ import com.streamdek.tv.nativeapp.ui.library.LibraryScreen
 import com.streamdek.tv.nativeapp.ui.live.LiveBrowseScreen
 import com.streamdek.tv.nativeapp.ui.live.LiveScreen
 import com.streamdek.tv.nativeapp.ui.network.NetworkBrowseScreen
+import com.streamdek.tv.nativeapp.ui.fuse.FuseScreen
 import com.streamdek.tv.nativeapp.ui.player.PlayerScreen
 import com.streamdek.tv.nativeapp.ui.profile.StartupBootstrapGate
 import com.streamdek.tv.nativeapp.ui.profile.StartupProfilePicker
@@ -143,6 +145,8 @@ private enum class TopLevelDestination(
     Home("home", R.string.nav_home, Icons.Outlined.Home),
     Search("search", R.string.nav_search, Icons.Outlined.Search),
     Live("live", R.string.nav_live, Icons.Outlined.LiveTv),
+    /** Stands in Live's place while StreamDek Fuse is on: Fuse's Live TV view is what Live was. */
+    Fuse("fuse", R.string.nav_fuse, Icons.Outlined.Hub),
     Library("library", R.string.nav_library, Icons.Outlined.VideoLibrary),
     Profile("profile", R.string.nav_settings, null),
 }
@@ -297,6 +301,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     // The two screens that gained the rail: they need somewhere for it to hand focus back to.
     val liveBrowseContentRequester = remember { FocusRequester() }
     val networkContentRequester = remember { FocusRequester() }
+    val fuseContentRequester = remember { FocusRequester() }
     val profileNavRequester = remember { FocusRequester() }
     val settingsContentRequester = remember { FocusRequester() }
     /** The title page's own way back in from the rail, and the rail's way of being reached. */
@@ -429,11 +434,16 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         section.rails.any { rail -> rail.items.isNotEmpty() }
     }
     val showLiveDestination = hasEnabledLiveAddon || hasLoadedLiveContent
-    val topLevelDestinations = remember(showLiveDestination) {
+    val fuseEnabled by repository.fuseEnabled.collectAsState()
+    val topLevelDestinations = remember(showLiveDestination, fuseEnabled) {
         buildList {
             add(TopLevelDestination.Home)
             add(TopLevelDestination.Search)
-            if (showLiveDestination) add(TopLevelDestination.Live)
+            // One entry for live channels, never two. With StreamDek Fuse on it takes Live's place in the
+            // rail - its Live TV view is the Live page, with on-demand sources and favourites beside it -
+            // and it is offered whether or not a live add-on is installed, since it holds VOD as well.
+            if (fuseEnabled) add(TopLevelDestination.Fuse)
+            else if (showLiveDestination) add(TopLevelDestination.Live)
             add(TopLevelDestination.Library)
             add(TopLevelDestination.Profile)
         }
@@ -442,7 +452,11 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         TopLevelDestination.Library.route,
         "continue-watching" -> TopLevelDestination.Library.route
         TopLevelDestination.Search.route -> TopLevelDestination.Search.route
-        TopLevelDestination.Live.route -> if (showLiveDestination) TopLevelDestination.Live.route else TopLevelDestination.Home.route
+        TopLevelDestination.Live.route -> when {
+            fuseEnabled -> TopLevelDestination.Fuse.route
+            showLiveDestination -> TopLevelDestination.Live.route
+            else -> TopLevelDestination.Home.route
+        }
         TopLevelDestination.Profile.route -> TopLevelDestination.Profile.route
         else -> TopLevelDestination.Home.route
     }
@@ -562,6 +576,19 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         }
     }
 
+    // Turning the Fuse on or off while on the page it replaces moves across to the one that replaced it.
+    LaunchedEffect(fuseEnabled, currentRoute) {
+        val target = when {
+            fuseEnabled && currentRoute == TopLevelDestination.Live.route -> TopLevelDestination.Fuse.route
+            !fuseEnabled && currentRoute == TopLevelDestination.Fuse.route -> TopLevelDestination.Home.route
+            else -> null
+        } ?: return@LaunchedEffect
+        navController.navigate(target) {
+            popUpTo(TopLevelDestination.Home.route) { inclusive = false }
+            launchSingleTop = true
+        }
+    }
+
     LaunchedEffect(showLiveDestination, liveNavigationState.loading, currentRoute) {
         // Only evict the viewer from the Live tab once loading has settled and there is
         // genuinely no live content. Bouncing on a transient empty result used to throw
@@ -610,6 +637,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
             PersonRoutePattern to personContentRequester,
             "live-view-all" to liveBrowseContentRequester,
             "network/{id}/{name}" to networkContentRequester,
+            "fuse" to fuseContentRequester,
         )
     }
     /**
@@ -932,7 +960,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         // menu. Off the sign-in screen, which is not somewhere to navigate away from.
         val railRoutes = remember {
             topLevelDestinations.map { it.route } +
-                listOf(DetailRoutePattern, "live-view-all", "network/{id}/{name}")
+                listOf(DetailRoutePattern, "live-view-all", "network/{id}/{name}", "fuse")
         }
         val railOnScreen = currentRoute in railRoutes && !detailNavigationInProgress &&
             !showUpdatePrompt && chromeAlpha > 0.001f
@@ -1001,6 +1029,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                         onOpenNetwork = { networkId, networkName ->
                             navController.navigate("network/$networkId/${Uri.encode(networkName)}")
                         },
+                        onOpenFuse = { navController.navigate("fuse") },
                         onOpenAccount = {
                             navController.navigate(TopLevelDestination.Profile.route)
                         },
@@ -1104,8 +1133,21 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                     )
                     }
                 }
+                // Not inset by the shell: the page draws its brand wash to the edge of the screen and
+                // clears the rail itself, as Home does, so a transparent rail has the page behind it
+                // rather than a band of flat background.
+                // Full-bleed like a network's page: it clears the rail itself.
+                composable("fuse") {
+                    FuseScreen(
+                        repository = repository,
+                        entryFocusRequester = fuseContentRequester,
+                        onOpenNavigation = ::openSideNavigation,
+                        onBack = { navController.popBackStack() },
+                        onOpenDetail = openDetail,
+                        onPlayLive = playLiveItem,
+                    )
+                }
                 composable("network/{id}/{name}") { backStackEntryInner ->
-                    RailInsetDestination {
                     NetworkBrowseScreen(
                         repository = repository,
                         networkId = backStackEntryInner.arguments?.getString("id").orEmpty(),
@@ -1115,7 +1157,6 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                         onBack = { navController.popBackStack() },
                         onOpenDetail = openDetail,
                     )
-                    }
                 }
                 composable("auth") {
                     AuthScreen(

@@ -104,8 +104,13 @@ class HomeViewModel(
             runCatching {
                 repository.homeContentStream(forceRefresh = forceRefresh).collect { content ->
                     if (!progressive && !content.isComplete) return@collect
+                    // The personal rows are held for as well, not only the entry row. Continue Watching
+                    // settling the highlight used to publish the page with New Episodes still a
+                    // skeleton beneath it, which filled in a second later and read as Home loading a
+                    // second time. Both are one account read apart, well inside the budget.
                     if (progressive && _uiState.value.content == null &&
-                        !content.isComplete && !content.priorityResolved && !priorityBudgetSpent
+                        !content.isComplete && (!content.priorityResolved || content.personalRowsPending()) &&
+                        !priorityBudgetSpent
                     ) {
                         held = content
                         return@collect
@@ -138,6 +143,9 @@ class HomeViewModel(
                 }
         }
     }
+    private fun HomeContent.personalRowsPending(): Boolean =
+        shelves.any { it is com.streamdek.tv.nativeapp.data.HomeShelfSlot.Pending && (it.id == "continue-watching" || it.id == "new-episodes") }
+
     private fun publishContent(content: HomeContent) {
         _uiState.value = _uiState.value.copy(
             isLoading = !content.isComplete,
@@ -155,7 +163,7 @@ class HomeViewModel(
         val cachedDetail = heroDetailCache[nextKey]
         _uiState.value = _uiState.value.copy(heroDetail = cachedDetail)
 
-        if (item == null || item.type == "network" || item.type == "live") {
+        if (item == null || item.type == "network" || item.type == "live" || item.type == com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE) {
             _uiState.value = _uiState.value.copy(heroDetail = null)
             return
         }
@@ -181,7 +189,10 @@ class HomeViewModel(
     fun prefetchHeroCandidates(items: List<MediaItem>) {
         val candidates = items
             .asSequence()
-            .filter { it.type != "network" && it.type != "live" && it.titleLogo.isNullOrBlank() }
+            .filter {
+                it.type != "network" && it.type != "live" &&
+                    it.type != com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE && it.titleLogo.isNullOrBlank()
+            }
             .distinctBy(::heroItemKey)
             .take(8)
             .toList()

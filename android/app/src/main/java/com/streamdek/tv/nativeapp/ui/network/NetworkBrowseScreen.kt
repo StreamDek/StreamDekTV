@@ -71,6 +71,7 @@ import com.streamdek.tv.nativeapp.ui.TvContentPhase
 import com.streamdek.tv.nativeapp.ui.TvContentSwap
 import com.streamdek.tv.nativeapp.ui.TvEmptyState
 import com.streamdek.tv.nativeapp.ui.TvMediaCardVariant
+import com.streamdek.tv.nativeapp.ui.TvNavRailInset
 import com.streamdek.tv.nativeapp.ui.TvSkeletonGrid
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.search.SearchChip
@@ -271,7 +272,8 @@ fun NetworkBrowseScreen(
             ),
         )
 
-        Column(Modifier.fillMaxSize()) {
+        // The wash above runs under the navigation rail; only what can be reached clears it.
+        Column(Modifier.fillMaxSize().padding(start = TvNavRailInset)) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = NetworkInset, end = NetworkInset, top = 34.dp),
                 verticalAlignment = Alignment.Bottom,
@@ -314,23 +316,29 @@ fun NetworkBrowseScreen(
                     placeholder = {
                         Text(
                             text = stringResource(R.string.network_search_placeholder, networkName),
-                            style = MaterialTheme.typography.bodyLarge,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                            // Stated here: this is the TV theme's Text, which takes its colour from the
+                            // TV theme rather than from the placeholder colour the Material field sets,
+                            // so without it the words were drawn in the theme's dark default.
+                            color = Color.White.copy(alpha = if (editing) 0.9f else 0.82f),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     },
-                    // Search states its palette and this screen did not, so the field fell back to
-                    // the stock Material one: a light-theme container over the brand wash, with the
-                    // placeholder sitting too close to it to be read from the sofa.
+                    // Read from across a room over a brand wash, so the words are the weight and size of
+                    // the filter chips beneath rather than the text field's default body type, and the
+                    // pill is solid enough to separate them from the wash. The typed query was left at
+                    // Material's default style entirely, thinner still than the placeholder.
+                    textStyle = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold, color = Color.White),
                     colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.White.copy(alpha = 0.10f),
-                        unfocusedContainerColor = Color.White.copy(alpha = 0.05f),
+                        focusedContainerColor = Color.White.copy(alpha = 0.18f),
+                        unfocusedContainerColor = Color.White.copy(alpha = 0.11f),
                         focusedIndicatorColor = MaterialTheme.colorScheme.primary,
                         unfocusedIndicatorColor = Color.Transparent,
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
-                        focusedPlaceholderColor = Color.White.copy(alpha = 0.68f),
-                        unfocusedPlaceholderColor = Color.White.copy(alpha = 0.55f),
+                        focusedPlaceholderColor = Color.White.copy(alpha = 0.88f),
+                        unfocusedPlaceholderColor = Color.White.copy(alpha = 0.76f),
                         cursorColor = MaterialTheme.colorScheme.primary,
                     ),
                     keyboardActions = KeyboardActions(onDone = {

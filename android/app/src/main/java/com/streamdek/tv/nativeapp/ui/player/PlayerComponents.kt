@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.ClosedCaptionOff
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -277,6 +278,10 @@ internal fun PlayerBottomBar(
     /** Whether the channel playing is already a favourite. Live only. */
     isFavourite: Boolean = false,
     onToggleFavourite: () -> Unit = {},
+    /** Whether the channel carries captions, and whether they are showing. Live only. */
+    captionsAvailable: Boolean = false,
+    captionsOn: Boolean = false,
+    onToggleCaptions: () -> Unit = {},
 ) {
     // Live broadcasts have no seekable timeline — the progress bar is replaced
     // by a LIVE indicator, so focus targets that pointed at it move to Play.
@@ -539,10 +544,26 @@ internal fun PlayerBottomBar(
                         requester = favouriteRequester,
                         upRequester = timelineUpRequester,
                         leftRequester = engineRequester,
-                        rightRequester = infoRequester,
+                        rightRequester = if (captionsAvailable) subtitlesRequester else infoRequester,
                         onFocused = onControlsFocused,
                         onClick = onToggleFavourite,
                     )
+                    // A channel's own captions - a news channel's automatic transcription, say - are
+                    // one press to hide, where a film's subtitles have a whole panel. It is the same
+                    // requester the subtitles button uses, which a live row otherwise leaves unused.
+                    if (captionsAvailable) {
+                        PlayerControlIconButton(
+                            icon = if (captionsOn) Icons.Filled.ClosedCaption else Icons.Filled.ClosedCaptionOff,
+                            label = stringResource(if (captionsOn) R.string.player_captions_on else R.string.player_captions_off),
+                            active = captionsOn,
+                            requester = subtitlesRequester,
+                            upRequester = timelineUpRequester,
+                            leftRequester = favouriteRequester,
+                            rightRequester = infoRequester,
+                            onFocused = onControlsFocused,
+                            onClick = onToggleCaptions,
+                        )
+                    }
                 }
                 if (!isLive) {
                     if (hasNext) {
@@ -586,7 +607,7 @@ internal fun PlayerBottomBar(
                     active = selectedPanel == OverlayPanel.Info,
                     requester = infoRequester,
                     upRequester = timelineUpRequester,
-                    leftRequester = if (isLive) favouriteRequester else speedRequester,
+                    leftRequester = if (isLive) (if (captionsAvailable) subtitlesRequester else favouriteRequester) else speedRequester,
                     onFocused = onControlsFocused,
                     onClick = { onOpenPanel(OverlayPanel.Info) },
                 )

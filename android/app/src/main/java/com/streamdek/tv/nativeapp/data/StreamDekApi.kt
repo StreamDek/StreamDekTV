@@ -33,6 +33,8 @@ class AuthSessionStore(
     private val previousDeviceIdKey = "streamdek_tv_previous_device_id"
     private val activeProfileIdKey = "streamdek_tv_active_profile_id"
     private val rememberLastProfileAtStartupKey = "streamdek_tv_remember_last_profile_at_startup"
+    private val fuseEnabledKey = "streamdek_tv_fuse_enabled"
+    private val liveCaptionsEnabledKey = "streamdek_tv_live_captions_enabled"
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
     private val rememberedSourceKeyPrefix = "streamdek_tv_remembered_source_v1"
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
@@ -87,6 +89,23 @@ class AuthSessionStore(
 
     fun setRememberLastProfileAtStartup(remember: Boolean) {
         preferences.edit().putBoolean(rememberLastProfileAtStartupKey, remember).apply()
+    }
+
+    /** TV-local and off by default, as on the phone: trying StreamDek Fuse here changes no other screen. */
+    fun fuseEnabled(): Boolean = preferences.getBoolean(fuseEnabledKey, false)
+
+    fun setFuseEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(fuseEnabledKey, enabled).apply()
+    }
+
+    /**
+     * Whether live channels show the captions a stream carries. On by default, which is how they
+     * behaved; switched off from the live player, it stays off for every channel on this television.
+     */
+    fun liveCaptionsEnabled(): Boolean = preferences.getBoolean(liveCaptionsEnabledKey, true)
+
+    fun setLiveCaptionsEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(liveCaptionsEnabledKey, enabled).apply()
     }
 
     fun loadFavouriteChannels(): List<MediaItem> {

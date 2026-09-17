@@ -808,6 +808,19 @@ class StreamDekRepository(
     private val profilePreferencesState = MutableStateFlow(JsonObject())
     private val fusionBadgeSourcesState = MutableStateFlow<Map<String, FusionBadgeSource>>(emptyMap())
     private val favouriteChannelsState = MutableStateFlow(sessionStore.loadFavouriteChannels().map(::withCloudStreamChannelSource))
+    private val fuseEnabledState = MutableStateFlow(sessionStore.fuseEnabled())
+
+    /** Whether StreamDek Fuse stands in for the source rows on Home. See [applyFuseToHomeRails]. */
+    val fuseEnabled: StateFlow<Boolean> = fuseEnabledState
+
+    fun setFuseEnabled(enabled: Boolean) {
+        sessionStore.setFuseEnabled(enabled)
+        fuseEnabledState.value = enabled
+    }
+
+    fun liveCaptionsEnabled(): Boolean = sessionStore.liveCaptionsEnabled()
+
+    fun setLiveCaptionsEnabled(enabled: Boolean) = sessionStore.setLiveCaptionsEnabled(enabled)
     private var lastPlaybackRequest: PlaybackRequest? = null
 
     val session: StateFlow<AuthSession?> = sessionStore.session
@@ -1614,6 +1627,8 @@ class StreamDekRepository(
         catalogId: String,
         genre: String? = null,
         search: String? = null,
+        /** How many titles to pass over, for a catalogue's later pages. */
+        skip: Int? = null,
     ): List<AddonCatalogMetaItem> = withContext(Dispatchers.IO) {
         val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: return@withContext emptyList()
         val addonBaseUrl = manifestUrl
@@ -1624,6 +1639,7 @@ class StreamDekRepository(
         val extras = buildList {
             genre?.takeIf { it.isNotBlank() }?.let { add("genre=" + addonPathSegment(it)) }
             search?.takeIf { it.isNotBlank() }?.let { add("search=" + addonPathSegment(it)) }
+            skip?.takeIf { it > 0 }?.let { add("skip=$it") }
         }
         val extraSegment = extras.takeIf { it.isNotEmpty() }?.joinToString("&", prefix = "/").orEmpty()
         val endpoint = "$addonBaseUrl/catalog/${addonPathSegment(rawType)}/${addonPathSegment(catalogId)}$extraSegment.json"
@@ -1976,8 +1992,9 @@ class StreamDekRepository(
         // and only from sources loaded now, which is part of the key so Home catches up as they load.
         val cloudStreamRowIds = enabledCloudStreamRowIds(homePreferences?.homeCatalogRows.orEmpty())
         val cloudStreamSources = if (cloudStreamRowIds.isEmpty()) "" else loadedCloudStreamProviders().joinToString(",") { it.name }
+        val fuseEnabled = fuseEnabledState.value
         val cacheKey = buildSessionProfileCacheKey() +
-            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout:$cloudStreamSources"
+            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout:$cloudStreamSources:fuse=$fuseEnabled"
         if (!forceRefresh) {
             homeCache[cacheKey]?.let {
                 send(it)
@@ -2019,9 +2036,14 @@ class StreamDekRepository(
             reserve("networks", "Streaming Services", titleRes = R.string.home_rail_streaming_services)
             reserve("recommended", "Recommended For You", titleRes = R.string.home_rail_recommended)
         }
-        reserve("addon-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
-        if (cloudStreamRowIds.isNotEmpty()) {
-            reserve("cloudstream-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
+        if (fuseEnabled) reserve(FUSE_HOME_RAIL_ID, "StreamDek Fuse", titleRes = R.string.fuse_title)
+        // With the Fuse on, the source rows are still fetched - an add-on can offer rows the Fuse
+        // does not stand in for - but no skeleton is held for them: most arrive only to be left out.
+        if (!fuseEnabled) {
+            reserve("addon-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
+            if (cloudStreamRowIds.isNotEmpty()) {
+                reserve("cloudstream-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
+            }
         }
 
         // Display order, which with the registry is only known at runtime. The pre-registry slots
@@ -2029,11 +2051,13 @@ class StreamDekRepository(
         val slotOrder = if (catalogRows.isEmpty()) buildList {
             add("continue-watching")
             add("new-episodes")
+            add(FUSE_HOME_RAIL_ID)
             addAll(HOME_SLOT_ORDER.filterNot { it == "continue-watching" })
             add("cloudstream-catalogs")
         } else buildList {
             add("continue-watching")
             add("new-episodes")
+            add(FUSE_HOME_RAIL_ID)
             catalogRows.forEach { add(it.id) }
             add("addon-catalogs")
             add("cloudstream-catalogs")
@@ -2052,11 +2076,15 @@ class StreamDekRepository(
                     .sortedBy { key -> slotOrder.indexOf(key) }
                     .flatMap { resolved.getValue(it) }
                     .filter { it.items.isNotEmpty() }
-                HomeContent(
-                    featured = ready.heroCandidate(),
-                    rails = orderHomeRails(ready),
-                    pendingRails = ordered.mapNotNull { pending[it] },
-                    shelves = homeShelfOrder(slotOrder, resolved, pending, ::orderHomeRails),
+                steadyFuseContent(
+                    HomeContent(
+                        featured = ready.heroCandidate(),
+                        rails = orderHomeRails(ready),
+                        pendingRails = ordered.mapNotNull { pending[it] },
+                        shelves = homeShelfOrder(slotOrder, resolved, pending, ::orderHomeRails),
+                    ),
+                    sourcesResolved = "addon-catalogs" in resolved &&
+                        (cloudStreamRowIds.isEmpty() || "cloudstream-catalogs" in resolved),
                 )
             }
             perf.mark("publish:$slot", "rails=${rails.size} items=${rails.sumOf { it.items.size }} pending=${snapshot.pendingRails.size}")
@@ -2096,6 +2124,12 @@ class StreamDekRepository(
                 launch { publishTmdbRails(::publish, recommendationsAvailable) }
             }
 
+            if (fuseEnabled) {
+                launch {
+                    publish(FUSE_HOME_RAIL_ID, listOf(fuseHomeRail()))
+                }
+            }
+
             launch {
                 val addonRails = runCatching { fetchAddonCatalogRails() }.getOrDefault(emptyList())
                 publish("addon-catalogs", addonRails)
@@ -2119,9 +2153,12 @@ class StreamDekRepository(
                 .sortedBy { key -> slotOrder.indexOf(key) }
                 .flatMap { resolved.getValue(it) }
                 .filter { it.items.isNotEmpty() }
-            HomeContent(
-                featured = ready.heroCandidate(),
-                rails = orderHomeRails(ready),
+            steadyFuseContent(
+                HomeContent(
+                    featured = ready.heroCandidate(),
+                    rails = orderHomeRails(ready),
+                ),
+                sourcesResolved = true,
             )
         }
 
@@ -2394,7 +2431,7 @@ class StreamDekRepository(
     private fun List<HomeRail>.heroCandidate(): MediaItem? {
         val eligible = firstNotNullOfOrNull { rail ->
             if (rail.id == "continue-watching") return@firstNotNullOfOrNull null
-            rail.items.firstOrNull { it.type != "network" && it.type != "live" }
+            rail.items.firstOrNull { it.type != "network" && it.type != "live" && it.type != FUSE_PORTAL_ITEM_TYPE }
         }
         return eligible ?: firstOrNull()?.items?.firstOrNull()
     }
@@ -2425,10 +2462,210 @@ class StreamDekRepository(
             if (networksIndex >= 0) ordered.addAll(networksIndex + 1, liveAddonRails) else ordered.addAll(liveAddonRails)
         }
         ordered.addAll(otherAddonRails)
-        return applyHomeRowLayoutKeepingPersonalRows(
-            ordered,
-            bootstrapState.value?.preferences?.home?.homeCatalogRows.orEmpty(),
+        return arrangeHomeRails(
+            applyFuseToHomeRails(
+                applyHomeRowLayoutKeepingPersonalRows(
+                    ordered,
+                    bootstrapState.value?.preferences?.home?.homeCatalogRows.orEmpty(),
+                ),
+                fuseEnabledState.value,
+            ),
+            networkRowIds = setOf("networks", NETWORKS_CATALOG_ID),
         )
+    }
+
+    // ── StreamDek Fuse ───────────────────────────────────────────────────────────────────────────
+
+    /**
+     * The Fuse's sources and what has been loaded from them, kept for the session and per profile, so
+     * coming back to the page shows it as it was instead of reading every source and playlist again.
+     */
+    private val fuseCatalogCache = java.util.concurrent.ConcurrentHashMap<String, List<FuseCatalog>>()
+
+    /** The Fuse card's artwork as last drawn with every source row in. See [steadyFusePreview]. */
+    private val fusePreviewCache = java.util.concurrent.ConcurrentHashMap<String, List<MediaItem>>()
+
+    private fun steadyFuseContent(content: HomeContent, sourcesResolved: Boolean): HomeContent {
+        val key = buildSessionProfileCacheKey()
+        val (steadied, stable) = steadyFusePreview(content, sourcesResolved, fusePreviewCache[key])
+        if (stable != null) fusePreviewCache[key] = stable
+        return steadied
+    }
+    private val fusePageCache = java.util.concurrent.ConcurrentHashMap<String, FusePage>()
+
+    private val fuseViewMemory = java.util.concurrent.ConcurrentHashMap<String, FuseViewMemory>()
+
+    internal fun fuseViewMemory(): FuseViewMemory? = fuseViewMemory[buildSessionProfileCacheKey()]
+
+    internal fun rememberFuseView(memory: FuseViewMemory) {
+        fuseViewMemory[buildSessionProfileCacheKey()] = memory
+    }
+
+    internal fun cachedFuseCatalogs(): List<FuseCatalog>? = fuseCatalogCache[buildSessionProfileCacheKey()]
+
+    internal fun cachedFusePages(): Map<String, FusePage> {
+        val prefix = buildSessionProfileCacheKey() + "\u001d"
+        return fusePageCache.filterKeys { it.startsWith(prefix) }.mapKeys { it.key.removePrefix(prefix) }
+    }
+
+    internal fun rememberFusePage(key: String, page: FusePage) {
+        fusePageCache[buildSessionProfileCacheKey() + "\u001d" + key] = page
+    }
+
+    /** Home's one Fuse card. It carries no artwork of its own; the card draws the Fuse's mark. */
+    private fun fuseHomeRail(): HomeRail = HomeRail(
+        id = FUSE_HOME_RAIL_ID,
+        title = "StreamDek Fuse",
+        items = listOf(
+            MediaItem(
+                id = FUSE_HOME_RAIL_ID,
+                title = "StreamDek Fuse",
+                type = FUSE_PORTAL_ITEM_TYPE,
+                // What the spotlight says about the card while it has the highlight.
+                description = label(R.string.fuse_portal_description, "Live TV and on-demand libraries, together in one place."),
+            ),
+        ),
+        titleRes = R.string.fuse_title,
+    )
+
+    /**
+     * Every catalogue the Fuse offers, less the ones switched off in Home Rows: a row turned off there
+     * is a source the viewer has said they do not want, and the Fuse must not bring it back. Add-on
+     * catalogues a layout has not listed are on and CloudStream rows off, as Home Rows has them.
+     * Playlists are not in Home Rows; they are switched on and off in their own settings.
+     */
+    internal suspend fun fuseCatalogs(includePlaylists: Boolean = true): List<FuseCatalog> = supervisorScope {
+        val saved = bootstrapState.value?.preferences?.home?.homeCatalogRows.orEmpty()
+            .associateBy { homeCatalogRowMatchKey(it.id) }
+        fun switchedOn(rowId: String, offWhenUnlisted: Boolean): Boolean =
+            saved[homeCatalogRowMatchKey(rowId)]?.enabled ?: !offWhenUnlisted
+        val addons = async { runCatching { fetchAddonManifests() }.getOrDefault(emptyList()) }
+        val playlists = async {
+            if (!includePlaylists) emptyList() else runCatching { fetchPlaylists() }.getOrDefault(emptyList()).filter { it.enabled }
+        }
+        val catalogs = mutableListOf<FuseCatalog>()
+        addons.await().filter { it.enabled }
+            .sortedWith(compareByDescending<AddonManifest> { it.favourite }.thenBy { it.position })
+            .forEach { addon ->
+                addon.manifest.catalogs.forEach catalog@{ catalog ->
+                    val rawType = catalog.type.trim().lowercase(Locale.US)
+                    val catalogId = catalog.id.trim()
+                    val mappedType = mapAddonCatalogType(rawType)
+                    if (catalogId.isBlank() || catalog.requiresSearch || mappedType == null || !isFuseCatalogType(rawType)) return@catalog
+                    val key = "addon:${addon.id}:$rawType:$catalogId"
+                    if (!switchedOn(key, offWhenUnlisted = false)) return@catalog
+                    catalogs += FuseCatalog(
+                        key = key,
+                        sourceKey = addon.id,
+                        sourceName = addon.manifest.name.ifBlank { addon.id },
+                        title = catalog.name?.takeIf { it.isNotBlank() } ?: catalogId,
+                        live = mappedType == "live",
+                        origin = FuseOrigin.Addon,
+                        addonId = addon.id,
+                        rawType = rawType,
+                        catalogId = catalogId,
+                        genre = catalog.defaultGenre,
+                        searchable = catalog.supportsSearch,
+                    )
+                }
+            }
+        cloudStreamHomeRowOptions(loadedCloudStreamProviders())
+            .filter { switchedOn(it.id, offWhenUnlisted = true) }
+            .forEach { row ->
+                val source = homeCatalogRowAddonId(row.id).orEmpty()
+                catalogs += FuseCatalog(
+                    key = row.id,
+                    sourceKey = source,
+                    sourceName = row.subtitleArg ?: source,
+                    title = row.title,
+                    live = isLiveCloudStreamHomeRowId(row.id),
+                    origin = FuseOrigin.CloudStream,
+                    cloudRowId = row.id,
+                )
+            }
+        val enabledPlaylists = playlists.await()
+        if (enabledPlaylists.isNotEmpty()) appContext?.let { M3uPlaylistEngine.initialize(it) }
+        enabledPlaylists.forEach { playlist ->
+            val channels = M3uPlaylistEngine
+                .fetchChannels(playlist, forceRefresh = M3uPlaylistEngine.needsRefresh(playlist))
+                .onFailure { TvDebugLogger.w("Fuse", "playlist ${playlist.name} failed to load") }
+                .getOrDefault(emptyList())
+            val (live, onDemand) = channels.partition { it.type == "live" }
+            listOf(true to live, false to onDemand).forEach { (isLive, items) ->
+                if (items.isEmpty()) return@forEach
+                catalogs += FuseCatalog(
+                    key = "playlist:${playlist.id}:${if (isLive) "live" else "vod"}",
+                    sourceKey = "playlist:${playlist.id}",
+                    sourceName = playlist.name,
+                    title = playlist.name,
+                    live = isLive,
+                    origin = FuseOrigin.Playlist,
+                    localItems = items,
+                )
+            }
+        }
+        catalogs.distinctBy { it.key }.also { if (includePlaylists) fuseCatalogCache[buildSessionProfileCacheKey()] = it }
+    }
+
+    /**
+     * The next page of [catalog] for [query], added to [previous]. A playlist is whole already and a
+     * CloudStream row is one page; add-on catalogues page by `skip`. A failure keeps what was loaded
+     * and says so, so one source that is down does not empty the others.
+     */
+    internal suspend fun loadFusePage(catalog: FuseCatalog, query: String, previous: FusePage): FusePage = try {
+        val search = query.trim().takeIf { catalog.searchable && it.isNotEmpty() }
+        when (catalog.origin) {
+            FuseOrigin.Playlist -> FusePage(catalog.localItems.orEmpty(), end = true)
+            FuseOrigin.CloudStream -> {
+                val row = catalog.cloudRowId?.let { resolveCloudStreamHomeRow(it, loadedCloudStreamProviders()) }
+                if (row == null) previous.copy(failed = true)
+                else FusePage(CloudStreamCatalog.mainPageItems(row.provider, row.page).distinctBy(::fuseItemKey), end = true)
+            }
+            FuseOrigin.Addon -> {
+                val addon = fetchAddonManifests().firstOrNull { it.id == catalog.addonId }
+                val rawType = catalog.rawType.orEmpty()
+                val catalogId = catalog.catalogId.orEmpty()
+                val mappedType = mapAddonCatalogType(rawType)
+                if (addon == null || mappedType == null) {
+                    previous.copy(failed = true)
+                } else {
+                    val skip = previous.nextSkip
+                    var metas = fetchAddonCatalogDirect(addon, rawType, catalogId, genre = catalog.genre, search = search, skip = skip)
+                    // The first plain page can come through the backend proxy, as Home's rows do, for
+                    // an add-on that does not answer the television directly.
+                    if (metas.isEmpty() && skip == 0 && search == null && catalog.genre == null) {
+                        metas = runCatching {
+                            api.get<AddonCatalogResponse>(
+                                "/addons/${URLEncoder.encode(addon.id, "UTF-8")}/catalog/$rawType/${URLEncoder.encode(catalogId, "UTF-8")}",
+                            )?.metas.orEmpty()
+                        }.getOrDefault(emptyList())
+                    }
+                    val items = metas.filterNot(::isAddonCatalogDiagnosticMeta).mapNotNull { meta ->
+                        normalizeAddonCatalogMeta(
+                            meta = meta,
+                            fallbackType = mappedType,
+                            nativeFallbackType = rawType,
+                            addonId = addon.id,
+                            addonName = addon.manifest.name,
+                            catalogId = catalogId,
+                            catalogName = catalog.title,
+                        )
+                    }
+                    val merged = (previous.items + items).distinctBy(::fuseItemKey)
+                    FusePage(
+                        items = merged,
+                        nextSkip = skip + metas.size,
+                        end = metas.isEmpty() || merged.size == previous.items.size,
+                    )
+                }
+            }
+        }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (failure: Throwable) {
+        // Plugins can throw linkage errors, not just exceptions.
+        TvDebugLogger.w("Fuse", "page failed for ${catalog.key}", failure)
+        previous.copy(failed = true)
     }
 
     /**

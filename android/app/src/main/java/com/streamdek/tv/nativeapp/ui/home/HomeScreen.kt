@@ -140,6 +140,8 @@ private data class BrowseActionState(
 private sealed interface HomeHeroBackdrop {
     data class Artwork(val url: String) : HomeHeroBackdrop
     data class Brand(val color: Color) : HomeHeroBackdrop
+    /** StreamDek Fuse's card: a wall of the sources it holds. See [FuseHeroBackdrop]. */
+    data class Fuse(val artworks: List<String>) : HomeHeroBackdrop
     data object None : HomeHeroBackdrop
 }
 
@@ -173,6 +175,8 @@ fun HomeScreen(
     entryFocusRequester: FocusRequester? = null,
     onOpenDetail: (String, String) -> Unit,
     onOpenNetwork: (String, String) -> Unit,
+    /** Opens StreamDek Fuse, from its card on Home. */
+    onOpenFuse: () -> Unit = {},
     onOpenAccount: () -> Unit,
     onPlayLive: (MediaItem) -> Unit = {},
     onResumePlayback: (MediaItem) -> Unit = {},
@@ -271,8 +275,9 @@ fun HomeScreen(
     // CloudStream sources load after Home first draws, and can be switched on or off at any time;
     // their rows follow as soon as they do rather than at the next poll.
     val cloudStreamVersion by repository.cloudStreamProvidersVersion.collectAsState()
-    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration, cloudStreamVersion) {
-        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration:cs$cloudStreamVersion"
+    val fuseEnabled by repository.fuseEnabled.collectAsState()
+    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration, cloudStreamVersion, fuseEnabled) {
+        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration:cs$cloudStreamVersion:fuse$fuseEnabled"
     }
     LaunchedEffect(loadKey) {
         // A retained HomeViewModel must not turn its first snapshot into a session-long cache.
@@ -308,13 +313,18 @@ fun HomeScreen(
     }
 
     val content = screenState.content
-    val spotlightItem = focusedItem ?: content?.featured ?: content?.rails?.firstOrNull()?.items?.firstOrNull()
+    // Before anything has the highlight, the spotlight shows the card the opening highlight lands on.
+    // It used to show the featured title, which skips Continue Watching, and then switch to the first
+    // Continue Watching card a moment later when focus arrived - one more change on a page that had
+    // just appeared, and part of why Home looked as though it loaded twice.
+    val openingItem = content?.rails?.let { rails -> rails.getOrNull(firstFocusableHomeRowIndex(rails))?.items?.firstOrNull() }
+    val spotlightItem = focusedItem ?: openingItem ?: content?.featured
     var initialArtworkReady by remember(loadKey) { mutableStateOf(false) }
     val initialArtworkUrls = remember(content, portraitCards) {
         buildList {
-            content?.featured?.let { featured ->
-                (featured.backdrop ?: featured.poster)?.let(::add)
-                featured.titleLogo?.let(::add)
+            (openingItem ?: content?.featured)?.let { opening ->
+                (opening.backdrop ?: opening.poster)?.let(::add)
+                opening.titleLogo?.let(::add)
             }
             // Two shelves cover the first TV viewport. Warming more here competes with the hero
             // and first row for bandwidth without improving what is initially visible.
@@ -496,6 +506,12 @@ fun HomeScreen(
             spotlightItem.type == "network" ->
                 networkBrandColor(spotlightItem)?.let { HomeHeroBackdrop.Brand(it) }
                     ?: HomeHeroBackdrop.None
+            spotlightItem.type == com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE -> HomeHeroBackdrop.Fuse(
+                content?.rails?.firstOrNull { it.id == com.streamdek.tv.nativeapp.data.FUSE_HOME_RAIL_ID }
+                    ?.previewItems.orEmpty()
+                    .mapNotNull { it.poster ?: it.backdrop }
+                    .distinct(),
+            )
             else -> (spotlightItem.backdrop ?: spotlightItem.poster)
                 ?.takeIf { it.isNotBlank() }
                 ?.let { HomeHeroBackdrop.Artwork(it) }
@@ -523,6 +539,7 @@ fun HomeScreen(
                 is HomeHeroBackdrop.Brand -> Box(
                     Modifier.fillMaxSize().background(networkHeroWash(target.color)),
                 )
+                is HomeHeroBackdrop.Fuse -> FuseHeroBackdrop(target.artworks, backgroundColor)
                 HomeHeroBackdrop.None -> Unit
             }
         }
@@ -530,7 +547,7 @@ fun HomeScreen(
         // The scrim exists to hold the copy off busy artwork. A brand wash is one flat colour that
         // already fades to the app background on its own, and drawing this over it would put the
         // background back on top of the brand — so it is skipped there, not softened.
-        if (backdrop !is HomeHeroBackdrop.Brand) {
+        if (backdrop !is HomeHeroBackdrop.Brand && backdrop !is HomeHeroBackdrop.Fuse) {
             Box(
                 Modifier.fillMaxSize().drawWithCache {
                     val (readingScrim, baseFade) = homeScrim(backgroundColor)
@@ -843,6 +860,7 @@ fun HomeScreen(
                                 onItemPressed = { item ->
                                     when {
                                         item.type == "network" -> onOpenNetwork(item.id, item.title)
+                                        item.type == com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE -> onOpenFuse()
                                         // Live broadcasts skip detail and play straight away.
                                         item.type == "live" -> onPlayLive(item)
                                         row.id == "continue-watching" -> onResumePlayback(item)
@@ -850,7 +868,7 @@ fun HomeScreen(
                                     }
                                 },
                                 onItemMenu = { item, requester ->
-                                    if (item.type != "network" && item.type != "live") {
+                                    if (item.type != "network" && item.type != "live" && item.type != com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE) {
                                         actionState = BrowseActionState(
                                             item,
                                             requester,

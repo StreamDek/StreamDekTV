@@ -292,6 +292,7 @@ fun SettingsScreen(
     var addonsExpanded by remember { mutableStateOf(false) }
     var pluginsExpanded by remember { mutableStateOf(false) }
     var playlistsExpanded by remember { mutableStateOf(false) }
+    val fuseEnabled by repository.fuseEnabled.collectAsState()
     var rememberLastProfileAtStartup by remember {
         mutableStateOf(repository.rememberLastProfileAtStartup())
     }
@@ -744,6 +745,11 @@ fun SettingsScreen(
                     }
                 }
                 SettingsDestination.Library -> {
+                    // Device-local, like the phone's switch: it changes this television's Home only.
+                    SettingsToggleRow(stringResource(R.string.fuse_title), stringResource(R.string.fuse_setting_description), fuseEnabled, selectedRequester) { next, complete ->
+                        repository.setFuseEnabled(next)
+                        complete(true)
+                    }
                     SettingsToggleRow(stringResource(R.string.settings_tv_built_in_catalogs), stringResource(R.string.settings_tv_show_streamdek_s_default_movie_and_series), homePrefs?.defaultAppCatalogsEnabled != false, selectedRequester) { next, complete ->
                         savePreference(R.string.settings_tv_built_in_catalogs, complete) { repository.updateHomePreferences(mapOf("defaultAppCatalogsEnabled" to next)) }
                     }

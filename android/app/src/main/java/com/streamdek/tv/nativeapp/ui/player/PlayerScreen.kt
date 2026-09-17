@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GridView
@@ -130,6 +131,8 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** How many copies of the same language to try before telling the viewer none of them loaded. */
+/** How long the live player's exit prompt stays up, and so how long a second Back has to exit. */
+private const val LiveExitPromptWindowMs = 2_500L
 private const val SUBTITLE_ATTEMPT_LIMIT = 4
 
 private const val ControlsHideDelayMs = 3000L
@@ -313,6 +316,14 @@ fun PlayerScreen(
     val isLive = request.mediaType == "live"
     var activeLiveRequest by remember(request) { mutableStateOf<PlaybackRequest?>(null) }
     var liveChannelHistory by remember(request) { mutableStateOf<List<PlaybackRequest>>(emptyList()) }
+    // Shown by the first Back after switching channels in the player; a second Back while it is up
+    // leaves the player. It clears itself, so a Back much later asks again rather than exiting.
+    var liveExitPromptVisible by remember(request) { mutableStateOf(false) }
+    LaunchedEffect(liveExitPromptVisible) {
+        if (!liveExitPromptVisible) return@LaunchedEffect
+        delay(LiveExitPromptWindowMs)
+        liveExitPromptVisible = false
+    }
     val playbackRequest = activeLiveRequest ?: request
     val isVod = isLive && playbackRequest.streamType.equals("movie", ignoreCase = true)
     val favouriteChannels by repository.favouriteChannels.collectAsState()
@@ -624,8 +635,10 @@ fun PlayerScreen(
         }
     }
 
+    // Open while a channel is loading or has failed as well: a switch that hangs on its loading
+    // screen is exactly when a viewer wants a different channel, and Back was the only way out.
     fun showLiveChannelRow() {
-        if (!isLive || liveChannels.size <= 1 || loading || error != null) {
+        if (!isLive || liveChannels.size <= 1) {
             showLiveChannelInfo()
             return
         }
@@ -674,7 +687,7 @@ fun PlayerScreen(
         "${playbackRequest.sourceAddonId}:${playbackRequest.mediaId}" in favouriteChannelKeys
 
     fun showLiveFavouritesDrawer() {
-        if (!isLive || liveAddonFavourites.isEmpty() || loading || error != null) return
+        if (!isLive || liveAddonFavourites.isEmpty()) return
         liveChannelInfoHideJob?.cancel()
         liveChannelInfoVisible = false
         liveChannelRowVisible = false
@@ -974,6 +987,30 @@ fun PlayerScreen(
         pauseInfoVisible = false
         if (!controlsVisible) controlsVisible = true
         scheduleControlsHide()
+    }
+
+    /** The live player's captions button. Remembered for every live channel on this television. */
+    fun toggleLiveCaptions() {
+        subtitleSelectionGeneration += 1
+        subtitlePreferenceAppliedForSource = currentSourceUrl
+        if (selectedSubtitleId >= 0 || selectedExternalSubtitleId != null) {
+            selectedExternalSubtitleId = null
+            externalSubtitleAppliedKey = null
+            playerView?.disableSubtitleTrack()
+            selectedSubtitleId = -1
+            repository.setLiveCaptionsEnabled(false)
+        } else {
+            val track = preferredSubtitleTrack(
+                subtitles = subtitleTracks,
+                preferredLanguage = repository.bootstrap.value?.preferences?.playback?.defaultSubtitleLanguage ?: "en",
+            ) ?: subtitleTracks.firstOrNull()
+            track?.let {
+                playerView?.setSubtitleTrack(it.id)
+                selectedSubtitleId = it.id
+            }
+            repository.setLiveCaptionsEnabled(true)
+        }
+        registerInteraction()
     }
 
     fun toggleCurrentChannelFavourite() {
@@ -1624,7 +1661,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         externalSubtitles = if (playbackPreferences.showOnlyPreferredSubtitleLanguages) {
             results.filter { Languages.normalize(it.language) in allowedLanguages }
         } else results
-        if (playbackPreferences.autoLoadSubtitles && selectedSubtitleId < 0 && selectedExternalSubtitleId == null) {
+        if (playbackPreferences.autoLoadSubtitles && selectedSubtitleId < 0 && selectedExternalSubtitleId == null &&
+            !(isLive && !repository.liveCaptionsEnabled())
+        ) {
             val preferredLanguage = playbackPreferences.defaultSubtitleLanguage
             val preferred = externalSubtitles.firstOrNull { Languages.matches(it.language, preferredLanguage) }
                 ?: externalSubtitles.firstOrNull { Languages.matches(it.language, playbackPreferences.secondarySubtitleLanguage) }
@@ -2120,7 +2159,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     }
                 }
                 AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (isLive && !controlsVisible && panel == null && !liveChannelRowVisible && !liveFavouritesDrawerVisible && liveAddonFavourites.isNotEmpty()) {
+                    if (isLive && error == null && !controlsVisible && panel == null && !liveChannelRowVisible && !liveFavouritesDrawerVisible && liveAddonFavourites.isNotEmpty()) {
                         showLiveFavouritesDrawer()
                         true
                     } else {
@@ -2230,24 +2269,18 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             val closedPanel = panel!!
             panel = null
             restoreControlsAfterPanel(closedPanel)
-        } else if (controlsVisible) {
+        } else if (controlsVisible && !loading && error == null) {
+            // Only while the controls are actually drawn. On a loading or error screen they are
+            // hidden but can still be flagged visible, and Back spent a press hiding nothing.
             hideControlsNow()
             scope.launch { runCatching { playerRootRequester.requestFocus() } }
-        } else if (isLive && liveChannelHistory.isNotEmpty()) {
-            val previousRequest = liveChannelHistory.last()
-            liveChannelHistory = liveChannelHistory.dropLast(1)
-            TvDebugLogger.i("Player", "back to previous live channel from=${playbackRequest.mediaId} to=${previousRequest.mediaId}")
-            repository.savePlaybackRequest(previousRequest)
-            loading = true
-            error = null
-            currentLabel = "Loading ${previousRequest.title ?: "previous channel"}…"
-            liveChannelRowVisible = false
-            liveFavouritesDrawerVisible = false
-            liveReconnectAttempt = 0
-            liveRefetchGeneration = 0
-            streamKeyOverride = null
-            streamLabelOverride = null
-            activeLiveRequest = previousRequest
+        } else if (isLive && liveChannelHistory.isNotEmpty() && !liveExitPromptVisible) {
+            hideControlsNow()
+            // Back used to step back through the channels switched to in the player, so leaving took
+            // one press per channel and each press started loading an old one. Having switched, the
+            // first Back now asks, and a second Back while the prompt is up leaves the player.
+            TvDebugLogger.i("Player", "back after live channel switches; asking before exit from=${playbackRequest.mediaId}")
+            liveExitPromptVisible = true
         } else {
             TvDebugLogger.i("Player", "back exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
             queueTraktStop()
@@ -2357,6 +2390,22 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     }
                 }
                 if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+                // Loading or failed, the channel list and favourites are still one press away. Right
+                // is left alone on the error screen, where it moves between the buttons.
+                if (isLive && (loading || error != null) && panel == null && !watchlistPromptVisible &&
+                    !liveFavouritesDrawerVisible && !liveChannelRowVisible
+                ) {
+                    when {
+                        event.key == Key.DirectionDown && liveChannels.size > 1 -> {
+                            showLiveChannelRow()
+                            return@onPreviewKeyEvent true
+                        }
+                        event.key == Key.DirectionRight && loading && error == null && liveAddonFavourites.isNotEmpty() -> {
+                            showLiveFavouritesDrawer()
+                            return@onPreviewKeyEvent true
+                        }
+                    }
+                }
                 if (nextEpisodeDialogVisible) return@onPreviewKeyEvent false
                 if (smartSwitchCandidate != null) return@onPreviewKeyEvent false
                 if (isLive && !controlsVisible && panel == null && !loading && error == null && !watchlistPromptVisible && !liveFavouritesDrawerVisible) {
@@ -2744,6 +2793,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         subtitleTracks = subtitles
                         selectedAudioId = selectedAudioTrackId ?: -1
                         selectedSubtitleId = selectedSubtitleTrackId ?: -1
+                        // Captions switched off for live channels stay off, including a caption track
+                        // the stream marks to be shown by default.
+                        val liveCaptionsOff = isLive && !repository.liveCaptionsEnabled()
+                        if (liveCaptionsOff && selectedSubtitleId >= 0) {
+                            disableSubtitleTrack()
+                            selectedSubtitleId = -1
+                        }
                         val currentSource = currentSourceUrl
                         val currentBootstrap = repository.bootstrap.value
                         val activeProfile = repository.activeStreamProfile(currentBootstrap)
@@ -2765,6 +2821,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         }
                         if (
                             currentSource != null &&
+                            !liveCaptionsOff &&
                             playbackPreferences.autoLoadSubtitles &&
                             subtitleSourceAllowsOrigin(
                                 playbackPreferences.subtitleDefaultSource,
@@ -2895,6 +2952,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     textAlign = TextAlign.Center,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (isLive && (liveChannels.size > 1 || liveAddonFavourites.isNotEmpty())) {
+                    Text(
+                        text = stringResource(
+                            when {
+                                liveChannels.size > 1 && liveAddonFavourites.isNotEmpty() -> R.string.player_loading_switch_hint
+                                liveChannels.size > 1 -> R.string.player_loading_switch_hint_channels
+                                else -> R.string.player_loading_switch_hint_favourites
+                            },
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         }
 
@@ -3021,6 +3092,16 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                     androidx.tv.material3.Text(stringResource(R.string.player_try_another_source))
                                 }
                             }
+                            if (isLive && liveChannels.size > 1) {
+                                androidx.tv.material3.OutlinedButton(onClick = ::showLiveChannelRow) {
+                                    androidx.tv.material3.Text(stringResource(R.string.live_channels))
+                                }
+                            }
+                            if (isLive && liveAddonFavourites.isNotEmpty()) {
+                                androidx.tv.material3.OutlinedButton(onClick = ::showLiveFavouritesDrawer) {
+                                    androidx.tv.material3.Text(stringResource(R.string.live_favourites))
+                                }
+                            }
                             if (canResume) {
                                 androidx.tv.material3.OutlinedButton(
                                     onClick = {
@@ -3054,6 +3135,24 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
 
         @Composable
         fun RenderLiveChrome() {
+        if (isLive && liveExitPromptVisible) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 40.dp)
+                    .background(Color(0xE6101014), RoundedCornerShape(999.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 22.dp, vertical = 12.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.player_live_exit_prompt, currentChannelTitle),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         // Playback controls — bottom bar
         if (isLive && !loading && error == null) {
             LiveStatusBadge(
@@ -3090,7 +3189,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        if (isLive && liveFavouritesDrawerVisible && liveAddonFavourites.isNotEmpty() && !loading && error == null) {
+        if (isLive && liveFavouritesDrawerVisible && liveAddonFavourites.isNotEmpty()) {
             LiveFavouritesDrawer(
                 channels = liveAddonFavourites,
                 currentChannelId = playbackRequest.mediaId,
@@ -3107,7 +3206,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 modifier = Modifier.align(Alignment.CenterEnd),
             )
         }
-        if (isLive && liveChannelRowVisible && liveChannels.size > 1 && !loading && error == null) {
+        if (isLive && liveChannelRowVisible && liveChannels.size > 1) {
             val currentChannelIndex = liveChannels.indexOfFirst { it.id == playbackRequest.mediaId }.coerceAtLeast(0)
             LiveChannelCarousel(
                 channels = liveChannels,
@@ -3160,6 +3259,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     favouriteRequester = favouriteRequester,
                     isFavourite = currentChannelIsFavourite,
                     onToggleFavourite = ::toggleCurrentChannelFavourite,
+                    captionsAvailable = isLive && subtitleTracks.isNotEmpty(),
+                    captionsOn = selectedSubtitleId >= 0 || selectedExternalSubtitleId != null,
+                    onToggleCaptions = ::toggleLiveCaptions,
                     onInteract = ::registerInteraction,
                     onPlayPause = {
                         // tv-material fires onClick on key-up without requiring the

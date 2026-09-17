@@ -342,6 +342,11 @@ data class HomeRail(
      * construction used across the app and its tests is unaffected.
      */
     @StringRes val titleRes: Int? = null,
+    /**
+     * Titles a row shows as artwork without listing them as cards. The StreamDek Fuse row has one
+     * card, and draws a few of the channels it stands in for on it and behind it.
+     */
+    val previewItems: List<MediaItem> = emptyList(),
 )
 
 data class LiveCatalogRail(

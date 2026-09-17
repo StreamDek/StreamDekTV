@@ -1,5 +1,10 @@
 package com.streamdek.tv.nativeapp.ui.home
 
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -139,6 +144,9 @@ internal fun homeCardSize(item: MediaItem, portrait: Boolean, compact: Boolean, 
     val scale = (if (compact) CompactShelfScale else 1f) * (if (dense) 0.9f else 1f)
     return when {
         item.type == "network" -> HomeCardSize(190.dp * scale, 104.dp * scale)
+        // Two cards wide and a card tall: a doorway, not one more title.
+        item.type == com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE ->
+            HomeCardSize(430.dp * scale, (if (portrait) 174.dp else 117.dp) * scale)
         portrait -> HomeCardSize(116.dp * scale, 174.dp * scale)
         else -> HomeCardSize(208.dp * scale, 117.dp * scale)
     }
@@ -333,6 +341,8 @@ private fun spotlightKindLabel(item: MediaItem, detail: MediaDetail?): String? {
     // The genre names being matched are TMDB's, which arrive in English whatever the interface
     // language is, so the comparisons stay English while every word this returns is translated.
     val labelRes = when {
+        item.type == com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE ->
+            return "${stringResource(R.string.live_tv)} · ${stringResource(R.string.fuse_vod)}"
         item.type == "live" -> return item.sourceAddonName?.takeIf { it.isNotBlank() }?.uppercase()
             ?: stringResource(R.string.badge_live)
         item.type == "network" -> R.string.badge_streaming_service
@@ -467,7 +477,26 @@ internal fun HomeShelf(
                 val size = cardSize.width
                 val cardHeight = cardSize.height
 
-                if (item.type == "network") {
+                if (item.type == com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE) {
+                    FusePortalCard(
+                        previewItems = row.previewItems,
+                        modifier = Modifier
+                            .focusRequester(effective)
+                            .openNavigationFromFirstCard(index, onOpenNavigation)
+                            .width(size)
+                            .height(cardHeight)
+                            .graphicsLayer {
+                                scaleX = shelfScale
+                                scaleY = shelfScale
+                                transformOrigin = TransformOrigin(0f, 0f)
+                            },
+                        onFocused = {
+                            focusedIndex = index
+                            onItemFocused(index, item)
+                        },
+                        onPressed = { onItemPressed(item) },
+                    )
+                } else if (item.type == "network") {
                     NetworkCard(
                         item = item,
                         modifier = Modifier
@@ -642,6 +671,168 @@ private fun NetworkCard(
                     text = item.title,
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
                     color = Color(0xFF111111),
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The spotlight behind StreamDek Fuse's card: a wall of the channels and titles it holds, tilted and
+ * drifting slowly across a wash of the accent colour, fading into the page on the left so the words
+ * over it stay readable. Nothing else on Home has a spotlight like it, which is the point - the card
+ * is a door to every source, not one more title. Still, with motion turned off.
+ */
+@Composable
+internal fun FuseHeroBackdrop(artworks: List<String>, backgroundColor: Color) {
+    val primary = MaterialTheme.colorScheme.primary
+    val motionless = LocalTvExperienceSettings.current.motion.motionless
+    val drift = if (motionless) null else androidx.compose.animation.core.rememberInfiniteTransition(label = "fuse-hero")
+        .animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                androidx.compose.animation.core.tween(22_000, easing = androidx.compose.animation.core.LinearEasing),
+                androidx.compose.animation.core.RepeatMode.Reverse,
+            ),
+            label = "fuse-hero-drift",
+        )
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.linearGradient(listOf(primary.copy(alpha = 0.34f), backgroundColor, primary.copy(alpha = 0.14f))),
+        ),
+    ) {
+        if (artworks.isNotEmpty()) {
+            val columns = 4
+            val rows = 4
+            Column(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .graphicsLayer {
+                        rotationZ = -9f
+                        translationX = 90.dp.toPx()
+                        translationY = -70.dp.toPx() - (drift?.value ?: 0f) * 60.dp.toPx()
+                        alpha = 0.5f
+                    },
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                repeat(rows) { row ->
+                    Row(
+                        Modifier.padding(start = if (row % 2 == 1) 110.dp else 0.dp),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    ) {
+                        repeat(columns) { column ->
+                            AsyncImage(
+                                model = artworks[(row * columns + column) % artworks.size],
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .width(220.dp)
+                                    .height(128.dp)
+                                    .clip(AppCardShape)
+                                    .background(Color.White.copy(alpha = 0.06f)),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        // The copy sits on the left: the wall fades out behind it and into the shelves below.
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.horizontalGradient(
+                    0f to backgroundColor,
+                    0.36f to backgroundColor.copy(alpha = 0.88f),
+                    0.72f to Color.Transparent,
+                ),
+            ),
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(0.4f to Color.Transparent, 0.62f to backgroundColor.copy(alpha = 0.6f), 0.9f to backgroundColor),
+            ),
+        )
+    }
+}
+
+/** StreamDek Fuse's card on Home: every live and on-demand source, one press away. */
+@Composable
+private fun FusePortalCard(
+    previewItems: List<MediaItem>,
+    modifier: Modifier = Modifier,
+    onFocused: () -> Unit,
+    onPressed: () -> Unit,
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    Card(
+        onClick = onPressed,
+        modifier = modifier.androidxOnFocus(onFocused),
+        shape = CardDefaults.shape(AppCardShape),
+        colors = CardDefaults.colors(
+            containerColor = Color(0xFF15131C),
+            focusedContainerColor = Color(0xFF15131C),
+            pressedContainerColor = Color(0xFF15131C),
+        ),
+        border = CardDefaults.border(
+            border = Border.None,
+            focusedBorder = Border(
+                BorderStroke(if (LocalTvExperienceSettings.current.highContrast) 3.dp else 2.dp, primary),
+                shape = AppCardShape,
+            ),
+        ),
+        glow = CardDefaults.glow(Glow.None, Glow.None, Glow.None),
+        scale = CardDefaults.scale(focusedScale = TvMotion.focusScale()),
+    ) {
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.linearGradient(listOf(primary.copy(alpha = 0.42f), Color(0xFF15131C), primary.copy(alpha = 0.16f))),
+            ),
+        ) {
+            // Three of the channels it holds, faded behind the words, as on the phone's card.
+            Row(
+                Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(vertical = 12.dp, horizontal = 14.dp)
+                    .graphicsLayer { alpha = 0.34f },
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                previewItems.asSequence().mapNotNull { it.poster ?: it.backdrop }.distinct().take(3).forEach { artwork ->
+                    AsyncImage(
+                        model = artwork,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxHeight().aspectRatio(0.62f).clip(AppCardShape),
+                    )
+                }
+            }
+            Column(
+                Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    androidx.compose.material3.Icon(
+                        androidx.compose.material.icons.Icons.Rounded.LiveTv,
+                        contentDescription = null,
+                        tint = primary,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Text(
+                        stringResource(R.string.fuse_title),
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                        color = Color.White,
+                        maxLines = 1,
+                    )
+                }
+                Text(
+                    stringResource(R.string.fuse_portal_description),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.78f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    stringResource(R.string.fuse_explore) + "  →",
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
                     maxLines = 1,
                 )
             }
