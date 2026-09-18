@@ -2056,7 +2056,7 @@ class StreamDekRepository(
         val catalogRows = if (builtInCatalogsEnabled) {
             Perf.timed(perf, "catalogManifest") { catalogRowOrder(fetchCatalogManifest()) }
         } else emptyList()
-        perf.mark("skeletonReady", "rows=${catalogRows.size}")
+        perf.mark("skeletonReady", "rows=${catalogRows.size} layout=${homePreferences?.homeCatalogRows?.size ?: 0} cloudStreamRows=${cloudStreamRowIds.size}")
 
         // Slots are declared up front, in final display order, so a row that resolves late lands
         // where its skeleton already was.

@@ -28,23 +28,31 @@ import java.util.Locale
  * several rows, and showing all of them would bury Home.
  */
 
-private val AddonRowIdPattern = Regex("""^addon:""", RegexOption.IGNORE_CASE)
+private fun isAddonRowId(id: String): Boolean = id.startsWith("addon:", ignoreCase = true)
 
 /**
  * The part of a row id that names the catalogue rather than where it happened to sit in a list.
  *
  * Built-in ids have no positional part and are returned unchanged.
+ *
+ * Runs for every row and every layout entry on each Home publish, on the main thread, and a layout
+ * holding a large CloudStream or SkyStream collection runs to thousands of entries - so it scans
+ * for the fourth colon rather than going through a regex and a split.
  */
 internal fun homeCatalogRowMatchKey(id: String): String {
     val trimmed = id.trim()
-    if (!AddonRowIdPattern.containsMatchIn(trimmed)) return trimmed
-    val parts = trimmed.split(":")
-    return if (parts.size >= 5) parts.take(4).joinToString(":") else trimmed
+    if (!isAddonRowId(trimmed)) return trimmed
+    var cut = -1
+    repeat(4) {
+        cut = trimmed.indexOf(':', cut + 1)
+        if (cut < 0) return trimmed
+    }
+    return trimmed.substring(0, cut)
 }
 
 /** The add-on a row came from, or null when the row is a built-in one. */
 internal fun homeCatalogRowAddonId(id: String): String? =
-    if (AddonRowIdPattern.containsMatchIn(id.trim())) {
+    if (isAddonRowId(id.trim())) {
         id.trim().split(":").getOrNull(1)?.takeIf { it.isNotBlank() }
     } else {
         null
@@ -147,14 +155,21 @@ private fun applyLayoutToOptions(
  *
  * Later entries lose to earlier ones on a collision, which only happens when a layout carries two
  * spellings of one catalogue — the earlier is the one the viewer arranged.
+ *
+ * Remembered for the last layout seen: Home asks for it twice per row that lands, with the same
+ * list each time until the account's preferences change.
  */
 private fun layoutByMatchKey(layout: List<HomeCatalogRowPreference>): Map<String, HomeCatalogRowPreference> {
+    lastLayoutByMatchKey?.takeIf { it.first === layout }?.let { return it.second }
     val byKey = LinkedHashMap<String, HomeCatalogRowPreference>()
     layout.filter { it.id.isNotBlank() }
         .sortedBy { it.position }
         .forEach { row -> byKey.putIfAbsent(homeCatalogRowMatchKey(row.id), row) }
+    lastLayoutByMatchKey = layout to byKey
     return byKey
 }
+
+@Volatile private var lastLayoutByMatchKey: Pair<List<HomeCatalogRowPreference>, Map<String, HomeCatalogRowPreference>>? = null
 
 /** The CloudStream rows the layout switches on, which are the only ones Home fetches. */
 internal fun enabledCloudStreamRowIds(layout: List<HomeCatalogRowPreference>): List<String> =
