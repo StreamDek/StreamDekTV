@@ -63,7 +63,21 @@ data class PluginSettingField(
     val options: List<PluginSettingOption> = emptyList(),
 )
 
-data class PluginSettingOption(val label: String, val value: String)
+data class PluginSettingOption(val label: String, val value: String, val defaultOn: Boolean = false)
+
+/**
+ * Whether a stored or declared setting value means "on". Sources answer with a boolean, or with the
+ * text "true"/"1"/"yes"/"on" - SkyStream stores every value as text - and both must read alike.
+ */
+internal fun settingIsOn(value: Any?, fallback: Boolean = false): Boolean = when (value) {
+    is Boolean -> value
+    null -> fallback
+    else -> when (value.toString().trim().lowercase()) {
+        "true", "1", "yes", "on" -> true
+        "false", "0", "no", "off" -> false
+        else -> fallback
+    }
+}
 
 /**
  * Rewrites the ES module syntax plugin sources are authored in into the CommonJS shape the

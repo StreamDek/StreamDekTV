@@ -1313,6 +1313,15 @@
   <string name="settings_plugin_section_regular">Reguläre Plugin-Quellen</string>
   <string name="settings_plugin_section_cloudstream">CloudStream-Quellen</string>
   <string name="settings_plugin_section_skystream">SkyStream-Quellen</string>
+  <string name="sky_detail_version_value">Version %1$d</string>
+  <string name="sky_settings_address">Seitenadresse</string>
+  <string name="sky_settings_address_default_named">Leer lassen, um die Adresse des Plugins zu verwenden: %1$s</string>
+  <string name="sky_settings_address_plugin_default">Plugin-Standard</string>
+  <string name="sky_settings_address_custom">Eigene Adresse</string>
+  <string name="sky_settings_sub_providers">Quellen in diesem Plugin</string>
+  <string name="sky_settings_sub_providers_hint">%1$d von %2$d an. Schalte die aus, die du nicht auf der Startseite, in Fuse oder in der Suche möchtest.</string>
+  <string name="sky_settings_all_on">Alle an</string>
+  <string name="sky_settings_all_off">Alle aus</string>
   <string name="settings_cloudstream_summary">%1$s · %2$s von %3$s Quellen aktiv</string>
   <string name="settings_status_source_on_downloads">%1$s ein. Sie wird beim ersten Gebrauch heruntergeladen.</string>
   <string name="settings_status_choose_doh_first">Wähle zuerst einen gültigen DNS-over-HTTPS-Anbieter.</string>

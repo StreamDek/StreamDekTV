@@ -115,6 +115,7 @@ import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
 import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ProfileCloudStreamRepo
+import com.streamdek.tv.nativeapp.data.SkyStreamProfile
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import com.streamdek.tv.nativeapp.data.RemotePlaylist
@@ -291,6 +292,7 @@ fun SettingsScreen(
     var expandedPluginParents by remember { mutableStateOf<Set<String>>(emptySet()) }
     /** Plugin source whose settings cog is open, if any. */
     var editingPluginProvider by remember { mutableStateOf<ProfilePluginProvider?>(null) }
+    var editingSkySource by remember { mutableStateOf<com.streamdek.tv.nativeapp.data.SkyProfileSource?>(null) }
     /** Which premium service the connect row acts on. */
     var debridProviderChoice by remember { mutableStateOf(repository.supportedDebridProviders().first().first) }
     /** Set while a service that wants a typed key is being connected. */
@@ -1519,6 +1521,102 @@ fun SettingsScreen(
                             }
                         }
                     }
+                    // SkyStream (.sky) collections, beside CloudStream's and managed the same way: a
+                    // change here is written into the synced document, which is how the sources on
+                    // this box, the phone and the portal all come to agree.
+                    val skySection = pluginState?.skystream
+                    val skyRepos = remember(skySection) { SkyStreamProfile.repos(skySection) }
+                    if (skySection != null && skyRepos.isNotEmpty()) {
+                        val skySources = remember(skySection) { SkyStreamProfile.sources(skySection) }
+                        SettingsPanel(stringResource(R.string.settings_plugin_section_skystream)) {
+                            InfoLine(
+                                stringResource(R.string.info_collections),
+                                stringResource(
+                                    R.string.settings_cloudstream_summary,
+                                    AppFormats.number(appLanguage, skyRepos.size),
+                                    AppFormats.number(appLanguage, skySources.count { it.enabled }),
+                                    AppFormats.number(appLanguage, skySources.size),
+                                ),
+                            )
+                            fun saveSky(section: com.google.gson.JsonObject, onDone: (Boolean) -> Unit) {
+                                scope.launch {
+                                    val updated = repository.updateProfilePlugins((pluginState ?: ProfilePluginState()).copy(skystream = section))
+                                    if (updated != null) bootstrap = updated
+                                    onDone(updated != null)
+                                }
+                            }
+                            skyRepos.sortedWith(compareByDescending<com.streamdek.tv.nativeapp.data.SkyProfileRepo> { it.favourite }.thenBy { it.name.lowercase() }).forEach { repo ->
+                                val parentKey = "sky:${repo.url}"
+                                val expanded = parentKey in expandedPluginParents
+                                val sources = skySources.filter { it.repoUrl == repo.url }.sortedBy { it.name.lowercase() }
+                                key(parentKey) {
+                                    SettingsSourceRow(
+                                        title = repo.name,
+                                        description = pluralStringResource(R.plurals.settings_tv_sources_with_enabled, sources.size, sources.size, sources.count { it.enabled }),
+                                        favourite = repo.favourite,
+                                        checked = repo.enabled,
+                                        leftRequester = selectedRequester,
+                                        expanded = expanded,
+                                        onExpand = {
+                                            expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
+                                        },
+                                        onFavourite = {
+                                            saveSky(SkyStreamProfile.withRepo(skySection, repo.url) { it.addProperty("favourite", !repo.favourite) }) { saved ->
+                                                status = settingsResources.getString(
+                                                    if (saved) R.string.settings_favourite_updated_named else R.string.settings_favourite_update_failed_named,
+                                                    repo.name,
+                                                )
+                                            }
+                                        },
+                                    ) { next, complete ->
+                                        saveSky(SkyStreamProfile.withRepo(skySection, repo.url) { it.addProperty("enabled", next) }) { saved ->
+                                            status = settingsResources.getString(
+                                                if (saved) R.string.settings_updated_named else R.string.settings_update_failed_named,
+                                                repo.name,
+                                            )
+                                            complete(saved)
+                                        }
+                                    }
+                                    if (expanded) {
+                                        sources.forEach { source ->
+                                            key("sky:${source.repoUrl}:${source.packageName}") {
+                                                SettingsToggleRow(
+                                                    source.name,
+                                                    listOfNotNull(
+                                                        source.categories.takeIf { it.isNotEmpty() }?.joinToString(", "),
+                                                        stringResource(R.string.sky_detail_version_value, source.version),
+                                                    ).joinToString(" · "),
+                                                    source.enabled,
+                                                    selectedRequester,
+                                                ) { next, complete ->
+                                                    // A source switched on here is switched on everywhere,
+                                                    // and its collection with it, as on the phone.
+                                                    var section = SkyStreamProfile.withSource(skySection, source.repoUrl, source.packageName) { it.addProperty("enabled", next) }
+                                                    if (next && !repo.enabled) section = SkyStreamProfile.withRepo(section, repo.url) { it.addProperty("enabled", true) }
+                                                    saveSky(section) { saved ->
+                                                        status = when {
+                                                            !saved -> settingsResources.getString(R.string.settings_update_failed_named, source.name)
+                                                            next -> settingsResources.getString(R.string.settings_status_source_on_downloads, source.name)
+                                                            else -> settingsResources.getString(R.string.settings_named_off, source.name)
+                                                        }
+                                                        complete(saved)
+                                                    }
+                                                }
+                                                if (source.enabled) {
+                                                    SettingsActionRow(
+                                                        stringResource(R.string.plugin_source_settings),
+                                                        source.name,
+                                                        stringResource(R.string.action_open),
+                                                        selectedRequester,
+                                                    ) { editingSkySource = source }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     SettingsPanel(stringResource(R.string.settings_tv_iptv_playlists)) {
                         if (playlists.isEmpty()) {
                             InfoLine(stringResource(R.string.info_playlists), stringResource(R.string.info_add_one_from_streamdek_mobile_or_the))
@@ -1745,6 +1843,28 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+    }
+
+    editingSkySource?.let { source ->
+        SkyStreamSettingsDialog(
+            source = source,
+            onSave = { values ->
+                // Into the synced document, like every other change here: the phone and the portal
+                // get the same settings, and they come back to this television the same way.
+                val current = bootstrap?.profilePlugins
+                val section = current?.skystream
+                val updated = if (current == null || section == null) null else repository.updateProfilePlugins(
+                    current.copy(skystream = SkyStreamProfile.withSettings(section, source.repoUrl, source.packageName, values)),
+                )
+                if (updated != null) bootstrap = updated
+                status = settingsResources.getString(
+                    if (updated != null) R.string.settings_updated_named else R.string.settings_update_failed_named,
+                    source.name,
+                )
+                updated != null
+            },
+            onDismiss = { editingSkySource = null },
+        )
     }
 
     editingPluginProvider?.let { provider ->

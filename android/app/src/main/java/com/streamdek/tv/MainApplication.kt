@@ -7,6 +7,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.streamdek.tv.nativeapp.data.CloudStreamPlugins
 import com.streamdek.tv.nativeapp.data.Perf
+import com.streamdek.tv.nativeapp.data.SkyStreamPlugins
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
@@ -22,6 +23,7 @@ class MainApplication : Application(), ImageLoaderFactory {
         // The `.cs3` engine, so a collection synced from the phone or the portal has somewhere to
         // load into. Cheap: it only opens a preferences file until a source is switched on.
         CloudStreamPlugins.initialize(this)
+        SkyStreamPlugins.initialize(this)
         Perf.startupMark("application.ready")
     }
 

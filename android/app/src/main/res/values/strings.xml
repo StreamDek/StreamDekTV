@@ -1311,6 +1311,15 @@
   <string name="settings_plugin_section_regular">Regular plugin sources</string>
   <string name="settings_plugin_section_cloudstream">CloudStream sources</string>
   <string name="settings_plugin_section_skystream">SkyStream sources</string>
+  <string name="sky_detail_version_value">Version %1$d</string>
+  <string name="sky_settings_address">Site address</string>
+  <string name="sky_settings_address_default_named">Leave empty to use the address the plugin ships with: %1$s</string>
+  <string name="sky_settings_address_plugin_default">Plugin default</string>
+  <string name="sky_settings_address_custom">Custom address</string>
+  <string name="sky_settings_sub_providers">Sources in this plugin</string>
+  <string name="sky_settings_sub_providers_hint">%1$d of %2$d on. Switch off the ones you do not want on Home, in Fuse or in search.</string>
+  <string name="sky_settings_all_on">All on</string>
+  <string name="sky_settings_all_off">All off</string>
   <string name="settings_cloudstream_summary">%1$s · %2$s of %3$s sources on</string>
   <string name="settings_status_source_on_downloads">%1$s on. It downloads the first time it is used.</string>
   <string name="settings_status_choose_doh_first">Choose a valid DNS over HTTPS provider first.</string>

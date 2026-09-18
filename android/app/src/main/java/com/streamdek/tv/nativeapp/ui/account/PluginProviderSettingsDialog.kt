@@ -188,7 +188,7 @@ internal fun PluginProviderSettingsDialog(
  * is always live steals D-pad focus from everything around it and pops the keyboard on the way past.
  */
 @Composable
-private fun PluginSettingTextRow(
+internal fun PluginSettingTextRow(
     field: PluginSettingField,
     value: String,
     editing: Boolean,
@@ -270,7 +270,7 @@ private fun PluginSettingTextRow(
 
 /** A field with a fixed set of answers — the provider's own options, or a boolean's on/off. */
 @Composable
-private fun PluginSettingChoiceRow(
+internal fun PluginSettingChoiceRow(
     field: PluginSettingField,
     value: String,
     onValueChange: (String) -> Unit,

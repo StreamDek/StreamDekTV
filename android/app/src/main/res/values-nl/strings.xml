@@ -1313,6 +1313,15 @@
   <string name="settings_plugin_section_regular">Gewone plug-inbronnen</string>
   <string name="settings_plugin_section_cloudstream">CloudStream-bronnen</string>
   <string name="settings_plugin_section_skystream">SkyStream-bronnen</string>
+  <string name="sky_detail_version_value">Versie %1$d</string>
+  <string name="sky_settings_address">Siteadres</string>
+  <string name="sky_settings_address_default_named">Laat leeg om het adres van de plug-in te gebruiken: %1$s</string>
+  <string name="sky_settings_address_plugin_default">Standaard van plug-in</string>
+  <string name="sky_settings_address_custom">Eigen adres</string>
+  <string name="sky_settings_sub_providers">Bronnen in deze plug-in</string>
+  <string name="sky_settings_sub_providers_hint">%1$d van %2$d aan. Zet uit wat je niet op Home, in Fuse of in zoeken wilt.</string>
+  <string name="sky_settings_all_on">Alles aan</string>
+  <string name="sky_settings_all_off">Alles uit</string>
   <string name="settings_cloudstream_summary">%1$s · %2$s van %3$s bronnen aan</string>
   <string name="settings_status_source_on_downloads">%1$s aan. Hij wordt bij het eerste gebruik gedownload.</string>
   <string name="settings_status_choose_doh_first">Kies eerst een geldige DNS-over-HTTPS-aanbieder.</string>

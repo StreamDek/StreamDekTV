@@ -1397,6 +1397,15 @@
   <string name="settings_plugin_section_regular">Zwykłe źródła wtyczek</string>
   <string name="settings_plugin_section_cloudstream">Źródła CloudStream</string>
   <string name="settings_plugin_section_skystream">Źródła SkyStream</string>
+  <string name="sky_detail_version_value">Wersja %1$d</string>
+  <string name="sky_settings_address">Adres strony</string>
+  <string name="sky_settings_address_default_named">Zostaw puste, aby użyć adresu wtyczki: %1$s</string>
+  <string name="sky_settings_address_plugin_default">Domyślny wtyczki</string>
+  <string name="sky_settings_address_custom">Własny adres</string>
+  <string name="sky_settings_sub_providers">Źródła w tej wtyczce</string>
+  <string name="sky_settings_sub_providers_hint">Włączone: %1$d z %2$d. Wyłącz te, których nie chcesz na stronie głównej, w Fuse ani w wyszukiwaniu.</string>
+  <string name="sky_settings_all_on">Włącz wszystkie</string>
+  <string name="sky_settings_all_off">Wyłącz wszystkie</string>
   <string name="settings_cloudstream_summary">%1$s · włączone %2$s z %3$s źródeł</string>
   <string name="settings_status_source_on_downloads">%1$s włączone. Zostanie pobrane przy pierwszym użyciu.</string>
   <string name="settings_status_choose_doh_first">Najpierw wybierz prawidłowego dostawcę DNS over HTTPS.</string>

@@ -1320,6 +1320,15 @@
   <string name="settings_plugin_section_regular">Sorgenti plugin standard</string>
   <string name="settings_plugin_section_cloudstream">Sorgenti CloudStream</string>
   <string name="settings_plugin_section_skystream">Sorgenti SkyStream</string>
+  <string name="sky_detail_version_value">Versione %1$d</string>
+  <string name="sky_settings_address">Indirizzo del sito</string>
+  <string name="sky_settings_address_default_named">Lascia vuoto per usare l’indirizzo del plugin: %1$s</string>
+  <string name="sky_settings_address_plugin_default">Predefinito del plugin</string>
+  <string name="sky_settings_address_custom">Indirizzo personalizzato</string>
+  <string name="sky_settings_sub_providers">Fonti in questo plugin</string>
+  <string name="sky_settings_sub_providers_hint">%1$d di %2$d attive. Disattiva quelle che non vuoi in Home, in Fuse o nella ricerca.</string>
+  <string name="sky_settings_all_on">Tutte attive</string>
+  <string name="sky_settings_all_off">Tutte disattive</string>
   <string name="settings_cloudstream_summary">%1$s · %2$s sorgenti su %3$s attive</string>
   <string name="settings_status_source_on_downloads">%1$s attiva. Viene scaricata al primo utilizzo.</string>
   <string name="settings_status_choose_doh_first">Scegli prima un fornitore DNS over HTTPS valido.</string>

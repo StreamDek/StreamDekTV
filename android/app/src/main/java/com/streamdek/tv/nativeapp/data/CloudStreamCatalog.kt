@@ -126,6 +126,16 @@ object CloudStreamCatalog {
   @Volatile private var liveSourceCache: LiveSourceCache? = null
 
   private fun liveSources(): Pair<Set<String>, Set<String>> {
+    val cloudStream = cloudStreamLiveSources()
+    // SkyStream sources declare their types in the plugin manifest, which is all there is to go on.
+    val skyStream = if (!SkyStreamPlugins.isInitialized) emptySet() else SkyStreamPlugins.manager.lastProviders
+      .filter { provider -> provider.supportedTypes.let { types -> types.isNotEmpty() && types.all { it == TvType.Live } } }
+      .mapTo(hashSetOf()) { it.name }
+    if (skyStream.isEmpty()) return cloudStream
+    return (cloudStream.first + skyStream) to (cloudStream.second + skyStream.map(::cloudStreamRowSourceId))
+  }
+
+  private fun cloudStreamLiveSources(): Pair<Set<String>, Set<String>> {
     if (!CloudStreamPlugins.isInitialized) return emptySet<String>() to emptySet()
     val state = CloudStreamPlugins.manager.state
     val generation = CloudStreamPluginLoader.generation
@@ -340,36 +350,65 @@ internal fun resolveCloudStreamHomeRow(id: String, providers: List<MainAPI>): Cl
   return rows.firstOrNull { cloudStreamRowSlug(it.page.name, "row") == parts[3] } ?: rows.getOrNull(parts[4].toIntOrNull() ?: -1)
 }
 
-/** The CloudStream sources ready to answer right now, or none. */
-internal fun loadedCloudStreamProviders(): List<MainAPI> =
-  if (!CloudStreamPlugins.isInitialized) emptyList()
-  else runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList())
+/**
+ * The sources ready to answer right now, or none: loaded `.cs3` providers, then switched-on
+ * SkyStream sources, which run as CloudStream providers (see [SkyStreamMainApi]) so Home rows, Fuse,
+ * title pages and stream lookups take them up with nothing written twice.
+ */
+internal fun loadedCloudStreamProviders(): List<MainAPI> {
+  val cloudStream = if (!CloudStreamPlugins.isInitialized) emptyList()
+    else runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList())
+  return cloudStream + skyStreamProviders(cloudStream)
+}
+
+/** Switched-on SkyStream sources as CloudStream providers, named clear of [cloudStream]'s. */
+internal fun skyStreamProviders(
+  cloudStream: List<MainAPI> = if (!CloudStreamPlugins.isInitialized) emptyList()
+    else runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList()),
+): List<MainAPI> =
+  if (!SkyStreamPlugins.isInitialized) emptyList()
+  else runCatching { SkyStreamPlugins.manager.mainApis(cloudStream.mapTo(hashSetOf()) { it.name }) }
+    .onFailure { TvDebugLogger.w("SkyStream", "sources could not be listed", it) }
+    .getOrDefault(emptyList())
+
+private fun skyStreamRowGroupKey(source: SkySource): String = "skystream-plugin:${source.repoUrl}|${source.packageName}"
 
 /**
  * Which group each loaded provider's rows go in: the plugin that registered it, as a group key and
  * title. One plugin can register several providers — CNC Verse registers Netflix, Prime Video and
  * more — and their rows belong together, the way an add-on's catalogues sit under the add-on.
  */
-internal fun cloudStreamRowGroups(): Map<String, Pair<String, String>> =
-  if (!CloudStreamPlugins.isInitialized) emptyMap() else runCatching {
+internal fun cloudStreamRowGroups(): Map<String, Pair<String, String>> {
+  val cloudStream = if (!CloudStreamPlugins.isInitialized) emptyMap() else runCatching {
     CloudStreamPluginLoader.loadedPlugins().flatMap { plugin ->
       plugin.providers.map { provider -> cloudStreamRowSourceId(provider.name) to ("cloudstream-plugin:${plugin.filePath}" to plugin.name) }
     }.toMap()
   }.getOrDefault(emptyMap())
+  // A SkyStream plugin that splits into sub-providers groups them the same way.
+  val skyStream = skyStreamProviders().filterIsInstance<SkyStreamMainApi>().associate { provider ->
+    cloudStreamRowSourceId(provider.name) to (skyStreamRowGroupKey(provider.source) to provider.source.pluginName)
+  }
+  return cloudStream + skyStream
+}
 
 /** Where each plugin group comes from ("CloudStream · CNC Repo"), keyed as [cloudStreamRowGroups] keys them. */
-internal fun cloudStreamGroupLabels(): Map<String, String> =
-  if (!CloudStreamPlugins.isInitialized) emptyMap() else runCatching {
+internal fun cloudStreamGroupLabels(): Map<String, String> {
+  val cloudStream = if (!CloudStreamPlugins.isInitialized) emptyMap() else runCatching {
     CloudStreamPluginLoader.loadedPlugins().mapNotNull { plugin ->
       plugin.providers.firstOrNull()
         ?.let { provider -> cloudStreamProviderOriginLabel(provider.name) }
         ?.let { label -> "cloudstream-plugin:${plugin.filePath}" to label }
     }.toMap()
   }.getOrDefault(emptyMap())
+  val skyStream = skyStreamProviders().filterIsInstance<SkyStreamMainApi>()
+    .associate { provider -> skyStreamRowGroupKey(provider.source) to cloudStreamProviderOriginLabel(provider.name) }
+  return cloudStream + skyStream
+}
 
 // --- Where a source came from -----------------------------------------------------------------
 
 private const val CLOUDSTREAM_ORIGIN = "CloudStream"
+private const val SKYSTREAM_ORIGIN = "SkyStream"
 
 /**
  * "CloudStream · <collection>" for a loaded CloudStream provider, by name.
@@ -379,6 +418,14 @@ private const val CLOUDSTREAM_ORIGIN = "CloudStream"
  * the name match kept as the fallback. "CloudStream" alone when neither finds it.
  */
 internal fun cloudStreamProviderOriginLabel(providerName: String): String {
+  // A SkyStream source runs as a CloudStream provider, so its name arrives here too.
+  if (SkyStreamPlugins.isInitialized) {
+    SkyStreamPlugins.manager.collectionNamesByProvider()[providerName]?.let { collection ->
+      val shown = collection.takeUnless { it.startsWith("http", true) }
+        ?: runCatching { java.net.URI(collection).host }.getOrNull()?.removePrefix("www.")
+      return listOfNotNull(SKYSTREAM_ORIGIN, shown).joinToString(" · ")
+    }
+  }
   if (!CloudStreamPlugins.isInitialized) return CLOUDSTREAM_ORIGIN
   val state = runCatching { CloudStreamPlugins.manager.state }.getOrNull() ?: return CLOUDSTREAM_ORIGIN
   val file = runCatching { CloudStreamPluginLoader.providerFiles()[providerName] }.getOrNull()

@@ -1053,6 +1053,16 @@ data class ProfilePluginState(
      * field it drops. The server merges it value by value, so it is never replaced by a stale copy.
      */
     val cloudstreamSourceSettings: com.google.gson.JsonArray? = null,
+    /**
+     * The SkyStream half of the document: collections, which sources are on, and each source's
+     * settings, as the phone and the portal write it (see SkyStreamProfile.kt).
+     *
+     * Carried as raw JSON for the reason [cloudstreamSourceSettings] is: this class is sent back
+     * whole, and until this field existed every plugin setting saved on this television deleted
+     * the section from the account. Raw rather than typed so that fields the phone or the portal
+     * add later - settings schemas, sub-provider lists, mirrors - survive the round trip too.
+     */
+    val skystream: com.google.gson.JsonObject? = null,
     val updatedAt: Long = 0L,
 )
 

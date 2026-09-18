@@ -811,7 +811,11 @@ class StreamDekRepository(
     @Volatile private var announcedCloudStreamSignature: String? = null
 
     private fun announceCloudStreamProviders() {
-        val signature = loadedCloudStreamProviders().map { it.name }.sorted().joinToString("|")
+        // Each provider's rows are part of it: a SkyStream source learns its rows after it first
+        // loads, and Home has to hear about them then, not only when the set of names changes.
+        val signature = loadedCloudStreamProviders()
+            .map { provider -> provider.name + CloudStreamCatalog.mainPageRows(provider).joinToString(",", "[", "]") { it.page.name } }
+            .sorted().joinToString("|")
         if (signature == announcedCloudStreamSignature) return
         announcedCloudStreamSignature = signature
         cloudStreamProvidersState.value = cloudStreamProvidersState.value + 1
@@ -4497,6 +4501,7 @@ class StreamDekRepository(
      * logged rather than surfaced: the rest of the sources should still answer.
      */
     private fun applyCloudStreamCollections(plugins: ProfilePluginState?) {
+        applySkyStreamCollections(plugins)
         if (!CloudStreamPlugins.isInitialized) return
         val ownerKey = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: "guest"
         CloudStreamPlugins.manager.onProvidersChanged = ::announceCloudStreamProviders
@@ -4522,15 +4527,34 @@ class StreamDekRepository(
     }
 
     /**
+     * Brings this profile's SkyStream collections up from the synced document: which are installed
+     * and on, and each source's settings. The document is the only way they reach this television -
+     * it adds none itself - and switching one on here is a change to the document, which comes back
+     * through this. A bundle is downloaded the first time its source is on, off the caller's thread.
+     */
+    private fun applySkyStreamCollections(plugins: ProfilePluginState?) {
+        if (!SkyStreamPlugins.isInitialized) return
+        val ownerKey = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: "guest"
+        val manager = SkyStreamPlugins.manager
+        manager.onProvidersChanged = ::announceCloudStreamProviders
+        repositoryScope.launch(Dispatchers.IO) {
+            manager.selectProfileStorage(ownerKey)
+            // A profile whose document has no section has no collections: an empty one takes away
+            // any this television still held for it, as a removal made on the phone should.
+            val section = plugins?.skystream?.toString() ?: """{"repos":[],"providers":[]}"""
+            runCatching { manager.restoreCloudState(section) }
+                .onSuccess { changed -> if (changed) TvDebugLogger.i("SkyStream", "collections updated from the account") }
+                .onFailure { TvDebugLogger.w("SkyStream", "could not take collections from the account", it) }
+        }
+    }
+
+    /**
      * The CloudStream sources ready to answer, or none.
      *
      * These search by title rather than by id -- a `.cs3` scrapes a website -- so unlike the JS
      * plugins they are worth asking only once the title is known.
      */
-    private fun cloudStreamProviders(): List<com.lagradost.cloudstream3.MainAPI> {
-        if (!CloudStreamPlugins.isInitialized) return emptyList()
-        return runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList())
-    }
+    private fun cloudStreamProviders(): List<com.lagradost.cloudstream3.MainAPI> = loadedCloudStreamProviders()
 
     /** How many plugin scrapers a lookup of [mediaType] would fan out to. */
     private fun pluginProviderCount(mediaType: String): Int {
