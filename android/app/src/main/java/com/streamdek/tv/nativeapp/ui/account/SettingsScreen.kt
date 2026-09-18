@@ -42,6 +42,10 @@ import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.VpnKey
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -110,6 +114,9 @@ import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
 import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
+import com.streamdek.tv.nativeapp.data.ProfileCloudStreamRepo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import com.streamdek.tv.nativeapp.data.RemotePlaylist
 import com.streamdek.tv.nativeapp.data.StreamDekDoHProviders
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
@@ -1115,11 +1122,30 @@ fun SettingsScreen(
                         if (!collapsibleAddons || addonsExpanded) {
                             addons.sortedWith(compareByDescending<AddonManifest> { it.favourite }.thenBy { it.position }).forEach { addon ->
                                 key(addon.id) {
-                                    SettingsToggleRow(
-                                        addon.manifest.name.ifBlank { addon.id },
-                                        stringResource(R.string.settings_tv_enable_or_disable_this_installed_add_on),
-                                        addon.enabled,
-                                        selectedRequester,
+                                    SettingsSourceRow(
+                                        title = addon.manifest.name.ifBlank { addon.id },
+                                        description = if (addon.favourite) {
+                                            stringResource(R.string.settings_tv_favourite_add_ons_are_searched_before_other)
+                                        } else {
+                                            stringResource(R.string.settings_tv_enable_or_disable_this_installed_add_on)
+                                        },
+                                        favourite = addon.favourite,
+                                        checked = addon.enabled,
+                                        leftRequester = selectedRequester,
+                                        onFavourite = {
+                                            scope.launch {
+                                                val saved = repository.setAddonFavourite(addon.id, !addon.favourite)
+                                                if (saved) {
+                                                    bootstrap = repository.bootstrap.value
+                                                    addons = repository.fetchAddonManifests(forceRefresh = true)
+                                                }
+                                                val addonName = addon.manifest.name.ifBlank { settingsResources.getString(R.string.source_origin_addon) }
+                                                status = settingsResources.getString(
+                                                    if (saved) R.string.settings_favourite_updated_named else R.string.settings_favourite_update_failed_named,
+                                                    addonName,
+                                                )
+                                            }
+                                        },
                                     ) { next, complete ->
                                         scope.launch {
                                             addons = addons.map { current ->
@@ -1141,25 +1167,6 @@ fun SettingsScreen(
                                                 )
                                             }
                                             complete(saved)
-                                        }
-                                    }
-                                    SettingsActionRow(
-                                        stringResource(R.string.settings_tv_name_favourite, addon.manifest.name.ifBlank { addon.id }),
-                                        stringResource(R.string.settings_tv_favourite_add_ons_are_searched_before_other),
-                                        if (addon.favourite) stringResource(R.string.action_unfavourite) else stringResource(R.string.action_favourite),
-                                        selectedRequester,
-                                    ) {
-                                        scope.launch {
-                                            val saved = repository.setAddonFavourite(addon.id, !addon.favourite)
-                                            if (saved) {
-                                                bootstrap = repository.bootstrap.value
-                                                addons = repository.fetchAddonManifests(forceRefresh = true)
-                                            }
-                                            val addonName = addon.manifest.name.ifBlank { settingsResources.getString(R.string.source_origin_addon) }
-                                            status = settingsResources.getString(
-                                                if (saved) R.string.settings_favourite_updated_named else R.string.settings_favourite_update_failed_named,
-                                                addonName,
-                                            )
                                         }
                                     }
                                 }
@@ -1244,20 +1251,17 @@ fun SettingsScreen(
                                             val parentKey = "repo:${repo.url}"
                                             val expanded = parentKey in expandedPluginParents
                                             key(parentKey) {
-                                                SettingsActionRow(
-                                                    repo.name.ifBlank { repo.url },
-                                                    pluralStringResource(R.plurals.settings_tv_source_count, providers.size, providers.size).let { base -> repo.version.takeIf { it.isNotBlank() }?.let { stringResource(R.string.settings_tv_dot_joined, base, it) } ?: base },
-                                                    if (expanded) stringResource(R.string.action_collapse) else stringResource(R.string.action_expand),
-                                                    selectedRequester,
-                                                ) {
-                                                    expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
-                                                }
-                                                SettingsActionRow(
-                                                    stringResource(R.string.settings_tv_name_favourite, repo.name.ifBlank { stringResource(R.string.settings_tv_plugin_collection) }),
-                                                    stringResource(R.string.settings_tv_favourite_plugin_collections_are_searched_before_other),
-                                                    if (repo.favourite) stringResource(R.string.action_unfavourite) else stringResource(R.string.action_favourite),
-                                                    selectedRequester,
-                                                ) {
+                                                SettingsSourceRow(
+                                                    title = repo.name.ifBlank { repo.url },
+                                                    description = pluralStringResource(R.plurals.settings_tv_source_count, providers.size, providers.size).let { base -> repo.version.takeIf { it.isNotBlank() }?.let { stringResource(R.string.settings_tv_dot_joined, base, it) } ?: base },
+                                                    favourite = repo.favourite,
+                                                    checked = repo.enabled,
+                                                    leftRequester = selectedRequester,
+                                                    expanded = expanded,
+                                                    onExpand = {
+                                                        expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
+                                                    },
+                                                    onFavourite = {
                                                     scope.launch {
                                                         val nextState = pluginState.copy(
                                                             repos = pluginState.repos.map { if (it.url == repo.url) it.copy(favourite = !repo.favourite) else it },
@@ -1269,14 +1273,8 @@ fun SettingsScreen(
                                                             repo.name.ifBlank { settingsResources.getString(R.string.settings_tv_plugin_collection) },
                                                         )
                                                     }
-                                                }
-                                                if (expanded) {
-                                                    SettingsToggleRow(
-                                                        stringResource(R.string.settings_tv_collection_enabled),
-                                                        stringResource(R.string.settings_tv_enable_or_disable_named, repo.name.ifBlank { stringResource(R.string.settings_tv_this_plugin_collection) }),
-                                                        repo.enabled,
-                                                        selectedRequester,
-                                                    ) { next, complete ->
+                                                    },
+                                                ) { next, complete ->
                                                         scope.launch {
                                                             val nextState = pluginState.copy(
                                                                 repos = pluginState.repos.map { if (it.url == repo.url) it.copy(enabled = next) else it },
@@ -1293,6 +1291,7 @@ fun SettingsScreen(
                                                             complete(updated != null)
                                                         }
                                                     }
+                                                if (expanded) {
                                                     providers.forEach { provider ->
                                                         key("provider:${provider.repoUrl}:${provider.id}") {
                                                             SettingsToggleRow(
@@ -1399,18 +1398,63 @@ fun SettingsScreen(
                                     AppFormats.number(appLanguage, cloudStream.providers.size),
                                 ),
                             )
-                            cloudStream.repos.forEach { repo ->
+                            // Favourites first, as the phone orders them - they are the collections whose
+                            // sources are asked first.
+                            cloudStream.repos.sortedWith(compareByDescending<ProfileCloudStreamRepo> { it.favourite }.thenBy { it.name.lowercase() }).forEach { repo ->
                                 val parentKey = "cs:${repo.url}"
                                 val expanded = parentKey in expandedPluginParents
                                 val sources = cloudStream.providers.filter { it.repoUrl == repo.url }
+                                val repoName = repo.name.ifBlank { repo.url }
+                                /**
+                                 * Writes one change to this collection back through the document the
+                                 * phone and the portal read, stamped so it wins over their older copy.
+                                 */
+                                fun saveRepo(change: (ProfileCloudStreamRepo) -> ProfileCloudStreamRepo, onDone: (Boolean) -> Unit) {
+                                    scope.launch {
+                                        val nextState = (pluginState ?: ProfilePluginState()).copy(
+                                            cloudstream = cloudStream.copy(
+                                                repos = cloudStream.repos.map { if (it.url == repo.url) change(it) else it },
+                                                updatedAt = System.currentTimeMillis(),
+                                            ),
+                                        )
+                                        val updated = repository.updateProfilePlugins(nextState)
+                                        if (updated != null) bootstrap = updated
+                                        onDone(updated != null)
+                                    }
+                                }
                                 key(parentKey) {
-                                    SettingsActionRow(
-                                        repo.name.ifBlank { repo.url },
-                                        pluralStringResource(R.plurals.settings_tv_sources_with_enabled, sources.size, sources.size, sources.count { it.enabled }),
-                                        if (expanded) stringResource(R.string.action_collapse) else stringResource(R.string.action_expand),
-                                        selectedRequester,
-                                    ) {
-                                        expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
+                                    SettingsSourceRow(
+                                        title = repoName,
+                                        description = pluralStringResource(R.plurals.settings_tv_sources_with_enabled, sources.size, sources.size, sources.count { it.enabled }),
+                                        favourite = repo.favourite,
+                                        checked = repo.enabled,
+                                        leftRequester = selectedRequester,
+                                        expanded = expanded,
+                                        onExpand = {
+                                            expandedPluginParents = if (expanded) expandedPluginParents - parentKey else expandedPluginParents + parentKey
+                                        },
+                                        onFavourite = {
+                                            saveRepo({ it.copy(favourite = !repo.favourite) }) { saved ->
+                                                status = settingsResources.getString(
+                                                    if (saved) R.string.settings_favourite_updated_named else R.string.settings_favourite_update_failed_named,
+                                                    repoName,
+                                                )
+                                            }
+                                        },
+                                    ) { next, complete ->
+                                        // Switching a collection off stops every source in it answering
+                                        // here and on the phone, without forgetting which were on: switch
+                                        // it back and the same sources return.
+                                        saveRepo({ it.copy(enabled = next) }) { saved ->
+                                            status = settingsResources.getString(
+                                                when {
+                                                    !saved -> R.string.settings_update_failed_named
+                                                    else -> R.string.settings_updated_named
+                                                },
+                                                repoName,
+                                            )
+                                            complete(saved)
+                                        }
                                     }
                                     if (expanded) {
                                         sources.forEach { source ->
@@ -2296,6 +2340,178 @@ private fun SettingsToggleRow(
         }
         Switch(
             checked = visualChecked,
+            onCheckedChange = null,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = MaterialTheme.colorScheme.primary,
+                uncheckedThumbColor = Color.White.copy(alpha = 0.72f),
+                uncheckedTrackColor = Color.White.copy(alpha = 0.16f),
+                uncheckedBorderColor = Color.White.copy(alpha = 0.22f),
+            ),
+        )
+    }
+}
+
+/**
+ * One installed source - an add-on, a plugin collection, a CloudStream collection - as a single row.
+ *
+ * Favouriting used to be a second full-width row under every item ("Favourite <name>" /
+ * "Unfavourite"), which doubled the length of every list and read like a list of chores. It is now
+ * a star on the item itself, beside the switch that turns it on and off:
+ *
+ * - The card is the first stop. It opens the collection when there is something to open, and
+ *   otherwise does what the switch does, so an add-on list still toggles with a single press.
+ * - Right moves to the star, which is a small icon at rest and widens into a labelled pill while
+ *   focused - on a television the highlight has to say what OK will do before it is pressed.
+ * - Right again reaches the switch. Up and Down move between rows, landing on the same control in
+ *   the next row, so a column of stars or switches can be worked straight down.
+ *
+ * A favourited item also carries a filled star beside its name, so the order of the list - which
+ * puts favourites first - explains itself.
+ */
+@Composable
+private fun SettingsSourceRow(
+    title: String,
+    description: String,
+    favourite: Boolean,
+    checked: Boolean,
+    leftRequester: FocusRequester,
+    onFavourite: () -> Unit,
+    expanded: Boolean? = null,
+    onExpand: (() -> Unit)? = null,
+    onToggle: (Boolean, (Boolean) -> Unit) -> Unit,
+) {
+    var cardFocused by remember { mutableStateOf(false) }
+    var visualChecked by remember { mutableStateOf(checked) }
+    var saving by remember { mutableStateOf(false) }
+    LaunchedEffect(checked) { if (!saving) visualChecked = checked }
+    // Shown immediately, like the switch: the account round trip should not be what the star waits on.
+    var visualFavourite by remember { mutableStateOf(favourite) }
+    LaunchedEffect(favourite) { visualFavourite = favourite }
+
+    fun toggle() {
+        if (saving) return
+        val next = !visualChecked
+        visualChecked = next
+        saving = true
+        onToggle(next) { succeeded ->
+            if (!succeeded) visualChecked = checked
+            saving = false
+        }
+    }
+
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
+    val accent = MaterialTheme.colorScheme.primary
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            Modifier.weight(1f)
+                .background(if (cardFocused) Color(0xFF172131) else Color(0xB20E141D), shape)
+                .border(if (cardFocused) 2.dp else 1.dp, if (cardFocused) accent else Color(0x10FFFFFF), shape)
+                .onFocusChanged { cardFocused = it.isFocused }
+                .onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess }
+                .clickable { if (onExpand != null) onExpand() else toggle() }
+                .padding(horizontal = 18.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        title,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (visualFavourite) {
+                        Icon(Icons.Filled.Star, contentDescription = null, tint = FavouriteStarColor, modifier = Modifier.size(15.dp))
+                    }
+                }
+                Text(
+                    description,
+                    color = Color.White.copy(alpha = if (visualChecked) 0.55f else 0.4f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = if (cardFocused) Int.MAX_VALUE else 1,
+                    overflow = if (cardFocused) TextOverflow.Clip else TextOverflow.Ellipsis,
+                )
+            }
+            if (expanded != null) {
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = stringResource(if (expanded) R.string.action_collapse else R.string.action_expand),
+                    tint = if (cardFocused) accent else Color.White.copy(alpha = 0.55f),
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        SettingsFavouriteButton(visualFavourite, title) {
+            visualFavourite = !visualFavourite
+            onFavourite()
+        }
+        SettingsSwitchButton(visualChecked, title, ::toggle)
+    }
+}
+
+private val FavouriteStarColor = Color(0xFFFFC857)
+
+/** The star beside a source: an icon at rest, a labelled pill while focused. */
+@Composable
+private fun SettingsFavouriteButton(favourite: Boolean, itemName: String, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(999.dp)
+    val label = stringResource(if (favourite) R.string.action_unfavourite else R.string.action_favourite)
+    Row(
+        Modifier
+            .height(46.dp)
+            .background(if (focused) Color(0xFF172131) else Color(0xB20E141D), shape)
+            .border(if (focused) 2.dp else 1.dp, if (focused) MaterialTheme.colorScheme.primary else Color(0x10FFFFFF), shape)
+            .onFocusChanged { focused = it.isFocused }
+            .semantics { contentDescription = "$label $itemName" }
+            .clickable(onClick = onClick)
+            .padding(horizontal = if (focused) 16.dp else 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            if (favourite) Icons.Filled.Star else Icons.Filled.StarBorder,
+            contentDescription = null,
+            tint = when {
+                favourite -> FavouriteStarColor
+                focused -> Color.White
+                else -> Color.White.copy(alpha = 0.5f)
+            },
+            modifier = Modifier.size(22.dp),
+        )
+        if (focused) {
+            Text(label, color = Color.White, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+        }
+    }
+}
+
+/** The on/off switch beside a source, as its own stop so the card can open the item instead. */
+@Composable
+private fun SettingsSwitchButton(checked: Boolean, itemName: String, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(999.dp)
+    val state = stringResource(if (checked) R.string.state_on else R.string.animation_speed_off)
+    Box(
+        Modifier
+            .height(46.dp)
+            .background(if (focused) Color(0xFF172131) else Color(0xB20E141D), shape)
+            .border(if (focused) 2.dp else 1.dp, if (focused) MaterialTheme.colorScheme.primary else Color(0x10FFFFFF), shape)
+            .onFocusChanged { focused = it.isFocused }
+            .semantics { contentDescription = "$itemName $state" }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Switch(
+            checked = checked,
             onCheckedChange = null,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,

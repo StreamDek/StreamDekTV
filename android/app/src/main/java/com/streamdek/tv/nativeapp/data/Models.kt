@@ -1046,6 +1046,13 @@ data class ProfilePluginState(
      * `.cs3` is that device's business and means nothing to any other client.
      */
     val cloudstream: ProfileCloudStreamState? = null,
+    /**
+     * CloudStream source switches - which sites inside each extension are on - recorded by the
+     * apps; see CloudStreamSourceSettings.kt. Carried as raw JSON because this class is sent back
+     * whole by [StreamDekRepository.updateProfilePlugins], and a field Gson does not model is a
+     * field it drops. The server merges it value by value, so it is never replaced by a stale copy.
+     */
+    val cloudstreamSourceSettings: com.google.gson.JsonArray? = null,
     val updatedAt: Long = 0L,
 )
 

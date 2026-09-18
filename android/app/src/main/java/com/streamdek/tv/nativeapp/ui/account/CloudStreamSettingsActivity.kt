@@ -71,6 +71,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.data.CloudStreamPluginLoader
 import com.streamdek.tv.nativeapp.data.CloudStreamPlugins
+import com.streamdek.tv.nativeapp.data.CloudStreamSourcePrefs
 import com.streamdek.tv.nativeapp.ui.localizedAppContext
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -108,6 +109,8 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
     }
 
     private var pluginPath: String? = null
+    /** The extensions' switches as they were when this screen opened; see [onCreate]. */
+    private var switchesBefore: Map<String, Map<String, Any>>? = null
     private var screen by mutableStateOf<Screen>(Screen.Loading)
     private var mirroredFragment: DialogFragment? = null
     private var changed = false
@@ -135,6 +138,9 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
             return
         }
         pluginPath = path
+        // Taken before the extension is loaded here, so everything the visit changes - and only that -
+        // is recorded as the viewer's choice when the screen closes. See CloudStreamSourceSettings.kt.
+        switchesBefore = CloudStreamSourcePrefs.snapshot(this)
 
         setContent { PluginSettingsScreen(sourceName = entry.name) }
 
@@ -191,6 +197,11 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
      * window manager and throws, which the caller catches. Only held around presses StreamDek makes on
      * the plugin's behalf, so its "restart the app to apply" prompt never appears.
      */
+    override fun getSharedPreferences(name: String?, mode: Int): android.content.SharedPreferences {
+        CloudStreamSourcePrefs.noteOpened(this, name)
+        return super.getSharedPreferences(name, mode)
+    }
+
     override fun getSystemService(name: String): Any? =
         if (suppressPluginDialogs && name == Context.WINDOW_SERVICE) null else super.getSystemService(name)
 
@@ -257,7 +268,13 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
         super.onDestroy()
         if (path != null && isFinishing) {
             // Registration is decided at load time. Re-read saved switches and notify the Home layout.
+            val before = switchesBefore
             reloadScope.launch {
+                // Recorded before the reload, from the stores the extension's own Save wrote to.
+                if (before != null && CloudStreamPlugins.isInitialized) {
+                    runCatching { CloudStreamPlugins.manager.recordSourceVisit(path, before) }
+                        .onFailure { Log.w("CloudStreamSettings", "Could not record source switches", it) }
+                }
                 CloudStreamPluginLoader.unload(path)
                 if (CloudStreamPlugins.isInitialized) CloudStreamPlugins.manager.loadEnabledProviders()
             }

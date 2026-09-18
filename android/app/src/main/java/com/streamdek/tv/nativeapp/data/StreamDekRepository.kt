@@ -709,6 +709,39 @@ class StreamDekRepository(
 
     /** Loading a profile's `.cs3` extensions; cancelled when the profile changes under it. */
     private var cloudStreamLoadJob: kotlinx.coroutines.Job? = null
+    private var sourceSettingsSyncJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Sends this profile's CloudStream source switches to the account.
+     *
+     * A read-modify-write of that one field: the rest of the document is read back from the account
+     * and returned exactly as it was, so a television whose copy of the collections is behind can
+     * never put it back over a newer one. The server merges the field value by value as well.
+     * [updatedAt] is left alone, since nothing it covers has changed.
+     */
+    private fun syncCloudStreamSourceSettings() {
+        if (!CloudStreamPlugins.isInitialized) return
+        sourceSettingsSyncJob?.cancel()
+        sourceSettingsSyncJob = repositoryScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(500)
+            val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return@launch
+            val path = "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/plugins"
+            runCatching {
+                val plugins = api.get<JsonObject>(path)?.getAsJsonObject("plugins") ?: JsonObject()
+                val merge = CloudStreamPlugins.manager.mergeCloudSourceSettings(
+                    plugins.getAsJsonArray("cloudstreamSourceSettings")?.let { org.json.JSONArray(it.toString()) },
+                )
+                if (merge.reloadNeeded) CloudStreamPlugins.manager.loadEnabledProviders()
+                if (!merge.localAhead) return@runCatching
+                plugins.add(
+                    "cloudstreamSourceSettings",
+                    com.google.gson.JsonParser.parseString(CloudStreamPlugins.manager.sourceSettingsJson().toString()),
+                )
+                api.put<JsonObject>(path, mapOf("plugins" to plugins))
+                TvDebugLogger.i("CloudStream", "source switches synced to the account")
+            }.onFailure { TvDebugLogger.w("CloudStream", "could not sync source switches", it) }
+        }
+    }
     private val detailsCache = lruCache<String, MediaDetail>(48)
     private val seasonCache = lruCache<String, SeasonDetail>(32)
     private val homeCache = lruCache<String, HomeContent>(4)
@@ -4467,9 +4500,19 @@ class StreamDekRepository(
         if (!CloudStreamPlugins.isInitialized) return
         val ownerKey = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: "guest"
         CloudStreamPlugins.manager.onProvidersChanged = ::announceCloudStreamProviders
+        CloudStreamPlugins.manager.onSourceSettingsChanged = { syncCloudStreamSourceSettings() }
         CloudStreamPlugins.manager.selectProfileStorage(ownerKey)
         val section = plugins?.cloudstream?.let { com.google.gson.Gson().toJson(it) }
         val changed = runCatching { CloudStreamPlugins.manager.restoreCloudState(section) }.getOrDefault(false)
+        // The switches inside each extension, merged value by value rather than taken whole: choices
+        // made on the phone arrive here, and any made on this television that the account has not
+        // seen yet go back up. An extension whose switches changed is unloaded by the merge and
+        // brought back by the load below, since it decides what to register as it loads.
+        val switches = runCatching {
+            val incoming = plugins?.cloudstreamSourceSettings?.let { org.json.JSONArray(it.toString()) }
+            CloudStreamPlugins.manager.mergeCloudSourceSettings(incoming)
+        }.onFailure { TvDebugLogger.w("CloudStream", "could not take source switches from the account", it) }.getOrNull()
+        if (switches?.localAhead == true) syncCloudStreamSourceSettings()
         cloudStreamLoadJob?.cancel()
         cloudStreamLoadJob = repositoryScope.launch(Dispatchers.IO) {
             runCatching { CloudStreamPlugins.manager.loadEnabledProviders() }
