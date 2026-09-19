@@ -120,6 +120,97 @@ internal object PreferenceScopes {
     }
 }
 
+/**
+ * Settings each client holds for itself rather than sharing with the account.
+ *
+ * The backend defines the convention (settingsSchema.ts: perPlatformSettingKeys and
+ * PER_PLATFORM_PREFERENCES_KEY), and the phone and the web portal already follow it: trailer choices
+ * live under `platforms.<client>` so a phone deciding when its trailers start does not change the
+ * television's. Until this television read and wrote the same place, the portal's TV tab changed a
+ * value nothing read, and every trailer setting saved here quietly became the phone's fallback.
+ */
+internal object PlatformPreferences {
+
+    const val KEY = "platforms"
+    const val PLATFORM = "tv"
+
+    /** The per-platform keys, by the section their shared fallback lives in. */
+    val keys: Map<String, Set<String>> = mapOf(
+        "detail" to setOf("heroTrailerAutoplay", "heroTrailerDelaySeconds", "heroTrailerResolution"),
+    )
+
+    /**
+     * Folds this television's own values over the shared sections, so screens keep reading
+     * `preferences.detail` and get the answer for this client. A key the television has never
+     * saved keeps the shared value, which is how an account configured before the split keeps the
+     * settings it already had.
+     */
+    fun applyToPreferences(preferences: JsonObject): JsonObject {
+        val own = preferences.asObjectOrNull(KEY)?.asObjectOrNull(PLATFORM) ?: return preferences
+        val merged = preferences.deepCopy()
+        for ((section, sectionKeys) in keys) {
+            val base = merged.asObjectOrNull(section)?.deepCopy() ?: JsonObject()
+            var changed = false
+            for (key in sectionKeys) {
+                val value = own.get(key) ?: continue
+                if (value.isJsonNull) continue
+                base.add(key, value)
+                changed = true
+            }
+            if (changed) merged.add(section, base)
+        }
+        return merged
+    }
+
+    /**
+     * Settings that used to live only on this television and now travel under `platforms.tv`, so
+     * the web portal can set them. Unlike the trailer keys there is no shared value to fall back to:
+     * they were never anywhere but the device, so they are not folded into any section.
+     */
+    object Device {
+        const val ANIMATION_SPEED = "animationSpeed"
+        const val APP_LANGUAGE = "appLanguage"
+        const val SLEEP_WHEN_PAUSED_MINUTES = "sleepWhenPausedMinutes"
+        const val APP_IDLE_TIMEOUT_MINUTES = "appIdleTimeoutMinutes"
+    }
+
+    /** What to take from the account, and what the account does not hold yet. */
+    data class DeviceReconciliation(val apply: Map<String, JsonElement>, val upload: Map<String, Any>)
+
+    /**
+     * Compares this television's own section of the account with what the device holds.
+     *
+     * A key the account has is applied here, which is how a change made in the portal arrives. A key
+     * it lacks is uploaded from the device rather than the device being given a default: a television
+     * that has slept after thirty minutes for a year keeps doing so, and the portal learns it.
+     */
+    fun reconcileDevice(platforms: JsonObject?, local: Map<String, Any>): DeviceReconciliation {
+        val own = platforms?.asObjectOrNull(PLATFORM)
+        val apply = mutableMapOf<String, JsonElement>()
+        val upload = mutableMapOf<String, Any>()
+        for ((key, value) in local) {
+            val remote = own?.get(key)?.takeUnless { it.isJsonNull }
+            if (remote == null) upload[key] = value else apply[key] = remote
+        }
+        return DeviceReconciliation(apply, upload)
+    }
+
+    /**
+     * Splits a section update into the part that is shared and the part that belongs to this
+     * television, returning the payload to PATCH. The backend merges `platforms` one level deep, so
+     * sending only this client's sub-object leaves the phone's untouched.
+     */
+    fun splitSectionUpdate(section: String, values: Map<String, Any?>): Map<String, Any?> {
+        val own = keys[section].orEmpty()
+        val shared = values.filterKeys { it !in own }
+        val platform = values.filterKeys { it in own }
+        return buildMap {
+            put(section, shared)
+            if (platform.isNotEmpty()) put(KEY, mapOf(PLATFORM to platform))
+        }
+    }
+}
+
 internal fun JsonObject.asObjectOrNull(key: String): JsonObject? {
     val element: JsonElement? = get(key)
     return if (element != null && element.isJsonObject) element.asJsonObject else null

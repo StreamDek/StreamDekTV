@@ -110,6 +110,7 @@ import com.streamdek.tv.nativeapp.data.DoHSettings
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MaxTrailerDelaySeconds
 import com.streamdek.tv.nativeapp.data.PAUSED_SLEEP_CHOICES_MINUTES
+import com.streamdek.tv.nativeapp.data.PlatformPreferences
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import com.streamdek.tv.nativeapp.data.ProfilePluginProvider
 import com.streamdek.tv.nativeapp.data.ProfilePluginRepo
@@ -591,6 +592,7 @@ fun SettingsScreen(
                     ) { value ->
                         pausedTimeoutMinutes = value.toInt()
                         idlePreferences.pausedTimeoutMinutes = pausedTimeoutMinutes
+                        scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.SLEEP_WHEN_PAUSED_MINUTES to pausedTimeoutMinutes)) }
                         status = settingsResources.getString(R.string.settings_status_paused_sleep_set, idleTimeoutLabel(settingsResources, pausedTimeoutMinutes))
                     }
                     SettingsDropdownRow(
@@ -601,6 +603,7 @@ fun SettingsScreen(
                     ) { value ->
                         appIdleTimeoutMinutes = value.toInt()
                         idlePreferences.appIdleTimeoutMinutes = appIdleTimeoutMinutes
+                        scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.APP_IDLE_TIMEOUT_MINUTES to appIdleTimeoutMinutes)) }
                         status = settingsResources.getString(R.string.settings_status_app_idle_set, idleTimeoutLabel(settingsResources, appIdleTimeoutMinutes))
                     }
                     // Last on the page: only worth opening when something will not play.
@@ -1679,9 +1682,11 @@ fun SettingsScreen(
                     SettingsDropdownRow(stringResource(R.string.settings_tv_theme), stringResource(R.string.settings_tv_change_the_visual_colour_system), appPrefs?.theme ?: "cinema-blue", themeOptions, themeColors) { value ->
                         savePreference(R.string.settings_theme) { repository.updateAppPreferences(mapOf("theme" to value)) }
                     }
-                    // Saved on this television and nowhere else, unlike every other row on this
-                    // page: see AnimationSpeed.kt. There is nothing to save to the account and so
-                    // nothing that can fail, which is why it does not go through savePreference.
+                    // This television's own setting, not the account's: see AnimationSpeed.kt. It
+                    // applies on the spot from the device's own store and is then mirrored to
+                    // `platforms.tv` so the web portal shows and can change it. The upload is
+                    // best-effort - the choice has already taken effect - so it does not go
+                    // through savePreference and its failure message.
                     SettingsDropdownRow(
                         title = stringResource(R.string.settings_animation_speed),
                         description = animationSpeedDescription(motionSettings),
@@ -1689,12 +1694,13 @@ fun SettingsScreen(
                         options = AnimationSpeed.entries.map { it.key to stringResource(it.labelRes) },
                         optionDescriptions = AnimationSpeed.entries.associate { it.key to stringResource(it.descriptionRes) },
                     ) { value ->
-                        animationPreferences?.select(AnimationSpeed.fromKey(value))
+                        val speed = AnimationSpeed.fromKey(value)
+                        animationPreferences?.select(speed)
+                        scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.ANIMATION_SPEED to speed.key)) }
                     }
-                    // Saved on this television and nowhere else, like Animation speed above and
-                    // for the same reason: see AppLanguage.kt. There is nothing to save to the
-                    // account and so nothing that can fail, which is why it does not go through
-                    // savePreference. Choosing a language recomposes the tree in place - the rail
+                    // This television's own setting like Animation speed above, and mirrored to
+                    // `platforms.tv` in the same way: see AppLanguage.kt. Choosing a language
+                    // recomposes the tree in place - the rail
                     // keeps its focus and this row stays under the highlight, now reading in the
                     // language just chosen.
                     SettingsDropdownRow(
@@ -1705,6 +1711,9 @@ fun SettingsScreen(
                         optionDescriptions = appLanguageOptionDescriptions(),
                     ) { value ->
                         languagePreferences?.select(value)
+                        languagePreferences?.let { chosen ->
+                            scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.APP_LANGUAGE to chosen.selection)) }
+                        }
                     }
                     SettingsToggleRow(stringResource(R.string.settings_tv_background_depth), stringResource(R.string.settings_tv_subtle_cinematic_depth_behind_content), appPrefs?.backgroundBlur != false, selectedRequester) { next, complete ->
                         savePreference(R.string.settings_tv_background_depth, complete) { repository.updateAppPreferences(mapOf("backgroundBlur" to next)) }

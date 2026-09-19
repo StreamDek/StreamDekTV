@@ -107,6 +107,14 @@ android {
             shrinkResources true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
+        // The release build, profileable from the shell (src/profiling/AndroidManifest.xml), for
+        // measuring what a viewer actually runs: simpleperf and gfxinfo on a debug build measure
+        // the debugger's overhead as much as the app. Debug-signed, so it installs over a local build.
+        profiling {
+            initWith release
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ["release"]
+        }
     }
 
     packaging {

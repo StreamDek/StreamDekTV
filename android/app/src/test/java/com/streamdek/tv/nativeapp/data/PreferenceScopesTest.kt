@@ -68,4 +68,73 @@ class PreferenceScopesTest {
 
         assertNull(PreferenceScopes.applyToProfileBlob(json("{}"), changed))
     }
+
+    @Test
+    fun `this television's trailer settings win over the shared ones`() {
+        val preferences = json(
+            """{"detail":{"heroTrailerDelaySeconds":3,"heroTrailerAutoplay":true,"ratingsEnabled":true},
+               "platforms":{"tv":{"heroTrailerDelaySeconds":0},"mobile":{"heroTrailerAutoplay":false}}}""",
+        )
+
+        val detail = PlatformPreferences.applyToPreferences(preferences).getAsJsonObject("detail")
+
+        assertEquals(0, detail.get("heroTrailerDelaySeconds").asInt)
+        // Unset here, so the shared value stands; the phone's own choice never leaks across.
+        assertTrue(detail.get("heroTrailerAutoplay").asBoolean)
+        assertTrue(detail.get("ratingsEnabled").asBoolean)
+    }
+
+    @Test
+    fun `without a platform section the shared values are used unchanged`() {
+        val preferences = json("""{"detail":{"heroTrailerResolution":1080}}""")
+
+        val detail = PlatformPreferences.applyToPreferences(preferences).getAsJsonObject("detail")
+
+        assertEquals(1080, detail.get("heroTrailerResolution").asInt)
+    }
+
+    @Test
+    fun `trailer settings are written to this television's section only`() {
+        val payload = PlatformPreferences.splitSectionUpdate(
+            "detail",
+            mapOf("heroTrailerAutoplay" to false, "heroTrailerResolution" to 720, "ratingsEnabled" to true),
+        )
+
+        assertEquals(mapOf("ratingsEnabled" to true), payload["detail"])
+        assertEquals(
+            mapOf("tv" to mapOf("heroTrailerAutoplay" to false, "heroTrailerResolution" to 720)),
+            payload["platforms"],
+        )
+    }
+
+    @Test
+    fun `device settings the account holds are applied and the rest are uploaded`() {
+        val platforms = json("""{"tv":{"animationSpeed":"cinematic","appIdleTimeoutMinutes":"30"},"mobile":{"appLanguage":"fr"}}""")
+        val local = mapOf<String, Any>("animationSpeed" to "standard", "appLanguage" to "system", "appIdleTimeoutMinutes" to 0)
+
+        val plan = PlatformPreferences.reconcileDevice(platforms, local)
+
+        assertEquals("cinematic", plan.apply.getValue("animationSpeed").asString)
+        // The portal sends select values as strings; the device reads them as numbers.
+        assertEquals(30, plan.apply.getValue("appIdleTimeoutMinutes").asInt)
+        // The phone's language is the phone's: this television uploads its own instead.
+        assertEquals(mapOf<String, Any>("appLanguage" to "system"), plan.upload)
+    }
+
+    @Test
+    fun `an account with no television section learns everything from the device`() {
+        val local = mapOf<String, Any>("animationSpeed" to "fast", "sleepWhenPausedMinutes" to 15)
+
+        val plan = PlatformPreferences.reconcileDevice(null, local)
+
+        assertTrue(plan.apply.isEmpty())
+        assertEquals(local, plan.upload)
+    }
+
+    @Test
+    fun `the platform section never reaches a profile blob`() {
+        val changed = json("""{"platforms":{"tv":{"heroTrailerAutoplay":false}}}""")
+
+        assertNull(PreferenceScopes.applyToProfileBlob(json("{}"), changed))
+    }
 }

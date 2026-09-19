@@ -505,7 +505,13 @@ fun PlaybackStreamsScreen(
         is PlaybackStreamsUiState.Error -> 0
     }
     // HLS is valid for movies and episodes too; torrent hash and file size are optional.
-    val streamRows = ready?.candidate?.streams.orEmpty().filter(repository::isPlayableStreamOption)
+    // Remembered on the list the providers delivered. Recomputed on every recomposition, this and
+    // the tab filter below also handed every `remember` downstream a new list to compare item by
+    // item - hundreds of results, each time focus moved in the picker.
+    val candidateStreams = ready?.candidate?.streams
+    val streamRows = remember(candidateStreams) {
+        candidateStreams.orEmpty().filter(repository::isPlayableStreamOption)
+    }
     val otherSourceLabel = stringResource(R.string.source_group_other)
     val addonNames = remember(streamRows, otherSourceLabel) {
         streamRows.map { it.addonName.ifBlank { otherSourceLabel } }.distinct()
@@ -513,10 +519,12 @@ fun PlaybackStreamsScreen(
     val sourceTabs = remember(addonNames) { if (addonNames.size <= 1) emptyList() else listOf("All") + addonNames }
     // Keyed to the request, not the stream list: progressive batches must not reset the chosen tab.
     var selectedTab by remember(request) { mutableStateOf("All") }
-    val filteredStreams = if (sourceTabs.isEmpty() || selectedTab == "All") {
-        streamRows
-    } else {
-        streamRows.filter { it.addonName.ifBlank { otherSourceLabel } == selectedTab }
+    val filteredStreams = remember(streamRows, sourceTabs, selectedTab, otherSourceLabel) {
+        if (sourceTabs.isEmpty() || selectedTab == "All") {
+            streamRows
+        } else {
+            streamRows.filter { it.addonName.ifBlank { otherSourceLabel } == selectedTab }
+        }
     }
 
     // Decided across the whole list so the columns line up and empty ones disappear entirely.

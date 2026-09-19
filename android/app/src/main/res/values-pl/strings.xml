@@ -267,7 +267,7 @@
   <string name="animation_speed_standard_description">Zalecana równowaga między płynnością a szybkością.</string>
   <string name="animation_speed_cinematic">Filmowe</string>
   <string name="animation_speed_cinematic_description">Wolniejsze, w pełni widoczne przejścia dla pełnego wrażenia wizualnego.</string>
-  <string name="settings_animation_speed_description">Jak długo trwają przejścia w aplikacji. Zapisywane tylko na tym urządzeniu.</string>
+  <string name="settings_animation_speed_description">Jak długo trwają przejścia w aplikacji. Dotyczy twoich telewizorów, nie telefonu.</string>
   <string name="home_row_kind_networks">Serwisy streamingowe</string>
   <string name="home_row_kind_series">Seriale</string>
   <string name="home_row_kind_films">Filmy</string>
@@ -1277,7 +1277,7 @@
   <string name="info_simkl">Simkl</string>
   <string name="info_sources">Źródła</string>
   <string name="info_status">Stan</string>
-  <string name="info_stored_on_this_tv_active_video_playback">Przechowywane na tym telewizorze. Aktywne odtwarzanie wideo nigdy nie liczy się jako bezczynność aplikacji.</string>
+  <string name="info_stored_on_this_tv_active_video_playback">Przechowywane na tym telewizorze i na twoim koncie. Aktywne odtwarzanie wideo nigdy nie liczy się jako bezczynność aplikacji.</string>
   <string name="info_streamdek_api_calls_made_through_the_shared">Wywołania API StreamDek przez wspólnego klienta HTTP</string>
   <string name="info_subscription">Subskrypcja</string>
   <string name="info_syncdek">SyncDek</string>

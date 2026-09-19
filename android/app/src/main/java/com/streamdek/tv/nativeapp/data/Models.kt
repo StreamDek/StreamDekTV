@@ -769,6 +769,11 @@ data class PreferencesEnvelope(
     val detail: DetailPreferences = DetailPreferences(),
     val playback: PlaybackPreferences = PlaybackPreferences(),
     val streams: StreamsPreferences = StreamsPreferences(),
+    /**
+     * Each client's own settings, by client (`tv`, `mobile`). Left as JSON: this television reads only
+     * its own entry, through PlatformPreferences, and has no business typing the phone's.
+     */
+    val platforms: com.google.gson.JsonObject? = null,
 )
 
 /** Reply shape of `PUT /profiles/:id/preferences`. */

@@ -264,10 +264,23 @@ private fun TrailerSurface(
                 .setMaxVideoSize(Int.MAX_VALUE, maxHeight.coerceAtLeast(360))
                 .build()
         }
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(12_000, 45_000, 1_500, 4_000)
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .build()
+        val loadControl = if (trailerMemoryConstrained(context)) {
+            // A streaming stick has a few hundred megabytes free for everything, the launcher's own
+            // video included, and a trailer playing over a title page is the moment this app holds
+            // the most. Time-first buffering let a 1080p trailer take forty-five seconds of video -
+            // tens of megabytes - and the low-memory killer has been seen taking the app down from
+            // the foreground on this page. A trailer needs seconds of buffer, not most of a minute.
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(8_000, 20_000, 1_500, 3_000)
+                .setTargetBufferBytes(16 * 1024 * 1024)
+                .setPrioritizeTimeOverSizeThresholds(false)
+                .build()
+        } else {
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(12_000, 45_000, 1_500, 4_000)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build()
+        }
         // googlevideo refuses an open-ended byte request on these URLs, which is what a progressive
         // source issues by default — see ChunkedGoogleVideoDataSource.
         val dataSourceFactory = trailerDataSourceFactory(context, requestHeaders)
@@ -436,6 +449,15 @@ private class TrailerTextureContainer(context: Context) : FrameLayout(context) {
         super.onSizeChanged(w, h, oldW, oldH)
         updateScaleTransform()
     }
+}
+
+/** Under 3 GB of RAM: every Fire TV Stick and most budget televisions. */
+private fun trailerMemoryConstrained(context: android.content.Context): Boolean {
+    val manager = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+        ?: return true
+    if (manager.isLowRamDevice) return true
+    val info = android.app.ActivityManager.MemoryInfo().also(manager::getMemoryInfo)
+    return info.totalMem < 3L * 1024 * 1024 * 1024
 }
 
 /** Scale applied to a full-surface TextureView to aspect-fit its video without stretching. */

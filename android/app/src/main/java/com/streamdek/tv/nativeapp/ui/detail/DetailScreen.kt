@@ -58,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
@@ -68,6 +69,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import kotlin.math.roundToInt
+import androidx.compose.ui.unit.offset
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -127,6 +131,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 
@@ -139,6 +144,9 @@ import kotlinx.coroutines.supervisorScope
  * left than what is focused, and a card overlapping the rail is not further left than it, which is
  * why left never found the menu from anywhere below the hero.
  */
+/** The backdrop's dissolve once decoded: a full-screen picture, so a little longer than a crossfade. */
+private const val MotionDurationBackdrop = 320
+
 private val DetailNavRailClearance = (TvNavRailInset - DetailInset).coerceAtLeast(0.dp)
 
 
@@ -153,6 +161,17 @@ private val DetailNavRailClearance = (TvNavRailInset - DetailInset).coerceAtLeas
  * The group is what makes it land properly: requesting a group consults its `enter`, and each
  * band's own row-focus entry then picks the card the viewer was actually on rather than the first.
  */
+/**
+ * Top padding that follows an animation without recomposing whoever applies it: the value is read
+ * while measuring, so each frame of the hero's collapse re-lays the page out and does nothing else.
+ */
+private fun Modifier.topInset(inset: androidx.compose.runtime.State<Dp>): Modifier =
+    layout { measurable, constraints ->
+        val top = inset.value.roundToPx().coerceAtLeast(0)
+        val placeable = measurable.measure(constraints.offset(vertical = -top))
+        layout(placeable.width, placeable.height + top) { placeable.place(0, top) }
+    }
+
 private fun Modifier.bandRestorePoint(active: Boolean, requester: FocusRequester): Modifier =
     focusGroup().then(if (active) Modifier.focusRequester(requester) else Modifier)
 
@@ -212,6 +231,18 @@ fun DetailScreen(
     var loadingNextSeason by remember(mediaType, mediaId) { mutableStateOf(false) }
     var resumeEpisodeContext by remember(mediaType, mediaId) { mutableStateOf<EpisodeContext?>(null) }
     var resumeTargetSlot by remember(mediaType, mediaId) { mutableStateOf<SeriesEpisodeSlot?>(null) }
+    /**
+     * Whether a series' resume position is known yet. The page is drawn before it is - the hero needs
+     * nothing from it - but the episode row waits for it, so the row opens on the right season and
+     * episode instead of opening on season one and then jumping.
+     *
+     * Saved rather than remembered. Coming back from the player rebuilds this screen with the season
+     * and episode it was on already restored, and holding the row behind a fresh resume lookup then
+     * would show a skeleton where the viewer's episodes just were.
+     */
+    var resumeResolved by rememberSaveable(mediaType, mediaId) { mutableStateOf(mediaType != "tv" && mediaType != "series") }
+    /** Play was pressed on a series before its resume position was known; honoured once it is. */
+    var playPending by remember(mediaType, mediaId) { mutableStateOf(false) }
     var progressFraction by remember(mediaType, mediaId) { mutableStateOf<Float?>(null) }
     var progressLabel by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
     var inWatchlist by remember(mediaType, mediaId) { mutableStateOf(false) }
@@ -312,7 +343,9 @@ fun DetailScreen(
      * the page — and collapsing the hero for those left the page rearranged behind whatever they
      * had actually opened.
      */
-    var focusedRow by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
+    // Saved, so that coming back from the player - which rebuilds this screen - returns to the row the
+    // viewer left from, with the page arranged around it, rather than to Play at the top.
+    var focusedRow by rememberSaveable(mediaType, mediaId) { mutableStateOf<String?>(null) }
     val heroExpanded = focusedRow == null
     val seasonChipRequester = remember(mediaType, mediaId) { FocusRequester() }
     val listState = rememberLazyListState()
@@ -339,7 +372,13 @@ fun DetailScreen(
         episodeActionError = null
         resumeEpisodeContext = null
         resumeTargetSlot = null
-        runCatching { repository.refreshBootstrap() }
+        // A signed-in television already holds a bootstrap from start-up. Refreshing it is worth doing,
+        // but not worth waiting for: it used to stand in front of every title page's first request.
+        if (repository.bootstrap.value != null) {
+            launch { runCatching { repository.refreshBootstrap() } }
+        } else {
+            runCatching { repository.refreshBootstrap() }
+        }
 
         val libraryDeferred = supervisorScope { async { runCatching { repository.fetchLibrary() }.getOrNull() } }
         val detail = repository.fetchDetail(mediaId, mediaType, forceRefresh = reloadToken > 0)
@@ -350,20 +389,23 @@ fun DetailScreen(
             onContentReady()
             return@LaunchedEffect
         }
-        val seriesResume = if (detail.type == "tv") {
-            runCatching { repository.fetchSeriesResumeState(detail) }.getOrNull()
-        } else null
-        seriesResume?.let { state ->
-            watchedEpisodeKeys = state.watchedEpisodeKeys
-            resumeTargetSlot = state.target
-            resumeEpisodeContext = state.target?.let { EpisodeContext(it.seasonNumber, it.episodeNumber) }
-            state.target?.let { target ->
-                anchorSeasonNumber = target.seasonNumber
-                activeSeasonNumber = target.seasonNumber
-            }
-        }
+        // The page goes up as soon as the title is known. A series' resume position takes three more
+        // requests, and waiting for them held the whole page - hero, Play, everything - behind work
+        // only the episode row needs; the row waits for it instead (see [resumeResolved]).
         uiState = DetailUiState.Ready(detail)
         onContentReady()
+        if (detail.type == "tv") {
+            runCatching { repository.fetchSeriesResumeState(detail) }.getOrNull()?.let { state ->
+                watchedEpisodeKeys = state.watchedEpisodeKeys
+                resumeTargetSlot = state.target
+                resumeEpisodeContext = state.target?.let { EpisodeContext(it.seasonNumber, it.episodeNumber) }
+                state.target?.let { target ->
+                    anchorSeasonNumber = target.seasonNumber
+                    activeSeasonNumber = target.seasonNumber
+                }
+            }
+        }
+        resumeResolved = true
         if (detail.seasons.none { it.seasonNumber == anchorSeasonNumber }) {
             anchorSeasonNumber = detail.seasons.firstOrNull()?.seasonNumber ?: 1
             activeSeasonNumber = anchorSeasonNumber
@@ -393,6 +435,19 @@ fun DetailScreen(
         // owns the D-pad, and taking the highlight back off them here is what read as the drawer
         // closing by itself.
         if (sideNavOwnsFocus) return@LaunchedEffect
+        // Back from the player (or any screen opened from here) with a row below the hero in use:
+        // the shell's requester is attached to that row's group, whose entry picks the card the
+        // viewer was on. Episodes are only there once their season is, so that row gets a moment.
+        if (focusedRow != null) {
+            if (focusedRow == "episodes") {
+                kotlinx.coroutines.withTimeoutOrNull(1_500L) {
+                    androidx.compose.runtime.snapshotFlow { loadedSeasons.isNotEmpty() }.first { it }
+                }
+                delay(60)
+            }
+            if (entryFocusRequester.requestFocusOrFalse()) return@LaunchedEffect
+            focusedRow = null
+        }
         playRequester.requestFocusOrFalse()
     }
 
@@ -428,14 +483,19 @@ fun DetailScreen(
     }
     val hasTrailer = trailerCandidateUrls.isNotEmpty()
     val trailerVisible = trailerPlayback != null && trailerRunning
+    // The two dissolves keep their lengths at the default speed and follow the viewer's animation
+    // speed otherwise. A crossfade never drops to zero, even with motion off: the picture replacing
+    // the page in a single frame is its own kind of jolt.
+    val trailerPictureFadeMs = TvMotion.crossfadeDuration(1200)
+    val trailerCopyFadeMs = TvMotion.crossfadeDuration(1400)
     val trailerStageAlpha by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (trailerVisible && trailerFrameReady) 1f else 0f,
-        animationSpec = androidx.compose.animation.core.tween(1200),
+        animationSpec = androidx.compose.animation.core.tween(trailerPictureFadeMs),
         label = "trailer-picture",
     )
     val pageAlpha by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (trailerVisible && trailerCopyHidden) 0f else 1f,
-        animationSpec = androidx.compose.animation.core.tween(1400),
+        animationSpec = androidx.compose.animation.core.tween(trailerCopyFadeMs),
         label = "trailer-hero-copy",
     )
     LaunchedEffect(trailerRunning, trailerFrameReady) {
@@ -448,7 +508,7 @@ fun DetailScreen(
     // Keep the last frame mounted throughout the return dissolve, including an early Back.
     LaunchedEffect(trailerRunning) {
         if (!trailerRunning) {
-            delay(1400L)
+            delay(trailerCopyFadeMs.toLong())
             trailerPlayback = null
             trailerFrameReady = false
         }
@@ -644,12 +704,14 @@ fun DetailScreen(
 
     // The run restarts whenever the viewer picks a season from the chips; everything after that
     // season is appended as they reach it.
-    LaunchedEffect(detail?.id, anchorSeasonNumber) {
+    LaunchedEffect(detail?.id, anchorSeasonNumber, resumeResolved) {
         val currentDetail = detail
         if (currentDetail?.type != "tv") {
             loadedSeasons = emptyList()
             return@LaunchedEffect
         }
+        // The row's skeleton holds the place meanwhile; see [resumeResolved].
+        if (!resumeResolved) return@LaunchedEffect
         loadedSeasons = emptyList()
         loadingNextSeason = false
         selectedEpisodeIndex = 0
@@ -702,8 +764,21 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, reloadToken, libraryRevision, lifecycleRefresh) {
-        val progressEpisode = if (mediaType == "tv") resumeEpisodeContext ?: selectedEpisodeContext else selectedEpisodeContext
+    /**
+     * How long focus has to rest on an episode before the page asks about it.
+     *
+     * The episode-dependent lookups below each cost a request - one of them re-reads the whole watched
+     * history - and they were keyed on the focused episode, so running along a row fired a burst of
+     * them per press and recomposed the page as each answered. Holding them until the row settles
+     * keeps the answer for the episode the viewer stopped on and drops the rest unasked.
+     */
+    val episodeSettleMs = 300L
+    val progressEpisode = if (mediaType == "tv") resumeEpisodeContext ?: selectedEpisodeContext else selectedEpisodeContext
+    LaunchedEffect(mediaType, mediaId, progressEpisode, resumeResolved, reloadToken, libraryRevision, lifecycleRefresh) {
+        // Asked about the series as a whole before its resume position is known, the answer is the
+        // wrong episode's, drawn and then replaced.
+        if (!resumeResolved) return@LaunchedEffect
+        if (mediaType == "tv") delay(episodeSettleMs)
         val progress = repository.fetchProgress(mediaType, mediaId, progressEpisode)
         currentCoroutineContext().ensureActive()
         if (mediaType == "movie") movieProgress = progress
@@ -713,16 +788,9 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId, detail?.id) {
-        val currentDetail = detail
-        if (mediaType != "tv" || currentDetail == null) {
-            watchedEpisodeKeys = emptySet()
-            return@LaunchedEffect
-        }
-        // Keep the entire series history, not only episodes in seasons that happen to be loaded.
-        // Season chips exist before their episode rows are fetched and still need their ticks.
-        watchedEpisodeKeys = repository.fetchSeriesResumeState(currentDetail).watchedEpisodeKeys
-    }
+    // The whole series' watched history - every season, not only those loaded, since the chips need
+    // their ticks before their rows are fetched - arrives with the resume state in the load above.
+    // It used to be fetched a second time here, in parallel with that, for the same answer.
 
     LaunchedEffect(mediaType, mediaId, detail?.id) {
         if (mediaType != "tv" || detail == null) return@LaunchedEffect
@@ -734,12 +802,15 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(mediaType, mediaId, selectedEpisodeContext, resumeEpisodeContext, progressFraction, detail?.id, reloadToken, libraryRevision, lifecycleRefresh) {
+    val watchedEpisode = detail?.let { playbackEpisodeContext(it, progressFraction, resumeEpisodeContext, selectedEpisodeContext) }
+    LaunchedEffect(mediaType, mediaId, watchedEpisode, detail?.id, resumeResolved, reloadToken, libraryRevision, lifecycleRefresh) {
         val currentDetail = detail ?: return@LaunchedEffect
+        if (!resumeResolved) return@LaunchedEffect
+        if (currentDetail.type == "tv") delay(episodeSettleMs)
         val refreshedWatched = repository.isWatched(
             mediaType = mediaType,
             mediaId = mediaId,
-            episode = playbackEpisodeContext(currentDetail, progressFraction, resumeEpisodeContext, selectedEpisodeContext),
+            episode = watchedEpisode,
             forceRefresh = true,
         )
         currentCoroutineContext().ensureActive()
@@ -809,20 +880,81 @@ fun DetailScreen(
 
     val backgroundColor = MaterialTheme.colorScheme.background
 
-    Box(Modifier.fillMaxSize().background(backgroundColor)) {
+    /**
+     * The page's arrival, as one movement: the backdrop dissolves in, the hero rises into place and
+     * the rows follow a step behind it. Played once per visit - saved, so a return from the player
+     * or the stream picker finds the page already there rather than performing it again.
+     *
+     * Opacity and a short rise only, applied in graphics layers: nothing is measured or laid out
+     * again while it runs, and the page is focusable from its first frame, so the remote is never
+     * waiting for it. With motion off it is a plain fade.
+     */
+    var entered by rememberSaveable(mediaType, mediaId) { mutableStateOf(false) }
+    val entrance = remember(mediaType, mediaId) { androidx.compose.animation.core.Animatable(if (entered) 1f else 0f) }
+    val motionless = com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings.current.motion.motionless
+    val entranceMs = if (motionless) TvMotion.crossfadeDuration() else TvMotion.duration(TvMotion.Expand)
+    val entranceStaggerMs = if (motionless) 0 else TvMotion.staggerStep() * 2
+    val entranceRisePx = with(androidx.compose.ui.platform.LocalDensity.current) { if (motionless) 0f else 18.dp.toPx() }
+    LaunchedEffect(detail != null) {
+        if (detail == null || entered) return@LaunchedEffect
+        entered = true
+        entrance.animateTo(
+            1f,
+            androidx.compose.animation.core.tween(entranceMs + entranceStaggerMs, easing = androidx.compose.animation.core.LinearEasing),
+        )
+    }
+    /** Where [stage] (0 = hero, 1 = rows) is in its own part of the entrance, eased. */
+    fun entranceProgress(stage: Int): Float {
+        val total = (entranceMs + entranceStaggerMs).coerceAtLeast(1)
+        val elapsed = entrance.value * total - stage * entranceStaggerMs
+        return TvMotion.EnterEasing.transform((elapsed / entranceMs.coerceAtLeast(1)).coerceIn(0f, 1f))
+    }
+    fun Modifier.entranceStage(stage: Int): Modifier = graphicsLayer {
+        val progress = entranceProgress(stage)
+        alpha = progress
+        translationY = (1f - progress) * entranceRisePx
+    }
+    /**
+     * The backdrop's own dissolve, from the moment it is decoded rather than from when the page
+     * appeared: a picture that arrives late fades in over the ambient colour instead of snapping.
+     * One already in memory is simply there - fading it would flash the page on every return.
+     */
+    val backdropAlpha = remember(mediaType, mediaId) { androidx.compose.animation.core.Animatable(if (entered) 1f else 0f) }
+    val backdropFadeMs = TvMotion.crossfadeDuration(MotionDurationBackdrop)
+    val onBackdropLoaded: (coil.compose.AsyncImagePainter.State.Success) -> Unit = { success ->
+        if (success.result.dataSource == coil.decode.DataSource.MEMORY_CACHE) {
+            scope.launch { backdropAlpha.snapTo(1f) }
+        } else if (backdropAlpha.value < 1f) {
+            scope.launch { backdropAlpha.animateTo(1f, androidx.compose.animation.core.tween(backdropFadeMs)) }
+        }
+    }
+
+    // A catalogue title — a TMDB id, or an IMDb id the details are resolved through — keeps its
+    // backdrop exactly as before. Any other id is an add-on's or a plugin's own, whose artwork can
+    // be any shape and may have no backdrop at all, so it adapts instead, falling back to the
+    // poster, fitted to the right of the reading column over a blurred copy of itself.
+    val catalogueTitle = remember(mediaId) {
+        mediaId.all(Char::isDigit) || Regex("tt\\d+", RegexOption.IGNORE_CASE).matches(mediaId)
+    }
+    val backdropFillsScreen = catalogueTitle && !detail?.backdrop.isNullOrBlank()
+    // The page colour is only seen where the artwork is not. A cropped catalogue backdrop covers every
+    // pixel once it has faded in, and painting the colour under it anyway was one of six full-screen
+    // passes this page made per frame - on a streaming stick, filling the screen that many times is
+    // most of the frame. Drawn (not composed) so the check follows the fade without recomposing.
+    Box(
+        Modifier.fillMaxSize().drawBehind {
+            if (!backdropFillsScreen || backdropAlpha.value < 1f) drawRect(backgroundColor)
+        },
+    ) {
         Box(Modifier.fillMaxSize()) {
-        // A catalogue title — a TMDB id, or an IMDb id the details are resolved through — keeps its
-        // backdrop exactly as before. Any other id is an add-on's or a plugin's own, whose artwork can
-        // be any shape and may have no backdrop at all, so it adapts instead, falling back to the
-        // poster, fitted to the right of the reading column over a blurred copy of itself.
-        val catalogueTitle = mediaId.all(Char::isDigit) || Regex("tt\\d+", RegexOption.IGNORE_CASE).matches(mediaId)
         if (catalogueTitle) {
             detail?.backdrop?.takeIf { it.isNotBlank() }?.let { backdrop ->
                 AsyncImage(
                     model = backdrop,
                     contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = backdropAlpha.value },
                     contentScale = ContentScale.Crop,
+                    onSuccess = onBackdropLoaded,
                 )
             }
         } else {
@@ -895,7 +1027,11 @@ fun DetailScreen(
                     ),
                 )
                 onDrawBehind {
-                    drawRect(readingScrim)
+                    // The reading scrim ends at 78% of the width and is transparent beyond it, so
+                    // it is painted only that far: a fifth of a full-screen pass saved for nothing.
+                    // (Composing the two gradients into one shader was tried and drew the reading
+                    // scrim wrongly on a Fire TV Stick, so they stay two draws.)
+                    drawRect(readingScrim, size = size.copy(width = size.width * 0.78f))
                     drawRect(baseFade)
                 }
             },
@@ -947,7 +1083,9 @@ fun DetailScreen(
                 // opens on Play that dragged the poster and title clean off the top of the screen.
                 // Pinning the hero removes the possibility rather than fighting it: only the
                 // sections below can move, and the title is always the first thing on screen.
-                val heroTop by androidx.compose.animation.core.animateDpAsState(
+                // Read in layout (see topInset), not here: this composable holds the whole page, and
+                // reading the value in it recomposed hero, bands and cards on every frame of the move.
+                val heroTop = androidx.compose.animation.core.animateDpAsState(
                     targetValue = if (heroExpanded) 72.dp else 28.dp,
                     // The same spec the hero's own sizes use, so the whole block settles as one.
                     animationSpec = TvMotion.standardSpec(TvMotion.Expand),
@@ -956,7 +1094,8 @@ fun DetailScreen(
                 Column(
                     Modifier
                         .fillMaxSize()
-                        .padding(top = heroTop, start = DetailNavRailClearance)
+                        .topInset(heroTop)
+                        .padding(start = DetailNavRailClearance)
                         // One group around the whole page, purely so leaving it sideways can be
                         // aimed. Everything inside still moves by ordinary focus search; this is
                         // only consulted when focus is on its way out of the page entirely.
@@ -979,7 +1118,28 @@ fun DetailScreen(
                             }
                         },
                 ) {
-                    DetailHero(
+                    val playTitle: () -> Unit = {
+                    onPlay(
+                        PlaybackRequest(
+                            mediaId = d.id,
+                            mediaType = d.type,
+                            imdbId = d.imdbId,
+                            episode = playbackEpisodeContext(
+                                d, progressFraction, resumeEpisodeContext, selectedEpisodeContext,
+                            ),
+                            title = d.title,
+                            startPositionSec = if (d.type == "movie" && movieAction != MoviePlaybackAction.Resume) 0.0 else null,
+                        ),
+                    )
+                }
+                LaunchedEffect(playPending, resumeResolved) {
+                    if (playPending && resumeResolved) {
+                        playPending = false
+                        playTitle()
+                    }
+                }
+                Box(Modifier.entranceStage(0)) {
+                DetailHero(
                             compact = !heroExpanded,
                             onFocusChanged = { focused -> if (focused) focusedRow = null },
                             detail = d,
@@ -991,21 +1151,13 @@ fun DetailScreen(
                             movieAction = movieAction,
                             playRequester = playRequester,
                             onPlay = {
-                                if (repository.currentSession() == null) {
-                                    onRequireAuth()
-                                } else {
-                                    onPlay(
-                                        PlaybackRequest(
-                                            mediaId = d.id,
-                                            mediaType = d.type,
-                                            imdbId = d.imdbId,
-                                            episode = playbackEpisodeContext(
-                                                d, progressFraction, resumeEpisodeContext, selectedEpisodeContext,
-                                            ),
-                                            title = d.title,
-                                            startPositionSec = if (d.type == "movie" && movieAction != MoviePlaybackAction.Resume) 0.0 else null,
-                                        ),
-                                    )
+                                when {
+                                    repository.currentSession() == null -> onRequireAuth()
+                                    // Which episode Play means is not known yet. The press is kept
+                                    // rather than acted on - see the effect above - so it can never
+                                    // start the wrong one, and never has to be pressed twice.
+                                    !resumeResolved -> playPending = true
+                                    else -> playTitle()
                                 }
                             },
                             onToggleWatchlist = {
@@ -1072,6 +1224,7 @@ fun DetailScreen(
                                 }
                             },
                         )
+                }
 
                         Spacer(Modifier.height(26.dp))
 
@@ -1087,7 +1240,7 @@ fun DetailScreen(
                             // below the hero, so its viewport hangs off the bottom and the rows
                             // down there can never be scrolled into view. weight gives it exactly
                             // the room the hero left over.
-                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            modifier = Modifier.weight(1f).fillMaxWidth().entranceStage(1),
                             contentPadding = PaddingValues(bottom = 72.dp),
                             verticalArrangement = Arrangement.spacedBy(28.dp),
                         ) {
@@ -1444,25 +1597,33 @@ private fun DetailHero(
      * leaves the image measured at full size — nothing about it is re-laid-out or re-decoded on the
      * way down — while the box holding it gives up its width and height on the shared curve.
      */
-    val posterScale by androidx.compose.animation.core.animateFloatAsState(
+    //
+    // All four are held as State and read only in layout and draw. The hero used to read them here,
+    // which recomposed the whole hero - copy, chips, buttons - on every frame of the collapse.
+    val posterScale = androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (compact) 0f else 1f,
         animationSpec = TvMotion.standardSpec(TvMotion.Expand),
         label = "hero-poster",
     )
-    val heroGap by androidx.compose.animation.core.animateDpAsState(
-        targetValue = if (compact) 20.dp else 30.dp,
-        animationSpec = heroTween,
-        label = "hero-gap",
+    val posterShown by remember { androidx.compose.runtime.derivedStateOf { posterScale.value > 0.001f } }
+    val heroGap = rememberAnimatedSpacing(
+        androidx.compose.animation.core.animateDpAsState(
+            targetValue = if (compact) 20.dp else 30.dp,
+            animationSpec = heroTween,
+            label = "hero-gap",
+        ),
     )
-    val logoHeight by androidx.compose.animation.core.animateDpAsState(
+    val logoHeight = androidx.compose.animation.core.animateDpAsState(
         targetValue = if (compact) 44.dp else 74.dp,
         animationSpec = heroTween,
         label = "hero-logo",
     )
-    val heroSpacing by androidx.compose.animation.core.animateDpAsState(
-        targetValue = if (compact) 10.dp else 14.dp,
-        animationSpec = heroTween,
-        label = "hero-spacing",
+    val heroSpacing = rememberAnimatedSpacing(
+        androidx.compose.animation.core.animateDpAsState(
+            targetValue = if (compact) 10.dp else 14.dp,
+            animationSpec = heroTween,
+            label = "hero-spacing",
+        ),
     )
 
     Row(
@@ -1477,15 +1638,20 @@ private fun DetailHero(
             .focusProperties { enter = { playRequester } }
             .onFocusChanged { onFocusChanged(it.hasFocus) }
             .padding(horizontal = DetailInset),
-        horizontalArrangement = Arrangement.spacedBy(heroGap),
+        horizontalArrangement = heroGap,
     ) {
         // The poster is the first thing to go when focus moves below: it is the largest element
         // and, once the viewer is browsing recommendations, the least useful.
-        if (posterScale > 0.001f) {
+        if (posterShown) {
             Box(
                 Modifier
-                    .width(HeroPosterWidth * posterScale)
-                    .height(HeroPosterHeight * posterScale)
+                    .layout { measurable, constraints ->
+                        val scale = posterScale.value
+                        val width = (HeroPosterWidth.toPx() * scale).roundToInt()
+                        val height = (HeroPosterHeight.toPx() * scale).roundToInt()
+                        val placeable = measurable.measure(androidx.compose.ui.unit.Constraints.fixed(width, height))
+                        layout(width, height) { placeable.place(0, 0) }
+                    }
                     .clipToBounds(),
             ) {
                 HeroPoster(
@@ -1493,8 +1659,8 @@ private fun DetailHero(
                     modifier = Modifier
                         .requiredSize(HeroPosterWidth, HeroPosterHeight)
                         .graphicsLayer {
-                            scaleX = posterScale
-                            scaleY = posterScale
+                            scaleX = posterScale.value
+                            scaleY = posterScale.value
                             transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
                         },
                 )
@@ -1503,13 +1669,17 @@ private fun DetailHero(
 
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(heroSpacing),
+            verticalArrangement = heroSpacing,
         ) {
             if (titleLogoRequest != null) {
                 AsyncImage(
                     model = titleLogoRequest,
                     contentDescription = detail.title,
-                    modifier = Modifier.height(logoHeight),
+                    modifier = Modifier.layout { measurable, constraints ->
+                        val height = logoHeight.value.roundToPx()
+                        val placeable = measurable.measure(constraints.copy(minHeight = height, maxHeight = height))
+                        layout(placeable.width, height) { placeable.place(0, 0) }
+                    },
                     contentScale = ContentScale.Fit,
                 )
             } else {

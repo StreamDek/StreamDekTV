@@ -43,5 +43,9 @@ class MainActivity : ComponentActivity() {
       Perf.startupMark("activity.firstComposition")
       StreamDekTvApp()
     }
+    // The shell paints its own opaque background over the whole screen, so the window's black one
+    // beneath it is a full-screen pass per frame that no one sees - on a streaming stick's GPU, a
+    // real share of every frame. Dropped once the first frame is up, so start-up still opens on black.
+    window.decorView.post { window.setBackgroundDrawable(null) }
   }
 }

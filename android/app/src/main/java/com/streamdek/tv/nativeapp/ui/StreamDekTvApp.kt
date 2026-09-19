@@ -100,7 +100,9 @@ import com.streamdek.tv.nativeapp.data.LiveCatalogSection
 import com.streamdek.tv.nativeapp.data.PlaybackHandoff
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.data.PlatformPreferences
 import com.streamdek.tv.nativeapp.data.TrailerCache
+import com.streamdek.tv.nativeapp.data.asObjectOrNull
 import com.streamdek.tv.nativeapp.data.TrailerCacheClearHourOfDay
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.TvIdlePreferences
@@ -917,14 +919,45 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         }
     }
 
-    // Device-local, and read here so that choosing a speed in Settings recomposes the theme and
-    // every animation under it on the spot. See AnimationSpeed.kt for why this one setting does not
-    // travel with the account.
+    // Read here so that choosing a speed in Settings recomposes the theme and every animation under
+    // it on the spot. Stored on the television and mirrored to `platforms.tv` below - see
+    // AnimationSpeed.kt for why it is this television's own rather than the account's.
     val animationPreferences = remember(context) { TvAnimationPreferences(context) }
     val motionSettings = rememberTvMotionSettings(
         preferences = animationPreferences,
         accountReducedMotion = appPrefs?.reducedMotion == true,
     )
+
+    // This television's own settings, as the account holds them under `platforms.tv`. A value there
+    // (say, from the web portal) is applied to the device; one missing is uploaded from it, so the
+    // portal shows what this set actually does. Keyed on the section itself, so it runs when that
+    // changes and not on every bootstrap refresh.
+    val languagePreferences = LocalTvAppLanguagePreferences.current
+    val ownPlatformSettings = bootstrap?.preferences?.platforms?.asObjectOrNull(PlatformPreferences.PLATFORM)
+    LaunchedEffect(bootstrap != null, ownPlatformSettings?.toString()) {
+        if (bootstrap == null) return@LaunchedEffect
+        val idle = TvIdlePreferences(context)
+        val local = buildMap<String, Any> {
+            put(PlatformPreferences.Device.ANIMATION_SPEED, animationPreferences.speed.key)
+            languagePreferences?.let { put(PlatformPreferences.Device.APP_LANGUAGE, it.selection) }
+            put(PlatformPreferences.Device.SLEEP_WHEN_PAUSED_MINUTES, idle.pausedTimeoutMinutes)
+            put(PlatformPreferences.Device.APP_IDLE_TIMEOUT_MINUTES, idle.appIdleTimeoutMinutes)
+        }
+        val plan = PlatformPreferences.reconcileDevice(bootstrap?.preferences?.platforms, local)
+        for ((key, value) in plan.apply) {
+            runCatching {
+                when (key) {
+                    PlatformPreferences.Device.ANIMATION_SPEED -> AnimationSpeed.fromKey(value.asString)
+                        .takeIf { it != animationPreferences.speed }?.let(animationPreferences::select)
+                    PlatformPreferences.Device.APP_LANGUAGE -> value.asString
+                        .takeIf { it != languagePreferences?.selection }?.let { languagePreferences?.select(it) }
+                    PlatformPreferences.Device.SLEEP_WHEN_PAUSED_MINUTES -> idle.pausedTimeoutMinutes = value.asInt
+                    PlatformPreferences.Device.APP_IDLE_TIMEOUT_MINUTES -> idle.appIdleTimeoutMinutes = value.asInt
+                }
+            }
+        }
+        if (plan.upload.isNotEmpty()) repository.updateDevicePreferences(plan.upload)
+    }
     CompositionLocalProvider(LocalTvAnimationPreferences provides animationPreferences) {
     StreamDekTvTheme(appPreferences = appPrefs, homePreferences = homePrefs, motion = motionSettings) {
         // Screen transitions, stated once for the whole graph. Navigation's defaults slide a full

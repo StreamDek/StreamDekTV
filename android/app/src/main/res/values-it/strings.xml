@@ -251,7 +251,7 @@
   <string name="animation_speed_standard_description">Il bilanciamento consigliato tra fluidità e velocità.</string>
   <string name="animation_speed_cinematic">Cinematografiche</string>
   <string name="animation_speed_cinematic_description">Transizioni più lente e pienamente visibili, per l\'esperienza visiva completa.</string>
-  <string name="settings_animation_speed_description">Quanto durano le transizioni nell\'app. Salvato solo su questo dispositivo.</string>
+  <string name="settings_animation_speed_description">Quanto durano le transizioni nell\'app. Vale per le tue TV, non per il telefono.</string>
   <string name="home_row_kind_networks">Servizi di streaming</string>
   <string name="home_row_kind_series">Serie</string>
   <string name="home_row_kind_films">Film</string>
@@ -1200,7 +1200,7 @@
   <string name="info_simkl">Simkl</string>
   <string name="info_sources">Sorgenti</string>
   <string name="info_status">Stato</string>
-  <string name="info_stored_on_this_tv_active_video_playback">Salvato su questo televisore. La riproduzione video attiva non conta mai come inattività dell\'app.</string>
+  <string name="info_stored_on_this_tv_active_video_playback">Salvato su questo televisore e nel tuo account. La riproduzione video attiva non conta mai come inattività dell\'app.</string>
   <string name="info_streamdek_api_calls_made_through_the_shared">Chiamate all\'API StreamDek effettuate tramite il client HTTP condiviso</string>
   <string name="info_subscription">Abbonamento</string>
   <string name="info_syncdek">SyncDek</string>

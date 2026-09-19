@@ -25,6 +25,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.Density
+import androidx.compose.runtime.State
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -106,10 +109,15 @@ internal const val DetailCompactScale = 0.4f
 /**
  * A single GPU transform per band. Card geometry stays fixed, so focus movement no longer causes
  * every lazy item to be measured on every animation frame.
+ *
+ * Handed back as the animation's [State] rather than its current value, and read only inside
+ * [detailBandScale]'s layout. Reading the value in the band's composition - which is what returning
+ * a plain Float meant - recomposed the band, its chips and every visible card on each frame of the
+ * collapse; on a streaming stick that alone held the movement to about fifteen frames a second.
  */
 @Composable
-internal fun detailBandScale(compact: Boolean): Float {
-    val scale by androidx.compose.animation.core.animateFloatAsState(
+internal fun detailBandScale(compact: Boolean): State<Float> =
+    androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (compact) DetailCompactScale else 1f,
         // The same length the hero collapses over. These two are one movement — the hero giving up
         // its height and the bands taking it — and running them at 170 and 280 made the second half
@@ -117,8 +125,6 @@ internal fun detailBandScale(compact: Boolean): Float {
         animationSpec = TvMotion.standardSpec(TvMotion.Expand),
         label = "detail-band-scale",
     )
-    return scale
-}
 
 /**
  * The gap between a band's header and its row.
@@ -128,17 +134,43 @@ internal fun detailBandScale(compact: Boolean): Float {
  * the same movement instead.
  */
 @Composable
-internal fun detailBandSpacing(compact: Boolean): Dp {
-    val spacing by androidx.compose.animation.core.animateDpAsState(
-        targetValue = if (compact) 8.dp else 14.dp,
-        animationSpec = TvMotion.standardSpec(TvMotion.Expand),
-        label = "detail-band-spacing",
+internal fun detailBandSpacing(compact: Boolean): Arrangement.HorizontalOrVertical =
+    rememberAnimatedSpacing(
+        androidx.compose.animation.core.animateDpAsState(
+            targetValue = if (compact) 8.dp else 14.dp,
+            animationSpec = TvMotion.standardSpec(TvMotion.Expand),
+            label = "detail-band-spacing",
+        ),
     )
-    return spacing
+
+/**
+ * `Arrangement.spacedBy` whose gap is an animation, read while the row or column is being laid out.
+ *
+ * `spacedBy(animatedDp)` takes the value in composition, so every frame of the animation recomposed
+ * the whole container just to hand it a new number. Read here, the same frames cost a relayout of
+ * that container and nothing else.
+ */
+internal class AnimatedSpacing(private val space: State<Dp>) : Arrangement.HorizontalOrVertical {
+    override val spacing: Dp get() = space.value
+
+    override fun Density.arrange(totalSize: Int, sizes: IntArray, outPositions: IntArray) =
+        with(Arrangement.spacedBy(space.value)) { arrange(totalSize, sizes, outPositions) }
+
+    override fun Density.arrange(
+        totalSize: Int,
+        sizes: IntArray,
+        layoutDirection: LayoutDirection,
+        outPositions: IntArray,
+    ) = with(Arrangement.spacedBy(space.value)) { arrange(totalSize, sizes, layoutDirection, outPositions) }
 }
 
-internal fun Modifier.detailBandScale(scale: Float, compact: Boolean): Modifier =
+@Composable
+internal fun rememberAnimatedSpacing(space: State<Dp>): Arrangement.HorizontalOrVertical =
+    remember(space) { AnimatedSpacing(space) }
+
+internal fun Modifier.detailBandScale(scaleState: State<Float>, compact: Boolean): Modifier =
     layout { measurable, constraints ->
+        val scale = scaleState.value
         // A scaled LazyRow otherwise composes only one unscaled viewport, which becomes 40% of the
         // screen and looks clipped on the right. Compact rows get one wider measurement up front;
         // the animation itself remains a single GPU layer with no per-card transforms.
@@ -841,7 +873,7 @@ internal fun EpisodesBand(
     }
     Column(
         modifier = Modifier.onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
+        verticalArrangement = detailBandSpacing(compact),
     ) {
         DetailSectionHeader(
             title = stringResource(R.string.detail_episodes),
@@ -985,7 +1017,7 @@ internal fun SimilarBand(
     AnchorRowToFocus(rowState, rowFocus, items.size)
     Column(
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
+        verticalArrangement = detailBandSpacing(compact),
     ) {
         DetailSectionHeader(stringResource(R.string.detail_more_like_this))
         LazyRow(
@@ -1042,7 +1074,7 @@ internal fun CastBand(
     AnchorRowToFocus(rowState, rowFocus, cast.size)
     Column(
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
+        verticalArrangement = detailBandSpacing(compact),
     ) {
         DetailSectionHeader(stringResource(R.string.detail_cast))
         LazyRow(
@@ -1150,7 +1182,7 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
     AnchorRowToFocus(rowState, rowFocus, comments.size)
     Column(
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
-        verticalArrangement = Arrangement.spacedBy(detailBandSpacing(compact)),
+        verticalArrangement = detailBandSpacing(compact),
     ) {
         DetailSectionHeader(stringResource(R.string.detail_reviews), trailing = AppFormats.number(LocalAppLanguage.current, comments.size))
         LazyRow(

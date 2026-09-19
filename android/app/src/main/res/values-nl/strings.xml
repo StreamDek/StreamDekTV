@@ -251,7 +251,7 @@
   <string name="animation_speed_standard_description">De aanbevolen balans tussen soepelheid en snelheid.</string>
   <string name="animation_speed_cinematic">Filmisch</string>
   <string name="animation_speed_cinematic_description">Langzamere, volledig zichtbare overgangen voor de complete visuele ervaring.</string>
-  <string name="settings_animation_speed_description">Hoe lang overgangen in de app duren. Alleen op dit apparaat opgeslagen.</string>
+  <string name="settings_animation_speed_description">Hoe lang overgangen in de app duren. Geldt voor je tv\'s, niet voor je telefoon.</string>
   <string name="home_row_kind_networks">Streamingdiensten</string>
   <string name="home_row_kind_series">Series</string>
   <string name="home_row_kind_films">Films</string>
@@ -1193,7 +1193,7 @@
   <string name="info_simkl">Simkl</string>
   <string name="info_sources">Bronnen</string>
   <string name="info_status">Status</string>
-  <string name="info_stored_on_this_tv_active_video_playback">Opgeslagen op deze tv. Actief videoafspelen telt nooit als app-inactiviteit.</string>
+  <string name="info_stored_on_this_tv_active_video_playback">Opgeslagen op deze tv en in je account. Actief videoafspelen telt nooit als app-inactiviteit.</string>
   <string name="info_streamdek_api_calls_made_through_the_shared">StreamDek-API-aanroepen via de gedeelde HTTP-client</string>
   <string name="info_subscription">Abonnement</string>
   <string name="info_syncdek">SyncDek</string>

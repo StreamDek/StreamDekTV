@@ -1243,7 +1243,14 @@ class StreamDekRepository(
         val profilePreferences = raw.asObjectOrNull("profilePreferences") ?: JsonObject()
         profilePreferencesState.value = profilePreferences
         val accountPreferences = raw.asObjectOrNull("preferences") ?: JsonObject()
-        raw.add("preferences", PreferenceScopes.mergeIntoAccountPreferences(accountPreferences, profilePreferences))
+        // This television's own values go on last: they are a device choice, so they win over the
+        // profile's copy of the shared value just as they win over the account's.
+        raw.add(
+            "preferences",
+            PlatformPreferences.applyToPreferences(
+                PreferenceScopes.mergeIntoAccountPreferences(accountPreferences, profilePreferences),
+            ),
+        )
         return runCatching { api.gson.fromJson(raw, AccountBootstrap::class.java) }
             .onFailure { TvDebugLogger.e("Bootstrap", "could not read bootstrap payload", it) }
             .getOrNull()
@@ -1361,9 +1368,12 @@ class StreamDekRepository(
 
     suspend fun updateDetailPreferences(partial: Map<String, Any?>): AccountBootstrap? {
         val existing = bootstrapState.value?.preferences?.detail ?: DetailPreferences()
+        // Trailer choices are split off into `platforms.tv` (see PlatformPreferences); everything
+        // else stays in the shared section.
         if (!patchPreferences(
-            mapOf(
-                "detail" to mapOf(
+            PlatformPreferences.splitSectionUpdate(
+                "detail",
+                mapOf(
                     "seasonTabStyle" to (partial["seasonTabStyle"] ?: existing.seasonTabStyle),
                     "heroTrailerAutoplay" to (partial["heroTrailerAutoplay"] ?: existing.heroTrailerAutoplay),
                     "heroTrailerDelaySeconds" to (partial["heroTrailerDelaySeconds"] ?: existing.heroTrailerDelaySeconds),
@@ -1380,6 +1390,16 @@ class StreamDekRepository(
                 ),
             ),
         )) return null
+        return refreshBootstrap()
+    }
+
+    /**
+     * Saves settings that belong to this television alone, under `platforms.tv`. The backend merges
+     * that section a client at a time, so only these keys are sent and the phone's are left alone.
+     */
+    suspend fun updateDevicePreferences(values: Map<String, Any?>): AccountBootstrap? {
+        if (values.isEmpty()) return bootstrapState.value
+        if (!patchPreferences(mapOf(PlatformPreferences.KEY to mapOf(PlatformPreferences.PLATFORM to values)))) return null
         return refreshBootstrap()
     }
 
