@@ -913,10 +913,7 @@ private fun PlayerControlButton(
                 focusedContentColor = PlayerTokens.Ink,
             ),
             border = ButtonDefaults.border(
-                border = Border(
-                    border = BorderStroke(1.dp, if (control.primary) Color(0x33FFFFFF) else Color(0x14FFFFFF)),
-                    shape = CircleShape,
-                ),
+                border = Border.None,
                 focusedBorder = Border(
                     border = BorderStroke(2.dp, PlayerTokens.Accent),
                     shape = CircleShape,
@@ -1806,10 +1803,7 @@ internal fun PlayerSkipActionChip(
             focusedContentColor = Color.White,
         ),
         border = ButtonDefaults.border(
-            border = Border(
-                border = BorderStroke(1.dp, Color(0x28FFFFFF)),
-                shape = AppPillShape,
-            ),
+            border = Border.None,
             focusedBorder = Border(
                 border = BorderStroke(2.dp, Color(0xFFF0BA66)),
                 shape = AppPillShape,
@@ -2215,17 +2209,8 @@ private fun OptionButton(
             focusedContentColor = Color.White,
         ),
         border = ButtonDefaults.border(
-            border = Border(
-                border = BorderStroke(
-                    if (focused) 2.dp else 1.dp,
-                    when {
-                        focused -> Color(0xFFF0BA66)
-                        active -> Color(0x668B5CF6)
-                        else -> Color(0x12FFFFFF)
-                    },
-                ),
-                shape = RoundedCornerShape(14.dp),
-            ),
+            border = if (active) Border(BorderStroke(1.dp, Color(0x668B5CF6)), shape = RoundedCornerShape(14.dp)) else Border.None,
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = RoundedCornerShape(14.dp)),
         ),
     ) {
         Row(
@@ -2331,17 +2316,8 @@ private fun StreamOptionButton(
             focusedContentColor = Color.White,
         ),
         border = ButtonDefaults.border(
-            border = Border(
-                border = BorderStroke(
-                    if (focused) 2.dp else 1.dp,
-                    when {
-                        focused -> Color(0xFFF0BA66)
-                        playing -> Color(0x668B5CF6)
-                        else -> Color(0x12FFFFFF)
-                    },
-                ),
-                shape = RoundedCornerShape(14.dp),
-            ),
+            border = if (playing) Border(BorderStroke(1.dp, Color(0x668B5CF6)), shape = RoundedCornerShape(14.dp)) else Border.None,
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = RoundedCornerShape(14.dp)),
         ),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 11.dp),
     ) {
@@ -2469,13 +2445,8 @@ private fun PlayerStepperRow(
             focusedContentColor = Color.White,
         ),
         border = ButtonDefaults.border(
-            border = Border(
-                border = BorderStroke(
-                    if (focused) 2.dp else 1.dp,
-                    if (focused) Color(0xFFF0BA66) else Color(0x12FFFFFF),
-                ),
-                shape = RoundedCornerShape(14.dp),
-            ),
+            border = Border.None,
+            focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = RoundedCornerShape(14.dp)),
         ),
     ) {
         Row(
@@ -2561,17 +2532,8 @@ private fun <T> PanelTabRow(
                     focusedContentColor = Color.White,
                 ),
                 border = ButtonDefaults.border(
-                    border = Border(
-                        border = BorderStroke(
-                            if (focused) 2.dp else 1.dp,
-                            when {
-                                focused -> Color(0xFFF0BA66)
-                                active -> Color(0x668B5CF6)
-                                else -> Color(0x12FFFFFF)
-                            },
-                        ),
-                        shape = AppPillShape,
-                    ),
+                    border = if (active) Border(BorderStroke(1.dp, Color(0x668B5CF6)), shape = AppPillShape) else Border.None,
+                    focusedBorder = Border(BorderStroke(2.dp, Color(0xFFF0BA66)), shape = AppPillShape),
                 ),
             ) {
                 Text(

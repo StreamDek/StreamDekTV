@@ -44,16 +44,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -68,10 +72,12 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -892,19 +898,23 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         }
     }
 
-    LaunchedEffect(currentRoute, appUserActivityVersion, showUpdatePrompt) {
+    LaunchedEffect(currentRoute, showUpdatePrompt) {
         // A playing or paused video has its own lifecycle timer in PlayerScreen. Excluding the
         // route here means a two-hour film is never mistaken for two hours without interaction.
         if (currentRoute == "player" || showUpdatePrompt) return@LaunchedEffect
-        val timeout = idleTimeoutMillis(TvIdlePreferences(context).appIdleTimeoutMinutes)
-            ?: return@LaunchedEffect
-        delay(timeout)
-        // Sleep is what this timer is for: a set left on StreamDek for hours with nobody in the
-        // room should go dark, not merely go to the launcher. Asking for it outright is only
-        // answered where the platform has granted this app DEVICE_POWER, so where it is refused the
-        // app stands down instead and leaves the set to its own idle timer — which is the same
-        // behaviour as before, now as the fallback rather than as the whole of it.
-        if (!TvPowerActions.sleepDevice(context)) activity?.moveTaskToBack(true)
+        // Observe key presses in the coroutine. Reading the counter as an effect key made every
+        // D-pad press recompose the entire shell just to restart this timer.
+        snapshotFlow { appUserActivityVersion }.collectLatest {
+            val timeout = idleTimeoutMillis(TvIdlePreferences(context).appIdleTimeoutMinutes)
+                ?: return@collectLatest
+            delay(timeout)
+            // Sleep is what this timer is for: a set left on StreamDek for hours with nobody in the
+            // room should go dark, not merely go to the launcher. Asking for it outright is only
+            // answered where the platform has granted this app DEVICE_POWER, so where it is refused the
+            // app stands down instead and leaves the set to its own idle timer — which is the same
+            // behaviour as before, now as the fallback rather than as the whole of it.
+            if (!TvPowerActions.sleepDevice(context)) activity?.moveTaskToBack(true)
+        }
     }
 
     // Device-local, and read here so that choosing a speed in Settings recomposes the theme and
@@ -1933,11 +1943,9 @@ private fun TvSideNav(
         animationSpec = TvScroll.spec(TvMotion.duration(TvMotion.Expand)),
         label = "side-nav-open",
     )
-    val railWidth = TvNavRailWidth + (196.dp - TvNavRailWidth) * railOpen
     // Trails the panel slightly: the words arrive once there is room for them, not while the space
     // is still opening up.
-    val labelAlpha = ((railOpen - 0.35f) / 0.65f).coerceIn(0f, 1f)
-    val railSurfaceAlpha = railOpen * if (transparent) NavRailTransparentAlpha else 1f
+    val showLabels by remember { derivedStateOf { ((railOpen - 0.35f) / 0.65f).coerceIn(0f, 1f) > 0.01f } }
 
     // The highlight follows the page the viewer is on, but only while the menu is shut. Re-syncing
     // it under an open menu would drag the highlight off whatever the viewer is currently reading.
@@ -2015,7 +2023,14 @@ private fun TvSideNav(
 
     Box(
         modifier = modifier
-            .width(railWidth)
+            // The panel must resize, but its animation need not recompose all navigation items.
+            .layout { measurable, constraints ->
+                val width = constraints.constrainWidth(
+                    (TvNavRailWidth + (196.dp - TvNavRailWidth) * railOpen).roundToPx(),
+                )
+                val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
+                layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
+            }
             .fillMaxHeight()
             .clipToBounds(),
     ) {
@@ -2036,7 +2051,9 @@ private fun TvSideNav(
             Modifier
                 .fillMaxSize()
                 .graphicsLayer { translationX = -size.width * (1f - railOpen) }
-                .background(TvChromeSurface.copy(alpha = railSurfaceAlpha)),
+                .drawBehind {
+                    drawRect(TvChromeSurface.copy(alpha = railOpen * if (transparent) NavRailTransparentAlpha else 1f))
+                },
         )
 
     Column(
@@ -2068,21 +2085,17 @@ private fun TvSideNav(
     ) {
         destinations.forEachIndexed { index, destination ->
             val highlighted = destination.route == displayedRoute
+            val highlightColor by androidx.compose.animation.animateColorAsState(
+                targetValue = if (highlighted) navHighlight else navHighlight.copy(alpha = 0f),
+                animationSpec = TvScroll.spec(TvMotion.duration(200)),
+                label = "side-nav-highlight",
+            )
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(46.dp)
                     .clip(RoundedCornerShape(14.dp))
-                    .background(
-                        androidx.compose.animation.animateColorAsState(
-                            // Fades on its own alpha rather than towards Color.Transparent, so the
-                            // in-between frames are the same hue getting fainter instead of a slide
-                            // through transparent black.
-                            targetValue = if (highlighted) navHighlight else navHighlight.copy(alpha = 0f),
-                            animationSpec = TvScroll.spec(TvMotion.duration(200)),
-                            label = "side-nav-highlight",
-                        ).value,
-                    )
+                    .drawBehind { drawRect(highlightColor) }
                     .focusRequester(itemRequesters.getValue(destination))
                     // A collapsed rail is not a focus target at all.
                     //
@@ -2170,12 +2183,15 @@ private fun TvSideNav(
                         }
                     }
                 }
-                if (labelAlpha > 0.01f) {
+                if (showLabels) {
                     Spacer(Modifier.width(12.dp))
                     Text(
                         text = stringResource(destination.labelRes),
                         color = (if (highlighted) Color.White else MaterialTheme.colorScheme.onBackground)
-                            .copy(alpha = labelAlpha),
+                            .copy(alpha = 1f),
+                        modifier = Modifier.graphicsLayer {
+                            alpha = ((railOpen - 0.35f) / 0.65f).coerceIn(0f, 1f)
+                        },
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         maxLines = 1,
                         softWrap = false,

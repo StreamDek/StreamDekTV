@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -71,13 +72,15 @@ fun PremiumMediaCard(
 ) {
     val portrait = variant == TvMediaCardVariant.Poster
     val shape = if (portrait) RoundedCornerShape(12.dp) else AppCardShape
-    val image = highResolutionCardArtwork(
-        if (portrait) item.poster ?: item.backdrop else item.backdrop ?: item.poster,
-        portrait = portrait,
-    )
+    val image = remember(item.poster, item.backdrop, portrait) {
+        highResolutionCardArtwork(
+            if (portrait) item.poster ?: item.backdrop else item.backdrop ?: item.poster,
+            portrait = portrait,
+        )
+    }
     val focusScale = TvMotion.focusScale()
     val context = LocalContext.current
-    val imageRequest = remember(image, portrait) {
+    val imageRequest = remember(context, image, portrait) {
         ImageRequest.Builder(context)
             .data(image)
             .memoryCacheKey(image)
@@ -93,17 +96,25 @@ fun PremiumMediaCard(
             .build()
     }
     var focused by remember { mutableStateOf(false) }
-    val metaLine = listOfNotNull(
-        item.rating?.takeIf { it > 0 }?.let { "★ %.1f".format(it) },
-        item.year,
-    ).joinToString("  ·  ")
+    val configuration = LocalConfiguration.current
+    val metaLine = remember(item.rating, item.year, configuration) {
+        listOfNotNull(
+            item.rating?.takeIf { it > 0 }?.let { "★ %.1f".format(it) },
+            item.year,
+        ).joinToString("  ·  ")
+    }
     val topMeta = metaOnTop && metaLine.isNotBlank()
-    val spokenDescription = buildString {
-        append(item.title)
-        item.year?.let { append(", $it") }
-        item.rating?.let { append(", rated %.1f".format(it)) }
-        if (favourite) append(", favourite")
-        if ((item.progress ?: 0.0) > 0.0) append(", ${item.progress?.toInt()} percent watched")
+    val spokenDescription = remember(item.title, item.year, item.rating, item.progress, favourite, configuration) {
+        buildString {
+            append(item.title)
+            item.year?.let { append(", $it") }
+            item.rating?.let { append(", rated %.1f".format(it)) }
+            if (favourite) append(", favourite")
+            if ((item.progress ?: 0.0) > 0.0) append(", ${item.progress?.toInt()} percent watched")
+        }
+    }
+    val bottomMeta = remember(item.year, item.rating, configuration) {
+        listOfNotNull(item.year, item.rating?.let { "★ %.1f".format(it) }).joinToString("  •  ")
     }
 
     Card(
@@ -188,8 +199,7 @@ fun PremiumMediaCard(
                     Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Text(item.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), color = Color.White, maxLines = if (portrait) 2 else 1, overflow = TextOverflow.Ellipsis)
-                val meta = listOfNotNull(item.year, item.rating?.let { "★ %.1f".format(it) }).joinToString("  •  ")
-                if (meta.isNotBlank()) Text(meta, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
+                if (bottomMeta.isNotBlank()) Text(bottomMeta, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
                 if ((item.progress ?: 0.0) > 0.0) {
                     ProgressMeter(item.progress, Modifier.width(if (portrait) 92.dp else 132.dp).height(4.dp))
                     item.positionSec?.let { Text(formatPlaybackClock(it), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.78f)) }
@@ -199,10 +209,12 @@ fun PremiumMediaCard(
     }
 }
 
+private val legacyCardArtworkSize = Regex("/t/p/w(?:92|154|185|300|342|500)/")
+
 /** Upgrades legacy TMDB thumbnail URLs when a poster is rendered at TV-card size. */
 internal fun highResolutionCardArtwork(url: String?, portrait: Boolean): String? {
     if (!portrait || url.isNullOrBlank() || !url.contains("image.tmdb.org/t/p/")) return url
-    return url.replace(Regex("/t/p/w(?:92|154|185|300|342|500)/"), "/t/p/w780/")
+    return url.replace(legacyCardArtworkSize, "/t/p/w780/")
 }
 
 @Composable

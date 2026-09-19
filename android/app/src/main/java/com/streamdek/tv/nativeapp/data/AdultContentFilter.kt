@@ -16,6 +16,8 @@ package com.streamdek.tv.nativeapp.data
  * administrator instead, through [applyPolicy].
  */
 object AdultContentFilter {
+  // Regex is immutable; reuse the expensive Unicode pattern across every catalogue field.
+  private val wordSeparators = Regex("[^\\p{L}\\p{N}+]+")
 
   /**
    * Whether filtering is active. On by default and restored to on whenever the platform policy
@@ -120,7 +122,7 @@ object AdultContentFilter {
     if (value.isBlank()) return false
     // Release names separate words with dots and underscores, so everything that is not a letter,
     // digit or '+' becomes a gap. '+' survives because it carries the meaning in "18+".
-    val normalized = value.lowercase().replace(Regex("[^\\p{L}\\p{N}+]+"), " ").trim()
+    val normalized = value.lowercase().replace(wordSeparators, " ").trim()
     if (normalized.isEmpty()) return false
     val tokens = normalized.split(' ').filter { it.isNotBlank() }
 

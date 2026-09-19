@@ -403,11 +403,14 @@ class StreamDekApi(
     ): T? {
         val raw = executeRaw(method, path, body, session) ?: return null
         val type = object : TypeToken<T>() {}.type
-        return runCatching {
-            gson.fromJson<T>(raw, type)
-        }.onFailure {
-            noteParseFailure(path, raw, it)
-        }.getOrNull()
+        // executeRaw returns to the caller's dispatcher. Keep large catalogue decoding off Main.
+        return withContext(Dispatchers.Default) {
+            runCatching {
+                gson.fromJson<T>(raw, type)
+            }.onFailure {
+                noteParseFailure(path, raw, it)
+            }.getOrNull()
+        }
     }
 
     @PublishedApi

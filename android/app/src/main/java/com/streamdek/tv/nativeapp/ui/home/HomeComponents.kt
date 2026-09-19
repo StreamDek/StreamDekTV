@@ -453,8 +453,8 @@ internal fun HomeShelf(
         Text(
             text = row.titleRes?.let { stringResource(it) } ?: row.title,
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = titleAlpha),
-            modifier = Modifier.padding(start = HomeInset),
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 1f),
+            modifier = Modifier.padding(start = HomeInset).graphicsLayer { alpha = titleAlpha },
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

@@ -173,6 +173,8 @@ data class MediaDetail(
      * only take [trailerKey], which is how a title opened on a fifteen-second notice.
      */
     val trailerKeys: List<String> = emptyList(),
+    val certification: String? = null,
+    val certificationCountry: String? = null,
     val genreNames: List<String> = emptyList(),
     val cast: List<CastMember> = emptyList(),
     val seasons: List<SeasonRef> = emptyList(),

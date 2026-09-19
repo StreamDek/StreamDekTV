@@ -1631,7 +1631,8 @@ class StreamDekRepository(
                     // A required genre has to be supplied or the catalog is within its rights to
                     // refuse. Only the backend proxy cannot carry one, so those go direct.
                     val requiredGenre = catalog.defaultGenre
-                    async {
+                    // Mapping and diagnostic filtering can touch thousands of entries per catalogue.
+                    async(Dispatchers.Default) {
                         val proxiedMetas = if (requiredGenre != null) {
                             emptyList()
                         } else {

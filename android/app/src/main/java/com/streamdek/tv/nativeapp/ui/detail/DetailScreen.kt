@@ -1546,6 +1546,9 @@ private fun DetailHero(
                 detail.numberOfSeasons?.takeIf { it > 0 }?.let {
                     MetaChip(if (it == 1) "1 season" else "$it seasons")
                 }
+                detail.certification?.takeIf { it.isNotBlank() }?.let { rating ->
+                    MetaChip(listOfNotNull(rating, detail.certificationCountry?.takeIf { it.isNotBlank() }).joinToString(" · "))
+                }
                 detail.genreNames.take(2).forEach { MetaChip(it) }
             }
 

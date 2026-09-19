@@ -30,6 +30,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -450,7 +452,7 @@ fun ProgressMeter(
 fun TvSkeletonBox(modifier: Modifier = Modifier, shape: androidx.compose.ui.graphics.Shape = AppCardShape) {
     val reducedMotion = LocalTvExperienceSettings.current.reducedMotion
     val alpha = if (reducedMotion) {
-        0.10f
+        null
     } else {
         val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "skeleton")
         transition.animateFloat(
@@ -461,9 +463,13 @@ fun TvSkeletonBox(modifier: Modifier = Modifier, shape: androidx.compose.ui.grap
                 repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
             ),
             label = "skeleton-alpha",
-        ).value
+        )
     }
-    Box(modifier.background(Color.White.copy(alpha = alpha), shape))
+    // Cache the shape and read alpha only while drawing: no per-frame composition or extra layer.
+    Box(modifier.drawWithCache {
+        val outline = shape.createOutline(size, layoutDirection, this)
+        onDrawBehind { drawOutline(outline, Color.White, alpha = alpha?.value ?: 0.10f) }
+    })
 }
 
 /**
