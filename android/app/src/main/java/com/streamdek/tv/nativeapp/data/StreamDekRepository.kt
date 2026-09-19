@@ -60,7 +60,8 @@ private const val SUBTITLE_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/131.0.0.0 Safari/537.36"
 
-private const val PLUGIN_WATCH_INTERVAL_MS = 15_000L
+/** How often this television asks whether the account's plugins or settings changed elsewhere. */
+private const val ACCOUNT_WATCH_INTERVAL_MS = 15_000L
 
 private const val MAX_ADDON_RAIL_TITLE_LENGTH = 30
 private const val ADDON_CACHE_SECONDS = 90
@@ -1553,31 +1554,50 @@ class StreamDekRepository(
     }
 
     /**
-     * Watches the account for a plugin change made on the phone or the web portal.
+     * Watches the account for a plugin or settings change made on the phone or the web portal.
      *
-     * Polls a stamp rather than the document: the document carries every source and every settings
-     * schema, and asking for that on a timer would be wasteful on a stick. Only when the stamp
-     * moves past what this television last saw is the bootstrap actually refreshed -- so the steady
-     * state is a few bytes, and a collection added elsewhere appears here within the interval
-     * rather than on the next cold start.
+     * Polls stamps rather than documents: each carries kilobytes -- every source, every settings
+     * schema -- and asking for that on a timer would be wasteful on a stick. Only when one moves
+     * past what this television last saw is the bootstrap actually refreshed, so the steady state is
+     * a few bytes and a change made elsewhere appears here within the interval rather than on the
+     * next cold start.
+     *
+     * Both stamps are asked for on the one timer, and either moving is answered by the same single
+     * refresh: the bootstrap carries plugins and settings together.
      */
-    fun watchProfilePlugins(scope: kotlinx.coroutines.CoroutineScope): kotlinx.coroutines.Job = scope.launch {
-        var lastSeen = bootstrapState.value?.profilePlugins?.updatedAt ?: 0L
+    fun watchAccountChanges(scope: kotlinx.coroutines.CoroutineScope): kotlinx.coroutines.Job = scope.launch {
+        var lastPlugins = bootstrapState.value?.profilePlugins?.updatedAt ?: 0L
+        // Where the settings stand now, recorded without acting on it: this television has just read
+        // the bootstrap, so the first tick has nothing to answer.
+        var lastPreferences = preferencesVersion()
         while (isActive) {
-            kotlinx.coroutines.delay(PLUGIN_WATCH_INTERVAL_MS)
+            kotlinx.coroutines.delay(ACCOUNT_WATCH_INTERVAL_MS)
             val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: continue
-            val version = runCatching {
+            val plugins = runCatching {
                 api.get<com.google.gson.JsonObject>(
                     "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/plugins/version",
                 )?.get("updatedAt")?.asLong ?: 0L
             }.getOrDefault(0L)
-            if (version > lastSeen) {
-                lastSeen = version
-                TvDebugLogger.i("Plugins", "plugin document changed elsewhere; refreshing")
-                runCatching { refreshBootstrap() }
-            }
+            val preferences = preferencesVersion()
+            val pluginsMoved = plugins > lastPlugins
+            val preferencesMoved = preferences > lastPreferences
+            if (!pluginsMoved && !preferencesMoved) continue
+            if (pluginsMoved) lastPlugins = plugins
+            if (preferencesMoved) lastPreferences = preferences
+            TvDebugLogger.i(
+                "Account",
+                if (pluginsMoved && preferencesMoved) "plugins and settings changed elsewhere; refreshing"
+                else if (pluginsMoved) "plugin document changed elsewhere; refreshing"
+                else "settings changed elsewhere; refreshing",
+            )
+            runCatching { refreshBootstrap() }
         }
     }
+
+    /** When the account's settings last changed, as epoch millis. Zero when it cannot be read. */
+    private suspend fun preferencesVersion(): Long = runCatching {
+        api.get<com.google.gson.JsonObject>("/account/preferences/version")?.get("updatedAt")?.asLong ?: 0L
+    }.getOrDefault(0L)
 
     suspend fun updateProfilePlugins(state: ProfilePluginState): AccountBootstrap? {
         val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return null

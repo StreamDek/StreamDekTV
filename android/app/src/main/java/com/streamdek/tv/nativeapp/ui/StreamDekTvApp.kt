@@ -552,7 +552,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     // should reach it while it sits there rather than waiting for the next cold start.
     LaunchedEffect(session?.user?.uid) {
         if (session == null) return@LaunchedEffect
-        repository.watchProfilePlugins(this)
+        repository.watchAccountChanges(this)
     }
 
 
