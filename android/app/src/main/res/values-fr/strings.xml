@@ -1773,4 +1773,24 @@
   <string name="player_loading_switch_hint_channels">Bas pour les chaînes</string>
   <string name="player_loading_switch_hint_favourites">Droite pour les favoris</string>
   <string name="player_live_exit_prompt">Appuyez de nouveau sur Retour pour quitter %1$s</string>
+  <string name="settings_tv_player_display">Affichage du lecteur</string>
+  <string name="settings_live_badge">Afficher le badge Direct/VOD</string>
+  <string name="settings_live_badge_description">Affiche l’indicateur Direct ou VOD dans le lecteur</string>
+  <string name="player_live_badge_on">Badge Direct/VOD activé</string>
+  <string name="player_live_badge_off">Badge Direct/VOD désactivé</string>
+  <string name="player_ends_at">Se termine à %1$s</string>
+  <string name="player_captions">Sous-titres</string>
+  <string name="player_captions_off_option">Désactivés</string>
+  <string name="player_panel_captions_description">Sous-titres diffusés par cette chaîne</string>
+  <string name="player_captions_off_description">Masquer les sous-titres sur toutes les chaînes en direct</string>
+  <string name="player_caption_track_fallback">Sous-titres %1$d</string>
+  <string name="player_captions_none_now">Cette chaîne n’envoie pas de sous-titres pour le moment.</string>
+  <string name="player_captions_detected_note">Les sous-titres apparaissent ici dès que la diffusion les envoie. Certaines chaînes n’en envoient qu’au début d’un programme.</string>
+  <string name="fuse_search_limited_one">%1$s ne propose pas de recherche : seuls les titres déjà chargés sont comparés. Chargez-en plus pour chercher plus loin.</string>
+  <string name="fuse_search_limited_many">%1$s et d’autres (%2$d sources) ne proposent pas de recherche : seuls les titres déjà chargés sont comparés. Chargez-en plus pour chercher plus loin.</string>
+  <string name="auth_scan_with_camera">Scannez avec l’appareil photo du téléphone, ou avec le lecteur de l’app StreamDek dans Réglages › Connecter à la TV.</string>
+  <string name="auth_qr_description">Code QR pour associer ce téléviseur</string>
+  <string name="auth_link_reconnecting">Reconnexion… votre code reste valable</string>
+  <string name="auth_code_refreshed">Ce code a expiré, en voici un nouveau</string>
+  <string name="auth_link_declined">La demande a été refusée sur le téléphone. Un nouveau code arrive.</string>
 </resources>

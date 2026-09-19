@@ -31,7 +31,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.last
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
@@ -863,6 +865,10 @@ class StreamDekRepository(
     fun liveCaptionsEnabled(): Boolean = sessionStore.liveCaptionsEnabled()
 
     fun setLiveCaptionsEnabled(enabled: Boolean) = sessionStore.setLiveCaptionsEnabled(enabled)
+
+    fun liveCaptionsChosen(): Boolean = sessionStore.liveCaptionsChosen()
+
+    fun setLiveCaptionsChosen(chosen: Boolean) = sessionStore.setLiveCaptionsChosen(chosen)
     private var lastPlaybackRequest: PlaybackRequest? = null
 
     val session: StateFlow<AuthSession?> = sessionStore.session
@@ -1113,9 +1119,20 @@ class StreamDekRepository(
             ?: error("Could not create TV sign-in session")
     }
 
+    /**
+     * One poll of a pairing session. The backend's answer is read even from an error reply - that is
+     * how "expired" and "declined" arrive - and a poll that never reached the backend comes back as
+     * `network_error`, so the sign-in screen keeps waiting instead of giving up on a dropped packet.
+     */
     suspend fun pollTvSession(deviceCode: String): TvPollResult {
-        val result = api.post<TvPollResult>("/auth/tv/token", mapOf("device_code" to deviceCode), session = null)
-            ?: TvPollResult(status = "invalid_grant")
+        val raw = api.postPublicForAnswer("/auth/tv/token", mapOf("device_code" to deviceCode))
+        val result = if (raw == null) {
+            TvPollResult(status = "network_error")
+        } else {
+            runCatching { com.google.gson.Gson().fromJson(raw, TvPollResult::class.java) }.getOrNull()
+                ?.takeIf { !it.status.isNullOrBlank() }
+                ?: TvPollResult(status = "invalid_grant")
+        }
         TvDebugLogger.i("Auth", "pollTvSession status=${result.status}")
         return result
     }
@@ -1280,6 +1297,7 @@ class StreamDekRepository(
                     "rememberLastSource" to (partial["rememberLastSource"] ?: existing.rememberLastSource),
                     "manualStreamSelectionEnabled" to (partial["manualStreamSelectionEnabled"] ?: existing.manualStreamSelectionEnabled),
                     "liveProgressBarEnabled" to (partial["liveProgressBarEnabled"] ?: existing.liveProgressBarEnabled),
+                    "liveBadgeEnabled" to (partial["liveBadgeEnabled"] ?: existing.liveBadgeEnabled),
                 ),
             ),
         )) return null
@@ -2632,6 +2650,9 @@ class StreamDekRepository(
                     title = row.title,
                     live = isLiveCloudStreamHomeRowId(row.id),
                     origin = FuseOrigin.CloudStream,
+                    // Through PluginCatalogSearch: the provider's own search, or the rows already
+                    // loaded from it when it has none - never "only what happens to be on screen".
+                    searchable = true,
                     cloudRowId = row.id,
                 )
             }
@@ -2670,8 +2691,20 @@ class StreamDekRepository(
             FuseOrigin.Playlist -> FusePage(catalog.localItems.orEmpty(), end = true)
             FuseOrigin.CloudStream -> {
                 val row = catalog.cloudRowId?.let { resolveCloudStreamHomeRow(it, loadedCloudStreamProviders()) }
-                if (row == null) previous.copy(failed = true)
-                else FusePage(CloudStreamCatalog.mainPageItems(row.provider, row.page).distinctBy(::fuseItemKey), end = true)
+                when {
+                    row == null -> previous.copy(failed = true)
+                    // A query is put to the provider as a whole, once, rather than row by row: its
+                    // search is not organised by the rows its main page happens to show.
+                    search != null -> {
+                        val outcome = PluginCatalogSearch.searchProvider(row.provider, search)
+                        FusePage(outcome.items.withoutAdult().distinctBy(::fuseItemKey), end = true, failed = outcome.failed && outcome.items.isEmpty())
+                    }
+                    else -> {
+                        val items = CloudStreamCatalog.mainPageItems(row.provider, row.page).distinctBy(::fuseItemKey)
+                        PluginCatalogSearch.index(row.provider.name, items)
+                        FusePage(items, end = true)
+                    }
+                }
             }
             FuseOrigin.Addon -> {
                 val addon = fetchAddonManifests().firstOrNull { it.id == catalog.addonId }
@@ -2775,6 +2808,8 @@ class StreamDekRepository(
             .getOrDefault(emptyList())
         TvDebugLogger.i("CloudStream", "home row ${row.provider.name} ${row.page.name}: ${items.size} item(s)")
         repairFavouriteChannelIds(items)
+        // What a provider without search of its own can still be searched against. See PluginCatalogSearch.
+        PluginCatalogSearch.index(row.provider.name, items)
         return HomeRail(
             id = id,
             title = buildAddonRailTitle(row.provider.name, row.page.name.ifBlank { null }),
@@ -3138,6 +3173,32 @@ class StreamDekRepository(
         addonSearchCache[cacheKey] = results
         return results
     }
+
+    /**
+     * Matches from every enabled plugin catalogue - CloudStream and SkyStream sources - reported
+     * provider by provider as each answers. See [PluginCatalogSearch].
+     *
+     * Only providers that are loaded are asked, which is exactly the set the viewer has switched on:
+     * a disabled plugin, a disabled collection or a SkyStream sub-provider turned off is never loaded.
+     * Each emission is everything found so far, so the Search screen can show the latest one.
+     */
+    fun searchPluginCatalogs(query: String, forceRefresh: Boolean = false): Flow<List<MediaItem>> {
+        val providers = loadedCloudStreamProviders()
+        return PluginCatalogSearch.searchAll(providers, query, forceRefresh)
+            .map { outcomes ->
+                // In the order the viewer's providers are listed, not the order they happened to answer,
+                // so a result does not move when a slower provider lands above it.
+                val order = providers.map { it.name }
+                outcomes.sortedBy { outcome -> order.indexOf(outcome.providerName).let { if (it < 0) Int.MAX_VALUE else it } }
+                    .flatMap { it.items }
+                    .withoutAdult()
+                    .distinctBy { it.id }
+            }
+            .flowOn(Dispatchers.Default)
+    }
+
+    /** Whether any plugin catalogue is loaded to be searched at all. */
+    fun hasSearchablePluginCatalogs(): Boolean = loadedCloudStreamProviders().isNotEmpty()
 
     /**
      * How well an add-on result answers the query, lowest first, or null when it does not.

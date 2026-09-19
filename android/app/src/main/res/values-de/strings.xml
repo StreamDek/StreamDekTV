@@ -1722,4 +1722,24 @@
   <string name="player_loading_switch_hint_channels">Nach unten für Sender</string>
   <string name="player_loading_switch_hint_favourites">Nach rechts für Favoriten</string>
   <string name="player_live_exit_prompt">Erneut Zurück drücken, um %1$s zu verlassen</string>
+  <string name="settings_tv_player_display">Player-Anzeige</string>
+  <string name="settings_live_badge">Live/VOD-Kennzeichen anzeigen</string>
+  <string name="settings_live_badge_description">Zeigt im Player an, ob live oder VOD läuft</string>
+  <string name="player_live_badge_on">Live/VOD-Kennzeichen an</string>
+  <string name="player_live_badge_off">Live/VOD-Kennzeichen aus</string>
+  <string name="player_ends_at">Endet um %1$s</string>
+  <string name="player_captions">Untertitel</string>
+  <string name="player_captions_off_option">Aus</string>
+  <string name="player_panel_captions_description">Untertitel, die dieser Sender ausstrahlt</string>
+  <string name="player_captions_off_description">Untertitel auf allen Live-Sendern ausblenden</string>
+  <string name="player_caption_track_fallback">Untertitel %1$d</string>
+  <string name="player_captions_none_now">Dieser Sender sendet gerade keine Untertitel.</string>
+  <string name="player_captions_detected_note">Untertitel erscheinen hier, sobald die Sendung sie liefert. Manche Sender senden erst ab Beginn einer Sendung Untertitel.</string>
+  <string name="fuse_search_limited_one">%1$s bietet keine Suche an, daher werden nur die bisher geladenen Titel durchsucht. Mit „Mehr laden“ weitersuchen.</string>
+  <string name="fuse_search_limited_many">%1$s und weitere (%2$d Quellen) bieten keine Suche an, daher werden nur die bisher geladenen Titel durchsucht. Mit „Mehr laden“ weitersuchen.</string>
+  <string name="auth_scan_with_camera">Mit der Handykamera scannen oder mit dem Scanner in der StreamDek-App unter Einstellungen › Mit TV verbinden.</string>
+  <string name="auth_qr_description">QR-Code zum Verbinden dieses Fernsehers</string>
+  <string name="auth_link_reconnecting">Verbindung wird wiederhergestellt … dein Code gilt weiterhin</string>
+  <string name="auth_code_refreshed">Der Code ist abgelaufen – hier ist ein neuer</string>
+  <string name="auth_link_declined">Die Anfrage wurde auf dem Handy abgelehnt. Ein neuer Code folgt.</string>
 </resources>

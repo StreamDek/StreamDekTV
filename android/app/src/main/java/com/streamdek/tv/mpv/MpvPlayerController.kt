@@ -42,6 +42,15 @@ interface MpvPlayerController {
     fun setLoadWaitsForPlayback(waits: Boolean) = Unit
 
     /**
+     * Whether the engine should confirm speculative caption tracks by listening for their data.
+     *
+     * Only live channels ask. A confirmed track stops being [MpvTrackInfo.speculative] and the
+     * engine reports its tracks again, which is how the player learns, mid-broadcast, that a
+     * channel has captions. Listening never shows anything the viewer has not asked to see.
+     */
+    fun setCaptionProbe(enabled: Boolean) = Unit
+
+    /**
      * Subtitle appearance, adjustable from the player itself.
      *
      * Both engines already implemented these; they were simply not reachable from the screen, so

@@ -1722,4 +1722,24 @@
   <string name="player_loading_switch_hint_channels">Omlaag voor zenders</string>
   <string name="player_loading_switch_hint_favourites">Rechts voor favorieten</string>
   <string name="player_live_exit_prompt">Druk nogmaals op Terug om %1$s te verlaten</string>
+  <string name="settings_tv_player_display">Spelerweergave</string>
+  <string name="settings_live_badge">Live/VOD-label tonen</string>
+  <string name="settings_live_badge_description">Toont de Live- of VOD-aanduiding in de speler</string>
+  <string name="player_live_badge_on">Live/VOD-label aan</string>
+  <string name="player_live_badge_off">Live/VOD-label uit</string>
+  <string name="player_ends_at">Eindigt om %1$s</string>
+  <string name="player_captions">Ondertiteling</string>
+  <string name="player_captions_off_option">Uit</string>
+  <string name="player_panel_captions_description">Ondertiteling die dit kanaal uitzendt</string>
+  <string name="player_captions_off_description">Ondertiteling verbergen op alle live kanalen</string>
+  <string name="player_caption_track_fallback">Ondertiteling %1$d</string>
+  <string name="player_captions_none_now">Dit kanaal zendt op dit moment geen ondertiteling uit.</string>
+  <string name="player_captions_detected_note">Ondertiteling verschijnt hier zodra de uitzending die meestuurt. Sommige kanalen sturen pas ondertiteling mee als een programma begint.</string>
+  <string name="fuse_search_limited_one">%1$s biedt geen zoekfunctie, dus alleen de tot nu toe geladen titels worden doorzocht. Laad meer om verder te zoeken.</string>
+  <string name="fuse_search_limited_many">%1$s en andere (%2$d bronnen) bieden geen zoekfunctie, dus alleen de tot nu toe geladen titels worden doorzocht. Laad meer om verder te zoeken.</string>
+  <string name="auth_scan_with_camera">Scan met de camera van je telefoon, of met de scanner in de StreamDek-app onder Instellingen › Verbinden met tv.</string>
+  <string name="auth_qr_description">QR-code om deze tv te koppelen</string>
+  <string name="auth_link_reconnecting">Opnieuw verbinden… je code werkt nog</string>
+  <string name="auth_code_refreshed">Die code is verlopen, hier is een nieuwe</string>
+  <string name="auth_link_declined">Het verzoek is op je telefoon geweigerd. Er komt een nieuwe code.</string>
 </resources>

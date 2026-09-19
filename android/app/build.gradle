@@ -149,6 +149,8 @@ dependencies {
     implementation("androidx.palette:palette-ktx:1.0.0")
     implementation("androidx.tv:tv-material:1.0.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // The sign-in QR code is encoded on the television rather than fetched from a web service.
+    implementation("com.google.zxing:core:3.5.3")
 
     // --- CloudStream (.cs3) plugin support ---
     // A .cs3 extension is compiled Kotlin/JVM bytecode written against the real

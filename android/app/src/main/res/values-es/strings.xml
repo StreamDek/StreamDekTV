@@ -1738,4 +1738,24 @@
   <string name="player_loading_switch_hint_channels">Pulsa abajo para canales</string>
   <string name="player_loading_switch_hint_favourites">Pulsa derecha para favoritos</string>
   <string name="player_live_exit_prompt">Pulsa Atrás de nuevo para salir de %1$s</string>
+  <string name="settings_tv_player_display">Pantalla del reproductor</string>
+  <string name="settings_live_badge">Mostrar distintivo En directo/VOD</string>
+  <string name="settings_live_badge_description">Muestra el indicador En directo o VOD en el reproductor</string>
+  <string name="player_live_badge_on">Distintivo En directo/VOD activado</string>
+  <string name="player_live_badge_off">Distintivo En directo/VOD desactivado</string>
+  <string name="player_ends_at">Termina a las %1$s</string>
+  <string name="player_captions">Subtítulos</string>
+  <string name="player_captions_off_option">Desactivados</string>
+  <string name="player_panel_captions_description">Subtítulos que emite este canal</string>
+  <string name="player_captions_off_description">Ocultar subtítulos en todos los canales en directo</string>
+  <string name="player_caption_track_fallback">Subtítulos %1$d</string>
+  <string name="player_captions_none_now">Este canal no está emitiendo subtítulos ahora mismo.</string>
+  <string name="player_captions_detected_note">Los subtítulos aparecen aquí según los envía la emisión. Algunos canales solo los envían cuando empieza un programa.</string>
+  <string name="fuse_search_limited_one">%1$s no ofrece búsqueda, así que solo se buscan los títulos cargados hasta ahora. Carga más para seguir buscando.</string>
+  <string name="fuse_search_limited_many">%1$s y otras (%2$d fuentes) no ofrecen búsqueda, así que solo se buscan los títulos cargados hasta ahora. Carga más para seguir buscando.</string>
+  <string name="auth_scan_with_camera">Escanéalo con la cámara del móvil o con el lector de la app StreamDek en Ajustes › Conectar con la TV.</string>
+  <string name="auth_qr_description">Código QR para vincular esta TV</string>
+  <string name="auth_link_reconnecting">Reconectando… tu código sigue siendo válido</string>
+  <string name="auth_code_refreshed">Ese código caducó; aquí tienes uno nuevo</string>
+  <string name="auth_link_declined">La solicitud se rechazó en el móvil. Enseguida aparece un código nuevo.</string>
 </resources>

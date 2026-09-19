@@ -72,6 +72,7 @@ import com.streamdek.tv.nativeapp.data.FuseOrigin
 import com.streamdek.tv.nativeapp.data.FusePage
 import com.streamdek.tv.nativeapp.data.FuseViewMemory
 import com.streamdek.tv.nativeapp.data.MediaItem
+import com.streamdek.tv.nativeapp.data.PluginCatalogSearch
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.cloudStreamProviderNameFromCutId
 import com.streamdek.tv.nativeapp.data.decodeCloudStreamMediaId
@@ -220,8 +221,10 @@ fun FuseScreen(
 
     LaunchedEffect(query) { delay(350); settledQuery = query.trim() }
     val sources = remember(catalogs) { catalogs.distinctBy { it.sourceKey } }
-    val scoped = remember(catalogs, mode, sourceKey, catalogKey) {
+    val scoped = remember(catalogs, mode, sourceKey, catalogKey, settledQuery) {
         catalogs.filter { (sourceKey == null || it.sourceKey == sourceKey) && (catalogKey == null || it.key == catalogKey) && modeAllows(it.live) }
+            // A query goes to a plugin once, not once per row it has on Home: see fusePageKey.
+            .distinctBy { if (it.origin == FuseOrigin.CloudStream && settledQuery.isNotEmpty()) "cloudsearch:" + it.sourceKey else it.key }
     }
     val availableCatalogs = remember(catalogs, mode, sourceKey) {
         catalogs.filter { (sourceKey == null || it.sourceKey == sourceKey) && modeAllows(it.live) }
@@ -300,10 +303,22 @@ fun FuseScreen(
             val categoryNames = if (scoped.isNotEmpty() && scoped.all { it.live } && categoriesEnabled) {
                 items.mapNotNull { it.sourceCatalogName?.takeIf(String::isNotBlank) }.distinct().sortedBy { it.lowercase() }
             } else emptyList()
+            // What a plugin's own search returned is already an answer to the query - it may match on
+            // a title it does not show - so it is not filtered again, only kept to the view's kind.
+            val searched = if (settledQuery.isEmpty()) emptySet() else scoped
+                .filter { it.origin == FuseOrigin.CloudStream }
+                .flatMap { snapshot[fusePageKey(it, settledQuery)]?.items.orEmpty() }
+                .mapTo(hashSetOf(), ::fuseItemKey)
             val matches = items.filter { item ->
+                val fromSearch = fuseItemKey(item) in searched
                 (category == null || item.sourceCatalogName == category) &&
                     (!favouritesOnly || isFavourite(item)) &&
-                    (settledQuery.isEmpty() || item.title.contains(settledQuery, true) || item.description.orEmpty().contains(settledQuery, true))
+                    (!fromSearch || modeAllows(item.type == "live")) &&
+                    (
+                        settledQuery.isEmpty() || fromSearch ||
+                            PluginCatalogSearch.matchRank(item.title, settledQuery) != null ||
+                            item.description.orEmpty().contains(settledQuery, true)
+                        )
             }
             val groups = matches.groupBy { owners[fuseItemKey(it)].orEmpty() }.map { (key, owned) -> FuseGroup(key, owned) }
             FuseView(filterIdentity, matches, groups, categoryNames)
@@ -315,7 +330,15 @@ fun FuseScreen(
     val loadingSources = remember(inFlight.toMap(), catalogs) { catalogs.filter { inFlight[it.key] == true }.mapTo(hashSetOf()) { it.sourceKey } }
     val hasMore = scoped.any { catalog -> catalog.localItems == null && pages[fusePageKey(catalog, settledQuery)]?.let { !it.end && !it.failed } != false }
     val failed = scoped.any { pages[fusePageKey(it, settledQuery)]?.failed == true }
-    val searchLimited = settledQuery.isNotEmpty() && scoped.any { !it.searchable && it.localItems == null }
+    // Sources that genuinely cannot answer a query: add-on catalogues without search, only matched
+    // against what has loaded from them so far. A catalogue already loaded to its end is complete, so
+    // matching it on the device misses nothing and is not worth a warning; nor is anything a plugin or
+    // playlist holds, both of which are searched in full. Named, so the viewer knows which ones.
+    val searchLimitedSources = if (settledQuery.isEmpty()) emptyList() else scoped
+        .filter { !it.searchable && it.localItems == null && pages[fusePageKey(it, settledQuery)]?.end != true }
+        .map { it.sourceName }
+        .distinct()
+    val searchLimited = searchLimitedSources.isNotEmpty()
     val groupedBySource = sourceKey == null && sources.size > 1
 
     // Sources in the order they answered, so a slow one joins below the ones already showing.
@@ -663,7 +686,15 @@ fun FuseScreen(
 
                         if (searchLimited) item(key = "search_limited") {
                             Text(
-                                stringResource(R.string.fuse_search_limited),
+                                if (searchLimitedSources.size == 1) {
+                                    stringResource(R.string.fuse_search_limited_one, searchLimitedSources.first())
+                                } else {
+                                    stringResource(
+                                        R.string.fuse_search_limited_many,
+                                        searchLimitedSources.take(3).joinToString(", "),
+                                        searchLimitedSources.size,
+                                    )
+                                },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
                             )

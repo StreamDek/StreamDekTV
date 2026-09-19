@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedTextField
@@ -67,6 +68,8 @@ fun AuthScreen(
     var status by remember { mutableStateOf<String?>(null) }
     var tvSession by remember { mutableStateOf<TvSessionInfo?>(null) }
     var busy by remember { mutableStateOf(false) }
+    /** Bumped to ask for a fresh code: after one expires, or after the phone declined the last one. */
+    var codeGeneration by remember { mutableStateOf(0) }
 
     /**
      * Why the last session ended, when it ended by itself.
@@ -85,17 +88,29 @@ fun AuthScreen(
     // Everything below reports its outcome from a coroutine, which is not a composition.
     val authResources = LocalContext.current.resources
 
-    LaunchedEffect(mode) {
+    LaunchedEffect(mode, codeGeneration) {
         if (mode != AuthMode.TvCode) return@LaunchedEffect
-        TvDebugLogger.i("AuthUi", "starting TV code flow")
+        TvDebugLogger.i("AuthUi", "starting TV code flow generation=$codeGeneration")
         busy = true
         // Starting a fresh pairing clears whatever ended the last session.
-        repository.clearSessionExpired()
-        status = null
-        tvSession = runCatching { repository.createTvSession() }
-            .onFailure { status = authResources.getString(R.string.auth_could_not_start) }
-            .getOrNull()
-        TvDebugLogger.i("AuthUi", "tvSession created code=${tvSession?.userCode ?: "none"}")
+        if (codeGeneration == 0) {
+            repository.clearSessionExpired()
+            status = null
+        }
+        tvSession = null
+        // A backend that is briefly out of reach is waited for rather than reported once and left.
+        var created: TvSessionInfo? = null
+        var attempt = 0
+        while (created == null) {
+            created = runCatching { repository.createTvSession() }.getOrNull()
+            if (created == null) {
+                status = authResources.getString(R.string.auth_could_not_start)
+                attempt += 1
+                delay((attempt * 3_000L).coerceAtMost(15_000L))
+            }
+        }
+        tvSession = created
+        TvDebugLogger.i("AuthUi", "tvSession created code=${created.userCode}")
         busy = false
     }
 
@@ -126,9 +141,24 @@ fun AuthScreen(
                     TvDebugLogger.w("AuthUi", "tvSession slow_down")
                     status = authResources.getString(R.string.auth_approval_pending)
                 }
+                // Out of reach for a moment: keep the code on screen and keep asking.
+                "network_error" -> {
+                    TvDebugLogger.w("AuthUi", "tvSession poll could not reach the backend")
+                    status = authResources.getString(R.string.auth_link_reconnecting)
+                }
+                // A code that ran out is replaced at once, so the QR on screen is always one that works.
                 "expired_token" -> {
-                    TvDebugLogger.w("AuthUi", "tvSession expired")
-                    status = authResources.getString(R.string.auth_code_expired)
+                    TvDebugLogger.w("AuthUi", "tvSession expired; issuing a new code")
+                    status = authResources.getString(R.string.auth_code_refreshed)
+                    codeGeneration += 1
+                    return@LaunchedEffect
+                }
+                // Declined on the phone. Said plainly, then a new code, in case it was a mis-tap.
+                "access_denied" -> {
+                    TvDebugLogger.i("AuthUi", "tvSession declined on the phone")
+                    status = authResources.getString(R.string.auth_link_declined)
+                    delay(4_000)
+                    codeGeneration += 1
                     return@LaunchedEffect
                 }
                 else -> {
@@ -250,16 +280,37 @@ fun AuthScreen(
                     .fillMaxSize()
                     .background(Color(0x22000000), RoundedCornerShape(28.dp)),
             ) {
-                AsyncImage(
-                    model = tvSession?.verificationUriComplete?.let {
-                        "https://api.qrserver.com/v1/create-qr-code/?size=720x720&data=$it"
-                    },
-                    contentDescription = null,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(360.dp),
-                    contentScale = ContentScale.Fit,
-                )
+                val qr = rememberQrImage(tvSession?.verificationUriComplete)
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(360.dp)
+                            .background(Color.White, RoundedCornerShape(24.dp))
+                            .padding(14.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (qr != null) {
+                            androidx.compose.foundation.Image(
+                                bitmap = qr,
+                                contentDescription = stringResource(R.string.auth_qr_description),
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit,
+                                filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
+                            )
+                        }
+                    }
+                    Text(
+                        text = stringResource(R.string.auth_scan_with_camera),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.width(380.dp),
+                    )
+                }
             }
         }
     }

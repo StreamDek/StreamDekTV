@@ -618,6 +618,12 @@ data class PlaybackPreferences(
     val manualStreamSelectionEnabled: Boolean = true,
     /** Initial visibility of the seek/progress row for live and live-style VOD playback. */
     val liveProgressBarEnabled: Boolean = false,
+    /**
+     * Whether the player draws its Live / VOD indicator. Purely visual: the stream is classified
+     * the same way either way, and every behaviour that hangs off that classification is untouched.
+     * On unless the viewer has turned it off, so accounts that predate the setting see no change.
+     */
+    val liveBadgeEnabled: Boolean = true,
 ) {
     fun isAutoPlayNextEpisodeEnabled(): Boolean = autoPlayNextEpisodeEnabled ?: autoplayNextEpisode
 

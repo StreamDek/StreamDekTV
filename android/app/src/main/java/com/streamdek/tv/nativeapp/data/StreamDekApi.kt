@@ -35,6 +35,7 @@ class AuthSessionStore(
     private val rememberLastProfileAtStartupKey = "streamdek_tv_remember_last_profile_at_startup"
     private val fuseEnabledKey = "streamdek_tv_fuse_enabled"
     private val liveCaptionsEnabledKey = "streamdek_tv_live_captions_enabled"
+    private val liveCaptionsChosenKey = "streamdek_tv_live_captions_chosen"
     private val preferredStreamKeyPrefix = "streamdek_tv_preferred_stream_v1"
     private val rememberedSourceKeyPrefix = "streamdek_tv_remembered_source_v1"
     private val favouriteChannelsKeyPrefix = "streamdek_tv_favourite_channels_v1"
@@ -106,6 +107,19 @@ class AuthSessionStore(
 
     fun setLiveCaptionsEnabled(enabled: Boolean) {
         preferences.edit().putBoolean(liveCaptionsEnabledKey, enabled).apply()
+    }
+
+    /**
+     * Whether the viewer last turned a channel's captions on from the captions menu.
+     *
+     * Kept apart from [liveCaptionsEnabled], which is on by default and only ever let captions in the
+     * preferred language through. Captions that name no language - most in-band broadcast captions -
+     * come on by themselves only once the viewer has asked for them like this.
+     */
+    fun liveCaptionsChosen(): Boolean = preferences.getBoolean(liveCaptionsChosenKey, false)
+
+    fun setLiveCaptionsChosen(chosen: Boolean) {
+        preferences.edit().putBoolean(liveCaptionsChosenKey, chosen).apply()
     }
 
     fun loadFavouriteChannels(): List<MediaItem> {
@@ -423,6 +437,23 @@ class StreamDekApi(
                 },
             )
         }.onFailure { AdultContentFilter.applyPolicy(null, null) }
+    }
+
+    /**
+     * A public, unauthenticated POST whose answer matters even when it is an error.
+     *
+     * Television pairing replies to a poll with a 400 that *means* something - the code expired, the
+     * phone declined it - and [executeRaw] folds every non-2xx into null. This keeps the body, and
+     * returns null only when the backend could not be reached at all, so a dropped connection is
+     * told apart from a refusal and polling can carry on through it.
+     */
+    internal suspend fun postPublicForAnswer(path: String, body: Any): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            client.newCall(buildRequest("POST", path, gson.toJson(body), null)).execute().use { response ->
+                response.body?.string().orEmpty()
+            }
+        }.onFailure { TvDebugLogger.w("Api", "transport failure method=POST path=$path", it) }
+            .getOrNull()
     }
 
     /**

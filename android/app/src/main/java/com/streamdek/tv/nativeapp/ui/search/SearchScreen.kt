@@ -157,8 +157,11 @@ fun SearchScreen(
     var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     /** Add-on catalog matches, kept apart so they can land after the faster TMDB pass. */
     var addonResults by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    /** Plugin catalogue matches (CloudStream, SkyStream), filled in provider by provider. */
+    var pluginResults by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var addonSearching by remember { mutableStateOf(false) }
+    var pluginSearching by remember { mutableStateOf(false) }
     var searchScope by remember { mutableStateOf(SearchScope.All) }
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
     var openTray by remember { mutableStateOf(OpenTray.None) }
@@ -221,7 +224,9 @@ fun SearchScreen(
     val hasQuery = query.trim().length >= 2
     // Add-on matches follow the TMDB ones rather than interleaving: the ordering stays stable as
     // the slower add-on pass lands, so nothing shifts under a viewer already moving through the grid.
-    val allResults = remember(results, addonResults) { results + addonResults }
+    // Plugin matches follow the add-ons' for the same reason, and a title found both through TMDB and
+    // through a plugin is kept twice on purpose: they open to different sources.
+    val allResults = remember(results, addonResults, pluginResults) { results + addonResults + pluginResults }
     val visibleResults = remember(allResults, searchScope) {
         allResults.filter {
             when (searchScope) {
@@ -235,7 +240,7 @@ fun SearchScreen(
     val rawItems = if (hasQuery) visibleResults else discoverItems
     // Only a spinner while nothing is on screen yet. Once the TMDB pass has landed, add-ons still
     // answering must not blank out results the viewer can already act on.
-    val searchingAnything = searching || addonSearching
+    val searchingAnything = searching || addonSearching || pluginSearching
     // Same guard as Library: a repeated entry must not take the screen down.
     val items = remember(rawItems) {
         rawItems.distinctBy { listOf(it.type, it.sourceAddonId.orEmpty(), it.sourceCatalogId.orEmpty(), it.id) }
@@ -328,6 +333,28 @@ fun SearchScreen(
         delay(260)
         addonResults = runCatching { repository.searchAddonCatalogs(normalized) }.getOrDefault(emptyList())
         addonSearching = false
+    }
+
+    // Plugin catalogues in a third pass of their own. Each provider's matches are shown as it answers,
+    // so a slow or unreachable plugin holds back only its own results; a new query cancels the old one.
+    LaunchedEffect(query) {
+        val normalized = query.trim()
+        if (normalized.length < 2 || !repository.hasSearchablePluginCatalogs()) {
+            pluginResults = emptyList()
+            pluginSearching = false
+            return@LaunchedEffect
+        }
+        pluginSearching = true
+        delay(260)
+        try {
+            repository.searchPluginCatalogs(normalized).collect { found -> pluginResults = found }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            com.streamdek.tv.nativeapp.data.TvDebugLogger.w("Search", "plugin catalogue search failed: ${failure.message}")
+        } finally {
+            pluginSearching = false
+        }
     }
 
     LaunchedEffect(items.size) {

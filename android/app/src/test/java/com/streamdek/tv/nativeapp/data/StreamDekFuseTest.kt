@@ -59,7 +59,9 @@ class StreamDekFuseTest {
 
     @Test
     fun `a catalogue that cannot search shares one listing across queries`() {
-        val browse = FuseCatalog("c", "s", "Source", "Row", live = true, origin = FuseOrigin.CloudStream, cloudRowId = "c")
+        // An add-on catalogue without search. CloudStream rows used to be the example here; they are
+        // searched through PluginCatalogSearch now (see PluginCatalogSearchTest).
+        val browse = FuseCatalog("c", "s", "Source", "Row", live = true, origin = FuseOrigin.Addon)
         val searchable = browse.copy(key = "a", origin = FuseOrigin.Addon, searchable = true)
         assertEquals(fusePageKey(browse, ""), fusePageKey(browse, "news"))
         assertFalse(fusePageKey(searchable, "") == fusePageKey(searchable, "news"))

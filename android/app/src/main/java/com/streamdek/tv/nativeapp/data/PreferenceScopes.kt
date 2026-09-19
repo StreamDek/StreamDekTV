@@ -52,6 +52,7 @@ internal object PreferenceScopes {
             "timingProvider",
             "timingProviderFallbackEnabled",
             "liveProgressBarEnabled",
+            "liveBadgeEnabled",
         ),
     )
 

@@ -1738,4 +1738,24 @@
   <string name="player_loading_switch_hint_channels">Giù per i canali</string>
   <string name="player_loading_switch_hint_favourites">Destra per i preferiti</string>
   <string name="player_live_exit_prompt">Premi di nuovo Indietro per uscire da %1$s</string>
+  <string name="settings_tv_player_display">Visualizzazione del player</string>
+  <string name="settings_live_badge">Mostra badge Live/VOD</string>
+  <string name="settings_live_badge_description">Mostra l’indicatore Live o VOD nel player</string>
+  <string name="player_live_badge_on">Badge Live/VOD attivo</string>
+  <string name="player_live_badge_off">Badge Live/VOD disattivato</string>
+  <string name="player_ends_at">Termina alle %1$s</string>
+  <string name="player_captions">Sottotitoli</string>
+  <string name="player_captions_off_option">Disattivati</string>
+  <string name="player_panel_captions_description">Sottotitoli trasmessi da questo canale</string>
+  <string name="player_captions_off_description">Nascondi i sottotitoli su tutti i canali live</string>
+  <string name="player_caption_track_fallback">Sottotitoli %1$d</string>
+  <string name="player_captions_none_now">Questo canale al momento non trasmette sottotitoli.</string>
+  <string name="player_captions_detected_note">I sottotitoli compaiono qui non appena la trasmissione li invia. Alcuni canali li inviano solo quando inizia un programma.</string>
+  <string name="fuse_search_limited_one">%1$s non offre la ricerca, quindi vengono confrontati solo i titoli caricati finora. Carica altro per cercare oltre.</string>
+  <string name="fuse_search_limited_many">%1$s e altre (%2$d fonti) non offrono la ricerca, quindi vengono confrontati solo i titoli caricati finora. Carica altro per cercare oltre.</string>
+  <string name="auth_scan_with_camera">Scansiona con la fotocamera del telefono o con lo scanner dell’app StreamDek in Impostazioni › Collega al TV.</string>
+  <string name="auth_qr_description">Codice QR per collegare questo TV</string>
+  <string name="auth_link_reconnecting">Riconnessione… il codice è ancora valido</string>
+  <string name="auth_code_refreshed">Quel codice è scaduto, eccone uno nuovo</string>
+  <string name="auth_link_declined">La richiesta è stata rifiutata sul telefono. Arriva un nuovo codice.</string>
 </resources>

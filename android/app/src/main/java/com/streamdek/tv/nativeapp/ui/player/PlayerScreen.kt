@@ -204,6 +204,7 @@ private class PlayerFocusRequesters {
     val liveChannelFirst = FocusRequester()
     val liveFavouriteFirst = FocusRequester()
     val favourite = FocusRequester()
+    val liveBadge = FocusRequester()
 }
 
 private enum class SegmentActionKind {
@@ -435,6 +436,16 @@ fun PlayerScreen(
     var showLiveProgress by remember(playbackRequest.mediaId, playbackPreferences.liveProgressBarEnabled) {
         mutableStateOf(playbackPreferences.liveProgressBarEnabled)
     }
+    /**
+     * The badge switch as set from inside the player, until the account echoes it back.
+     *
+     * The preference is saved to the account, which takes a round trip; holding the viewer's choice
+     * here makes the badge answer the press at once. Cleared the moment the synced value changes, so
+     * Settings and the player never disagree for longer than that round trip.
+     */
+    var liveBadgeOverride by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(playbackPreferences.liveBadgeEnabled) { liveBadgeOverride = null }
+    val showLiveBadge = liveBadgeOverride ?: playbackPreferences.liveBadgeEnabled
     var controlsHideJob by remember { mutableStateOf<Job?>(null) }
     var liveChannelInfoVisible by remember { mutableStateOf(false) }
     var liveChannelInfoHideJob by remember { mutableStateOf<Job?>(null) }
@@ -595,6 +606,7 @@ fun PlayerScreen(
     val liveFavouriteFirstRequester = focusRequesters.liveFavouriteFirst
     val liveFavouriteListState = rememberLazyListState()
     val favouriteRequester = focusRequesters.favourite
+    val liveBadgeRequester = focusRequesters.liveBadge
 
     // Keep the screen on while something is actually playing - and only then.
     @Composable
@@ -940,6 +952,7 @@ fun PlayerScreen(
                 OverlayPanel.Subtitles -> subtitlesRequester
                 OverlayPanel.Speed -> speedRequester
                 OverlayPanel.Info -> infoRequester
+                OverlayPanel.Captions -> subtitlesRequester
             },
         )
     }
@@ -989,26 +1002,37 @@ fun PlayerScreen(
         scheduleControlsHide()
     }
 
-    /** The live player's captions button. Remembered for every live channel on this television. */
-    fun toggleLiveCaptions() {
+    /**
+     * The live captions menu's answer, remembered for every live channel on this television.
+     *
+     * Null is Off. A track turns captions on and records that the viewer asked for them, which is
+     * what lets language-less broadcast captions come on by themselves on the next channel.
+     */
+    fun chooseLiveCaptions(trackId: Int?) {
         subtitleSelectionGeneration += 1
         subtitlePreferenceAppliedForSource = currentSourceUrl
-        if (selectedSubtitleId >= 0 || selectedExternalSubtitleId != null) {
-            selectedExternalSubtitleId = null
-            externalSubtitleAppliedKey = null
+        selectedExternalSubtitleId = null
+        externalSubtitleAppliedKey = null
+        if (trackId == null) {
             playerView?.disableSubtitleTrack()
             selectedSubtitleId = -1
             repository.setLiveCaptionsEnabled(false)
+            repository.setLiveCaptionsChosen(false)
         } else {
-            val track = preferredSubtitleTrack(
-                subtitles = subtitleTracks,
-                preferredLanguage = repository.bootstrap.value?.preferences?.playback?.defaultSubtitleLanguage ?: "en",
-            ) ?: subtitleTracks.firstOrNull()
-            track?.let {
-                playerView?.setSubtitleTrack(it.id)
-                selectedSubtitleId = it.id
-            }
+            playerView?.setSubtitleTrack(trackId)
+            selectedSubtitleId = trackId
             repository.setLiveCaptionsEnabled(true)
+            repository.setLiveCaptionsChosen(true)
+        }
+    }
+
+    /** The in-player badge switch. Saved to the account, so Settings shows the same answer. */
+    fun toggleLiveBadge() {
+        val next = !showLiveBadge
+        liveBadgeOverride = next
+        scope.launch {
+            runCatching { repository.updatePlaybackPreferences(mapOf("liveBadgeEnabled" to next)) }
+                .onFailure { TvDebugLogger.w("Player", "live badge preference not saved: ${it.message}") }
         }
         registerInteraction()
     }
@@ -2096,6 +2120,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         // and the way back out.
         val hasFirstRow = when (panel) {
             OverlayPanel.Info -> false
+            OverlayPanel.Captions -> true
             OverlayPanel.Streams -> candidate?.streams?.isNotEmpty() == true
             else -> true
         }
@@ -2349,6 +2374,39 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         else -> false
                     }
                 }
+                when (event.key) {
+                    Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> {
+                        if (event.type == KeyEventType.KeyUp && !loading && error == null && !nextEpisodeDialogVisible) {
+                            paused = when (event.key) {
+                                Key.MediaPlay -> false
+                                Key.MediaPause -> true
+                                else -> !paused
+                            }
+                            if (paused) showControls(focusPlay = interactionLayer == PlayerInteractionLayer.Playback) else scheduleControlsHide()
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                    Key.MediaFastForward, Key.MediaRewind -> {
+                        if (event.type == KeyEventType.KeyDown && hasSeekableTimeline && !loading && error == null &&
+                            panel == null && !nextEpisodeDialogVisible
+                        ) {
+                            // Same stepping, and the same acceleration when held, as scrubbing on the
+                            // timeline - and the timeline is brought up to show where it lands.
+                            controlsFocusRegion = PlayerControlsFocusRegion.Seek
+                            controlsVisible = true
+                            scheduleRelativeSeek(
+                                if (event.key == Key.MediaFastForward) tvSeekStepSeconds(durationSec) else -tvSeekStepSeconds(durationSec),
+                            )
+                            scheduleControlsHide()
+                            scope.launch {
+                                delay(60)
+                                runCatching { progressRequester.requestFocus() }
+                            }
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                    else -> Unit
+                }
                 if (recommendationDialogVisible && !recommendationHasFocus &&
                     event.key in setOf(Key.DirectionDown, Key.DirectionRight)
                 ) {
@@ -2491,6 +2549,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 controller.apply {
                     // Before any source is set, so the first load already knows what counts as loaded.
                     setLoadWaitsForPlayback(isLive)
+                    setCaptionProbe(isLive)
                     setDecoderMode(playbackPreferences.decoderMode)
                     setHeaders(currentRequestHeaders)
                     onRemoteCenterCallback = {
@@ -2819,6 +2878,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 }
                             }
                         }
+                        // A live channel only offers what it has been seen to carry, and the decision
+                        // waits until there is something: captions often arrive after the picture.
+                        val eligibleSubtitles = if (isLive) subtitles.filterNot { it.speculative } else subtitles
                         if (
                             currentSource != null &&
                             !liveCaptionsOff &&
@@ -2828,13 +2890,18 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 ExternalSubtitleOrigin.BuiltIn,
                             ) &&
                             selectedExternalSubtitleId == null &&
-                            subtitlePreferenceAppliedForSource != currentSource
+                            subtitlePreferenceAppliedForSource != currentSource &&
+                            (!isLive || eligibleSubtitles.isNotEmpty())
                         ) {
                             subtitlePreferenceAppliedForSource = currentSource
-                            preferredSubtitleTrack(
-                                subtitles = subtitles,
-                                preferredLanguage = currentBootstrap?.preferences?.playback?.defaultSubtitleLanguage
-                                    ?: "en",
+                            (
+                                preferredSubtitleTrack(
+                                    subtitles = eligibleSubtitles,
+                                    preferredLanguage = currentBootstrap?.preferences?.playback?.defaultSubtitleLanguage
+                                        ?: "en",
+                                ) ?: eligibleSubtitles.firstOrNull()?.takeIf {
+                                    isLive && repository.liveCaptionsChosen() && eligibleSubtitles.all { track -> track.language.isNullOrBlank() }
+                                }
                             )?.let { preferredTrack ->
                                 if (selectedSubtitleTrackId != preferredTrack.id) {
                                     setSubtitleTrack(preferredTrack.id)
@@ -2850,6 +2917,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 val controller = view as MpvPlayerController
                 playerView = controller
                 controller.setLoadWaitsForPlayback(isLive)
+                controller.setCaptionProbe(isLive)
                 controller.setDecoderMode(playbackPreferences.decoderMode)
                 controller.onRemoteCenterCallback = {
                     if (segmentPromptActive) {
@@ -3154,13 +3222,16 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             }
         }
         // Playback controls — bottom bar
-        if (isLive && !loading && error == null) {
-            LiveStatusBadge(
-                isVod = isVod,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(bottom = 26.dp, start = 26.dp),
-            )
+        AnimatedVisibility(
+            visible = isLive && showLiveBadge && !loading && error == null &&
+                interactionLayer != PlayerInteractionLayer.Controls && interactionLayer != PlayerInteractionLayer.Seeking,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(bottom = 26.dp, start = 26.dp),
+            enter = TvMotion.fadeInSpec(TvMotion.Standard),
+            exit = TvMotion.fadeOutSpec(TvMotion.Quick),
+        ) {
+            LiveStatusBadge(isVod = isVod)
         }
 
         if (isLive && liveChannelInfoVisible && !loading && error == null) {
@@ -3173,7 +3244,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        if (isLive && liveHintsVisible && liveChannels.size > 1 && !liveChannelRowVisible && !loading && error == null) {
+        // Hints are for a picture with nothing else on it; under the control bar they collide with it.
+        val controlsUp = interactionLayer == PlayerInteractionLayer.Controls || interactionLayer == PlayerInteractionLayer.Seeking
+        if (isLive && liveHintsVisible && !controlsUp && liveChannels.size > 1 && !liveChannelRowVisible && !loading && error == null) {
             LiveChannelDownHint(
                 offsetY = liveCaretOffset,
                 modifier = Modifier
@@ -3182,7 +3255,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        if (isLive && liveHintsVisible && liveAddonFavourites.isNotEmpty() && !liveFavouritesDrawerVisible && !loading && error == null) {
+        if (isLive && liveHintsVisible && !controlsUp && liveAddonFavourites.isNotEmpty() && !liveFavouritesDrawerVisible && !loading && error == null) {
             LiveFavouritesRightHint(
                 offsetX = liveCaretOffset,
                 modifier = Modifier.align(Alignment.CenterEnd).padding(end = 18.dp),
@@ -3236,7 +3309,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             ) {
                 PlayerBottomBar(
                     detail = detail,
-                    requestTitle = request.title,
+                    // The channel on now, not the one the player was opened on.
+                    requestTitle = if (isLive) currentChannelTitle else request.title,
                     currentEpisode = currentEpisode,
                     currentLabel = currentLabel,
                     error = error,
@@ -3259,9 +3333,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     favouriteRequester = favouriteRequester,
                     isFavourite = currentChannelIsFavourite,
                     onToggleFavourite = ::toggleCurrentChannelFavourite,
-                    captionsAvailable = isLive && subtitleTracks.isNotEmpty(),
+                    captionsAvailable = isLive && subtitleTracks.any { !it.speculative },
                     captionsOn = selectedSubtitleId >= 0 || selectedExternalSubtitleId != null,
-                    onToggleCaptions = ::toggleLiveCaptions,
+                    showLiveBadge = showLiveBadge,
+                    onToggleLiveBadge = ::toggleLiveBadge,
+                    liveBadgeRequester = liveBadgeRequester.takeIf { isLive },
+                    scrubTargetSec = seekTargetSec,
+                    playbackSpeed = speed,
                     onInteract = ::registerInteraction,
                     onPlayPause = {
                         // tv-material fires onClick on key-up without requiring the
@@ -3613,8 +3691,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        androidx.tv.material3.Text(
-                            text = if (isLive) "LIVE" else "${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(positionSec)} / ${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(durationSec)}",
+                        // Follows the badge setting, and says VOD for a playlist's on-demand item.
+                        if (!isLive || showLiveBadge) androidx.tv.material3.Text(
+                            text = if (isLive) (if (isVod) "VOD" else "LIVE") else "${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(positionSec)} / ${com.streamdek.tv.nativeapp.ui.formatPlaybackClock(durationSec)}",
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                             color = Color.White.copy(alpha = 0.55f),
                             textAlign = TextAlign.End,
@@ -3644,14 +3723,17 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             )
         }
 
-        // Option panel (sources / audio / subtitles)
-        panel?.let { activePanel ->
+        // Option panel (sources / audio / subtitles). The panel that was last open is held while it
+        // animates away, so closing is the opening played back rather than a panel vanishing.
+        var shownPanel by remember { mutableStateOf<OverlayPanel?>(null) }
+        if (panel != null && shownPanel != panel) shownPanel = panel
+        shownPanel?.let { activePanel ->
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.CenterEnd,
             ) {
-                PlayerOverlayVisibility(
-                    visible = true,
+                PlayerPanelVisibility(
+                    visible = panel != null,
                     modifier = Modifier.padding(end = 36.dp, top = 52.dp, bottom = 52.dp),
                 ) {
                     PlayerOptionPanel(
@@ -3742,7 +3824,15 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             playerView?.setPaused(paused)
                             restoreControlsAfterPanel(OverlayPanel.Audio)
                         },
-                        onDisableSubtitles = {
+                        onDisableSubtitles = if (activePanel == OverlayPanel.Captions) {
+                            {
+                                chooseLiveCaptions(null)
+                                panel = null
+                                panelClosedAtMs = System.currentTimeMillis()
+                                restoreControlsAfterPanel(OverlayPanel.Captions)
+                            }
+                        } else {
+                            {
                             subtitleSelectionGeneration += 1
                             selectedExternalSubtitleId = null
                             externalSubtitleAppliedKey = null
@@ -3751,8 +3841,17 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
                             restoreControlsAfterPanel(OverlayPanel.Subtitles)
+                            }
                         },
-                        onSelectSubtitle = {
+                        onSelectSubtitle = if (activePanel == OverlayPanel.Captions) {
+                            { trackId ->
+                                chooseLiveCaptions(trackId)
+                                panel = null
+                                panelClosedAtMs = System.currentTimeMillis()
+                                restoreControlsAfterPanel(OverlayPanel.Captions)
+                            }
+                        } else {
+                            {
                             subtitleSelectionGeneration += 1
                             selectedExternalSubtitleId = null
                             externalSubtitleAppliedKey = null
@@ -3761,6 +3860,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             panel = null
                             panelClosedAtMs = System.currentTimeMillis()
                             restoreControlsAfterPanel(OverlayPanel.Subtitles)
+                            }
                         },
                         onSelectExternalSubtitle = { subtitle ->
                             scope.launch {

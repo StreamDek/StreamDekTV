@@ -574,6 +574,12 @@ fun SettingsScreen(
                     ) { value ->
                         savePreference(R.string.settings_tv_preferred_subtitle_source) { repository.updatePlaybackPreferences(mapOf("subtitleDefaultSource" to value)) }
                     }
+                    SettingsPanel(stringResource(R.string.settings_tv_player_display)) {
+                        InfoLine(stringResource(R.string.info_cloud_scope), stringResource(R.string.info_changes_apply_on_this_tv_and_sync))
+                    }
+                    SettingsToggleRow(stringResource(R.string.settings_live_badge), stringResource(R.string.settings_live_badge_description), playbackPrefs?.liveBadgeEnabled != false, selectedRequester) { next, complete ->
+                        savePreference(R.string.settings_live_badge, complete) { repository.updatePlaybackPreferences(mapOf("liveBadgeEnabled" to next)) }
+                    }
                     SettingsPanel(stringResource(R.string.settings_tv_sleep_idle)) {
                         InfoLine(stringResource(R.string.info_scope), stringResource(R.string.info_stored_on_this_tv_active_video_playback))
                     }

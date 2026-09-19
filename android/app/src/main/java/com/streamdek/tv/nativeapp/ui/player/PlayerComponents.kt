@@ -7,7 +7,12 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -22,6 +27,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,6 +43,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.ClosedCaptionOff
 import androidx.compose.material.icons.filled.Cloud
@@ -55,6 +64,9 @@ import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +89,9 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -120,6 +135,7 @@ import com.streamdek.tv.nativeapp.ui.AppFormats
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
+import com.streamdek.tv.nativeapp.ui.MotionDuration
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.detail.streamQualityLabel
 import com.streamdek.tv.nativeapp.ui.detail.streamSizeLabel
@@ -136,6 +152,8 @@ internal enum class OverlayPanel {
     Subtitles,
     Speed,
     Info,
+    /** A live channel's own captions: off, or one of the caption tracks the stream was seen to carry. */
+    Captions,
 }
 
 /** One predictable remote press, with a slightly larger step for feature-length playback. */
@@ -183,7 +201,52 @@ internal enum class SubtitlePanelTab(@StringRes val labelRes: Int) {
     Adjust(R.string.subtitle_tab_adjust),
 }
 
-private val PlayerPanelShape = RoundedCornerShape(22.dp)
+private val PlayerPanelShape = RoundedCornerShape(28.dp)
+
+/**
+ * The player's own palette. One place, so the bar, the timeline and the panels agree on what
+ * "focused", "on" and "quiet" look like instead of each naming its own shade.
+ */
+internal object PlayerTokens {
+    /** The StreamDek gold: the focus ring, the scrub head and anything the viewer is acting on. */
+    val Accent = Color(0xFFF0BA66)
+    val AccentSoft = Color(0x33F0BA66)
+    /** A control that is on - a panel open, a toggle set - but not focused. */
+    val Active = Color(0xFFF0BA66)
+    val Ink = Color(0xFF111318)
+    val TextPrimary = Color.White
+    val TextSecondary = Color(0xB8FFFFFF)
+    val TextTertiary = Color(0x7AFFFFFF)
+    val Hairline = Color(0x1FFFFFFF)
+    val TrackRest = Color(0x33FFFFFF)
+    val LiveRed = Color(0xFFEF4444)
+    val VodBlue = Color(0xFF60A5FA)
+}
+
+/**
+ * Whether this television can afford the player's layered effects.
+ *
+ * Checked once per process from what Android says about the box: a low-RAM device, or one that
+ * gives an app a small heap, is the Fire TV Stick class of hardware where stacked translucent
+ * surfaces and several simultaneous animations cost frames. Those get opaque surfaces and a single
+ * fade in place of the staggered reveal; nothing is taken away, it only costs less to draw.
+ */
+internal object PlayerEffects {
+    @Volatile private var cached: Boolean? = null
+
+    fun reduced(context: android.content.Context): Boolean = cached ?: run {
+        val manager = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+        val reduced = manager == null || manager.isLowRamDevice || manager.memoryClass <= 128
+        cached = reduced
+        reduced
+    }
+}
+
+@Composable
+internal fun rememberPlayerEffectsReduced(): Boolean {
+    val context = LocalContext.current
+    return remember(context) { PlayerEffects.reduced(context) }
+}
 
 @Composable
 internal fun PlayerOverlayVisibility(
@@ -195,15 +258,53 @@ internal fun PlayerOverlayVisibility(
     // Asymmetric on purpose. The controls arrive on a decelerating curve because the viewer has
     // just asked for them and needs to read them; they leave faster, on an accelerating one,
     // because by then the viewer is watching the picture behind them.
-    val enterSpec = TvMotion.enterSpec<Float>()
-    val enterOffset = TvMotion.enterSpec<androidx.compose.ui.unit.IntOffset>()
+    val enterSpec = TvMotion.enterSpec<Float>(TvMotion.Expand)
+    val enterOffset = TvMotion.enterSpec<androidx.compose.ui.unit.IntOffset>(TvMotion.Expand)
     val exitSpec = TvMotion.exitSpec<Float>()
     val exitOffset = TvMotion.exitSpec<androidx.compose.ui.unit.IntOffset>()
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
-        enter = if (reducedMotion) EnterTransition.None else fadeIn(enterSpec) + slideInVertically(enterOffset, initialOffsetY = { it / 6 }),
-        exit = if (reducedMotion) ExitTransition.None else fadeOut(exitSpec) + slideOutVertically(exitOffset, targetOffsetY = { it / 8 }),
+        enter = if (reducedMotion) fadeIn(TvMotion.enterSpec(TvMotion.Quick)) else fadeIn(enterSpec) + slideInVertically(enterOffset, initialOffsetY = { it / 10 }),
+        exit = if (reducedMotion) fadeOut(TvMotion.exitSpec(TvMotion.Quick)) else fadeOut(exitSpec) + slideOutVertically(exitOffset, targetOffsetY = { it / 12 }),
+    ) {
+        content()
+    }
+}
+
+/**
+ * How a side panel comes and goes.
+ *
+ * It grows out of the bottom-right, where the control that opened it sits, rather than sliding in
+ * from nowhere: a short travel from the right, a small scale from that corner and a fade, all on the
+ * same decelerating curve. Leaving is the same movement reversed and quicker. With motion off it is
+ * a plain crossfade, which is the accessible replacement for movement rather than no transition.
+ */
+@Composable
+internal fun PlayerPanelVisibility(
+    visible: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val reducedMotion = LocalTvExperienceSettings.current.reducedMotion
+    val origin = androidx.compose.ui.graphics.TransformOrigin(1f, 1f)
+    AnimatedVisibility(
+        visible = visible,
+        modifier = modifier,
+        enter = if (reducedMotion) {
+            fadeIn(TvMotion.enterSpec(TvMotion.Quick))
+        } else {
+            fadeIn(TvMotion.enterSpec(TvMotion.Standard)) +
+                slideInHorizontally(TvMotion.enterSpec(TvMotion.Expand), initialOffsetX = { it / 12 }) +
+                scaleIn(TvMotion.enterSpec(TvMotion.Expand), initialScale = 0.96f, transformOrigin = origin)
+        },
+        exit = if (reducedMotion) {
+            fadeOut(TvMotion.exitSpec(TvMotion.Quick))
+        } else {
+            fadeOut(TvMotion.exitSpec(TvMotion.Quick)) +
+                slideOutHorizontally(TvMotion.exitSpec(TvMotion.Standard), targetOffsetX = { it / 16 }) +
+                scaleOut(TvMotion.exitSpec(TvMotion.Standard), targetScale = 0.97f, transformOrigin = origin)
+        },
     ) {
         content()
     }
@@ -215,20 +316,66 @@ internal fun PlayerGlassSurface(
     contentPadding: PaddingValues = PaddingValues(20.dp),
     content: @Composable () -> Unit,
 ) {
+    // Layered translucency is the expensive part of a glass panel on a stick; an opaque surface with
+    // the same shape and hairline reads the same from the sofa.
+    val layered = LocalTvExperienceSettings.current.backgroundBlur && !rememberPlayerEffectsReduced()
     Box(
         modifier = modifier
             .clip(PlayerPanelShape)
             .background(
                 Brush.verticalGradient(
-                    colors = if (LocalTvExperienceSettings.current.backgroundBlur) listOf(Color(0xED12141C), Color(0xF1181B24)) else listOf(Color(0xFF101218), Color(0xFF161921)),
+                    colors = if (layered) listOf(Color(0xF0171A23), Color(0xF40F1117)) else listOf(Color(0xFF161922), Color(0xFF0F1117)),
                 ),
             )
-            .border(1.dp, Color(0x1FFFFFFF), PlayerPanelShape)
+            .border(1.dp, PlayerTokens.Hairline, PlayerPanelShape)
             .padding(contentPadding),
     ) {
         content()
     }
 }
+
+/**
+ * A 0..1 value that climbs once when the thing reading it arrives, [step] staggers behind the first.
+ *
+ * The bar's three tiers - title, timeline, controls - read it so they land one after another rather
+ * than as a single slab. Each tier moves on its own graphics layer, so the reveal costs a few
+ * property changes rather than any relayout. Motion off, or a television that cannot spare it,
+ * starts at 1 and never animates.
+ */
+@Composable
+private fun rememberStaggeredReveal(step: Int, enabled: Boolean): State<Float> {
+    val motion = LocalTvExperienceSettings.current.motion
+    val animate = enabled && !motion.motionless
+    val progress = remember { androidx.compose.animation.core.Animatable(if (animate) 0f else 1f) }
+    val delayMs = motion.stagger(MotionDuration.stagger) * step
+    val duration = motion.scaled(MotionDuration.long)
+    LaunchedEffect(Unit) {
+        if (!animate) return@LaunchedEffect
+        kotlinx.coroutines.delay(delayMs.toLong())
+        progress.animateTo(1f, tween(duration, easing = TvMotion.EnterEasing))
+    }
+    return progress.asState()
+}
+
+private fun Modifier.revealLayer(progress: State<Float>): Modifier = graphicsLayer {
+    val value = progress.value
+    alpha = value
+    translationY = (1f - value) * 22.dp.toPx()
+}
+
+/** One entry in the controls row. The order of the list is the order on screen and on the remote. */
+internal data class PlayerControlSpec(
+    val key: String,
+    val icon: ImageVector,
+    val label: String,
+    val requester: FocusRequester,
+    val onClick: () -> Unit,
+    val active: Boolean = false,
+    val primary: Boolean = false,
+)
+
+/** "S1 · E4", the way the header's small line puts it. */
+private fun episodeEyebrow(episode: EpisodeContext): String = "S${episode.seasonNumber} · E${episode.episodeNumber}"
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -278,10 +425,18 @@ internal fun PlayerBottomBar(
     /** Whether the channel playing is already a favourite. Live only. */
     isFavourite: Boolean = false,
     onToggleFavourite: () -> Unit = {},
-    /** Whether the channel carries captions, and whether they are showing. Live only. */
+    /** Whether the channel is known to carry captions, and whether they are showing. Live only. */
     captionsAvailable: Boolean = false,
     captionsOn: Boolean = false,
-    onToggleCaptions: () -> Unit = {},
+    /** Whether the Live / VOD indicator is drawn. Visual only; see PlaybackPreferences.liveBadgeEnabled. */
+    showLiveBadge: Boolean = true,
+    onToggleLiveBadge: () -> Unit = {},
+    /** The badge toggle's place in the row. Null leaves the toggle out. Live only. */
+    liveBadgeRequester: FocusRequester? = null,
+    /** Where a scrub in flight will land, for the bubble over the timeline. Null when not scrubbing. */
+    scrubTargetSec: Double? = null,
+    /** The current playback speed, so "ends at" is honest at 1.5x. */
+    playbackSpeed: Double = 1.0,
 ) {
     // Live broadcasts have no seekable timeline — the progress bar is replaced
     // by a LIVE indicator, so focus targets that pointed at it move to Play.
@@ -293,6 +448,64 @@ internal fun PlayerBottomBar(
         onFocusRegionChanged(PlayerControlsFocusRegion.Controls)
         onInteract()
     }
+
+    val playLabel = stringResource(if (paused) R.string.action_play else R.string.action_pause)
+    val subtitlesLabel = stringResource(R.string.player_subtitles)
+    val captionsLabel = stringResource(if (captionsOn) R.string.player_captions_on else R.string.player_captions_off)
+    val audioLabel = stringResource(R.string.player_audio)
+    val sourcesLabel = stringResource(R.string.player_sources)
+    val engineLabel = stringResource(R.string.player_engine)
+    val progressLabel = stringResource(R.string.player_progress)
+    val favouriteLabel = stringResource(if (isFavourite) R.string.action_favourited else R.string.action_favourite)
+    val badgeLabel = stringResource(if (showLiveBadge) R.string.player_live_badge_on else R.string.player_live_badge_off)
+    val nextLabel = stringResource(R.string.player_next)
+    val watchedLabel = stringResource(R.string.player_watched)
+    val speedLabel = stringResource(R.string.player_playback_speed)
+    val infoLabel = stringResource(R.string.player_stream_info)
+
+    // The row, in the order the remote walks it. Neighbours are worked out from this list rather than
+    // named by hand on every button, so a control that comes or goes - captions arriving mid-broadcast,
+    // Next on the last episode - can never leave a neighbour pointing at something that is not there.
+    val controls = buildList {
+        add(PlayerControlSpec("play", if (paused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, playLabel, playRequester, onPlayPause, primary = true))
+        if (isLive) {
+            // A channel's own captions sit where a film's subtitles do: first after Play. Only once
+            // the stream has actually been seen to carry some; see ExoPlaybackView.setCaptionProbe.
+            if (captionsAvailable) {
+                add(
+                    PlayerControlSpec(
+                        "captions",
+                        if (captionsOn) Icons.Filled.ClosedCaption else Icons.Filled.ClosedCaptionOff,
+                        captionsLabel,
+                        subtitlesRequester,
+                        { onOpenPanel(OverlayPanel.Captions) },
+                        active = captionsOn || selectedPanel == OverlayPanel.Captions,
+                    ),
+                )
+            }
+            add(PlayerControlSpec("timeline", Icons.Filled.Timeline, progressLabel, liveProgressRequester, onToggleLiveProgress, active = showLiveProgress))
+        } else {
+            add(PlayerControlSpec("subtitles", Icons.Filled.ClosedCaption, subtitlesLabel, subtitlesRequester, { onOpenPanel(OverlayPanel.Subtitles) }, active = selectedPanel == OverlayPanel.Subtitles))
+            add(PlayerControlSpec("audio", Icons.Filled.VolumeUp, audioLabel, audioRequester, { onOpenPanel(OverlayPanel.Audio) }, active = selectedPanel == OverlayPanel.Audio))
+        }
+        add(PlayerControlSpec("sources", Icons.Filled.Cloud, sourcesLabel, sourcesRequester, { onOpenPanel(OverlayPanel.Streams) }, active = selectedPanel == OverlayPanel.Streams))
+        add(PlayerControlSpec("engine", Icons.Filled.Tune, engineLabel, engineRequester, { onOpenPanel(OverlayPanel.Engine) }, active = selectedPanel == OverlayPanel.Engine))
+        if (isLive) {
+            // Favouriting was only possible by holding OK on a channel in the grid, which is no use
+            // once you are watching it — this is where you decide you want it.
+            add(PlayerControlSpec("favourite", if (isFavourite) Icons.Filled.Star else Icons.Filled.StarBorder, favouriteLabel, favouriteRequester, onToggleFavourite, active = isFavourite))
+            liveBadgeRequester?.let { requester ->
+                add(PlayerControlSpec("badge", Icons.Filled.LiveTv, badgeLabel, requester, onToggleLiveBadge, active = showLiveBadge))
+            }
+        } else {
+            if (hasNext) add(PlayerControlSpec("next", Icons.Filled.SkipNext, nextLabel, nextRequester, onNext))
+            add(PlayerControlSpec("watched", Icons.Filled.CheckCircle, watchedLabel, watchedRequester, onMarkWatched))
+            add(PlayerControlSpec("speed", Icons.Filled.Speed, speedLabel, speedRequester, { onOpenPanel(OverlayPanel.Speed) }, active = selectedPanel == OverlayPanel.Speed))
+        }
+        add(PlayerControlSpec("info", Icons.Outlined.Info, infoLabel, infoRequester, { onOpenPanel(OverlayPanel.Info) }, active = selectedPanel == OverlayPanel.Info))
+    }
+    val controlRequesters = controls.map { it.requester }
+
     LaunchedEffect(focusRegion, hasSeekableTimeline, controlsFocusToken) {
         // Visibility and focus ownership change together. This is the only automatic handoff
         // between the two rows; horizontal movement never participates in focus search.
@@ -302,7 +515,10 @@ internal fun PlayerBottomBar(
         // reliably later still when the bar is arriving from behind a drawer that just closed.
         val target = when {
             focusRegion == PlayerControlsFocusRegion.Seek && hasSeekableTimeline -> progressRequester
-            focusRegion == PlayerControlsFocusRegion.Controls -> controlsEntryRequester ?: playRequester
+            // A named target that is no longer in the row - captions that went away with the
+            // channel - falls back to Play rather than to nothing at all.
+            focusRegion == PlayerControlsFocusRegion.Controls ->
+                controlsEntryRequester?.takeIf { it in controlRequesters } ?: playRequester
             else -> return@LaunchedEffect
         }
         repeat(6) { attempt ->
@@ -317,379 +533,436 @@ internal fun PlayerBottomBar(
     // the first key press after focus with the previous composition's value; left appeared to
     // "arm" scrubbing only because it gave recomposition time to catch up before right was used.
     val timelineFocused = remember { mutableStateOf(false) }
+    val effectsReduced = rememberPlayerEffectsReduced()
+    val headerReveal = rememberStaggeredReveal(step = 0, enabled = !effectsReduced)
+    val timelineReveal = rememberStaggeredReveal(step = 1, enabled = !effectsReduced)
+    val controlsReveal = rememberStaggeredReveal(step = 2, enabled = !effectsReduced)
+
     Box(
         modifier = modifier
             .fillMaxWidth()
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(Color.Transparent, Color(0xBB000000), Color(0xF2000000)),
+                    colors = listOf(Color.Transparent, Color(0x99000000), Color(0xE6000000), Color(0xF5000000)),
                 ),
             )
-            .padding(start = 36.dp, end = 36.dp, top = 56.dp, bottom = 28.dp),
+            .padding(start = 48.dp, end = 48.dp, top = 88.dp, bottom = 30.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                val title = detail?.title ?: requestTitle
-                if (!detail?.titleLogo.isNullOrBlank()) {
-                    AsyncImage(
-                        model = detail!!.titleLogo,
-                        contentDescription = title,
-                        modifier = Modifier.height(30.dp),
-                        contentScale = ContentScale.Fit,
-                        alignment = Alignment.CenterStart,
-                    )
-                } else if (!title.isNullOrBlank()) {
-                    Text(
-                        text = buildString {
-                            currentEpisode?.let { ep -> append("S${ep.seasonNumber} E${ep.episodeNumber}  ·  ") }
-                            append(title)
-                        },
-                        style = androidx.tv.material3.MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            PlayerHeader(
+                detail = detail,
+                requestTitle = requestTitle,
+                currentEpisode = currentEpisode,
+                currentLabel = currentLabel,
+                error = error,
+                isLive = isLive,
+                isVod = isVod,
+                showLiveBadge = showLiveBadge,
+                positionSec = positionSec,
+                durationSec = durationSec,
+                playbackSpeed = playbackSpeed,
+                paused = paused,
+                modifier = Modifier.revealLayer(headerReveal),
+            )
+
+            Box(modifier = Modifier.revealLayer(timelineReveal)) {
+                if (hasSeekableTimeline) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        PlayerSeekFocusGroup(
+                            positionSec = positionSec,
+                            durationSec = durationSec,
+                            requester = progressRequester,
+                            controlsEntryRequester = playRequester,
+                            onSeekBy = onSeekBy,
+                            onEnterControls = {
+                                onFocusRegionChanged(PlayerControlsFocusRegion.Controls)
+                                onInteract()
+                            },
+                            onInteract = onInteract,
+                            onFocusedChanged = {
+                                timelineFocused.value = it
+                                if (it) onFocusRegionChanged(PlayerControlsFocusRegion.Seek)
+                            },
+                            scrubTargetSec = scrubTargetSec,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        AnimatedVisibility(
+                            visible = timelineFocused.value,
+                            enter = TvMotion.fadeInSpec(TvMotion.Quick),
+                            exit = TvMotion.fadeOutSpec(TvMotion.Instant),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.player_scrub_hint),
+                                style = androidx.tv.material3.MaterialTheme.typography.labelSmall,
+                                color = PlayerTokens.TextTertiary,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                } else if (isLive && showLiveProgress) {
+                    // Asked for a timeline on a channel that has no window to seek in: how long it has
+                    // been playing, and a rule standing in for the bar.
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        Text(
+                            text = formatPlaybackClock(positionSec),
+                            style = androidx.tv.material3.MaterialTheme.typography.labelLarge,
+                            color = PlayerTokens.TextSecondary,
+                        )
+                        Box(
+                            modifier = Modifier.weight(1f).height(4.dp).clip(CircleShape)
+                                .background(PlayerTokens.TrackRest),
+                        )
+                        if (showLiveBadge) LiveBadgeChip(isVod = isVod)
+                    }
                 }
+            }
+
+            PlayerControlsRow(
+                controls = controls,
+                upRequester = timelineUpRequester,
+                playRequester = playRequester,
+                timelineFocused = timelineFocused.value,
+                onFocused = onControlsFocused,
+                modifier = Modifier.revealLayer(controlsReveal),
+            )
+        }
+    }
+}
+
+/**
+ * Title, what is playing and the small facts around it.
+ *
+ * An eyebrow line over the title - the episode for a series, the Live or VOD mark for a channel -
+ * then the title (the logo when there is one), then the source in quieter type. On the right, when
+ * there is a runtime to go on, the time the film will end: the question people actually have when
+ * they pull the controls up at night.
+ */
+@Composable
+private fun PlayerHeader(
+    detail: MediaDetail?,
+    requestTitle: String?,
+    currentEpisode: EpisodeContext?,
+    currentLabel: String,
+    error: String?,
+    isLive: Boolean,
+    isVod: Boolean,
+    showLiveBadge: Boolean,
+    positionSec: Double,
+    durationSec: Double,
+    playbackSpeed: Double,
+    paused: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(24.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            val eyebrow = currentEpisode?.let(::episodeEyebrow)
+            // Only drawn when it has something in it. With the badge switched off a channel has no
+            // eyebrow at all, and the title moves up rather than leaving the gap where it was.
+            if (eyebrow != null || (isLive && showLiveBadge)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (isLive && showLiveBadge) LiveBadgeChip(isVod = isVod)
+                    eyebrow?.let {
+                        Text(
+                            text = it,
+                            style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 1.4.sp,
+                            ),
+                            color = PlayerTokens.Accent,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+            val title = detail?.title ?: requestTitle
+            if (!detail?.titleLogo.isNullOrBlank()) {
+                AsyncImage(
+                    model = detail!!.titleLogo,
+                    contentDescription = title,
+                    modifier = Modifier.height(44.dp).widthIn(max = 420.dp),
+                    contentScale = ContentScale.Fit,
+                    alignment = Alignment.CenterStart,
+                )
+            } else if (!title.isNullOrBlank()) {
                 Text(
-                    text = error ?: currentLabel,
-                    style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
-                    color = if (error != null) Color(0xFFFFB4AB) else Color.White.copy(alpha = 0.56f),
+                    text = title,
+                    style = androidx.tv.material3.MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                    color = PlayerTokens.TextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                AnimatedVisibility(
-                    visible = timelineFocused.value,
-                    enter = TvMotion.fadeInSpec(TvMotion.Quick),
-                    exit = TvMotion.fadeOutSpec(TvMotion.Instant),
-                ) {
-                    Text(
-                        text = stringResource(R.string.player_scrub_hint),
-                        style = androidx.tv.material3.MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.42f),
-                        maxLines = 1,
-                    )
-                }
             }
-
-            if (isLive && !showLiveProgress) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(vertical = 8.dp),
-                ) {
-                    if (isVod) {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = Color(0xFF60A5FA),
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFEF4444)),
-                        )
-                    }
-                    Text(
-                        text = if (isVod) "VOD" else "LIVE",
-                        style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                        color = Color.White,
-                    )
-                }
-            } else if (hasSeekableTimeline) {
-                PlayerSeekFocusGroup(
-                    positionSec = positionSec,
-                    durationSec = durationSec,
-                    requester = progressRequester,
-                    controlsEntryRequester = playRequester,
-                    onSeekBy = onSeekBy,
-                    onEnterControls = {
-                        onFocusRegionChanged(PlayerControlsFocusRegion.Controls)
-                        onInteract()
-                    },
-                    onInteract = onInteract,
-                    onFocusedChanged = {
-                        timelineFocused.value = it
-                        if (it) onFocusRegionChanged(PlayerControlsFocusRegion.Seek)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
+            val subline = if (error != null) error else listOfNotNull(
+                currentEpisode?.title?.takeIf { it.isNotBlank() },
+                currentLabel.takeIf { it.isNotBlank() },
+            ).distinct().joinToString("  ·  ")
+            if (subline.isNotBlank()) {
+                Text(
+                    text = subline,
+                    style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
+                    color = if (error != null) Color(0xFFFFB4AB) else PlayerTokens.TextTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            } else if (isLive) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text(
-                        text = formatPlaybackClock(positionSec),
-                        style = androidx.tv.material3.MaterialTheme.typography.labelLarge,
-                        color = Color.White.copy(alpha = 0.9f),
-                    )
-                    Box(
-                        modifier = Modifier.weight(1f).height(3.dp).clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.22f)),
-                    )
-                    Text(
-                        text = if (isVod) "VOD" else "LIVE",
-                        style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                        color = if (isVod) Color(0xFF60A5FA) else Color.White,
-                    )
-                }
             }
+        }
+        if (!isLive && durationSec > 0.0 && positionSec >= 0.0) {
+            val context = LocalContext.current
+            // Recomputed as the position moves, so pausing pushes the end time back as it should.
+            val remainingMs = ((durationSec - positionSec).coerceAtLeast(0.0) / playbackSpeed.coerceAtLeast(0.25) * 1000.0).toLong()
+            val endsAt = remember(remainingMs / 60_000L, paused) {
+                android.text.format.DateFormat.getTimeFormat(context)
+                    .format(java.util.Date(System.currentTimeMillis() + remainingMs))
+            }
+            Text(
+                text = stringResource(R.string.player_ends_at, endsAt),
+                style = androidx.tv.material3.MaterialTheme.typography.labelLarge,
+                color = PlayerTokens.TextTertiary,
+                maxLines = 1,
+            )
+        }
+    }
+}
 
-            Row(
-                // PlayerControlsFocusGroup: the second of the bottom bar's two focus islands.
-                //
-                // Horizontal traversal is internal to this row and cannot leave it — the first
-                // control cancels a Left search and the last cancels a Right one, so a held button
-                // stops at the end of the row instead of falling out of the bar. Up is the single
-                // sanctioned way back to the seek row above; there is nothing below, so Down is
-                // cancelled outright rather than left to spatial search.
+/** The Live / VOD mark, as it appears in the bar's header and beside a live timeline. */
+@Composable
+internal fun LiveBadgeChip(isVod: Boolean, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (isVod) Color(0x3360A5FA) else Color(0x33EF4444))
+            .border(1.dp, if (isVod) Color(0x6660A5FA) else Color(0x66EF4444), RoundedCornerShape(999.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (isVod) {
+            Icon(
+                imageVector = Icons.Rounded.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = PlayerTokens.VodBlue,
+            )
+        } else {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .focusGroup()
-                    .focusProperties {
-                        enter = { playRequester }
-                        exit = { direction ->
-                            when (direction) {
-                                FocusDirection.Left, FocusDirection.Right, FocusDirection.Down ->
-                                    FocusRequester.Cancel
-                                FocusDirection.Up ->
-                                    timelineUpRequester ?: FocusRequester.Cancel
-                                else -> FocusRequester.Default
-                            }
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(PlayerTokens.LiveRed),
+            )
+        }
+        Text(
+            text = if (isVod) "VOD" else "LIVE",
+            style = androidx.tv.material3.MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.2.sp,
+            ),
+            color = Color.White,
+        )
+    }
+}
+
+/**
+ * PlayerControlsFocusGroup: the second of the bottom bar's two focus islands.
+ *
+ * Horizontal traversal is internal to this row and cannot leave it — the first control cancels a
+ * Left search and the last cancels a Right one, so a held button stops at the end of the row
+ * instead of falling out of the bar. Up is the single sanctioned way back to the seek row above;
+ * there is nothing below, so Down is cancelled outright rather than left to spatial search.
+ *
+ * The focused control's name rides above it on a single label that glides from button to button,
+ * so the row stays a quiet strip of icons and still says what each one does the moment it is
+ * reached.
+ */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+private fun PlayerControlsRow(
+    controls: List<PlayerControlSpec>,
+    upRequester: FocusRequester?,
+    playRequester: FocusRequester,
+    timelineFocused: Boolean,
+    onFocused: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var focusedKey by remember { mutableStateOf<String?>(null) }
+    val centers = remember { mutableStateMapOf<String, Float>() }
+    var labelWidth by remember { mutableIntStateOf(0) }
+    val focusedControl = controls.firstOrNull { it.key == focusedKey }
+    val labelVisible = focusedControl != null && !timelineFocused
+    val targetX = focusedControl?.let { (centers[it.key] ?: 0f) - labelWidth / 2f } ?: 0f
+    val labelX by animateFloatAsState(
+        targetValue = targetX,
+        animationSpec = TvMotion.standardSpec(TvMotion.Standard),
+        label = "control-label-x",
+    )
+    val labelAlpha by animateFloatAsState(
+        targetValue = if (labelVisible) 1f else 0f,
+        animationSpec = if (labelVisible) TvMotion.enterSpec(TvMotion.Quick) else TvMotion.exitSpec(TvMotion.Instant),
+        label = "control-label-alpha",
+    )
+    // Held so the label keeps saying the last control while it fades out, rather than going blank.
+    var shownLabel by remember { mutableStateOf("") }
+    focusedControl?.label?.let { shownLabel = it }
+
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().height(22.dp)) {
+            Text(
+                text = shownLabel,
+                style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = PlayerTokens.TextPrimary,
+                maxLines = 1,
+                modifier = Modifier
+                    .onSizeChanged { labelWidth = it.width }
+                    .graphicsLayer {
+                        translationX = labelX.coerceAtLeast(0f)
+                        alpha = labelAlpha
+                    },
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusGroup()
+                .focusProperties {
+                    enter = { playRequester }
+                    exit = { direction ->
+                        when (direction) {
+                            FocusDirection.Left, FocusDirection.Right, FocusDirection.Down ->
+                                FocusRequester.Cancel
+                            FocusDirection.Up ->
+                                upRequester ?: FocusRequester.Cancel
+                            else -> FocusRequester.Default
+                        }
+                    }
+                },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            controls.forEachIndexed { index, control ->
+                PlayerControlButton(
+                    control = control,
+                    upRequester = upRequester,
+                    leftRequester = controls.getOrNull(index - 1)?.requester,
+                    rightRequester = controls.getOrNull(index + 1)?.requester,
+                    onFocusChanged = { focused ->
+                        if (focused) {
+                            focusedKey = control.key
+                            onFocused()
+                        } else if (focusedKey == control.key) {
+                            focusedKey = null
                         }
                     },
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                PlayerControlIconButton(
-                    icon = if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                    label = stringResource(if (paused) R.string.action_play else R.string.action_pause),
-                    primary = true,
-                    requester = playRequester,
-                    upRequester = timelineUpRequester,
-                    rightRequester = if (isLive) liveProgressRequester else subtitlesRequester,
-                    onFocused = onControlsFocused,
-                    onClick = onPlayPause,
+                    modifier = Modifier.onGloballyPositioned { coordinates ->
+                        centers[control.key] = coordinates.positionInParent().x + coordinates.size.width / 2f
+                    },
                 )
-                Spacer(Modifier.width(8.dp))
-                if (isLive) {
-                    PlayerControlIconButton(
-                        icon = Icons.Filled.Timeline,
-                        label = stringResource(R.string.player_progress),
-                        active = showLiveProgress,
-                        requester = liveProgressRequester,
-                        upRequester = timelineUpRequester,
-                        leftRequester = playRequester,
-                        rightRequester = sourcesRequester,
-                        onFocused = onControlsFocused,
-                        onClick = onToggleLiveProgress,
-                    )
-                } else {
-                    PlayerControlIconButton(
-                        icon = Icons.Filled.ClosedCaption,
-                        label = stringResource(R.string.player_subtitles),
-                        active = selectedPanel == OverlayPanel.Subtitles,
-                        requester = subtitlesRequester,
-                        upRequester = timelineUpRequester,
-                        leftRequester = playRequester,
-                        rightRequester = audioRequester,
-                        onFocused = onControlsFocused,
-                        onClick = { onOpenPanel(OverlayPanel.Subtitles) },
-                    )
-                    PlayerControlIconButton(
-                        icon = Icons.Filled.VolumeUp,
-                        label = stringResource(R.string.player_audio),
-                        active = selectedPanel == OverlayPanel.Audio,
-                        requester = audioRequester,
-                        upRequester = timelineUpRequester,
-                        leftRequester = subtitlesRequester,
-                        rightRequester = sourcesRequester,
-                        onFocused = onControlsFocused,
-                        onClick = { onOpenPanel(OverlayPanel.Audio) },
-                    )
-                }
-                PlayerControlIconButton(
-                    icon = Icons.Filled.Cloud,
-                    label = stringResource(R.string.player_sources),
-                    active = selectedPanel == OverlayPanel.Streams,
-                    requester = sourcesRequester,
-                    upRequester = timelineUpRequester,
-                    leftRequester = if (isLive) liveProgressRequester else audioRequester,
-                    rightRequester = engineRequester,
-                    onFocused = onControlsFocused,
-                    onClick = { onOpenPanel(OverlayPanel.Streams) },
-                )
-                PlayerControlIconButton(
-                    icon = Icons.Filled.Tune,
-                    label = stringResource(R.string.player_engine),
-                    active = selectedPanel == OverlayPanel.Engine,
-                    requester = engineRequester,
-                    upRequester = timelineUpRequester,
-                    leftRequester = sourcesRequester,
-                    rightRequester = if (isLive) favouriteRequester else if (hasNext) nextRequester else watchedRequester,
-                    onFocused = onControlsFocused,
-                    onClick = { onOpenPanel(OverlayPanel.Engine) },
-                )
-                if (isLive) {
-                    // Favouriting was only possible by holding OK on a channel in the grid, which
-                    // is no use once you are watching it — this is where you decide you want it.
-                    PlayerControlIconButton(
-                        icon = if (isFavourite) Icons.Filled.Star else Icons.Filled.StarBorder,
-                        label = stringResource(if (isFavourite) R.string.action_favourited else R.string.action_favourite),
-                        active = isFavourite,
-                        requester = favouriteRequester,
-                        upRequester = timelineUpRequester,
-                        leftRequester = engineRequester,
-                        rightRequester = if (captionsAvailable) subtitlesRequester else infoRequester,
-                        onFocused = onControlsFocused,
-                        onClick = onToggleFavourite,
-                    )
-                    // A channel's own captions - a news channel's automatic transcription, say - are
-                    // one press to hide, where a film's subtitles have a whole panel. It is the same
-                    // requester the subtitles button uses, which a live row otherwise leaves unused.
-                    if (captionsAvailable) {
-                        PlayerControlIconButton(
-                            icon = if (captionsOn) Icons.Filled.ClosedCaption else Icons.Filled.ClosedCaptionOff,
-                            label = stringResource(if (captionsOn) R.string.player_captions_on else R.string.player_captions_off),
-                            active = captionsOn,
-                            requester = subtitlesRequester,
-                            upRequester = timelineUpRequester,
-                            leftRequester = favouriteRequester,
-                            rightRequester = infoRequester,
-                            onFocused = onControlsFocused,
-                            onClick = onToggleCaptions,
-                        )
-                    }
-                }
-                if (!isLive) {
-                    if (hasNext) {
-                        PlayerControlIconButton(
-                            icon = Icons.Filled.SkipNext,
-                            label = stringResource(R.string.player_next),
-                            requester = nextRequester,
-                            upRequester = timelineUpRequester,
-                            leftRequester = engineRequester,
-                            rightRequester = watchedRequester,
-                            onFocused = onControlsFocused,
-                            onClick = onNext,
-                        )
-                    }
-                    PlayerControlIconButton(
-                        icon = Icons.Filled.CheckCircle,
-                        label = stringResource(R.string.player_watched),
-                        requester = watchedRequester,
-                        upRequester = timelineUpRequester,
-                        leftRequester = if (hasNext) nextRequester else engineRequester,
-                        rightRequester = speedRequester,
-                        onFocused = onControlsFocused,
-                        onClick = onMarkWatched,
-                    )
-                    PlayerControlIconButton(
-                        icon = Icons.Filled.Speed,
-                        label = stringResource(R.string.player_playback_speed),
-                        active = selectedPanel == OverlayPanel.Speed,
-                        requester = speedRequester,
-                        upRequester = timelineUpRequester,
-                        leftRequester = watchedRequester,
-                        rightRequester = infoRequester,
-                        onFocused = onControlsFocused,
-                        onClick = { onOpenPanel(OverlayPanel.Speed) },
-                    )
-                }
-
-                PlayerControlIconButton(
-                    icon = Icons.Outlined.Info,
-                    label = stringResource(R.string.player_stream_info),
-                    active = selectedPanel == OverlayPanel.Info,
-                    requester = infoRequester,
-                    upRequester = timelineUpRequester,
-                    leftRequester = if (isLive) (if (captionsAvailable) subtitlesRequester else favouriteRequester) else speedRequester,
-                    onFocused = onControlsFocused,
-                    onClick = { onOpenPanel(OverlayPanel.Info) },
-                )
-
-                Spacer(Modifier.weight(1f))
+                // Play stands apart from the options that follow it.
+                if (control.primary) Spacer(Modifier.width(14.dp))
             }
         }
     }
 }
 
 /**
- * One control in [PlayerControlsFocusGroup].
+ * One control in [PlayerControlsRow].
  *
  * Every direction is named. A null neighbour means "there is nothing that way", which is expressed
  * as [FocusRequester.Cancel] rather than left to spatial focus search: the search is what used to
  * carry the highlight out of the bar and onto whatever happened to be laid out nearby.
+ *
+ * Focus is a filled disc - the icon inverts to ink on white - with a slight lift, which is legible
+ * across the room against any picture. An option that is on carries a small gold pip beneath it, so
+ * "on" and "focused" never have to share one signal.
  */
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-private fun PlayerControlIconButton(
-    icon: ImageVector,
-    label: String,
-    primary: Boolean = false,
-    active: Boolean = false,
-    requester: FocusRequester,
-    upRequester: FocusRequester? = null,
-    leftRequester: FocusRequester? = null,
-    rightRequester: FocusRequester? = null,
-    onFocused: () -> Unit,
-    onClick: () -> Unit,
+private fun PlayerControlButton(
+    control: PlayerControlSpec,
+    upRequester: FocusRequester?,
+    leftRequester: FocusRequester?,
+    rightRequester: FocusRequester?,
+    onFocusChanged: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val size = if (primary) 44.dp else 40.dp
-    val iconSize = 20.dp
-    Button(
-        onClick = onClick,
-        shape = ButtonDefaults.shape(CircleShape),
-        colors = ButtonDefaults.colors(
-            containerColor = if (primary) Color(0xBBF4EDE2) else Color.Transparent,
-            focusedContainerColor = if (primary) Color.White else Color(0x28FFFFFF),
-            contentColor = if (primary) Color(0xFF111111) else if (active) Color(0xFFF0BA66) else Color.White,
-            focusedContentColor = if (primary) Color(0xFF111111) else Color.White,
-        ),
-        border = ButtonDefaults.border(
-            border = Border(
-                border = BorderStroke(
-                    width = if (focused) 2.dp else if (primary) 1.dp else 0.dp,
-                    color = when {
-                        focused -> Color(0xFFF0BA66)
-                        primary -> Color(0x30FFFFFF)
-                        else -> Color.Transparent
-                    },
-                ),
-                shape = CircleShape,
-            ),
-        ),
-        scale = ButtonDefaults.scale(focusedScale = TvMotion.focusScale()),
-        modifier = Modifier
-            .size(size)
-            .focusRequester(requester)
-            .focusProperties {
-                up = upRequester ?: FocusRequester.Cancel
-                left = leftRequester ?: FocusRequester.Cancel
-                right = rightRequester ?: FocusRequester.Cancel
-                down = FocusRequester.Cancel
-            }
-            .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocused()
-            },
-        contentPadding = PaddingValues(0.dp),
+    val size = if (control.primary) 58.dp else 48.dp
+    val iconSize = if (control.primary) 28.dp else 22.dp
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        val iconTint = when {
-            primary -> Color(0xFF111111)
-            active -> Color(0xFFF0BA66)
-            else -> Color(0xE0FFFFFF)
+        Button(
+            onClick = control.onClick,
+            shape = ButtonDefaults.shape(CircleShape),
+            colors = ButtonDefaults.colors(
+                containerColor = if (control.primary) Color(0xE6F4EDE2) else Color(0x14FFFFFF),
+                focusedContainerColor = Color.White,
+                contentColor = if (control.primary) PlayerTokens.Ink else Color.White,
+                focusedContentColor = PlayerTokens.Ink,
+            ),
+            border = ButtonDefaults.border(
+                border = Border(
+                    border = BorderStroke(1.dp, if (control.primary) Color(0x33FFFFFF) else Color(0x14FFFFFF)),
+                    shape = CircleShape,
+                ),
+                focusedBorder = Border(
+                    border = BorderStroke(2.dp, PlayerTokens.Accent),
+                    shape = CircleShape,
+                ),
+            ),
+            scale = ButtonDefaults.scale(focusedScale = TvMotion.focusScale()),
+            modifier = Modifier
+                .size(size)
+                .focusRequester(control.requester)
+                .focusProperties {
+                    up = upRequester ?: FocusRequester.Cancel
+                    left = leftRequester ?: FocusRequester.Cancel
+                    right = rightRequester ?: FocusRequester.Cancel
+                    down = FocusRequester.Cancel
+                }
+                .onFocusChanged {
+                    focused = it.isFocused
+                    onFocusChanged(it.isFocused)
+                },
+            contentPadding = PaddingValues(0.dp),
+        ) {
+            val iconTint = when {
+                focused || control.primary -> PlayerTokens.Ink
+                control.active -> PlayerTokens.Active
+                else -> Color(0xE6FFFFFF)
+            }
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = control.icon,
+                    contentDescription = control.label,
+                    modifier = Modifier.size(iconSize),
+                    tint = iconTint,
+                )
+            }
         }
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            modifier = Modifier.size(iconSize),
-            tint = iconTint,
+        val pipAlpha by animateFloatAsState(
+            targetValue = if (control.active && !control.primary) 1f else 0f,
+            animationSpec = TvMotion.standardSpec(TvMotion.Quick),
+            label = "control-pip",
+        )
+        Box(
+            modifier = Modifier
+                .size(4.dp)
+                .graphicsLayer { alpha = pipAlpha }
+                .clip(CircleShape)
+                .background(PlayerTokens.Active),
         )
     }
 }
@@ -718,6 +991,7 @@ private fun PlayerSeekFocusGroup(
     onEnterControls: () -> Unit,
     onInteract: () -> Unit,
     onFocusedChanged: (Boolean) -> Unit,
+    scrubTargetSec: Double? = null,
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -743,6 +1017,7 @@ private fun PlayerSeekFocusGroup(
             onEnterControls = onEnterControls,
             onInteract = onInteract,
             onFocusedChanged = onFocusedChanged,
+            scrubTargetSec = scrubTargetSec,
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -759,6 +1034,8 @@ internal fun PlayerTimeline(
     onEnterControls: () -> Unit = {},
     onInteract: () -> Unit,
     onFocusedChanged: (Boolean) -> Unit = {},
+    /** Where a scrub in flight will land. Shown in a bubble over the head while it is non-null. */
+    scrubTargetSec: Double? = null,
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -767,6 +1044,19 @@ internal fun PlayerTimeline(
     // the first press after focus arrives sees this frame's value and not the previous one.
     val durationState = remember { mutableStateOf(durationSec) }
     durationState.value = durationSec
+    // The bar thickens and the head grows when the row is reached, so "you are on the timeline" is
+    // said by the timeline itself. Both ride graphics layers: nothing around the bar moves.
+    val emphasis by animateFloatAsState(
+        targetValue = if (focused) 1f else 0f,
+        animationSpec = TvMotion.standardSpec(TvMotion.Quick),
+        label = "timeline-emphasis",
+    )
+    val scrubbing = focused && scrubTargetSec != null
+    val bubbleAlpha by animateFloatAsState(
+        targetValue = if (scrubbing) 1f else 0f,
+        animationSpec = if (scrubbing) TvMotion.enterSpec(TvMotion.Instant) else TvMotion.exitSpec(TvMotion.Standard),
+        label = "timeline-bubble",
+    )
     Row(
         modifier = modifier
             .focusRequester(requester)
@@ -805,49 +1095,82 @@ internal fun PlayerTimeline(
                 if (it.isFocused) onInteract()
             }
             .focusable(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TimePill(formatPlaybackClock(positionSec))
+        TimeLabel(formatPlaybackClock(positionSec), emphasised = focused)
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
-                .height(36.dp)
-                .clip(RoundedCornerShape(999.dp))
-                .background(if (focused) Color(0x14000000) else Color.Transparent),
+                .height(32.dp),
         ) {
             val barWidth = maxWidth
-            val thumbR = if (focused) 11.dp else 8.dp
-            val thumbOffset = (barWidth * progress - thumbR).coerceAtLeast(0.dp)
-            val trackH = if (focused) 10.dp else 7.dp
-
+            val headX = barWidth * progress
+            val trackShape = RoundedCornerShape(999.dp)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.Center)
-                    .height(trackH)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(Color(0x2EFFFFFF)),
-            )
+                    .height(8.dp)
+                    .graphicsLayer { scaleY = 0.5f + 0.5f * emphasis }
+                    .clip(trackShape)
+                    .background(PlayerTokens.TrackRest),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(progress.coerceAtLeast(0f))
+                        .fillMaxHeight()
+                        .clip(trackShape)
+                        .background(
+                            if (focused) {
+                                Brush.horizontalGradient(listOf(Color(0xFFE9A94F), PlayerTokens.Accent))
+                            } else {
+                                Brush.horizontalGradient(listOf(Color(0xE6FFFFFF), Color.White))
+                            },
+                        ),
+                )
+            }
+            // The head: a small white dot at rest that swells into the gold scrub handle.
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(progress.coerceAtLeast(0f))
                     .align(Alignment.CenterStart)
-                    .height(trackH)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(Color(0xFF3EA6FF)),
-            )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .offset(x = thumbOffset)
-                    .size(thumbR * 2)
+                    .offset(x = headX - 9.dp)
+                    .size(18.dp)
+                    .graphicsLayer {
+                        val scale = 0.55f + 0.45f * emphasis
+                        scaleX = scale
+                        scaleY = scale
+                    }
                     .clip(CircleShape)
-                    .background(if (focused) Color(0xFFF0BA66) else Color.White),
+                    .background(if (focused) PlayerTokens.Accent else Color.White),
             )
+            if (scrubTargetSec != null || bubbleAlpha > 0f) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(x = (headX - 38.dp).coerceIn(0.dp, (barWidth - 76.dp).coerceAtLeast(0.dp)), y = (-34).dp)
+                        .width(76.dp)
+                        .graphicsLayer {
+                            alpha = bubbleAlpha
+                            translationY = (1f - bubbleAlpha) * 6.dp.toPx()
+                        }
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xF2171A23))
+                        .border(1.dp, PlayerTokens.AccentSoft, RoundedCornerShape(10.dp))
+                        .padding(vertical = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = formatPlaybackClock(scrubTargetSec ?: positionSec),
+                        style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+                        color = PlayerTokens.Accent,
+                        maxLines = 1,
+                    )
+                }
+            }
         }
 
-        TimePill(formatPlaybackClock(durationSec))
+        TimeLabel(formatPlaybackClock(durationSec), emphasised = false)
     }
 }
 
@@ -983,10 +1306,37 @@ internal fun PlayerOptionPanel(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Row(
+                        modifier = Modifier.weight(1f, fill = false),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(PlayerTokens.AccentSoft),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = when (panel) {
+                                OverlayPanel.Streams -> Icons.Filled.Cloud
+                                OverlayPanel.Engine -> Icons.Filled.Tune
+                                OverlayPanel.Audio -> Icons.Filled.VolumeUp
+                                OverlayPanel.Subtitles, OverlayPanel.Captions -> Icons.Filled.ClosedCaption
+                                OverlayPanel.Speed -> Icons.Filled.Speed
+                                OverlayPanel.Info -> Icons.Outlined.Info
+                            },
+                            contentDescription = null,
+                            tint = PlayerTokens.Accent,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
                             text = stringResource(
                                 when (panel) {
+                                    OverlayPanel.Captions -> R.string.player_captions
                                     OverlayPanel.Streams -> R.string.player_sources
                                     OverlayPanel.Engine -> R.string.player_engine_panel_title
                                     OverlayPanel.Audio -> R.string.player_audio
@@ -1007,11 +1357,13 @@ internal fun PlayerOptionPanel(
                                     OverlayPanel.Subtitles -> R.string.player_panel_subtitles_description
                                     OverlayPanel.Speed -> R.string.player_panel_speed_description
                                     OverlayPanel.Info -> R.string.player_panel_info_description
+                                    OverlayPanel.Captions -> R.string.player_panel_captions_description
                                 },
                             ),
                             style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.58f),
                         )
+                    }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (panel == OverlayPanel.Streams) {
@@ -1297,6 +1649,39 @@ internal fun PlayerOptionPanel(
                     item {
                         PanelNote(stringResource(R.string.player_subtitle_style_note))
                     }
+                }
+                OverlayPanel.Captions -> {
+                    // Only tracks the stream has been seen to carry. A placeholder the container
+                    // merely allows for would be a row that does nothing when chosen.
+                    val captionTracks = subtitleTracks.filterNot { it.speculative }
+                    val captionsOff = selectedSubtitleId < 0 && selectedExternalSubtitleId == null
+                    item {
+                        OptionButton(
+                            label = stringResource(R.string.player_captions_off_option),
+                            subtitle = stringResource(R.string.player_captions_off_description),
+                            active = captionsOff,
+                            activeBadge = selectedBadge.takeIf { captionsOff },
+                            requestFocus = firstItemRequester,
+                            onInteract = onInteract,
+                            onClick = onDisableSubtitles,
+                        )
+                    }
+                    itemsIndexed(captionTracks) { index, track ->
+                        val language = trackLanguageName(track.language)
+                        OptionButton(
+                            label = language ?: track.title ?: stringResource(R.string.player_caption_track_fallback, index + 1),
+                            subtitle = listOfNotNull(captionFormatLabel(track.codec), track.title.takeIf { language != null })
+                                .distinct().joinToString(" • ").ifBlank { null },
+                            active = !captionsOff && selectedSubtitleId == track.id,
+                            activeBadge = selectedBadge.takeIf { !captionsOff && selectedSubtitleId == track.id },
+                            onInteract = onInteract,
+                            onClick = { onSelectSubtitle(track.id) },
+                        )
+                    }
+                    if (captionTracks.isEmpty()) item {
+                        PanelNote(stringResource(R.string.player_captions_none_now))
+                    }
+                    item { PanelNote(stringResource(R.string.player_captions_detected_note)) }
                 }
                 OverlayPanel.Speed -> {
                     itemsIndexed(
@@ -2295,6 +2680,34 @@ private fun QualityPill(text: String, modifier: Modifier = Modifier) {
             style = androidx.tv.material3.MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
             color = Color(0xFFD4B8FF),
         )
+    }
+}
+
+/** The clock either side of the timeline. Tabular figures, so the digits do not jitter as they tick. */
+@Composable
+private fun TimeLabel(text: String, emphasised: Boolean) {
+    Text(
+        text = text,
+        style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(
+            fontWeight = if (emphasised) FontWeight.Black else FontWeight.Medium,
+            fontFeatureSettings = "tnum",
+        ),
+        color = if (emphasised) PlayerTokens.TextPrimary else PlayerTokens.TextSecondary,
+        maxLines = 1,
+        modifier = Modifier.widthIn(min = 64.dp),
+    )
+}
+
+/** "CEA-608" and the like, for a caption row, from whatever the engine called the format. */
+private fun captionFormatLabel(codec: String?): String? {
+    val value = codec?.lowercase(Locale.US) ?: return null
+    return when {
+        "608" in value -> "CEA-608"
+        "708" in value -> "CEA-708"
+        "webvtt" in value || "vtt" in value -> "WebVTT"
+        "ttml" in value || "stpp" in value -> "TTML"
+        "dvb" in value -> "DVB"
+        else -> null
     }
 }
 

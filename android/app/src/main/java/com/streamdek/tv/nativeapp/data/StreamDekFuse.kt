@@ -145,5 +145,9 @@ internal fun fuseItemKey(item: MediaItem): String =
  * The key a catalogue's pages are held under for [query]. A catalogue that cannot search is filtered
  * on the device instead, so every query shares its one listing.
  */
-internal fun fusePageKey(catalog: FuseCatalog, query: String): String =
-    catalog.key + "" + if (catalog.searchable) query.trim() else ""
+internal fun fusePageKey(catalog: FuseCatalog, query: String): String = when {
+    // A plugin is searched as a whole, so every row of one provider shares that one answer.
+    catalog.origin == FuseOrigin.CloudStream && query.isNotBlank() ->
+        "cloudsearch:" + catalog.sourceKey + "" + query.trim()
+    else -> catalog.key + "" + if (catalog.searchable) query.trim() else ""
+}
