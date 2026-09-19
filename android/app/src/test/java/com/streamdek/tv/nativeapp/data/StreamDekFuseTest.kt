@@ -49,6 +49,23 @@ class StreamDekFuseTest {
     }
 
     @Test
+    fun `New Movies and New Series lead Home, ahead of the Fuse, live rows and Streaming Networks`() {
+        val rails = listOf(
+            rail("streaming_networks"), rail(FUSE_HOME_RAIL_ID), rail("addon:iptv:tv:sports:0", live = true),
+            rail("trending_series"), rail("new_series"), rail("continue-watching"), rail("new_movies"),
+        )
+        assertEquals(
+            listOf("continue-watching", "new_movies", "new_series", FUSE_HOME_RAIL_ID, "addon:iptv:tv:sports:0", "streaming_networks", "trending_series"),
+            arrangeHomeRails(rails, setOf("streaming_networks")).map { it.id },
+        )
+        // Switched off in the layout, a row is simply absent; nothing stands in for it.
+        assertEquals(
+            listOf("new_series", FUSE_HOME_RAIL_ID, "streaming_networks"),
+            arrangeHomeRails(listOf(rail("streaming_networks"), rail(FUSE_HOME_RAIL_ID), rail("new_series")), setOf("streaming_networks")).map { it.id },
+        )
+    }
+
+    @Test
     fun `the Fuse row takes the live rows' place`() {
         val rails = listOf(rail("streaming_networks"), rail(FUSE_HOME_RAIL_ID), rail("continue-watching"))
         assertEquals(

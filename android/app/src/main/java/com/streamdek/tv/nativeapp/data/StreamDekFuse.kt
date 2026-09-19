@@ -43,23 +43,31 @@ internal fun applyFuseToHomeRails(rails: List<HomeRail>, enabled: Boolean): List
 }
 
 /**
- * Home's rows in the phone's order: Continue Watching, New Episodes, then what is on now - the Fuse
- * card when it is on, live rows otherwise - then Streaming Networks, then everything else in the order
- * the layout gave it.
+ * The StreamDek catalogue's New Movies and New Series rows, which lead Home ahead of the live rows.
+ * Their artwork is what the hero shows on arrival; with the Fuse card or a live row first, the hero
+ * opened on a channel logo or nothing at all, and Home looked empty until the viewer moved.
+ */
+internal val LEADING_CATALOG_ROW_IDS = listOf("new_movies", "new_series")
+
+/**
+ * Home's rows in the phone's order: Continue Watching, New Episodes, New Movies, New Series, then
+ * what is on now - the Fuse card when it is on, live rows otherwise - then Streaming Networks, then
+ * everything else in the order the layout gave it.
  *
  * Live rows used to sit wherever Home Rows put them, and Streaming Networks with them, so the two
- * apps on one account laid out the same rows differently. The personal rows and the live rows are
- * placed here whatever the saved layout says, as the phone places them.
+ * apps on one account laid out the same rows differently. The personal, new and live rows are
+ * placed here whatever the saved layout says, as the phone places them. A row switched off in the
+ * layout is not here at all, so switching one off still works.
  */
 internal fun arrangeHomeRails(rails: List<HomeRail>, networkRowIds: Set<String>): List<HomeRail> {
-    val personalIds = listOf("continue-watching", "new-episodes")
-    val personal = personalIds.mapNotNull { id -> rails.firstOrNull { it.id == id } }
-    val remaining = rails.filterNot { it.id in personalIds }
+    val leadingIds = listOf("continue-watching", "new-episodes") + LEADING_CATALOG_ROW_IDS
+    val leading = leadingIds.mapNotNull { id -> rails.firstOrNull { it.id == id } }
+    val remaining = rails.filterNot { it.id in leadingIds }
     val fuse = remaining.filter { it.id == FUSE_HOME_RAIL_ID }
     val live = remaining.filter { it.isLive && it.id != FUSE_HOME_RAIL_ID }
     val networks = remaining.filter { it.id in networkRowIds && !it.isLive }
     val later = remaining.filterNot { it.id == FUSE_HOME_RAIL_ID || it.isLive || it.id in networkRowIds }
-    return personal + fuse + live + networks + later
+    return leading + fuse + live + networks + later
 }
 
 /**
