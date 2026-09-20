@@ -63,12 +63,15 @@ object Telemetry {
     const val PLAYBACK_STARTED = "playback_started"
     const val PLAYBACK_FAILED = "playback_failed"
     const val SESSION_STARTED = "session_started"
+    const val APP_CRASH = "app_crash"
+    const val APP_ANR = "app_anr"
 
     const val CATEGORY_PLAYBACK = "playback"
     const val CATEGORY_RESOLVER = "resolver"
     const val CATEGORY_TIMEOUT = "timeout"
     const val CATEGORY_NETWORK = "network"
     const val CATEGORY_UNKNOWN = "unknown"
+    const val CATEGORY_CLIENT = "client"
 
     private const val MAX_QUEUE = 200
     private const val FLUSH_AT = 20
@@ -208,6 +211,58 @@ object Telemetry {
 
     fun sessionStarted() {
         track(TelemetryEventPayload(type = SESSION_STARTED, occurredAt = now()))
+    }
+
+    /**
+     * A crash that happened on a previous run, reported now.
+     *
+     * Never sent from inside the crash: a process being torn down cannot be relied on to finish a
+     * network call, and attempting one turns a crash into a slower crash. [Stability] records what
+     * happened locally and this reports it on the next launch.
+     *
+     * `crashedAppVersion` is the build that was *running* when it crashed, which is not always the
+     * one reporting it -- a box that crashed and then updated would otherwise blame the new build
+     * for the old one's fault.
+     */
+    fun appCrash(
+        exceptionClass: String?,
+        topFrame: String?,
+        occurredAtIso: String?,
+        crashedAppVersion: String?,
+    ) {
+        track(
+            TelemetryEventPayload(
+                type = APP_CRASH,
+                occurredAt = occurredAtIso ?: now(),
+                outcome = "failure",
+                errorCategory = CATEGORY_CLIENT,
+                errorCode = exceptionClass,
+                metadata = buildMap {
+                    // One frame of our own code, not the whole stack: enough to tell two crashes
+                    // with the same exception type apart, without shipping a trace that could
+                    // contain anything.
+                    if (!topFrame.isNullOrBlank()) put("topFrame", topFrame)
+                    if (!crashedAppVersion.isNullOrBlank()) put("crashedAppVersion", crashedAppVersion)
+                }.takeIf { it.isNotEmpty() },
+            ),
+        )
+    }
+
+    /** The app stopped responding to the remote for long enough that Android recorded it. */
+    fun appNotResponding(occurredAtIso: String?, crashedAppVersion: String?, description: String?) {
+        track(
+            TelemetryEventPayload(
+                type = APP_ANR,
+                occurredAt = occurredAtIso ?: now(),
+                outcome = "failure",
+                errorCategory = CATEGORY_CLIENT,
+                errorCode = "anr",
+                metadata = buildMap {
+                    if (!crashedAppVersion.isNullOrBlank()) put("crashedAppVersion", crashedAppVersion)
+                    if (!description.isNullOrBlank()) put("description", description.take(200))
+                }.takeIf { it.isNotEmpty() },
+            ),
+        )
     }
 
     // ── Internals ───────────────────────────────────────────────────────────

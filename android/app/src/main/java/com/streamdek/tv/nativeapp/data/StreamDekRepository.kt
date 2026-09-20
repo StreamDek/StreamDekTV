@@ -843,6 +843,10 @@ class StreamDekRepository(
         // providers were tried, but only this device knows whether anything actually played.
         Telemetry.configure(api)
         Telemetry.sessionStarted()
+        // After configure, not before: events queued without a client are dropped, so reporting
+        // any earlier would lose exactly the crash this exists to report. Absent in unit tests,
+        // which have no Context and nothing to report.
+        appContext?.let { Stability.reportPending(it) }
     }
 
     /**

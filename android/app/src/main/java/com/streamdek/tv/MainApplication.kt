@@ -7,6 +7,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.streamdek.tv.nativeapp.data.CloudStreamPlugins
 import com.streamdek.tv.nativeapp.data.Perf
+import com.streamdek.tv.nativeapp.data.Stability
 import com.streamdek.tv.nativeapp.data.SkyStreamPlugins
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
 import okhttp3.ConnectionPool
@@ -18,6 +19,10 @@ class MainApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         Perf.startupMark("application.onCreate")
+        // As early as the process allows: a crash before this runs cannot be recorded. It only
+        // installs a handler in front of the existing one -- see Stability -- so it changes
+        // nothing about what the viewer sees when the app does die.
+        Stability.install(this, BuildConfig.VERSION_NAME)
         // Read once, into the copy the player consults when it is built.
         PlaybackCodecOptions.initialize(this)
         // The `.cs3` engine, so a collection synced from the phone or the portal has somewhere to
