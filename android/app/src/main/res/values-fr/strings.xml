@@ -904,7 +904,7 @@
   <string name="settings_tv_dns_over_https">DNS over HTTPS</string>
   <string name="settings_tv_dns_privacy">Confidentialité DNS</string>
   <string name="settings_tv_doh_provider">Fournisseur DoH</string>
-  <string name="settings_tv_dolby_vision_profile_7_files_mostly_disc">Les fichiers Dolby Vision Profil 7, surtout des remux de disques, s\'affichent en noir sur la plupart des appareils. Lisez-les avec mpv, qui décode la couche de base HEVC. Vous perdez l\'étalonnage Dolby Vision.</string>
+  <string name="settings_tv_dolby_vision_profile_7_files_mostly_disc">Utilise automatiquement la lecture HEVC compatible si Dolby Vision Profil 7 est incompatible ou si le décodage échoue. Conserve Dolby Vision natif lorsque celui-ci est pris en charge. La sortie HDR dépend de l’appareil et du moteur de lecture.</string>
   <string name="settings_tv_draw_the_streaming_networks_row_with_each">Afficher la rangée Services de streaming avec les visuels de chaque service, ou son logo sur une tuile blanche.</string>
   <string name="settings_tv_drop_the_description_from_the_home_spotlight">Retirer la description de la mise en avant de l\'accueil et centrer le titre et ses informations</string>
   <string name="settings_tv_dv7_hevc_fallback">DV7 - repli HEVC</string>

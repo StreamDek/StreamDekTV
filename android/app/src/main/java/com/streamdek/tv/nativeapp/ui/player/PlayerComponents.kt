@@ -15,7 +15,9 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.MarqueeSpacing
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
@@ -36,6 +38,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -202,6 +205,25 @@ internal enum class SubtitlePanelTab(@StringRes val labelRes: Int) {
 }
 
 private val PlayerPanelShape = RoundedCornerShape(28.dp)
+
+/**
+ * How much of the header the source line may occupy, and how far it must stay from the end time.
+ *
+ * The line under the title carries whatever the add-on calls itself, and some of them are a
+ * paragraph: provider, release group, codec, size. Left to fill the row it ran the whole width of
+ * the screen and stopped a hair from "Ends at", which read as a collision even when it was not
+ * one. It is given a share of the header instead, with a ceiling for wide panels and a floor under
+ * the gap, and anything longer scrolls inside that space rather than growing into the gap.
+ */
+private const val PlayerSourceInfoWidthFraction = 0.55f
+private val PlayerSourceInfoMaxWidth = 440.dp
+private val PlayerHeaderGap = 36.dp
+
+/** How the source line scrolls when it does not fit: slowly, and not right away. */
+private const val PlayerSourceMarqueeInitialDelayMs = 700
+private const val PlayerSourceMarqueeRepeatDelayMs = 1_400
+private val PlayerSourceMarqueeVelocity = 26.dp
+private val PlayerSourceMarqueeSpacing = 56.dp
 
 /**
  * The player's own palette. One place, so the bar, the timeline and the panels agree on what
@@ -660,7 +682,7 @@ private fun PlayerHeader(
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(24.dp),
+        horizontalArrangement = Arrangement.spacedBy(PlayerHeaderGap),
     ) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             val eyebrow = currentEpisode?.let(::episodeEyebrow)
@@ -708,13 +730,45 @@ private fun PlayerHeader(
                 currentLabel.takeIf { it.isNotBlank() },
             ).distinct().joinToString("  ·  ")
             if (subline.isNotBlank()) {
-                Text(
-                    text = subline,
-                    style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
-                    color = if (error != null) Color(0xFFFFB4AB) else PlayerTokens.TextTertiary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // A television that has asked for less motion, or one that cannot afford the
+                // redraw, gets the line still and ellipsised. It is bounded either way: the point
+                // of the width is the layout, and the scrolling is only how the rest is reached.
+                val stillLine = LocalTvExperienceSettings.current.reducedMotion ||
+                    rememberPlayerEffectsReduced()
+                val lineWidth = Modifier
+                    .fillMaxWidth(PlayerSourceInfoWidthFraction)
+                    .widthIn(max = PlayerSourceInfoMaxWidth)
+                if (stillLine) {
+                    Text(
+                        text = subline,
+                        modifier = lineWidth.wrapContentWidth(Alignment.Start),
+                        style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
+                        color = if (error != null) Color(0xFFFFB4AB) else PlayerTokens.TextTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    Text(
+                        text = subline,
+                        // Restarted whenever the line changes, so a source switch reads from its
+                        // own beginning rather than continuing the previous one's scroll.
+                        modifier = lineWidth.basicMarquee(
+                            iterations = Int.MAX_VALUE,
+                            initialDelayMillis = PlayerSourceMarqueeInitialDelayMs,
+                            repeatDelayMillis = PlayerSourceMarqueeRepeatDelayMs,
+                            spacing = MarqueeSpacing(PlayerSourceMarqueeSpacing),
+                            velocity = PlayerSourceMarqueeVelocity,
+                        ),
+                        style = androidx.tv.material3.MaterialTheme.typography.bodyMedium,
+                        color = if (error != null) Color(0xFFFFB4AB) else PlayerTokens.TextTertiary,
+                        maxLines = 1,
+                        // Both required by the marquee: it scrolls what does not fit, which means
+                        // the line has to be allowed to measure past its bounds rather than being
+                        // wrapped or cut short with an ellipsis it would then scroll.
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
+                    )
+                }
             }
         }
         if (!isLive && durationSec > 0.0 && positionSec >= 0.0) {
@@ -727,9 +781,13 @@ private fun PlayerHeader(
             }
             Text(
                 text = stringResource(R.string.player_ends_at, endsAt),
+                // Never squeezed and never wrapped: it is short, it is the same length all
+                // evening, and the source line beside it has already been told where to stop.
+                modifier = Modifier.wrapContentWidth(Alignment.End),
                 style = androidx.tv.material3.MaterialTheme.typography.labelLarge,
                 color = PlayerTokens.TextTertiary,
                 maxLines = 1,
+                softWrap = false,
             )
         }
     }

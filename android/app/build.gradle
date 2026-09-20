@@ -155,6 +155,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("androidx.palette:palette-ktx:1.0.0")
+    // Installs src/main/baseline-prof.txt at first run. Already on the classpath transitively,
+    // named here because the whole point of shipping that profile is that this is present: without
+    // it a downloaded APK gets no ahead-of-time compilation of its launch path at all.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("androidx.tv:tv-material:1.0.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
     // The sign-in QR code is encoded on the television rather than fetched from a web service.

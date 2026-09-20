@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.player
 
+import android.app.ActivityManager
 import android.content.Context
 import android.graphics.Color
 import android.net.Uri
@@ -36,6 +37,7 @@ import androidx.media3.ui.PlayerView
 import com.streamdek.tv.R
 import com.streamdek.tv.mpv.MpvPlayerController
 import com.streamdek.tv.mpv.MpvTrackInfo
+import com.streamdek.tv.nativeapp.data.shouldUseDv7Fallback
 import com.streamdek.tv.nativeapp.data.Dv7Hevc
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
@@ -66,6 +68,47 @@ class ExoPlaybackView @JvmOverloads constructor(
     runCatching { localizedContext(context).getString(id) }.getOrElse { context.getString(id) }
   companion object {
     private const val TAG = "StreamDekExoPlayer"
+
+    /**
+     * The most media this view will hold in memory at once, by how much memory the box has.
+     *
+     * Media3's own ceiling is `DEFAULT_MUXED_BUFFER_SIZE`, 137.5 MiB, which is a desktop number:
+     * it was never reached on ordinary streams, so it went unnoticed, and on a 4K remux it is
+     * reached exactly. A Fire TV Stick has about 1.7 GB for the whole television, and this app was
+     * found sitting at 544 MB when the process aborted in native code - a heap dump taken
+     * afterwards had 59.5 MB of 64 KiB buffer segments in it from a single player, with the
+     * allocator's target still set to the full 137.5 MiB.
+     *
+     * These numbers are budgets, not buffer lengths: the durations below still decide how much is
+     * held, and only a stream fat enough to reach the budget first is shortened by it. At the
+     * bitrates televisions actually receive - 8 to 12 Mbit/s - a 64 MiB budget holds the whole 50
+     * seconds asked for and nothing changes. A 4K remux is capped at roughly ten seconds of
+     * forward buffer, which is enough to ride out a hiccup and is what the box can afford.
+     *
+     * The trailer player on the title page was given the same treatment for the same reason, and
+     * from the same signals -- see `trailerMemoryConstrained`. It is the feature player that was
+     * missed, which is the one that holds the most for the longest.
+     */
+    private const val SmallDeviceBufferBytes = 48 * 1024 * 1024
+    private const val MediumDeviceBufferBytes = 64 * 1024 * 1024
+    private const val LargeDeviceBufferBytes = 96 * 1024 * 1024
+
+    /** Which of those budgets this television gets, from its total RAM rather than its heap. */
+    internal fun targetBufferBytes(context: Context): Int {
+      val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        ?: return SmallDeviceBufferBytes
+      if (manager.isLowRamDevice) return SmallDeviceBufferBytes
+      val total = runCatching {
+        ActivityManager.MemoryInfo().also(manager::getMemoryInfo).totalMem
+      }.getOrNull()?.takeIf { it > 0L } ?: return SmallDeviceBufferBytes
+      val gibibytes = total.toDouble() / (1024.0 * 1024.0 * 1024.0)
+      return when {
+        gibibytes < 2.0 -> SmallDeviceBufferBytes
+        gibibytes < 3.0 -> MediumDeviceBufferBytes
+        else -> LargeDeviceBufferBytes
+      }
+    }
+
     private const val DEFAULT_USER_AGENT =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -78,13 +121,10 @@ class ExoPlaybackView @JvmOverloads constructor(
   var onExternalSubtitleErrorCallback: ((message: String) -> Unit)? = null
   override var onTracksChangedCallback: ((List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit)? = null
 
-  /**
-   * Raised when the selected video track is Dolby Vision profile 7 and the viewer has asked for
-   * the fallback. Media3 cannot show these -- see Dv7Hevc -- and, worse, does not fail while
-   * failing to, so the player switches engine on this rather than on an error that never comes.
-   */
-  var onDolbyVisionProfile7Callback: (() -> Unit)? = null
+  /** Requests a DV7 compatibility handoff. True means the owner accepted the switch. */
+  var onDolbyVisionProfile7Callback: (() -> Boolean)? = null
   private var dolbyVisionProfile7Reported = false
+  private var selectedDv7Format: Format? = null
   var onStallChangedCallback: ((Boolean) -> Unit)? = null
   override var onRemoteCenterCallback: (() -> Boolean)? = null
   override var onRemoteDownCallback: (() -> Boolean)? = null
@@ -172,6 +212,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     return super.dispatchKeyEvent(event)
   }
   override fun onDetachedFromWindow() {
+    stoppedAtPositionMs = null
     removeCallbacks(progressTicker)
     clearExternalSubtitleOverlay()
     releasePlayer()
@@ -226,6 +267,39 @@ class ExoPlaybackView @JvmOverloads constructor(
   override fun reloadSource() {
     val current = source ?: return
     prepareSource(current, exoPlayer?.currentPosition ?: 0L)
+  }
+
+  /** Where playback stood when the screen stopped; null when nothing is waiting to be reopened. */
+  private var stoppedAtPositionMs: Long? = null
+
+  override fun releaseWhileStopped() {
+    val active = exoPlayer ?: return
+    if (source == null) return
+    stoppedAtPositionMs = active.currentPosition.coerceAtLeast(0L)
+    Log.i(TAG, "screen stopped at ${stoppedAtPositionMs}ms; releasing the player and its buffers")
+    // Both tickers repost themselves for as long as the view is attached, and a stopped activity
+    // keeps its views attached. One of these was found still running on a backgrounded box half an
+    // hour after anyone had looked at it, reading a position nobody was watching twice a second.
+    // The subtitle timeline itself is left alone, so what the viewer chose is still there on the
+    // way back; only the loop reading it stops.
+    removeCallbacks(progressTicker)
+    removeCallbacks(externalSubtitleTicker)
+    // Deliberately not clearCallbacks(): this is a pause in the screen's life, not its end, and
+    // the callbacks are how the restored player reports that it is back.
+    releasePlayer()
+  }
+
+  override fun restoreAfterStop() {
+    val resumeAt = stoppedAtPositionMs ?: return
+    stoppedAtPositionMs = null
+    val current = source ?: return
+    // A source that was replaced while the screen was away has already built its own player, and
+    // reopening the old URL over it would take the viewer back to what they had left behind.
+    if (exoPlayer != null) return
+    Log.i(TAG, "screen started; reopening at ${resumeAt}ms")
+    post(progressTicker)
+    if (externalSubtitleCues != null) post(externalSubtitleTicker)
+    prepareSource(current, resumeAt)
   }
 
   override fun setPaused(paused: Boolean) {
@@ -455,6 +529,7 @@ class ExoPlaybackView @JvmOverloads constructor(
 
   private fun prepareSource(url: String, startPositionMs: Long = 0L) {
     dolbyVisionProfile7Reported = false
+    selectedDv7Format = null
     // A new source is a new broadcast: what the last one proved about its captions says nothing here.
     confirmedCaptionKeys.clear()
     lastTracks = null
@@ -478,11 +553,15 @@ class ExoPlaybackView @JvmOverloads constructor(
         setParameters(buildUponParameters().setTunnelingEnabled(true))
       }
     }
+    val budget = targetBufferBytes(context)
     val loadControl = DefaultLoadControl.Builder()
       // Start quickly, retain enough forward/back buffer for stable playback and seeks.
       .setBufferDurationsMs(10_000, 50_000, 750, 2_500)
       .setBackBuffer(15_000, true)
+      // Without this the allocator's ceiling is Media3's desktop default; see targetBufferBytes.
+      .setTargetBufferBytes(budget)
       .build()
+    Log.i(TAG, "buffer budget ${budget / (1024 * 1024)} MiB for 50s forward + 15s back")
     val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
     if (drmLicenseType.equals("clearkey", ignoreCase = true) && drmClearKeys.isNotEmpty()) {
       runCatching { clearKeyDrmSessionManager(drmClearKeys) }
@@ -567,6 +646,8 @@ class ExoPlaybackView @JvmOverloads constructor(
 
     override fun onPlayerError(error: PlaybackException) {
       Log.e(TAG, "Media3 playback failed", error)
+      if (error.errorCode in PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED &&
+        requestDv7Fallback(decoderFailed = true)) return
       onErrorCallback?.invoke(error.localizedMessage ?: viewerText(R.string.player_source_unplayable))
     }
 
@@ -590,16 +671,26 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
   }
 
-  /**
-   * Whether the video track that was just selected is Dolby Vision profile 7.
-   *
-   * Checked here rather than inside a renderer because this is the earliest point at which the
-   * chosen format is known to the app, and because it takes no subclassing of Media3 to reach.
-   * Reported once per source: the listener fires again on every track change, and switching engine
-   * twice for the same file would restart playback twice.
-   */
+  private fun requestDv7Fallback(decoderFailed: Boolean): Boolean {
+    if (dolbyVisionProfile7Reported) return false
+    val format = selectedDv7Format ?: exoPlayer?.videoFormat?.takeIf(Dv7Hevc::isDolbyVisionProfile7) ?: return false
+    if (!shouldUseDv7Fallback(
+        enabled = PlaybackCodecOptions.dv7HevcFallback,
+        profile7 = Dv7Hevc.isDolbyVisionProfile7(format),
+        nativeSupported = if (decoderFailed) false else Dv7Hevc.supportsNativePlayback(format, display),
+        decoderFailed = decoderFailed,
+        protectedContent = format.drmInitData != null,
+      )) return false
+    // The owner guards engine retries too. Do not swallow an error if it declines the handoff.
+    val switched = onDolbyVisionProfile7Callback?.invoke() == true
+    dolbyVisionProfile7Reported = switched
+    return switched
+  }
+
+  /** Inspect only the selected video; unknown profiles do not activate this setting. */
   private fun reportDolbyVisionProfile7(tracks: Tracks) {
     if (dolbyVisionProfile7Reported) return
+    selectedDv7Format = null
     tracks.groups.forEach { group ->
       if (group.type != C.TRACK_TYPE_VIDEO) return@forEach
       for (index in 0 until group.length) {
@@ -607,10 +698,8 @@ class ExoPlaybackView @JvmOverloads constructor(
         val format = group.getTrackFormat(index)
         if (format.sampleMimeType != MimeTypes.VIDEO_DOLBY_VISION) continue
         Dv7Hevc.log("Dolby Vision video track selected: " + Dv7Hevc.describe(format))
-        if (PlaybackCodecOptions.dv7HevcFallback && Dv7Hevc.isDolbyVisionProfile7(format)) {
-          dolbyVisionProfile7Reported = true
-          onDolbyVisionProfile7Callback?.invoke()
-        }
+        selectedDv7Format = format.takeIf(Dv7Hevc::isDolbyVisionProfile7)
+        requestDv7Fallback(decoderFailed = false)
         return
       }
     }

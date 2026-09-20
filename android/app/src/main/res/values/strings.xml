@@ -867,7 +867,7 @@
   <string name="settings_tv_dns_over_https">DNS over HTTPS</string>
   <string name="settings_tv_dns_privacy">DNS privacy</string>
   <string name="settings_tv_doh_provider">DoH provider</string>
-  <string name="settings_tv_dolby_vision_profile_7_files_mostly_disc">Dolby Vision Profile 7 files, mostly disc remuxes, play as a black picture on most devices. Play them with mpv instead, which decodes the HEVC base layer. You lose the Dolby Vision grade.</string>
+  <string name="settings_tv_dolby_vision_profile_7_files_mostly_disc">Automatically use compatible HEVC playback if Dolby Vision Profile 7 is unsupported or decoding fails. Keeps native Dolby Vision when supported. HDR output depends on the device and playback engine.</string>
   <string name="settings_tv_draw_the_streaming_networks_row_with_each">Draw the Streaming Networks row with each service\'s own artwork, or with its logo on a white tile.</string>
   <string name="settings_tv_drop_the_description_from_the_home_spotlight">Drop the description from the Home spotlight and centre the title and its details</string>
   <string name="settings_tv_dv7_hevc_fallback">DV7 - HEVC Fallback</string>

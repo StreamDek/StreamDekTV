@@ -64,4 +64,21 @@ interface MpvPlayerController {
 
     /** What this engine can say about the stream it is pulling, for the info panel. */
     fun playbackStats(): PlaybackStats = PlaybackStats()
+
+    /**
+     * Lets go of everything held for the current source, keeping only where to pick it up.
+     *
+     * Called when the screen stops - the viewer opened another app, the television went to
+     * standby. Nothing is being watched at that point, and what the engine is holding is a great
+     * deal: a released Media3 player hands its buffer pool back, which on a television stick is
+     * tens of megabytes of the little there is. Leaving it held is what left this app resident at
+     * half a gigabyte with nothing on screen, and is why the system kept killing it for memory.
+     *
+     * Only Media3 implements it. mpv's pipeline lives on a surface the window takes with it, so it
+     * already lets go on its own and has nothing to do here.
+     */
+    fun releaseWhileStopped() = Unit
+
+    /** Reopens what [releaseWhileStopped] let go of, at the position it was let go at. */
+    fun restoreAfterStop() = Unit
 }

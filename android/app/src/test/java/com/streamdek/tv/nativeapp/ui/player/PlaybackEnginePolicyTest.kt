@@ -23,6 +23,56 @@ class PlaybackEnginePolicyTest {
   }
 
   @Test
+  fun `a source that has played is recovered in place rather than handed to mpv`() {
+    assertFalse(
+      shouldAutoFallbackToMpv(
+        "Auto",
+        ActivePlaybackEngine.Media3,
+        fallbackUsed = false,
+        sourceHasPlayed = true,
+      ),
+    )
+    assertTrue(
+      shouldAutoFallbackToMpv(
+        "Auto",
+        ActivePlaybackEngine.Media3,
+        fallbackUsed = false,
+        sourceHasPlayed = false,
+      ),
+    )
+  }
+
+  @Test
+  fun `only a stored source that never opened counts as expired`() {
+    assertTrue(shouldTreatAsExpiredStoredSource(startedFromRememberedSource = true, sourceHasPlayed = false))
+    // The reported fault: an episode several minutes in, back in loading for an engine swap, was
+    // being read as an expired stored link and interrupted to say so.
+    assertFalse(shouldTreatAsExpiredStoredSource(startedFromRememberedSource = true, sourceHasPlayed = true))
+    assertFalse(shouldTreatAsExpiredStoredSource(startedFromRememberedSource = false, sourceHasPlayed = false))
+    assertFalse(shouldTreatAsExpiredStoredSource(startedFromRememberedSource = false, sourceHasPlayed = true))
+  }
+
+  @Test
+  fun `a source that has played waits longest for its picture to come back`() {
+    assertEquals(
+      RememberedSourceStartTimeoutMs,
+      sourceStartWindowMs(startedFromRememberedSource = true, sourceHasPlayed = false),
+    )
+    assertEquals(
+      SourceStartTimeoutMs,
+      sourceStartWindowMs(startedFromRememberedSource = false, sourceHasPlayed = false),
+    )
+    assertEquals(
+      SourceReopenTimeoutMs,
+      sourceStartWindowMs(startedFromRememberedSource = true, sourceHasPlayed = true),
+    )
+    assertEquals(
+      SourceReopenTimeoutMs,
+      sourceStartWindowMs(startedFromRememberedSource = false, sourceHasPlayed = true),
+    )
+  }
+
+  @Test
   fun `live retry reloads then refetches before giving up`() {
     assertEquals(LiveRetryAction.Reload, liveRetryAction(1))
     assertEquals(LiveRetryAction.Reload, liveRetryAction(2))

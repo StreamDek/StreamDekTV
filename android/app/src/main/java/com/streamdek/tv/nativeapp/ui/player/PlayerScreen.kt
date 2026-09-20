@@ -145,6 +145,42 @@ internal const val NextEpisodeSourceResolveTimeoutMs = 12_000L
 internal const val PlaybackSeekBufferingGraceMs = 8_000L
 
 /**
+ * How long a source may sit in loading before the player stops waiting for a picture.
+ *
+ * Three ropes, because the three situations are not the same thing. A stored URL that has never
+ * opened is a guess and gets the shortest one; a freshly resolved URL that has never opened gets a
+ * cold start's worth; and a URL that has already played and is being reopened - a new engine, a
+ * dropped connection - gets the longest, because it also has an engine to bring up and the
+ * viewer's position to seek back to. Only the first of those is evidence a link has expired.
+ */
+internal const val RememberedSourceStartTimeoutMs = 9_000L
+internal const val SourceStartTimeoutMs = 30_000L
+internal const val SourceReopenTimeoutMs = 45_000L
+
+/** Which of those three ropes this attempt at a picture is on. */
+internal fun sourceStartWindowMs(
+    startedFromRememberedSource: Boolean,
+    sourceHasPlayed: Boolean,
+): Long = when {
+    sourceHasPlayed -> SourceReopenTimeoutMs
+    startedFromRememberedSource -> RememberedSourceStartTimeoutMs
+    else -> SourceStartTimeoutMs
+}
+
+/**
+ * Whether a source still without a picture should be read as a stored link that has expired.
+ *
+ * Only ever true of a stored URL that has not opened *in this session*. A URL that has produced a
+ * picture has answered the question the stored link posed, and whatever it is doing now - waiting
+ * on a new engine, reopening after a dropped connection - is not expiry, must not be announced as
+ * expiry, and must not cost the viewer the stored source that was working a moment ago.
+ */
+internal fun shouldTreatAsExpiredStoredSource(
+    startedFromRememberedSource: Boolean,
+    sourceHasPlayed: Boolean,
+): Boolean = startedFromRememberedSource && !sourceHasPlayed
+
+/**
  * Live feeds drop out routinely (upstream restarts, ad breaks, CDN switches). Mobile retries
  * indefinitely; the TV app uses a bounded retry budget before surfacing a manual retry so a broken
  * outage never dumps the viewer out of the channel.
@@ -284,13 +320,24 @@ internal fun initialPlaybackEngine(preference: String?): ActivePlaybackEngine =
 /** How often playback position is written back while a title is running. */
 private const val PROGRESS_CHECKPOINT_INTERVAL_MS = 30_000L
 
+/**
+ * Whether a failure should be answered by handing the source to mpv.
+ *
+ * The swap exists for what Media3 cannot decode, and that is a verdict about a source Media3 never
+ * managed to play. Once it has played - minutes of picture, then a failure - the codec question is
+ * settled and the failure is the connection or the link, which changing engines does not fix. It
+ * only costs the viewer a full engine restart and their audio and subtitle selections, so a source
+ * that has played is recovered in place instead and this stays in reserve for if that fails too.
+ */
 internal fun shouldAutoFallbackToMpv(
     preference: String?,
     activeEngine: ActivePlaybackEngine,
     fallbackUsed: Boolean,
+    sourceHasPlayed: Boolean = false,
 ): Boolean = preference.equals("Auto", ignoreCase = true) &&
     activeEngine == ActivePlaybackEngine.Media3 &&
-    !fallbackUsed
+    !fallbackUsed &&
+    !sourceHasPlayed
 
 @Composable
 fun PlayerScreen(
@@ -400,6 +447,10 @@ fun PlayerScreen(
     var continueSourceChoiceRequired by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
     /** Where to pick up after an engine swap. Unkeyed for the same reason as the two above. */
     var pendingEngineResumePositionSec by remember { mutableStateOf<Double?>(null) }
+    // Engine-local track IDs are not portable from Media3 to mpv.
+    var dv7AudioToRestore by remember(currentSourceUrl) { mutableStateOf<MpvTrackInfo?>(null) }
+    var dv7SubtitleToRestore by remember(currentSourceUrl) { mutableStateOf<MpvTrackInfo?>(null) }
+    var dv7SubtitlesOffToRestore by remember(currentSourceUrl) { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var media3Buffering by remember { mutableStateOf(false) }
     var recentPlaybackStalls by remember(request.mediaId, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(emptyList<Long>()) }
@@ -474,6 +525,16 @@ fun PlayerScreen(
      * must be dropped rather than tried again on the next resume.
      */
     var startedFromRememberedSource by remember { mutableStateOf(false) }
+    /**
+     * The source URL that has already been reopened in place once after failing mid-playback.
+     *
+     * Most failures that arrive minutes into a healthy session are the connection dropping or a
+     * signed URL lapsing, and the same stream hands out a working one again — so the first thing
+     * tried is that stream, at the viewer's position, rather than a walk through the source list
+     * that costs them their place and their picture quality. Held per URL: a new source brings its
+     * own reopen, and a source that fails twice has said enough and moves on to the list.
+     */
+    var reopenedSourceUrl by remember { mutableStateOf<String?>(null) }
     var lastWorkingLabel by remember { mutableStateOf<String?>(null) }
     var lastWorkingRequestHeaders by remember { mutableStateOf(defaultPlaybackHeaders) }
     var liveReconnectJob by remember { mutableStateOf<Job?>(null) }
@@ -1813,12 +1874,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     LaunchedEffect(currentSourceUrl, loading, error) {
         val source = currentSourceUrl
         if (isLive || source.isNullOrBlank() || !loading || error != null) return@LaunchedEffect
-        // A stored URL gets a much shorter rope. It is a guess — a good one, but a guess — and an
-        // expired link often hangs rather than erroring, so waiting the full window would turn the
-        // fast path into the slowest one there is. There is a proper resolve to fall back to, and
-        // no reason to make anyone watch a spinner while deciding to use it.
-        val startedRemembered = startedFromRememberedSource
-        delay(if (startedRemembered) 9_000L else 30_000L)
+        // Whether *this* URL has ever produced a picture, which is the one thing separating a link
+        // that was dead on arrival from a session being reopened over a link that demonstrably
+        // works. The screen returns to loading for reasons that have nothing to do with the URL -
+        // the automatic Media3 -> mpv swap, the Dolby Vision profile 7 hand-off, the in-place
+        // reopen below - and judging those by the remembered-source rope is what interrupted a
+        // healthy episode minutes in to announce the source had expired, then threw away a stored
+        // source that had been playing perfectly well.
+        val sourceHasPlayed = lastWorkingSourceUrl == source
+        // A stored URL that has never opened gets a much shorter rope. It is a guess — a good one,
+        // but a guess — and an expired link often hangs rather than erroring, so waiting the full
+        // window would turn the fast path into the slowest one there is. There is a proper resolve
+        // to fall back to, and no reason to make anyone watch a spinner while deciding to use it.
+        val startedRemembered = shouldTreatAsExpiredStoredSource(startedFromRememberedSource, sourceHasPlayed)
+        delay(sourceStartWindowMs(startedFromRememberedSource, sourceHasPlayed))
         if (currentSourceUrl != source || !loading || error != null) return@LaunchedEffect
         if (startedRemembered) {
             TvDebugLogger.w("Player", "remembered source did not start; resolving from scratch")
@@ -1830,7 +1899,10 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             scope.launch { loadPlayback(forceRefresh = true) }
             return@LaunchedEffect
         }
-        TvDebugLogger.w("Player", "startup stalled before first frame source=${source.substringBefore('?')}")
+        TvDebugLogger.w(
+            "Player",
+            "stalled before picture source=${source.substringBefore('?')} everStarted=$sourceHasPlayed position=$positionSec",
+        )
         loading = false
         error = playerResources.getString(R.string.player_source_not_delivering)
         controlsVisible = true
@@ -2217,6 +2289,32 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             }
         }
     }
+
+    // Nothing is being watched once the television has gone somewhere else, and the player is the
+    // most expensive thing this app holds. Media3 keeps its player - and its buffer pool - across
+    // a lost surface, so leaving the screen composed behind another app left tens of megabytes of
+    // buffered media resident with nothing on screen. That is what the system kept killing this
+    // app for, and it is what the process was carrying when it aborted in native code. mpv needs
+    // none of this; its pipeline goes with the surface.
+    val playerLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(playerLifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
+                    playerView?.releaseWhileStopped()
+                    // The account learns the position here rather than only on the way out. A
+                    // stopped process is the one the system reclaims first, and a viewer whose box
+                    // killed the app while they were elsewhere used to come back to whatever the
+                    // last thirty-second checkpoint happened to have caught.
+                    scope.launch { syncProgressIfEligible() }
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_START -> playerView?.restoreAfterStop()
+                else -> Unit
+            }
+        }
+        playerLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { playerLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     }
     RemoteLifecycleEffects()
 
@@ -2526,13 +2624,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             factory = { context ->
                 val player = createPlayerView(context, resolvedRenderSurface, activePlaybackEngine)
                 TvDebugLogger.i("Player", "player view created engine=${activePlaybackEngine.name} view=${player.javaClass.simpleName}")
-                // Dolby Vision profile 7 is the one case Media3 loses silently: it decodes, reports
-                // frames, and shows black, so the error-driven fallback below never fires. The
-                // stream is recognised the moment its track is selected and handed to mpv, which
-                // decodes the HEVC base layer and plays it. See Dv7Hevc.
+                // Keep native DV7 when supported; accept one compatibility handoff per source.
                 (player as? ExoPlaybackView)?.onDolbyVisionProfile7Callback = {
                     if (activePlaybackEngine == ActivePlaybackEngine.Media3 && !autoEngineFallbackUsed) {
                         autoEngineFallbackUsed = true
+                        dv7AudioToRestore = audioTracks.firstOrNull { it.id == selectedAudioId }
+                        dv7SubtitleToRestore = subtitleTracks.firstOrNull { it.id == selectedSubtitleId }
+                        dv7SubtitlesOffToRestore = audioTracks.isNotEmpty() && selectedSubtitleId < 0 && selectedExternalSubtitleId == null
                         pendingEngineResumePositionSec = positionSec.takeIf { it > 0.0 }
                         loading = true
                         error = null
@@ -2540,7 +2638,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         subtitleTracks = emptyList()
                         TvDebugLogger.i("Player", "Dolby Vision profile 7 detected; switching to libMPV at ${positionSec}s")
                         activePlaybackEngine = ActivePlaybackEngine.MPV
-                    }
+                        true
+                    } else false
                 }
                 (player as? ExoPlaybackView)?.onStallChangedCallback = { buffering ->
                     media3Buffering = buffering
@@ -2813,7 +2912,20 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             "Player",
                             "onError mediaType=${request.mediaType} mediaId=${request.mediaId} source=${currentSourceUrl ?: "none"} label=$currentLabel position=$positionSec duration=$durationSec message=$message",
                         )
-                        if (shouldAutoFallbackToMpv(playbackPreferences.playerEngine, activePlaybackEngine, autoEngineFallbackUsed)) {
+                        // Whether this URL has ever produced a picture. Nearly every decision below
+                        // turns on it, because a source that has played and a source that never
+                        // opened fail for entirely different reasons and deserve entirely different
+                        // answers.
+                        val sourceHasPlayed = !isLive &&
+                            lastWorkingSourceUrl != null &&
+                            lastWorkingSourceUrl == currentSourceUrl
+                        if (shouldAutoFallbackToMpv(
+                                playbackPreferences.playerEngine,
+                                activePlaybackEngine,
+                                autoEngineFallbackUsed,
+                                sourceHasPlayed,
+                            )
+                        ) {
                             autoEngineFallbackUsed = true
                             pendingEngineResumePositionSec = positionSec.takeIf { it > 0.0 }
                             loading = true
@@ -2831,9 +2943,13 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             }
                         } else {
                             // A stored URL that will not open has gone stale — a debrid link that
-                            // expired, a signed CDN URL that lapsed. Drop it before recovering, so
-                            // the next resume resolves properly instead of starting here again.
-                            if (startedFromRememberedSource) {
+                            // expired, a signed CDN URL that lapsed — and is dropped before
+                            // recovering, so the next resume resolves properly instead of starting
+                            // here again. One that has been playing is a different story entirely:
+                            // it has been proven, and this is the session dropping rather than the
+                            // link being wrong. Forgetting it there cost the viewer their fast
+                            // resume for a source that was never at fault.
+                            if (startedFromRememberedSource && !sourceHasPlayed) {
                                 startedFromRememberedSource = false
                                 repository.forgetRememberedStream(
                                     request.mediaType,
@@ -2842,9 +2958,27 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                                 )
                                 TvDebugLogger.i("Player", "remembered source stale; resolving from scratch")
                             }
-                            error = "Source failed. Trying another stream…"
-                            loading = true
-                            beginSourceFallback(message)
+                            if (sourceHasPlayed && !sourceFallbackInProgress && reopenedSourceUrl != currentSourceUrl) {
+                                // Ask the same stream again at the same second before telling the
+                                // viewer anything. No error, no source list, no notice: a dropped
+                                // connection or a lapsed signed URL comes back from this in a
+                                // couple of seconds, and there is nothing worth reporting about a
+                                // session that recovers itself.
+                                reopenedSourceUrl = currentSourceUrl
+                                pendingEngineResumePositionSec = positionSec.takeIf { it > 0.0 }
+                                loading = true
+                                error = null
+                                TvDebugLogger.w(
+                                    "Player",
+                                    "playing source dropped at ${positionSec}s; reopening it in place: $message",
+                                )
+                                playerView?.reloadSource()
+                                playerView?.setPaused(false)
+                            } else {
+                                error = "Source failed. Trying another stream…"
+                                loading = true
+                                beginSourceFallback(message)
+                            }
                         }
                     }
                     onTracksChangedCallback = { audio, subtitles, selectedAudioTrackId, selectedSubtitleTrackId ->
@@ -2905,6 +3039,28 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             )?.let { preferredTrack ->
                                 if (selectedSubtitleTrackId != preferredTrack.id) {
                                     setSubtitleTrack(preferredTrack.id)
+                                }
+                            }
+                        }
+                        if (activePlaybackEngine == ActivePlaybackEngine.MPV) {
+                            dv7AudioToRestore?.let { wanted ->
+                                matchingEngineTrack(wanted, audio)?.let { restored ->
+                                    dv7AudioToRestore = null
+                                    selectedAudioId = restored.id
+                                    if (selectedAudioTrackId != restored.id) setAudioTrack(restored.id)
+                                }
+                            }
+                            if (dv7SubtitlesOffToRestore) {
+                                dv7SubtitlesOffToRestore = false
+                                selectedSubtitleId = -1
+                                disableSubtitleTrack()
+                            } else if (selectedExternalSubtitleId == null) {
+                                dv7SubtitleToRestore?.let { wanted ->
+                                    matchingEngineTrack(wanted, subtitles)?.let { restored ->
+                                        dv7SubtitleToRestore = null
+                                        selectedSubtitleId = restored.id
+                                        if (selectedSubtitleTrackId != restored.id) setSubtitleTrack(restored.id)
+                                    }
                                 }
                             }
                         }
