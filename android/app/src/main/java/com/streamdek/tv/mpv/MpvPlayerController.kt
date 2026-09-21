@@ -62,6 +62,14 @@ interface MpvPlayerController {
     fun setSubtitlePosition(position: Int) = Unit
     fun setSubtitleDelay(seconds: Double) = Unit
 
+    /**
+     * Moves the sound against the picture: positive plays it later. Both engines implement it;
+     * [audioDelaySupported] says whether it can take effect on what is playing now - Media3 cannot
+     * while tunneled, where the hardware keeps sound and picture together itself.
+     */
+    fun setAudioDelay(seconds: Double) = Unit
+    fun audioDelaySupported(): Boolean = false
+
     /** What this engine can say about the stream it is pulling, for the info panel. */
     fun playbackStats(): PlaybackStats = PlaybackStats()
 

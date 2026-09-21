@@ -143,6 +143,8 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var preferredAudioLanguage = "en"
   private var subtitlePositionPercent = 92
   private var subtitleDelaySeconds = 0.0
+  /** Read by the renderers each player here is built with; see [SyncAdjustableRenderersFactory]. */
+  private val playbackOffsets = PlaybackOffsets()
   private var pendingSubtitles: List<MediaItem.SubtitleConfiguration> = emptyList()
   private val subtitleExecutor = Executors.newCachedThreadPool()
   private val subtitleRequestGeneration = AtomicLong()
@@ -476,12 +478,27 @@ class ExoPlaybackView @JvmOverloads constructor(
   override fun selectExternalSubtitleTrack(trackId: String): Boolean = false
 
   override fun setSubtitleDelay(seconds: Double) {
-    subtitleDelaySeconds = seconds.coerceIn(-15.0, 15.0)
+    subtitleDelaySeconds = seconds.coerceIn(-SUBTITLE_DELAY_LIMIT_SECONDS, SUBTITLE_DELAY_LIMIT_SECONDS)
+    // Embedded tracks and captions, through the text renderer; a loaded subtitle file, through the
+    // overlay ticker below. Only one of the two is ever showing.
+    playbackOffsets.subtitleDelayUs = (subtitleDelaySeconds * 1_000_000.0).toLong()
     if (externalSubtitleCues != null) {
       removeCallbacks(externalSubtitleTicker)
       externalSubtitleTicker.run()
     }
   }
+
+  override fun setAudioDelay(seconds: Double) {
+    playbackOffsets.audioDelayUs = (seconds.coerceIn(-AUDIO_DELAY_LIMIT_SECONDS, AUDIO_DELAY_LIMIT_SECONDS) * 1_000_000.0).toLong()
+  }
+
+  /**
+   * Not with tunneled output, where the hardware keeps picture and sound together without reading
+   * the clock the delay moves. Asked of the tracks actually selected rather than of the setting:
+   * tunneling that was switched on but could not be used for this stream leaves the delay working.
+   */
+  @Suppress("DEPRECATION")
+  override fun audioDelaySupported(): Boolean = runCatching { exoPlayer?.isTunnelingEnabled != true }.getOrDefault(true)
 
   override fun setSubtitleFontSize(size: Int) {
     subtitleView?.setApplyEmbeddedStyles(false)
@@ -540,7 +557,7 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setDefaultRequestProperties(requestHeaders)
     // A fresh jar per player: cookies one stream's CDN hands out never reach another channel.
     val dataSourceFactory = DefaultDataSource.Factory(context, CookieJarDataSourceFactory(httpFactory, requestHeaders))
-    val renderers = DefaultRenderersFactory(context)
+    val renderers = SyncAdjustableRenderersFactory(context, playbackOffsets)
       .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
       .setEnableDecoderFallback(true)
       // Queue codec work off the playback thread on API 24+ TVs.

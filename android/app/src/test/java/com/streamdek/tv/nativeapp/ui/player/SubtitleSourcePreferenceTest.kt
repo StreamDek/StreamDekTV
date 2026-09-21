@@ -14,8 +14,10 @@ class SubtitleSourcePreferenceTest {
         assertEquals(85_000_000L, delayedSubtitlePositionUs(100_000L, 15.0))
         assertEquals(115_000_000L, delayedSubtitlePositionUs(100_000L, -15.0))
         assertEquals(100_000_000L, delayedSubtitlePositionUs(100_000L, 0.0))
-        assertEquals(85_000_000L, delayedSubtitlePositionUs(100_000L, 30.0))
-        assertEquals(-15.0..15.0, SubtitleDelayRange)
+        // Held to the two-minute range, not the fifteen seconds it used to stop at.
+        assertEquals(70_000_000L, delayedSubtitlePositionUs(100_000L, 30.0))
+        assertEquals(-20_000_000L, delayedSubtitlePositionUs(100_000L, 500.0))
+        assertEquals(-120.0..120.0, SubtitleDelayRange)
     }
     @Test
     fun `all sources is the safe default for missing or unknown values`() {

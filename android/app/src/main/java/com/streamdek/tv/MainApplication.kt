@@ -10,6 +10,7 @@ import com.streamdek.tv.nativeapp.data.Perf
 import com.streamdek.tv.nativeapp.data.Stability
 import com.streamdek.tv.nativeapp.data.SkyStreamPlugins
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
+import com.streamdek.tv.nativeapp.ui.player.AudioSyncOptions
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
@@ -25,6 +26,7 @@ class MainApplication : Application(), ImageLoaderFactory {
         Stability.install(this, BuildConfig.VERSION_NAME)
         // Read once, into the copy the player consults when it is built.
         PlaybackCodecOptions.initialize(this)
+        AudioSyncOptions.initialize(this)
         // The `.cs3` engine, so a collection synced from the phone or the portal has somewhere to
         // load into. Cheap: it only opens a preferences file until a source is switched on.
         CloudStreamPlugins.initialize(this)

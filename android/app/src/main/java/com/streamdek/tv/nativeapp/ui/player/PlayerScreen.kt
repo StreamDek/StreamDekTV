@@ -599,6 +599,9 @@ fun PlayerScreen(
     // Not persisted: a delay corrects one badly-timed subtitle file, and carrying it into the next
     // episode would silently desynchronise a file that was fine.
     var subtitleDelay by remember(currentSourceUrl) { mutableDoubleStateOf(0.0) }
+    // Starts from this TV's default (Settings > Audio), then belongs to this stream alone: a
+    // correction for one release carried into the next would put a synced one out.
+    var audioDelay by remember(currentSourceUrl) { mutableDoubleStateOf(AudioSyncOptions.defaultDelaySeconds) }
     var playbackStats by remember { mutableStateOf<PlaybackStats?>(null) }
     var streamsReloading by remember { mutableStateOf(false) }
     /**
@@ -1699,6 +1702,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         playerView?.setSubtitleFontSize(subtitleFontSize)
         playerView?.setSubtitlePosition(subtitlePosition)
         playerView?.setSubtitleDelay(subtitleDelay)
+        playerView?.setAudioDelay(audioDelay)
         // Resume is applied by onLoad after the engine reports this media ready. A timed seek here
         // could outlive an episode switch and land the previous episode's timestamp on the next.
     }
@@ -4096,6 +4100,12 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         onSubtitleDelay = {
                             subtitleDelay = it
                             playerView?.setSubtitleDelay(it)
+                        },
+                        audioDelay = audioDelay,
+                        audioDelaySupported = playerView?.audioDelaySupported() == true,
+                        onAudioDelay = {
+                            audioDelay = it
+                            playerView?.setAudioDelay(it)
                         },
                         // Refreshes the list in place. Leaving for the picker would tear down
                         // playback to answer a question about what else is available, which is the

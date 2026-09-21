@@ -28,8 +28,10 @@ import androidx.compose.material.icons.outlined.Accessibility
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.ClosedCaption
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Palette
@@ -142,6 +144,11 @@ import com.streamdek.tv.nativeapp.ui.TvChromeSurface
 import com.streamdek.tv.nativeapp.ui.appLanguageOptionDescriptions
 import com.streamdek.tv.nativeapp.ui.appLanguageOptions
 import com.streamdek.tv.nativeapp.ui.player.normalizeSubtitleDefaultSource
+import com.streamdek.tv.nativeapp.ui.player.AUDIO_DELAY_LIMIT_SECONDS
+import com.streamdek.tv.nativeapp.ui.player.AudioSyncOptions
+import com.streamdek.tv.nativeapp.ui.player.audioDelayStep
+import com.streamdek.tv.nativeapp.ui.player.signedDelay
+import com.streamdek.tv.nativeapp.ui.player.steppedDelay
 import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
 import com.streamdek.tv.nativeapp.ui.streamDekThemeAccent
 import com.streamdek.tv.nativeapp.update.AppUpdateManager
@@ -220,7 +227,12 @@ private enum class SettingsDestination(
     LiveTv(R.string.settings_category_appearance, R.string.live_tv, R.string.settings_dest_live_tv_description, "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
     Accessibility(R.string.settings_category_appearance, R.string.settings_dest_accessibility, R.string.settings_dest_accessibility_description, "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
 
-    Playback(R.string.settings_category_playback, R.string.settings_dest_player, R.string.settings_dest_player_description, "engine mpv media3 exoplayer decoder display surface audio language subtitles live progress", Icons.Outlined.PlayArrow),
+    Playback(R.string.settings_category_playback, R.string.settings_dest_player, R.string.settings_dest_player_description, "engine mpv media3 exoplayer decoder display surface live progress sleep idle compatibility", Icons.Outlined.PlayArrow),
+    // Their own pages rather than rows under the player: a language, a delay and a list of
+    // sources are what people come looking for, and under "Player" they sat between the engine
+    // choice and the sleep timer.
+    Subtitles(R.string.settings_category_playback, R.string.player_subtitles, R.string.settings_dest_subtitles_description, "subtitles subtitle captions language secondary preferred only auto load sources addons timing delay sync", Icons.Outlined.ClosedCaption),
+    Audio(R.string.settings_category_playback, R.string.player_audio, R.string.settings_dest_audio_description, "audio sound language spoken dub delay sync synchronisation lip sync lag latency soundbar receiver bluetooth", Icons.Outlined.GraphicEq),
     SkipAndAutoplay(R.string.settings_category_playback, R.string.settings_dest_skip_autoplay, R.string.settings_dest_skip_autoplay_description, "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
     Streams(R.string.settings_category_playback, R.string.settings_dest_streams, R.string.settings_dest_streams_description, "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
 
@@ -548,33 +560,6 @@ fun SettingsScreen(
                     SettingsDropdownRow(stringResource(R.string.settings_tv_default_player), stringResource(R.string.settings_tv_auto_uses_media3_first_with_one_mpv), normalizePlayerEngine(playbackPrefs?.playerEngine), listOf(PlayerEngineValues.AUTO to stringResource(R.string.settings_opt_auto), PlayerEngineValues.EXOPLAYER to stringResource(R.string.settings_opt_media3_exoplayer), PlayerEngineValues.MPV to PlayerEngineValues.MPV)) { value ->
                         savePreference(R.string.settings_tv_default_player) { repository.updatePlaybackPreferences(mapOf("playerEngine" to value)) }
                     }
-                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_audio), stringResource(R.string.settings_tv_select_the_first_matching_audio_track), normalizeLanguage(playbackPrefs?.defaultAudioLanguage), languageOptions(includeOff = false)) { value ->
-                        savePreference(R.string.settings_tv_default_audio) { repository.updatePlaybackPreferences(mapOf("defaultAudioLanguage" to value)) }
-                    }
-                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_subtitles), stringResource(R.string.settings_tv_choose_a_preferred_subtitle_language_or_leave), normalizeLanguage(playbackPrefs?.defaultSubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
-                        savePreference(R.string.settings_tv_default_subtitles) { repository.updatePlaybackPreferences(mapOf("defaultSubtitleLanguage" to value)) }
-                    }
-                    SettingsDropdownRow(stringResource(R.string.settings_tv_secondary_subtitles), stringResource(R.string.settings_tv_used_only_when_the_preferred_language_is), normalizeLanguage(playbackPrefs?.secondarySubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
-                        savePreference(R.string.settings_tv_secondary_subtitles) { repository.updatePlaybackPreferences(mapOf("secondarySubtitleLanguage" to value)) }
-                    }
-                    SettingsToggleRow(stringResource(R.string.settings_tv_auto_load_subtitles), stringResource(R.string.settings_tv_automatically_select_matching_subtitles_when_playback_starts), playbackPrefs?.autoLoadSubtitles != false, selectedRequester) { next, complete ->
-                        savePreference(R.string.settings_tv_auto_load_subtitles, complete) { repository.updatePlaybackPreferences(mapOf("autoLoadSubtitles" to next)) }
-                    }
-                    SettingsToggleRow(stringResource(R.string.settings_tv_show_only_preferred_language), stringResource(R.string.settings_tv_hide_embedded_and_add_on_subtitles_in), playbackPrefs?.showOnlyPreferredSubtitleLanguages == true, selectedRequester) { next, complete ->
-                        savePreference(R.string.settings_tv_show_only_preferred_language, complete) { repository.updatePlaybackPreferences(mapOf("showOnlyPreferredSubtitleLanguages" to next)) }
-                    }
-                    SettingsDropdownRow(
-                        stringResource(R.string.settings_tv_subtitle_sources),
-                        stringResource(R.string.settings_tv_choose_which_subtitle_sources_the_player_searches),
-                        normalizeSubtitleDefaultSource(playbackPrefs?.subtitleDefaultSource),
-                        listOf(
-                            SubtitleSourceValues.ALL to stringResource(R.string.settings_opt_all_sources),
-                            SubtitleSourceValues.BUILT_IN to stringResource(R.string.settings_opt_built_in),
-                            SubtitleSourceValues.ADDONS to stringResource(R.string.settings_opt_add_ons),
-                        ),
-                    ) { value ->
-                        savePreference(R.string.settings_tv_preferred_subtitle_source) { repository.updatePlaybackPreferences(mapOf("subtitleDefaultSource" to value)) }
-                    }
                     SettingsPanel(stringResource(R.string.settings_tv_player_display)) {
                         InfoLine(stringResource(R.string.info_cloud_scope), stringResource(R.string.info_changes_apply_on_this_tv_and_sync))
                     }
@@ -616,6 +601,65 @@ fun SettingsScreen(
                     SettingsDropdownRow(stringResource(R.string.settings_tv_mpv_display), stringResource(R.string.settings_tv_compatibility_mode_uses_a_texture_backed_video), normalizeRenderSurface(playbackPrefs?.renderSurface), listOf(RenderSurfaceValues.STANDARD to stringResource(R.string.settings_opt_standard), RenderSurfaceValues.COMPATIBILITY to stringResource(R.string.settings_opt_compatibility))) { value ->
                         savePreference(R.string.settings_tv_mpv_display) { repository.updatePlaybackPreferences(mapOf("renderSurface" to value)) }
                     }
+                }
+                // Language, timing, then behaviour. The same stored values as before the move.
+                SettingsDestination.Subtitles -> {
+                    SettingsPanel(stringResource(R.string.settings_tv_section_subtitle_language)) {
+                        InfoLine(stringResource(R.string.info_cloud_scope), stringResource(R.string.info_changes_apply_on_this_tv_and_sync))
+                    }
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_subtitles), stringResource(R.string.settings_tv_choose_a_preferred_subtitle_language_or_leave), normalizeLanguage(playbackPrefs?.defaultSubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
+                        savePreference(R.string.settings_tv_default_subtitles) { repository.updatePlaybackPreferences(mapOf("defaultSubtitleLanguage" to value)) }
+                    }
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_secondary_subtitles), stringResource(R.string.settings_tv_used_only_when_the_preferred_language_is), normalizeLanguage(playbackPrefs?.secondarySubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
+                        savePreference(R.string.settings_tv_secondary_subtitles) { repository.updatePlaybackPreferences(mapOf("secondarySubtitleLanguage" to value)) }
+                    }
+                    SettingsToggleRow(stringResource(R.string.settings_tv_show_only_preferred_language), stringResource(R.string.settings_tv_hide_embedded_and_add_on_subtitles_in), playbackPrefs?.showOnlyPreferredSubtitleLanguages == true, selectedRequester) { next, complete ->
+                        savePreference(R.string.settings_tv_show_only_preferred_language, complete) { repository.updatePlaybackPreferences(mapOf("showOnlyPreferredSubtitleLanguages" to next)) }
+                    }
+                    // No saved delay, on purpose: a delay corrects one subtitle file against one
+                    // release, and applied to everything it would put every good one out.
+                    SettingsPanel(stringResource(R.string.settings_tv_section_subtitle_timing)) {
+                        InfoLine(stringResource(R.string.player_subtitle_delay_title), stringResource(R.string.settings_tv_subtitle_timing_detail))
+                    }
+                    SettingsPanel(stringResource(R.string.settings_tv_section_subtitle_behaviour)) {
+                        InfoLine(stringResource(R.string.info_cloud_scope), stringResource(R.string.info_changes_apply_on_this_tv_and_sync))
+                    }
+                    SettingsToggleRow(stringResource(R.string.settings_tv_auto_load_subtitles), stringResource(R.string.settings_tv_automatically_select_matching_subtitles_when_playback_starts), playbackPrefs?.autoLoadSubtitles != false, selectedRequester) { next, complete ->
+                        savePreference(R.string.settings_tv_auto_load_subtitles, complete) { repository.updatePlaybackPreferences(mapOf("autoLoadSubtitles" to next)) }
+                    }
+                    SettingsDropdownRow(
+                        stringResource(R.string.settings_tv_subtitle_sources),
+                        stringResource(R.string.settings_tv_choose_which_subtitle_sources_the_player_searches),
+                        normalizeSubtitleDefaultSource(playbackPrefs?.subtitleDefaultSource),
+                        listOf(
+                            SubtitleSourceValues.ALL to stringResource(R.string.settings_opt_all_sources),
+                            SubtitleSourceValues.BUILT_IN to stringResource(R.string.settings_opt_built_in),
+                            SubtitleSourceValues.ADDONS to stringResource(R.string.settings_opt_add_ons),
+                        ),
+                    ) { value ->
+                        savePreference(R.string.settings_tv_preferred_subtitle_source) { repository.updatePlaybackPreferences(mapOf("subtitleDefaultSource" to value)) }
+                    }
+                }
+                SettingsDestination.Audio -> {
+                    SettingsPanel(stringResource(R.string.settings_tv_section_audio_language)) {
+                        InfoLine(stringResource(R.string.info_cloud_scope), stringResource(R.string.info_changes_apply_on_this_tv_and_sync))
+                    }
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_audio), stringResource(R.string.settings_tv_select_the_first_matching_audio_track), normalizeLanguage(playbackPrefs?.defaultAudioLanguage), languageOptions(includeOff = false)) { value ->
+                        savePreference(R.string.settings_tv_default_audio) { repository.updatePlaybackPreferences(mapOf("defaultAudioLanguage" to value)) }
+                    }
+                    SettingsPanel(stringResource(R.string.settings_tv_section_audio_sync)) {
+                        InfoLine(stringResource(R.string.info_scope), stringResource(R.string.settings_tv_audio_delay_scope))
+                        if (PlaybackCodecOptions.tunneledPlayback) {
+                            InfoLine(stringResource(R.string.settings_tv_tunneled_playback), stringResource(R.string.settings_tv_audio_delay_tunneled_note))
+                        }
+                    }
+                    SettingsAudioDelayRow()
+                    SettingsActionRow(
+                        stringResource(R.string.player_audio_delay_reset),
+                        stringResource(R.string.settings_tv_reset_audio_delay_detail),
+                        stringResource(R.string.player_delay_reset),
+                        selectedRequester,
+                    ) { AudioSyncOptions.setDefaultDelayMs(context, 0) }
                 }
                 SettingsDestination.SkipAndAutoplay -> {
                     SettingsPanel(stringResource(R.string.settings_tv_auto_skip)) {
@@ -2710,6 +2754,66 @@ private fun cloudStreamSettingsPath(repoUrl: String, internalName: String): Stri
         ?.installedFilePath ?: return null
     val plugin = CloudStreamPluginLoader.loadedPlugins().firstOrNull { it.filePath == path } ?: return null
     return path.takeIf { (plugin.instance as? com.lagradost.cloudstream3.plugins.Plugin)?.openSettings != null }
+}
+
+/**
+ * The default audio delay: left and right move it, faster while held, as in the player.
+ *
+ * Left adjusts here rather than returning to the page list - the one row in Settings that does -
+ * because a value moved by a remote has no other key to move down with. Up and down leave it as
+ * from any other row.
+ */
+@Composable
+private fun SettingsAudioDelayRow() {
+    val context = LocalContext.current
+    val language = LocalAppLanguage.current
+    val seconds = AudioSyncOptions.defaultDelaySeconds
+    var focused by remember { mutableStateOf(false) }
+    fun move(direction: Int, repeat: Int) {
+        val next = steppedDelay(seconds, direction * audioDelayStep(repeat), AUDIO_DELAY_LIMIT_SECONDS)
+        AudioSyncOptions.setDefaultDelayMs(context, kotlin.math.round(next * 1000).toInt())
+    }
+    Row(
+        Modifier.fillMaxWidth()
+            .background(if (focused) Color(0xFF172131) else Color(0xB20E141D), androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+            .border(if (focused) 2.dp else 1.dp, if (focused) MaterialTheme.colorScheme.primary else Color(0x10FFFFFF), androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> { move(-1, event.nativeKeyEvent.repeatCount); true }
+                    Key.DirectionRight -> { move(1, event.nativeKeyEvent.repeatCount); true }
+                    else -> false
+                }
+            }
+            .clickable { move(1, 0) }
+            .padding(horizontal = 18.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(stringResource(R.string.settings_tv_default_audio_delay), color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+            val amount = AppFormats.number(language, kotlin.math.abs(seconds), 2)
+            Text(
+                when {
+                    seconds > 0 -> stringResource(R.string.player_audio_delay_later, amount)
+                    seconds < 0 -> stringResource(R.string.player_audio_delay_earlier, amount)
+                    else -> stringResource(R.string.settings_tv_default_audio_delay_detail)
+                },
+                color = Color.White.copy(alpha = 0.55f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = if (focused) Int.MAX_VALUE else 2,
+                overflow = if (focused) TextOverflow.Clip else TextOverflow.Ellipsis,
+            )
+        }
+        Text("−", color = Color.White.copy(alpha = if (focused) 0.9f else 0.4f), style = MaterialTheme.typography.titleMedium)
+        Text(
+            stringResource(R.string.player_subtitle_delay_seconds, signedDelay(language, seconds, 2)),
+            color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.8f),
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+        )
+        Text("+", color = Color.White.copy(alpha = if (focused) 0.9f else 0.4f), style = MaterialTheme.typography.titleMedium)
+    }
 }
 
 @Composable

@@ -33,6 +33,8 @@ class MPVTextureView @JvmOverloads constructor(
     }
 
     private var initialized = false
+    private var subtitleDelaySeconds = 0.0
+    private var audioDelaySeconds = 0.0
     private var pendingSource: String? = null
     private var activeSource: String? = null
     private var paused = false
@@ -130,6 +132,9 @@ class MPVTextureView @JvmOverloads constructor(
             MPVLib.setPropertyString("android-surface-size", "${width}x${height}")
             observeProperties()
             initialized = true
+            // The player sets both timing offsets as this view is built, before mpv can take them.
+            MPVLib.setPropertyDouble("sub-delay", subtitleDelaySeconds)
+            MPVLib.setPropertyDouble("audio-delay", audioDelaySeconds)
 
             pendingSource?.let { source ->
                 Log.i(TAG, "Applying pending source after surface ready")
@@ -540,10 +545,21 @@ class MPVTextureView @JvmOverloads constructor(
      * This maps directly to mpv's `sub-delay` property.
      */
     override fun setSubtitleDelay(seconds: Double) {
+        subtitleDelaySeconds = seconds
         if (!initialized || isDestroyed) return
         Log.i(TAG, "setSubtitleDelay: $seconds")
         MPVLib.setPropertyDouble("sub-delay", seconds)
     }
+
+    /** Maps to mpv's `audio-delay`: positive plays the sound later. Holds with passthrough too. */
+    override fun setAudioDelay(seconds: Double) {
+        audioDelaySeconds = seconds
+        if (!initialized || isDestroyed) return
+        Log.i(TAG, "setAudioDelay: $seconds")
+        MPVLib.setPropertyDouble("audio-delay", seconds)
+    }
+
+    override fun audioDelaySupported(): Boolean = true
 
     /** Set subtitle font size (mpv default is 55). */
     override fun setSubtitleFontSize(size: Int) {

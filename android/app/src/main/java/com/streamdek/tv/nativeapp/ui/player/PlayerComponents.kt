@@ -134,6 +134,7 @@ import com.streamdek.tv.nativeapp.data.streamProviderLabel
 import com.streamdek.tv.nativeapp.data.streamTransport
 import com.streamdek.tv.nativeapp.data.subtitleOriginVisible
 import com.streamdek.tv.nativeapp.debrid.readyServiceLabel
+import com.streamdek.tv.nativeapp.data.AppLanguage
 import com.streamdek.tv.nativeapp.ui.AppFormats
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalAppLanguage
@@ -172,8 +173,36 @@ internal val SubtitleSizeRange = 28..84
 /** Subtitle vertical placement. Higher sits nearer the bottom of the picture. */
 internal val SubtitlePositionRange = 50..110
 
-/** Subtitle timing nudge in seconds, shared by native mpv and Media3 sidecar rendering. */
-internal val SubtitleDelayRange = -15.0..15.0
+/** Subtitle timing in seconds, either way. Both engines honour it; see [SyncAdjustableRenderersFactory]. */
+internal val SubtitleDelayRange = -SUBTITLE_DELAY_LIMIT_SECONDS..SUBTITLE_DELAY_LIMIT_SECONDS
+
+/** Audio timing in seconds, either way. */
+internal val AudioDelayRange = -AUDIO_DELAY_LIMIT_SECONDS..AUDIO_DELAY_LIMIT_SECONDS
+
+/**
+ * How far one press of left or right moves a delay, by how long the key has been held.
+ *
+ * A remote has no slider, and two minutes in tenths is twelve hundred presses. So a tap is the
+ * finest step, holding moves to whole seconds, and holding on moves in tens - the same key, faster
+ * the longer it is held, the way a remote's seek already behaves.
+ */
+internal fun subtitleDelayStep(repeatCount: Int): Double = when {
+    repeatCount < 8 -> 0.1
+    repeatCount < 24 -> 1.0
+    else -> 10.0
+}
+
+internal fun audioDelayStep(repeatCount: Int): Double = if (repeatCount < 8) 0.05 else 0.5
+
+/** "+1.5" or "−0.25": always signed, since which way is which is the point of the number. */
+internal fun signedDelay(language: AppLanguage, seconds: Double, decimals: Int): String {
+    val magnitude = AppFormats.number(language, kotlin.math.abs(seconds), decimals)
+    return when {
+        seconds > 0 -> "+$magnitude"
+        seconds < 0 -> "−$magnitude"
+        else -> magnitude
+    }
+}
 
 internal data class SpeedOption(
     val label: String,
@@ -1265,6 +1294,11 @@ internal fun PlayerOptionPanel(
     onSubtitleDelay: (Double) -> Unit = {},
     /** Whether the active subtitle renderer can apply a timing offset. */
     subtitleDelaySupported: Boolean = true,
+    /** Sound against picture, positive later; adjusted from the Audio panel. */
+    audioDelay: Double = 0.0,
+    onAudioDelay: (Double) -> Unit = {},
+    /** False when the engine cannot move the sound for what is playing - see [MpvPlayerController.audioDelaySupported]. */
+    audioDelaySupported: Boolean = false,
     onReloadStreams: () -> Unit = {},
     streamsReloading: Boolean = false,
     /** What the info panel reads. Null until the first sample comes back from the engine. */
@@ -1528,6 +1562,40 @@ internal fun PlayerOptionPanel(
                             onClick = { onSelectAudio(track.id) },
                         )
                     }
+                    // Timing sits under the tracks: choosing a language is why most people open this
+                    // panel, and the delay is the thing to reach for only when that one is out.
+                    if (audioDelaySupported) {
+                        item {
+                            val amount = AppFormats.number(appLanguage, kotlin.math.abs(audioDelay), 2)
+                            PlayerStepperRow(
+                                label = stringResource(R.string.player_audio_delay),
+                                value = stringResource(R.string.player_subtitle_delay_seconds, signedDelay(appLanguage, audioDelay, 2)),
+                                hint = when {
+                                    audioDelay > 0 -> stringResource(R.string.player_audio_delay_later, amount)
+                                    audioDelay < 0 -> stringResource(R.string.player_audio_delay_earlier, amount)
+                                    else -> stringResource(R.string.player_delay_hold_hint)
+                                },
+                                requestFocus = if (audioTracks.isEmpty()) firstItemRequester else null,
+                                onInteract = onInteract,
+                                onDecrease = { onAudioDelay(steppedDelay(audioDelay, -audioDelayStep(0), AUDIO_DELAY_LIMIT_SECONDS)) },
+                                onIncrease = { onAudioDelay(steppedDelay(audioDelay, audioDelayStep(0), AUDIO_DELAY_LIMIT_SECONDS)) },
+                                onAdjust = { direction, repeat ->
+                                    onAudioDelay(steppedDelay(audioDelay, direction * audioDelayStep(repeat), AUDIO_DELAY_LIMIT_SECONDS))
+                                },
+                            )
+                        }
+                        item {
+                            OptionButton(
+                                label = stringResource(R.string.player_audio_delay_reset),
+                                subtitle = stringResource(R.string.player_audio_delay_scope),
+                                active = false,
+                                onInteract = onInteract,
+                                onClick = { onAudioDelay(0.0) },
+                            )
+                        }
+                    } else {
+                        item { PanelNote(stringResource(R.string.player_audio_delay_unavailable_tunneled)) }
+                    }
                 }
                 OverlayPanel.Subtitles -> if (subtitleTab != SubtitlePanelTab.Adjust) {
                     val visibleEmbeddedTracks = if (subtitleSourceIncludesBuiltIn(subtitleTab.name)) subtitleTracks.filter { track ->
@@ -1682,22 +1750,36 @@ internal fun PlayerOptionPanel(
                     }
                     if (subtitleDelaySupported) {
                         item {
+                            val amount = AppFormats.number(appLanguage, kotlin.math.abs(subtitleDelay), 1)
                             PlayerStepperRow(
-                                label = stringResource(R.string.player_subtitle_delay),
+                                label = stringResource(R.string.player_subtitle_delay_title),
                                 value = stringResource(
                                     R.string.player_subtitle_delay_seconds,
                                     // The sign is what makes "ahead" and "behind" readable at a
                                     // glance, and no number format adds one to a positive value.
-                                    (if (subtitleDelay > 0) "+" else "") + AppFormats.number(appLanguage, subtitleDelay, 1),
+                                    signedDelay(appLanguage, subtitleDelay, 1),
                                 ),
-                                hint = stringResource(R.string.player_subtitle_delay_hint),
+                                // What the number means once there is one; until then, how to move it.
+                                hint = when {
+                                    subtitleDelay > 0 -> stringResource(R.string.player_subtitle_delay_later, amount)
+                                    subtitleDelay < 0 -> stringResource(R.string.player_subtitle_delay_earlier, amount)
+                                    else -> stringResource(R.string.player_delay_hold_hint)
+                                },
                                 onInteract = onInteract,
-                                onDecrease = {
-                                    onSubtitleDelay((subtitleDelay - 0.25).coerceIn(SubtitleDelayRange))
+                                onDecrease = { onSubtitleDelay(steppedDelay(subtitleDelay, -subtitleDelayStep(0), SUBTITLE_DELAY_LIMIT_SECONDS)) },
+                                onIncrease = { onSubtitleDelay(steppedDelay(subtitleDelay, subtitleDelayStep(0), SUBTITLE_DELAY_LIMIT_SECONDS)) },
+                                onAdjust = { direction, repeat ->
+                                    onSubtitleDelay(steppedDelay(subtitleDelay, direction * subtitleDelayStep(repeat), SUBTITLE_DELAY_LIMIT_SECONDS))
                                 },
-                                onIncrease = {
-                                    onSubtitleDelay((subtitleDelay + 0.25).coerceIn(SubtitleDelayRange))
-                                },
+                            )
+                        }
+                        item {
+                            OptionButton(
+                                label = stringResource(R.string.player_subtitle_delay_reset),
+                                subtitle = stringResource(R.string.player_subtitle_delay_scope),
+                                active = false,
+                                onInteract = onInteract,
+                                onClick = { onSubtitleDelay(0.0) },
                             )
                         }
                     }
@@ -2475,6 +2557,13 @@ private fun PlayerStepperRow(
     onDecrease: () -> Unit,
     onIncrease: () -> Unit,
     hint: String? = null,
+    requestFocus: FocusRequester? = null,
+    /**
+     * Left or right as a direction (-1, +1) with how many times the key has repeated, for a value
+     * whose step should grow while the key is held. Replaces [onDecrease] and [onIncrease] for the
+     * keys when given; the on-screen press still uses them.
+     */
+    onAdjust: ((direction: Int, repeatCount: Int) -> Unit)? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
     OutlinedButton(
@@ -2484,15 +2573,17 @@ private fun PlayerStepperRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 4.dp)
+            .then(if (requestFocus != null) Modifier.focusRequester(requestFocus) else Modifier)
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onInteract()
             }
             .onPreviewKeyEvent { event ->
                 if (!focused || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val repeat = event.nativeKeyEvent.repeatCount
                 when (event.key) {
-                    Key.DirectionLeft -> { onDecrease(); true }
-                    Key.DirectionRight -> { onIncrease(); true }
+                    Key.DirectionLeft -> { onAdjust?.invoke(-1, repeat) ?: onDecrease(); true }
+                    Key.DirectionRight -> { onAdjust?.invoke(1, repeat) ?: onIncrease(); true }
                     else -> false
                 }
             },
