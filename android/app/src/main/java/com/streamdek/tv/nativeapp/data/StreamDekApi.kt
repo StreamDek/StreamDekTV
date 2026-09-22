@@ -482,7 +482,7 @@ class StreamDekApi(
         var transportError: IOException? = null
 
         for (attempt in 1..attempts) {
-            val response = runCatching { client.newCall(buildRequest(method, path, body, session)).execute() }
+            val response = readApiResponse { client.newCall(buildRequest(method, path, body, session)).execute() }
                 .getOrElse { error ->
                     if (error !is IOException) throw error
                     transportError = error
@@ -495,9 +495,9 @@ class StreamDekApi(
                 continue
             }
 
-            response.use {
+            response.let {
                 if (it.isSuccessful) {
-                    val raw = it.body?.string()?.takeIf { payload -> payload.isNotBlank() }
+                    val raw = it.body.takeIf { payload -> payload.isNotBlank() }
                         // A successful mutation is allowed to return 204/empty. Give typed write
                         // callers an empty JSON object so they can distinguish success from a
                         // failed request instead of reporting that Remove did nothing.
@@ -511,7 +511,7 @@ class StreamDekApi(
                     return@withContext raw
                 }
 
-                val errorBody = runCatching { it.body?.string() }.getOrNull().orEmpty()
+                val errorBody = it.body
                 if (it.code == 426) AppVersionPolicyRuntime.acceptUnsupportedResponse(errorBody)
                 TvDebugLogger.w(
                     "Api",
@@ -638,9 +638,9 @@ class StreamDekApi(
         if (!refreshInFlight.compareAndSet(false, true)) return false
         try {
             val request = buildRequest("POST", "/auth/refresh", gson.toJson(mapOf("refresh_token" to refreshToken)), null)
-            val response = runCatching { client.newCall(request).execute() }.getOrNull() ?: return false
-            response.use {
-                val payload = it.body?.string().orEmpty()
+            val response = readApiResponse { client.newCall(request).execute() }.getOrNull() ?: return false
+            response.let {
+                val payload = it.body
                 if (!it.isSuccessful) {
                     if (errorCodeOf(payload) == "ACCOUNT_SUSPENDED") {
                         endSession(errorMessageOf(payload) ?: "This account has been suspended.")
