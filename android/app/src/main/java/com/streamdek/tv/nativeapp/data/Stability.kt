@@ -20,7 +20,7 @@ import java.time.Instant
  * the time. What happens instead:
  *
  *  - [install] puts a handler in front of the existing one that writes a small record to
- *    preferences -- exception class, one frame, a timestamp, the running version -- and then hands
+ *    preferences -- exception class, bounded cause frames, timestamp and build -- and then hands
  *    straight on to whatever handler was already there. It changes no behaviour: the app still
  *    dies exactly as it would have.
  *  - [reportPending] runs on the next launch, sends that record, and clears it.
@@ -40,6 +40,7 @@ object Stability {
     private const val PREFS = "streamdek_tv_stability"
     private const val KEY_EXCEPTION = "pending_exception"
     private const val KEY_FRAME = "pending_frame"
+    private const val KEY_DIAGNOSTICS = "pending_diagnostics"
     private const val KEY_AT = "pending_at"
     private const val KEY_VERSION = "pending_version"
     private const val KEY_LAST_EXIT_AT = "last_exit_reported_at"
@@ -79,11 +80,19 @@ object Stability {
      */
     private fun record(context: Context, error: Throwable, appVersion: String?) {
         val root = rootCause(error)
+        // Extra diagnostics must never prevent the original minimal crash record being saved.
+        val diagnostics = runCatching {
+            com.google.gson.Gson().toJson(crashDiagnostics(error) + mapOf(
+                "crashedVersionCode" to com.streamdek.tv.BuildConfig.VERSION_CODE,
+                "androidSdk" to Build.VERSION.SDK_INT,
+            ))
+        }.getOrNull()
 
         prefs(context)
             .edit()
             .putString(KEY_EXCEPTION, root.javaClass.name.take(180))
             .putString(KEY_FRAME, ownFrame(root))
+            .putString(KEY_DIAGNOSTICS, diagnostics)
             .putString(KEY_AT, Instant.now().toString())
             .putString(KEY_VERSION, appVersion)
             .commit()
@@ -113,6 +122,12 @@ object Stability {
             topFrame = prefs.getString(KEY_FRAME, null),
             occurredAtIso = prefs.getString(KEY_AT, null),
             crashedAppVersion = prefs.getString(KEY_VERSION, null),
+            diagnostics = runCatching {
+                com.google.gson.Gson().fromJson<Map<String, Any>>(
+                    prefs.getString(KEY_DIAGNOSTICS, null),
+                    object : com.google.gson.reflect.TypeToken<Map<String, Any>>() {}.type,
+                )
+            }.getOrNull(),
         )
 
         // Cleared whether or not the send succeeds. The emitter owns it by now, and keeping it
@@ -121,6 +136,7 @@ object Stability {
         prefs.edit()
             .remove(KEY_EXCEPTION)
             .remove(KEY_FRAME)
+            .remove(KEY_DIAGNOSTICS)
             .remove(KEY_AT)
             .remove(KEY_VERSION)
             .apply()
@@ -167,6 +183,12 @@ object Stability {
                         topFrame = record.description?.take(180),
                         occurredAtIso = at,
                         crashedAppVersion = null,
+                        diagnostics = mapOf(
+                            "exitStatus" to record.status,
+                            "exitImportance" to record.importance,
+                            "pssKb" to record.pss,
+                            "rssKb" to record.rss,
+                        ),
                     )
 
                 // Everything else -- the viewer leaving, the system reclaiming memory, an ordinary
@@ -197,15 +219,12 @@ object Stability {
     }
 
     /**
-     * The first frame in our own code.
-     *
-     * A framework frame is the same for every crash of that kind and groups nothing; the first
-     * StreamDek frame is what distinguishes two `IllegalStateException`s from each other. Only the
-     * class and line are taken -- never the message, which can contain anything.
+     * The actual throwing frame, including framework and obfuscated classes. Filtering by our
+     * package loses release frames and can incorrectly group everything at Activity dispatch.
      */
     private fun ownFrame(error: Throwable): String? = runCatching {
         error.stackTrace
-            .firstOrNull { it.className.startsWith("com.streamdek") }
+            .firstOrNull()
             ?.let { "${it.className}.${it.methodName}:${it.lineNumber}" }
             ?.take(180)
     }.getOrNull()

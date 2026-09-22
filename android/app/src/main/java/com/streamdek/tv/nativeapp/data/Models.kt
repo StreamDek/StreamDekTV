@@ -55,6 +55,7 @@ data class TvPollResult(
     val user: AuthUserPayload? = null,
 )
 
+@com.google.gson.annotations.JsonAdapter(MediaItemJsonAdapterFactory::class)
 data class MediaItem(
     val id: String,
     val tmdbId: Int = 0,

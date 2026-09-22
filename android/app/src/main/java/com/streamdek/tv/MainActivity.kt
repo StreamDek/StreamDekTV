@@ -29,10 +29,28 @@ class MainActivity : ComponentActivity() {
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-    if (event.action == KeyEvent.ACTION_UP && TvRemoteKeyRouter.onKeyUp?.invoke(event.keyCode) == true) {
-      return true
+    try {
+      if (event.action == KeyEvent.ACTION_UP && TvRemoteKeyRouter.onKeyUp?.invoke(event.keyCode) == true) {
+        return true
+      }
+      return super.dispatchKeyEvent(event)
+    } catch (error: Throwable) {
+      // Navigation categories only: never record typed characters or text entry key codes.
+      val key = when (event.keyCode) {
+        KeyEvent.KEYCODE_DPAD_UP -> "up"
+        KeyEvent.KEYCODE_DPAD_DOWN -> "down"
+        KeyEvent.KEYCODE_DPAD_LEFT -> "left"
+        KeyEvent.KEYCODE_DPAD_RIGHT -> "right"
+        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "select"
+        KeyEvent.KEYCODE_BACK -> "back"
+        KeyEvent.KEYCODE_MENU -> "menu"
+        else -> "other"
+      }
+      runCatching {
+        com.streamdek.tv.nativeapp.data.CrashInputDiagnostics.record(error, key, event.action, event.repeatCount)
+      }
+      throw error
     }
-    return super.dispatchKeyEvent(event)
   }
   override fun onCreate(savedInstanceState: Bundle?) {
     setTheme(R.style.AppTheme)

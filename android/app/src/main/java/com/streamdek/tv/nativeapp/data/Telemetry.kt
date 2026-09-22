@@ -229,6 +229,7 @@ object Telemetry {
         topFrame: String?,
         occurredAtIso: String?,
         crashedAppVersion: String?,
+        diagnostics: Map<String, Any>? = null,
     ) {
         track(
             TelemetryEventPayload(
@@ -238,9 +239,9 @@ object Telemetry {
                 errorCategory = CATEGORY_CLIENT,
                 errorCode = exceptionClass,
                 metadata = buildMap {
-                    // One frame of our own code, not the whole stack: enough to tell two crashes
-                    // with the same exception type apart, without shipping a trace that could
-                    // contain anything.
+                    diagnostics?.let { putAll(it) }
+                    if (!occurredAtIso.isNullOrBlank()) put("crashOccurredAt", occurredAtIso)
+                    // A compact grouping location alongside bounded, message-free cause frames.
                     if (!topFrame.isNullOrBlank()) put("topFrame", topFrame)
                     if (!crashedAppVersion.isNullOrBlank()) put("crashedAppVersion", crashedAppVersion)
                 }.takeIf { it.isNotEmpty() },
