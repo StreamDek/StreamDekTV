@@ -221,7 +221,7 @@ class HomeRowLayoutTest {
     }
 
     @Test
-    fun `a catalogue type the app cannot render is not offered`() {
+    fun `an unknown catalogue remains available for provider metadata`() {
         val addon = AddonManifest(
             id = "odd",
             manifest = AddonManifestMeta(
@@ -236,10 +236,10 @@ class HomeRowLayoutTest {
 
         val options = homeRowOptions(emptyList(), listOf(addon), emptyList())
 
-        // Only the film catalogue survives. The title carries the add-on's name in front of the
+        // Provider-owned catalogues remain available without assuming movie or TV. The title carries the
         // catalogue's, which is how a row says where it came from.
-        assertEquals(listOf("addon:odd:movie:films:0"), options.map { it.id })
-        assertTrue(options.single().title.contains("Films"))
+        assertEquals(listOf("addon:odd:movie:films:0", "addon:odd:podcast:casts:1"), options.map { it.id })
+        assertTrue(options.first().title.contains("Films"))
     }
 
     // ── Saving ──────────────────────────────────────────────────────────────────────────────────

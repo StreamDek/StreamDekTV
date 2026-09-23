@@ -18,9 +18,8 @@ class AddonCatalogRailTest {
 
     @Test
     fun `anime catalogs are shown rather than dropped`() {
-        // Series-shaped in every respect that matters, and published as its own type by a good
-        // number of add-ons. It used to map to null, which silently discarded the whole row.
-        assertEquals("tv", mapAddonCatalogType("anime"))
+        // Anime is a genre, not evidence of movie versus series. Keep the row and classify each item.
+        assertEquals("unknown", mapAddonCatalogType("anime"))
         assertEquals("tv", mapAddonCatalogType("series"))
         assertEquals("movie", mapAddonCatalogType("movie"))
         assertEquals("live", mapAddonCatalogType("tv"))

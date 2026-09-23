@@ -94,6 +94,8 @@ data class MediaItem(
     val streamType: String? = null,
     val sourceAddonId: String? = null,
     val sourceAddonName: String? = null,
+    val sourceMediaType: String? = null,
+    val sourceCatalogType: String? = null,
     val sourceCatalogId: String? = null,
     val sourceCatalogName: String? = null,
     val directStreamUrl: String? = null,
@@ -107,7 +109,9 @@ data class MediaItem(
     val drmClearKeys: Map<String, String>? = null,
 ) {
     /** TMDB detail routes require the numeric TMDB id, while add-ons often expose IMDb as id. */
-    fun detailLookupId(): String = tmdbId.takeIf { it > 0 }?.toString() ?: id
+    fun detailLookupId(): String = if (AddonMediaReference.decode(id) != null) id else if (!sourceAddonId.isNullOrBlank() && !sourceCatalogType.isNullOrBlank()) {
+        AddonMediaReference(sourceAddonId, sourceCatalogType, id).encode()
+    } else tmdbId.takeIf { it > 0 }?.toString() ?: id
 }
 
 data class TmdbFindResponse(
@@ -952,6 +956,7 @@ data class AddonManifest(
 )
 
 data class AddonCatalogMetaItem(
+    val videos: List<AddonMetaVideo> = emptyList(),
     val id: String? = null,
     val type: String? = null,
     val name: String? = null,
@@ -980,6 +985,7 @@ data class AddonCatalogResponse(
  * TMDB cannot resolve a card's id — a metadata add-on's `tmdb:`/`kitsu:` id, or a bridge's own.
  */
 data class AddonMetaItem(
+    @SerializedName(value = "moviedb_id", alternate = ["tmdb_id", "tmdbId"]) val movieDbId: Int? = null,
     val id: String? = null,
     @SerializedName("imdb_id") val imdbId: String? = null,
     val type: String? = null,

@@ -45,7 +45,7 @@ import kotlinx.coroutines.withContext
 // Stremio-native catalog types that represent live content. Native 'tv' means
 // live television channels — series catalogs use 'series'.
 private val LIVE_ADDON_CATALOG_TYPES = setOf(
-    "tv", "channel", "channels", "event", "events", "live", "sport", "sports", "other",
+    "tv", "channel", "channels", "event", "events", "live", "sport", "sports",
 )
 
 /** How often a running television asks whether the plugin document moved somewhere else. */
@@ -599,15 +599,8 @@ private data class AddonCatalogCollection(
 )
 
 /** Maps a Stremio-native catalog type to the app-internal type, or null when unsupported. */
-fun mapAddonCatalogType(rawType: String): String? = when {
-    rawType == "movie" -> "movie"
-    // Anime is published as its own catalog type by a good number of add-ons and is series-shaped
-    // in every other respect — episodes, seasons, a `series` meta resource. Dropping it meant those
-    // rows simply never appeared, with nothing on screen to say why.
-    rawType == "series" || rawType == "anime" -> "tv"
-    rawType in LIVE_ADDON_CATALOG_TYPES -> "live"
-    else -> null
-}
+fun mapAddonCatalogType(rawType: String): String? = MediaClassification.addon(rawType)
+
 
 /**
  * How a row says which half of a two-type catalog it is.
@@ -1067,7 +1060,7 @@ class StreamDekRepository(
     fun consumePlaybackRequest(): PlaybackRequest? = lastPlaybackRequest
 
     fun peekCachedDetail(id: String, type: String): MediaDetail? {
-        val cacheKey = "$type:$id"
+        val cacheKey = AddonMediaReference.decode(id)?.let { "${buildSessionProfileCacheKey()}:${it.encode()}" } ?: "${MediaClassification.canonical(type)}:$id"
         return detailsCache[cacheKey]
     }
 
@@ -1662,7 +1655,7 @@ class StreamDekRepository(
         return supervisorScope {
             addons.flatMap { addon ->
                 addon.manifest.catalogs.mapIndexedNotNull { _, catalog ->
-                    val rawType = catalog.type.trim().lowercase(Locale.US)
+                    val rawType = catalog.type.trim()
                     val mappedType = mapAddonCatalogType(rawType) ?: return@mapIndexedNotNull null
                     if (!includeCatalog(rawType, mappedType)) return@mapIndexedNotNull null
                     val catalogId = catalog.id.trim()
@@ -1986,12 +1979,12 @@ class StreamDekRepository(
             ?: rawId.takeIf { it.startsWith("tmdb:", ignoreCase = true) }
                 ?.substringAfter(':')?.toIntOrNull()
             ?: 0
-        val resolvedId = if (tmdbId > 0) tmdbId.toString() else rawId
+        val resolvedId = rawId.ifBlank { tmdbId.takeIf { it > 0 }?.toString().orEmpty() }
         if (resolvedId.isBlank()) return null
         if (isPlaceholderCatalogMeta(rawId, meta.name)) return null
         val rawNativeType = meta.type?.trim()?.lowercase(Locale.US).orEmpty()
         val mapped = rawNativeType.takeIf { it.isNotBlank() }?.let { mapAddonCatalogType(it) }
-        val type = mapped ?: fallbackType
+        val type = MediaClassification.item(rawNativeType, nativeFallbackType, resolvedId, meta.videos.any { (it.season ?: -1) >= 0 && (it.episode ?: 0) > 0 })
         val nativeType = if (mapped != null) rawNativeType else nativeFallbackType
         return MediaItem(
             id = resolvedId,
@@ -2009,11 +2002,19 @@ class StreamDekRepository(
             streamType = if (type == "live") (nativeType.ifBlank { "tv" }) else null,
             sourceAddonId = addonId,
             sourceAddonName = addonName,
+            sourceMediaType = meta.type,
+            sourceCatalogType = nativeFallbackType,
             sourceCatalogId = catalogId,
             sourceCatalogName = catalogName,
             directStreamUrl = directMediaUrl(meta),
             requestHeaders = catalogRequestHeaders(meta),
-        )
+        ).also { item ->
+            val ref = AddonMediaReference(addonId, nativeFallbackType, resolvedId)
+            originPreviews["${buildSessionProfileCacheKey()}:${ref.encode()}"] = MediaDetail(
+                id = ref.encode(), type = type, title = item.title, poster = item.poster,
+                backdrop = item.backdrop, description = item.description, year = item.year,
+            )
+        }
     }
 
     private fun directMediaUrl(meta: AddonCatalogMetaItem): String? {
@@ -2663,7 +2664,7 @@ class StreamDekRepository(
             .sortedWith(compareByDescending<AddonManifest> { it.favourite }.thenBy { it.position })
             .forEach { addon ->
                 addon.manifest.catalogs.forEach catalog@{ catalog ->
-                    val rawType = catalog.type.trim().lowercase(Locale.US)
+                    val rawType = catalog.type.trim()
                     val catalogId = catalog.id.trim()
                     val mappedType = mapAddonCatalogType(rawType)
                     if (catalogId.isBlank() || catalog.requiresSearch || mappedType == null || !isFuseCatalogType(rawType)) return@catalog
@@ -2900,26 +2901,75 @@ class StreamDekRepository(
         return native
     }
 
+    private val originMetaCache = lruCache<String, Pair<Long, AddonMetaItem?>>(48)
+    private val originPreviews = lruCache<String, MediaDetail>(96)
+    private suspend fun originMeta(ref: AddonMediaReference): AddonMetaItem? = withContext(Dispatchers.IO) {
+        val key = "${buildSessionProfileCacheKey()}:${ref.encode()}"
+        originMetaCache[key]?.let { if (System.currentTimeMillis() - it.first < 60_000) return@withContext it.second }
+        val addon = fetchAddonManifests().firstOrNull { it.id == ref.addonId && it.enabled } ?: return@withContext null
+        if (usesServerSideStreams()) {
+            return@withContext runCatching {
+                api.get<AddonMetaResponse>("/addons/${encodePathSegment(ref.addonId)}/meta/${encodePathSegment(ref.type)}/${encodePathSegment(ref.id)}")?.meta
+            }.getOrNull().also { originMetaCache[key] = System.currentTimeMillis() to it }
+        }
+        val base = addon.transportUrl ?: addon.manifestUrl ?: return@withContext null
+        val url = base.substringBeforeLast("/manifest.json", base).trimEnd('/') +
+            "/meta/${addonPathSegment(ref.type)}/${addonPathSegment(ref.id)}.json"
+        runCatching {
+            val request = okhttp3.Request.Builder().url(url).header("User-Agent", "Stremio/4.4.168").build()
+            directStreamClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                api.gson.fromJson(response.body?.charStream(), AddonMetaResponse::class.java)?.meta
+            }
+        }.getOrNull().also { originMetaCache[key] = System.currentTimeMillis() to it }
+    }
+
+    private suspend fun fetchOriginDetail(ref: AddonMediaReference, type: String, forceRefresh: Boolean): MediaDetail? {
+        val key = "${buildSessionProfileCacheKey()}:${ref.encode()}"
+        if (!forceRefresh) detailsCache[key]?.let { return it }
+        val meta = originMeta(ref) ?: return originPreviews[key]
+        if (meta.name.isNullOrBlank() || isPlaceholderCatalogMeta(meta.id.orEmpty(), meta.name)) return originPreviews[key]
+        val canonical = MediaClassification.item(meta.type, ref.type, ref.id, meta.videos.any { it.season != null && it.episode != null })
+            .let { if (it == "unknown") MediaClassification.canonical(type) else it }
+        val seasons = meta.videos.mapNotNull { it.season }.filter { it > 0 }.distinct().sorted()
+        val native = MediaDetail(id = ref.encode(), title = meta.name, type = canonical,
+            poster = meta.poster, backdrop = meta.background ?: meta.poster, description = meta.description ?: meta.overview ?: meta.synopsis,
+            year = meta.releaseInfo?.take(4), genreNames = meta.genres, titleLogo = meta.logo,
+            imdbId = meta.imdbId?.let(MetadataLookupIdentity::imdbId),
+            seasons = seasons.map { SeasonRef(seasonNumber = it, name = label(R.string.detail_season_number, "Season $it", it),
+                episodeCount = meta.videos.count { video -> video.season == it }) })
+        val lookupId = MediaClassification.enrichmentId(meta.movieDbId?.takeIf { it > 0 }?.let { "tmdb:$it" } ?: meta.imdbId ?: meta.id ?: ref.id, providerOwned = true)
+        val enriched = if (lookupId != null && MetadataLookupIdentity.supportsType(canonical))
+            runCatching { fetchDetail(lookupId, canonical, forceRefresh) }.getOrNull() else null
+        return (enriched?.copy(id = ref.encode(), tmdbId = enriched.tmdbId.takeIf { it > 0 } ?: enriched.id.toIntOrNull() ?: 0, seasons = native.seasons.ifEmpty { enriched.seasons }) ?: native)
+            .also { detailsCache[key] = it }
+    }
+
+    private suspend fun originStreams(ref: AddonMediaReference, episode: EpisodeContext?, forceRefresh: Boolean): List<AddonStream> {
+        val meta = originMeta(ref)
+        val videoId = if (episode == null) meta?.id?.takeIf { !it.startsWith("aiostreamserror") } ?: ref.id else
+            meta?.videos?.firstOrNull { it.season == episode.seasonNumber && it.episode == episode.episodeNumber }?.id
+                ?: return emptyList()
+        return fetchStreamsFromOwningAddon(ref.addonId, listOf(ref.type), videoId, MediaClassification.addon(ref.type) == "live", forceRefresh, nativeIdentity = true)?.second.orEmpty()
+    }
+
     /** The finished screen. Callers that cannot render progressively still get one value. */
     suspend fun fetchHomeContent(forceRefresh: Boolean = false): HomeContent =
         homeContentStream(forceRefresh).last()
 
 
     suspend fun fetchDetail(id: String, type: String, forceRefresh: Boolean = false): MediaDetail? {
+        AddonMediaReference.decode(id)?.let { return fetchOriginDetail(it, type, forceRefresh) }
         if (isCloudStreamMediaId(id)) return fetchCloudStreamDetail(id, type, forceRefresh)
         val perf = Perf.span("detail", "$type:$id")
         try {
-        val canonicalType = if (type == "series") "tv" else type
-        val imdbId = Regex("tt\\d+", RegexOption.IGNORE_CASE).find(id)?.value
-        val resolved = if (imdbId != null) {
-            runCatching {
-                api.get<TmdbFindResponse>("/tmdb/find/imdb/$imdbId?type=$canonicalType")
-            }.getOrNull()?.takeIf { it.id > 0 }
-        } else {
-            null
+        val canonicalType = MediaClassification.canonical(type)
+        if (!MetadataLookupIdentity.supportsType(canonicalType)) {
+            if (canonicalType == "live") return null
+            return fetchAddonMetaDetail(id, type)
         }
-        val resolvedType = resolved?.type?.let { if (it == "series") "tv" else it } ?: canonicalType
-        val resolvedId = resolved?.id?.toString() ?: id
+        val resolvedType = canonicalType
+        val resolvedId = id
         val cacheKey = "$resolvedType:$resolvedId"
         if (!forceRefresh) {
             // A cache hit is still the viewer opening the title, so it counts. Missing these
@@ -2929,8 +2979,9 @@ class StreamDekRepository(
                 return it
             }
         }
-        val detail = (api.get<MediaDetail>("/tmdb/details/$resolvedType/$resolvedId")
-            ?: fetchAddonMetaDetail(resolvedId, canonicalType))?.let { resolvedDetail ->
+        val detail = (if (MediaClassification.enrichmentId(resolvedId) != null)
+            api.get<MediaDetail>("/tmdb/details/$resolvedType/${encodePathSegment(resolvedId)}")
+            else fetchAddonMetaDetail(resolvedId, canonicalType))?.let { resolvedDetail ->
             if (resolvedDetail.type == "tv") {
                 val releasedSeasons = availableSeasons(resolvedDetail.seasons)
                 resolvedDetail.copy(
@@ -2958,18 +3009,18 @@ class StreamDekRepository(
         val addonType = if (canonicalType == "tv") "series" else canonicalType
         val response = runCatching {
             api.get<AddonMetaResponse>("/addons/meta/$addonType/${encodePathSegment(id)}")
-        }.onFailure { TvDebugLogger.w("Detail", "addon meta lookup failed type=$addonType id=$id") }
+        }.onFailure { TvDebugLogger.w("Detail", "addon meta lookup failed") }
             .getOrNull()
         val meta = response?.meta ?: return null
         if (!isUsableAddonMeta(meta, id)) {
-            TvDebugLogger.w("Detail", "addon meta unusable addon=${response.addonName.orEmpty()} id=${meta.id.orEmpty()}")
+            TvDebugLogger.w("Detail", "addon meta unusable")
             return null
         }
         val seasonNumbers = meta.videos.mapNotNull { it.season }.filter { it > 0 }.distinct().sorted()
         return MediaDetail(
             id = id,
             title = meta.name?.trim().orEmpty().ifBlank { return null },
-            type = if (meta.videos.isNotEmpty() || addonType == "series") "tv" else "movie",
+            type = MediaClassification.item(meta.type, addonType, id, meta.videos.any { it.season != null && it.episode != null }),
             poster = meta.poster,
             backdrop = meta.background ?: meta.poster,
             description = sequenceOf(meta.description, meta.overview, meta.synopsis)
@@ -2986,7 +3037,12 @@ class StreamDekRepository(
 
 
     suspend fun fetchTraktComments(id: String, type: String): List<TraktCommentItem> {
-        return api.get<TraktCommentsResponse>("/trakt/comments/$type/$id")?.results.orEmpty()
+        val canonical = MediaClassification.canonical(type)
+        if (!MetadataLookupIdentity.supportsType(canonical)) return emptyList()
+        val lookupId = if (AddonMediaReference.decode(id) != null) {
+            peekCachedDetail(id, canonical)?.tmdbId?.takeIf { it > 0 }?.toString() ?: return emptyList()
+        } else MediaClassification.enrichmentId(id) ?: return emptyList()
+        return api.get<TraktCommentsResponse>("/trakt/comments/$canonical/${encodePathSegment(lookupId)}")?.results.orEmpty()
     }
 
     suspend fun fetchPerson(id: String): PersonDetail? {
@@ -3005,6 +3061,18 @@ class StreamDekRepository(
     }
 
     suspend fun fetchSeason(id: String, seasonNumber: Int, forceRefresh: Boolean = false): SeasonDetail? {
+        AddonMediaReference.decode(id)?.let { ref ->
+            val meta = originMeta(ref)
+            if (meta?.videos.isNullOrEmpty()) {
+                val tmdbId = peekCachedDetail(id, "tv")?.tmdbId?.takeIf { it > 0 } ?: return null
+                return fetchSeason(tmdbId.toString(), seasonNumber, forceRefresh)
+            }
+            val episodes = meta!!.videos.filter { it.season == seasonNumber && it.episode != null }.map { video ->
+                SeasonEpisode(id = 0, episodeNumber = video.episode!!,
+                    name = label(R.string.new_episode_number, "Episode ${video.episode}", video.episode))
+            }
+            return SeasonDetail(seasonNumber, label(R.string.detail_season_number, "Season $seasonNumber", seasonNumber), episodes = episodes)
+        }
         val cacheKey = "$id:$seasonNumber"
         if (!forceRefresh) {
             seasonCache[cacheKey]?.let { return it }
@@ -3177,7 +3245,7 @@ class StreamDekRepository(
             searchable.map { (addon, catalog) ->
                 async(Dispatchers.IO) {
                     gate.withPermit {
-                        val rawType = catalog.type.trim().lowercase(Locale.US)
+                        val rawType = catalog.type.trim()
                         val mappedType = mapAddonCatalogType(rawType) ?: return@withPermit emptyList()
                         val catalogId = catalog.id.trim()
                         if (catalogId.isBlank()) return@withPermit emptyList()
@@ -3804,7 +3872,8 @@ class StreamDekRepository(
      */
     suspend fun dismissContinueWatching(item: MediaItem): Boolean {
         val episode = item.episode
-        val entityType = if (item.type.equals("movie", true)) "movie" else "tv"
+        val entityType = MediaClassification.canonical(item.type)
+        if (!MetadataLookupIdentity.supportsType(entityType)) return false
         val cacheKey = buildSessionProfileCacheKey()
         val previous = libraryCache[cacheKey]
         rememberPendingContinueDismissal(cacheKey, item)
@@ -4247,7 +4316,7 @@ class StreamDekRepository(
                 path = "/sync/progress",
                 body = com.google.gson.Gson().toJson(
                     mapOf(
-                        "entityType" to mediaType,
+                        "entityType" to MetadataLookupIdentity.requireType(mediaType),
                         "entityId" to mediaId,
                         "positionSec" to positionSec,
                         "durationSec" to durationSec,
@@ -4326,6 +4395,16 @@ class StreamDekRepository(
         sourceAddonId: String? = null,
         sourceAddonName: String? = null,
     ): ResolvedPlaybackCandidate {
+        AddonMediaReference.decode(mediaId)?.let { ref ->
+            val streams = streamCandidates(mediaType, mediaId, imdbId, episode,
+                preferredStreamKey = preferredStreamKey, preferredAddonName = preferredAddonName,
+                preferredQualityGroup = preferredQualityGroup, forceRefresh = forceRefresh).last().streams
+            for (stream in rankStreams(streams, preferredStreamKey, preferredAddonName, preferredQualityGroup)) {
+                val source = resolvePlaybackSource(stream)
+                if (source != null) return ResolvedPlaybackCandidate(source, stream, streams)
+            }
+            return ResolvedPlaybackCandidate(null, null, streams)
+        }
         if (mediaType == "live" && !directStreamUrl.isNullOrBlank()) {
             val directStream = AddonStream(
                 addonId = sourceAddonId.orEmpty(),
@@ -4535,6 +4614,7 @@ class StreamDekRepository(
         videoId: String,
         isLive: Boolean,
         forceRefresh: Boolean,
+        nativeIdentity: Boolean = false,
     ): Pair<String?, List<AddonStream>>? {
         val addon = runCatching { fetchAddonManifests() }.getOrDefault(emptyList())
             .firstOrNull { it.enabled && it.id == addonId }
@@ -4549,6 +4629,7 @@ class StreamDekRepository(
                 baseId = baseId,
                 isLive = isLive,
                 forceRefresh = forceRefresh,
+                nativeIdentity = nativeIdentity,
             )
             if (streams.isNotEmpty()) return lookupType to streams
         }
@@ -4722,13 +4803,14 @@ class StreamDekRepository(
         baseId: String,
         isLive: Boolean,
         forceRefresh: Boolean = false,
+        nativeIdentity: Boolean = false,
     ): List<AddonStream> {
         // Keep the two modes isolated. In direct mode every response is fetched and parsed on this
         // device; in server-side mode this client never contacts the add-on itself.
         if (usesServerSideStreams()) {
             return runCatching {
                 val raw = api.executeRaw("GET",
-                    "/addons/streams/single/${encodePathSegment(addon.id)}/$lookupType/${encodePathSegment(videoId)}",
+                    "/addons/streams/single/${encodePathSegment(addon.id)}/${encodePathSegment(lookupType)}/${encodePathSegment(videoId)}?nativeIdentity=$nativeIdentity",
                     body = null, session = currentSession(),
                 ) ?: error("Backend stream request failed")
                 parseAddonStreamsPayload(raw) { returned, parsed ->
@@ -4741,7 +4823,7 @@ class StreamDekRepository(
         }
 
         // Direct add-on calls require the identifier shape the add-on understands.
-        val requiresImdbId = !isLive && (lookupType == "movie" || lookupType == "series" || lookupType == "tv")
+        val requiresImdbId = !nativeIdentity && !isLive && (lookupType == "movie" || lookupType == "series" || lookupType == "tv")
         if (requiresImdbId && !baseId.matches(Regex("^tt\\d+$", RegexOption.IGNORE_CASE))) return emptyList()
         return fetchFreshStreamsFromAddon(addon, lookupType, videoId, forceNetwork = forceRefresh)
     }
@@ -4864,7 +4946,7 @@ class StreamDekRepository(
     ): List<AddonStream> = withContext(Dispatchers.IO) {
         val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: return@withContext emptyList()
         val addonBaseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl.trimEnd('/'))
-        val streamType = type.trim().lowercase(Locale.US)
+        val streamType = type.trim()
         val request = okhttp3.Request.Builder()
             .url("$addonBaseUrl/stream/${addonPathSegment(streamType)}/${addonPathSegment(videoId)}.json")
             .header("User-Agent", "Stremio/4.4.168")
@@ -4886,7 +4968,7 @@ class StreamDekRepository(
         }.getOrDefault(emptyList())
     }
 
-    private fun encodePathSegment(value: String): String = URLEncoder.encode(value, "UTF-8")
+    private fun encodePathSegment(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
     /**
      * Percent-encoding for a path segment sent straight to a third-party add-on.
@@ -4920,6 +5002,24 @@ class StreamDekRepository(
         sourceAddonName: String? = null,
         forceRefresh: Boolean = false,
     ): kotlinx.coroutines.flow.Flow<StreamCandidatesProgress> = kotlinx.coroutines.flow.channelFlow {
+        AddonMediaReference.decode(mediaId)?.let { ref ->
+            send(StreamCandidatesProgress(emptyList(), pendingSources = 1, done = false))
+            val streams = originStreams(ref, episode, forceRefresh)
+            val detail = fetchOriginDetail(ref, mediaType, forceRefresh = false)
+            val meta = originMeta(ref)
+            val lookupId = MediaClassification.enrichmentId(detail?.imdbId ?: meta?.movieDbId?.takeIf { it > 0 }?.let { "tmdb:$it" }
+                ?: meta?.id ?: ref.id, providerOwned = true)
+            if (lookupId != null && MetadataLookupIdentity.supportsType(detail?.type ?: mediaType)) {
+                streamCandidates(detail?.type ?: mediaType, lookupId, detail?.imdbId, episode,
+                    preferredStreamKey = preferredStreamKey, preferredAddonName = preferredAddonName,
+                    preferredQualityGroup = preferredQualityGroup, forceRefresh = forceRefresh).collect { progress ->
+                    send(progress.copy(streams = dedupeStreams(streams + progress.streams)))
+                }
+            } else {
+                send(StreamCandidatesProgress(markCachedStreams(streams), pendingSources = 0, done = true))
+            }
+            return@channelFlow
+        }
         val isLive = mediaType == "live"
         if (isLive && !directStreamUrl.isNullOrBlank()) {
             val directStream = AddonStream(
@@ -5166,7 +5266,7 @@ class StreamDekRepository(
 
     private fun streamMergeKey(stream: AddonStream): String = streamAggregationKey(stream)
 
-    private fun streamLookupTypes(mediaType: String, streamType: String?): List<String> = when (mediaType) {
+    private fun streamLookupTypes(mediaType: String, streamType: String?): List<String> = when (MediaClassification.canonical(mediaType)) {
         "live" -> {
             val native = streamType?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() } ?: "tv"
             buildList {
@@ -5179,7 +5279,8 @@ class StreamDekRepository(
             }.distinct()
         }
         "tv" -> listOf("series")
-        else -> listOf("movie")
+        "movie" -> listOf("movie")
+        else -> listOfNotNull(streamType?.takeIf { it.isNotBlank() })
     }
 
 
@@ -5393,7 +5494,7 @@ class StreamDekRepository(
             path = "/sync/progress",
             body = com.google.gson.Gson().toJson(
                 mapOf(
-                    "entityType" to mediaType,
+                    "entityType" to MetadataLookupIdentity.requireType(mediaType),
                     "entityId" to mediaId,
                     "positionSec" to positionSec.coerceAtLeast(0.0),
                     "durationSec" to durationSec.coerceAtLeast(0.0),
@@ -6834,13 +6935,13 @@ class StreamDekRepository(
         val now = System.currentTimeMillis()
         val resolution = synchronized(nextUpCache) { nextUpCache[cacheKey] }?.takeIf { now - it.at < NEXT_UP_CACHE_MS }
             ?: run {
-                val detail = api.get<MediaDetail>("/tmdb/details/tv/${encodePathSegment(seriesId)}") ?: return null
-                val current = api.get<SeasonDetail>("/tmdb/season/${detail.id}/$season") ?: return null
+                val detail = fetchDetail(seriesId, "tv") ?: return null
+                val current = fetchSeason(detail.id, season) ?: return null
                 val nextSeason = detail.seasons.filter { it.seasonNumber > season }.minByOrNull { it.seasonNumber }
                 val needsNextSeason = current.episodes.none { it.episodeNumber == number + 1 } &&
                     number == detail.seasons.firstOrNull { it.seasonNumber == season }?.episodeCount
                 val following = if (needsNextSeason && nextSeason != null) {
-                    api.get<SeasonDetail>("/tmdb/season/${detail.id}/${nextSeason.seasonNumber}") ?: return null
+                    fetchSeason(detail.id, nextSeason.seasonNumber) ?: return null
                 } else null
                 val episodes = buildMap {
                     put(season, current.episodes)
