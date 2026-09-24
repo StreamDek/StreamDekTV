@@ -1772,4 +1772,5 @@
   <string name="settings_tv_audio_delay_scope">Stored on this TV only: other devices have their own speakers. To correct a single video, use Audio in the player.</string>
   <string name="settings_tv_audio_delay_tunneled_note">Tunneled playback is on. ExoPlayer can\'t apply an audio delay while it is in use; mpv still can.</string>
   <string name="settings_tv_reset_audio_delay_detail">Set the default back to no adjustment.</string>
+  <string name="content_safety_blocked">This content is blocked by the content protection policy.</string>
 </resources>

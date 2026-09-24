@@ -95,11 +95,12 @@ internal object PluginCatalogSearch {
      * either way. Cached for a few minutes, so typing back to an earlier query is instant.
      */
     suspend fun searchProvider(provider: MainAPI, query: String, forceRefresh: Boolean = false): ProviderOutcome {
+        if (AdultContentFilter.isBlocked(provider.name, provider.mainUrl, provider.javaClass.name)) return ProviderOutcome(provider.name, emptyList(), Capability.CatalogueOnly)
         val needle = query.trim()
         val key = provider.name + "" + needle.lowercase(Locale.US)
         val now = System.currentTimeMillis()
         if (!forceRefresh) {
-            cache[key]?.takeIf { now - it.at < CACHE_TTL_MS }?.let { return it.outcome }
+            cache[key]?.takeIf { now - it.at < CACHE_TTL_MS }?.let { return it.outcome.copy(items = it.outcome.items.filterNot { item -> AdultContentFilter.isBlockedItem(title = item.title) || AdultContentFilter.isBlocked(item.id) }) }
         }
         val indexed = matchIndexed(provider.name, needle)
         var failed = false
@@ -131,7 +132,7 @@ internal object PluginCatalogSearch {
         }
         val outcome = ProviderOutcome(
             providerName = provider.name,
-            items = (relevant(native, needle) + indexed).distinctBy { it.id },
+            items = (relevant(native, needle) + indexed).distinctBy { it.id }.filterNot { AdultContentFilter.isBlockedItem(title = it.title) || AdultContentFilter.isBlocked(it.id) },
             capability = capabilities[provider.name] ?: Capability.Native,
             failed = failed,
         )

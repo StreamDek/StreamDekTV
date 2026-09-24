@@ -512,6 +512,7 @@ class PluginSourceEngine(context: Context) {
     // --- scraper source ---------------------------------------------------------------------
 
     private suspend fun providerCode(provider: ProfilePluginProvider, repoVersion: String): String {
+        check(!AdultContentFilter.isBlocked(provider.id, provider.name, provider.repoUrl)) { "CONTENT_SAFETY_BLOCKED" }
         // A snapshot that already carries the source (an older client, or a control-center import)
         // is used as-is rather than re-downloading it.
         provider.code?.takeIf { it.isNotBlank() }?.let { return it }

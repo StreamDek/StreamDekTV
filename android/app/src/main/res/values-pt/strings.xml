@@ -1784,4 +1784,5 @@
   <string name="settings_tv_audio_delay_scope">Guardado apenas nesta TV: outros dispositivos têm as suas próprias colunas. Para corrigir um único vídeo, use Áudio no reprodutor.</string>
   <string name="settings_tv_audio_delay_tunneled_note">A reprodução em túnel está ativada. O ExoPlayer não consegue aplicar atraso do áudio nesse modo; o mpv consegue.</string>
   <string name="settings_tv_reset_audio_delay_detail">Repõe o valor predefinido sem ajuste.</string>
+  <string name="content_safety_blocked">Este conteúdo está bloqueado pela política de proteção de conteúdo.</string>
 </resources>

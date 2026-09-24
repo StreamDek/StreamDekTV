@@ -330,6 +330,7 @@ class StreamDekApi(
      */
     @PublishedApi internal val baseUrl: String = BuildConfig.STREAMDEK_API_URL.trimEnd('/') + API_PATH_PREFIX,
 ) {
+    private val contentPolicyStore = ContentPolicyStore(sessionStore.appContext).also { it.restore() }
     @PublishedApi internal val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     /**
@@ -430,15 +431,7 @@ class StreamDekApi(
             val raw = executeRaw("GET", "/public/content-policy", null, null)
                 ?: error("Empty content policy response")
             val json = org.json.JSONObject(raw)
-            val terms = json.optJSONArray("terms")
-            AdultContentFilter.applyPolicy(
-                blockAdult = json.optBoolean("blockAdult", true),
-                terms = buildList {
-                    if (terms != null) for (index in 0 until terms.length()) {
-                        terms.optString(index).takeIf { it.isNotBlank() }?.let(::add)
-                    }
-                },
-            )
+            contentPolicyStore.accept(json)
         }.onFailure { AdultContentFilter.applyPolicy(null, null) }
     }
 

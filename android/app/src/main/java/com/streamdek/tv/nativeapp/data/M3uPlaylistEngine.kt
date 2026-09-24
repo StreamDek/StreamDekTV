@@ -433,6 +433,8 @@ private fun isM3uVodEntry(title: String, group: String?, declaredType: String?, 
  */
 internal fun Int.formatted(locale: Locale = Locale.getDefault()): String = String.format(locale, "%,d", this)
 
+private val m3uSafetyIdentityRegex = Regex("""\btvg-(?:id|name)\s*=\s*["']([^"']{1,512})["']""", RegexOption.IGNORE_CASE)
+
 internal fun parseM3uLines(
     lines: Sequence<String>,
     playlistId: String,
@@ -441,6 +443,7 @@ internal fun parseM3uLines(
 ): List<MediaItem> {
     val items = mutableListOf<MediaItem>()
     var pendingTitle: String? = null
+    var pendingIdentityBlocked = false
     var pendingLogo: String? = null
     var pendingGroup: String? = null
     var pendingMediaType: String? = null
@@ -471,6 +474,7 @@ internal fun parseM3uLines(
             line.startsWith("#EXTINF", ignoreCase = true) -> {
                 sawPlaylistMarker = true
                 val comma = line.indexOf(',')
+                pendingIdentityBlocked = m3uSafetyIdentityRegex.findAll(line).any { AdultContentFilter.isBlocked(it.groupValues[1]) }
                 pendingTitle = if (comma >= 0) line.substring(comma + 1).trim().takeIf { it.isNotEmpty() } else null
                 pendingLogo = m3uTvgLogoRegex.find(line)?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
                 pendingGroup = m3uGroupTitleRegex.find(line)?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }?.let(::intern)
@@ -538,6 +542,8 @@ internal fun parseM3uLines(
                         drmClearKeys = if (pendingDrmClearKeys.isEmpty()) null else pendingDrmClearKeys.toMap(),
                     ),
                 )
+                if (pendingIdentityBlocked && items.isNotEmpty()) items.removeAt(items.lastIndex)
+                pendingIdentityBlocked = false
                 pendingTitle = null
                 pendingLogo = null
                 pendingGroup = null
@@ -556,7 +562,7 @@ internal fun parseM3uLines(
     // than where they are displayed keeps them out of browse, search and favourites at once.
     return items.filterNot { item ->
         AdultContentFilter.isBlockedItem(title = item.title) ||
-            AdultContentFilter.isBlocked(item.sourceCatalogName)
+            AdultContentFilter.isBlockedCategory(item.sourceCatalogName) || AdultContentFilter.isBlocked(item.id, item.directStreamUrl)
     }
 }
 

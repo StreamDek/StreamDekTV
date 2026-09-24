@@ -1784,4 +1784,5 @@
   <string name="settings_tv_audio_delay_scope">Salvato solo su questa TV: gli altri dispositivi hanno i propri altoparlanti. Per correggere un singolo video, usa Audio nel player.</string>
   <string name="settings_tv_audio_delay_tunneled_note">La riproduzione in tunneling è attiva. ExoPlayer non può applicare un ritardo audio in questa modalità; mpv sì.</string>
   <string name="settings_tv_reset_audio_delay_detail">Riporta il valore predefinito a nessuna regolazione.</string>
+  <string name="content_safety_blocked">Questo contenuto è bloccato dalla politica di protezione dei contenuti.</string>
 </resources>

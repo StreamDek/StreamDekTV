@@ -1768,4 +1768,5 @@
   <string name="settings_tv_audio_delay_scope">Alleen op deze tv opgeslagen: andere apparaten hebben hun eigen luidsprekers. Corrigeer één video via Audio in de speler.</string>
   <string name="settings_tv_audio_delay_tunneled_note">Getunneld afspelen staat aan. ExoPlayer kan dan geen audiovertraging toepassen; mpv wel.</string>
   <string name="settings_tv_reset_audio_delay_detail">Zet de standaard terug op geen aanpassing.</string>
+  <string name="content_safety_blocked">Deze inhoud wordt geblokkeerd door het beleid voor inhoudsbescherming.</string>
 </resources>

@@ -42,7 +42,7 @@ object CloudStreamCatalog {
   data class MainPageRow(val provider: MainAPI, val index: Int, val page: MainPageData)
 
   fun mainPageRows(provider: MainAPI): List<MainPageRow> = runCatching {
-    if (!provider.hasMainPage) emptyList() else provider.mainPage.mapIndexed { index, page -> MainPageRow(provider, index, page) }
+    if (!provider.hasMainPage || AdultContentFilter.isBlocked(provider.name, provider.mainUrl, provider.javaClass.name)) emptyList() else provider.mainPage.mapIndexed { index, page -> MainPageRow(provider, index, page) }
   }.onFailure { Log.w(TAG, "${provider.name} main page could not be listed", it) }.getOrDefault(emptyList())
 
   /**
@@ -60,7 +60,7 @@ object CloudStreamCatalog {
     // whole page at once still has its named list picked out when there is one.
     val lists = response.items
     val chosen = lists.firstOrNull { it.name.equals(page.name, ignoreCase = true) }?.let(::listOf) ?: lists
-    chosen.flatMap { it.list }.distinctBy { it.url }.map { toMediaItem(provider, it, rowName = page.name) }
+    chosen.filterNot { AdultContentFilter.isBlockedCategory(it.name) }.flatMap { it.list }.filterNot { AdultContentFilter.isBlockedItem(title = it.name) || AdultContentFilter.isBlocked(it.url, provider.name, provider.mainUrl) }.distinctBy { it.url }.map { toMediaItem(provider, it, rowName = page.name) }
   }
 
   /**

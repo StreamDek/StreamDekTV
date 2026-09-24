@@ -832,6 +832,13 @@ class StreamDekRepository(
     @Volatile private var serverSideStreamsEnabled: Boolean = false
 
     init {
+        repositoryScope.launch {
+            while (true) {
+                api.refreshContentPolicy()
+                PluginCatalogSearch.clearCache()
+                kotlinx.coroutines.delay(5 * 60_000L)
+            }
+        }
         // Client funnel capture. The backend can see which add-ons were queried and which debrid
         // providers were tried, but only this device knows whether anything actually played.
         Telemetry.configure(api)
@@ -1974,6 +1981,8 @@ class StreamDekRepository(
         catalogId: String,
         catalogName: String?,
     ): MediaItem? {
+        if (AdultContentFilter.isBlockedItem(adultFlag = meta.adult, title = meta.name, genres = meta.genres.orEmpty()) ||
+            AdultContentFilter.isBlocked(meta.id, meta.url as? String, addonId, addonName, catalogId, catalogName)) return null
         val rawId = meta.id?.trim().orEmpty()
         val tmdbId = meta.movieDbId
             ?: rawId.takeIf { it.startsWith("tmdb:", ignoreCase = true) }
@@ -6569,6 +6578,8 @@ class StreamDekRepository(
         // so this is the one place the block cannot be routed around by a new caller.
         return streams.filterNot { stream ->
             AdultContentFilter.isBlocked(
+                stream.url,
+                stream.addonId,
                 stream.name,
                 stream.title,
                 stream.addonName,
@@ -7147,7 +7158,7 @@ internal fun orderCatalogRows(
  * documentary about it, and hiding those is how a filter earns a reputation for being wrong.
  */
 internal fun MediaItem.isAdultCard(): Boolean =
-    AdultContentFilter.isBlockedItem(title = title) || AdultContentFilter.isBlocked(sourceCatalogName)
+    AdultContentFilter.isBlockedItem(adultFlag = adult, title = title, genres = genres.orEmpty()) || AdultContentFilter.isBlocked(id, directStreamUrl, sourceAddonId, sourceAddonName, sourceCatalogId, sourceCatalogName)
 
 /** Drops adult cards from a row. Applied where rows are built rather than where they render. */
 internal fun List<MediaItem>.withoutAdult(): List<MediaItem> = filterNot { it.isAdultCard() }

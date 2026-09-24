@@ -1870,4 +1870,5 @@
   <string name="settings_tv_audio_delay_scope">Zapisywane tylko na tym telewizorze: inne urządzenia mają własne głośniki. Pojedynczy film popraw w menu Dźwięk w odtwarzaczu.</string>
   <string name="settings_tv_audio_delay_tunneled_note">Odtwarzanie tunelowane jest włączone. ExoPlayer nie może wtedy zastosować opóźnienia dźwięku; mpv może.</string>
   <string name="settings_tv_reset_audio_delay_detail">Przywraca wartość domyślną bez korekty.</string>
+  <string name="content_safety_blocked">Ta treść jest zablokowana przez zasady ochrony treści.</string>
 </resources>

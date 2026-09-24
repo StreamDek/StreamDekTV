@@ -50,6 +50,7 @@ android {
 
     defaultConfig {
         applicationId "com.streamdek.tv"
+        testInstrumentationRunner "com.streamdek.tv.nativeapp.data.ContentSafetyInstrumentation"
         minSdk 24
         targetSdk 36
         versionCode ciVersionCode

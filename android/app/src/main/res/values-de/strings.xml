@@ -1768,4 +1768,5 @@
   <string name="settings_tv_audio_delay_scope">Nur auf diesem Fernseher gespeichert – andere Geräte haben eigene Lautsprecher. Ein einzelnes Video korrigierst du im Player unter Ton.</string>
   <string name="settings_tv_audio_delay_tunneled_note">Getunnelte Wiedergabe ist an. ExoPlayer kann dabei keine Tonverzögerung anwenden, mpv schon.</string>
   <string name="settings_tv_reset_audio_delay_detail">Setzt den Standardwert auf keine Anpassung zurück.</string>
+  <string name="content_safety_blocked">Dieser Inhalt wird durch die Richtlinie zum Inhaltsschutz blockiert.</string>
 </resources>

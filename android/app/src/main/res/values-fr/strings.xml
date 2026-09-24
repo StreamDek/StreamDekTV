@@ -1819,4 +1819,5 @@
   <string name="settings_tv_audio_delay_scope">Enregistré sur ce téléviseur uniquement : les autres appareils ont leurs propres enceintes. Pour corriger une seule vidéo, utilisez Audio dans le lecteur.</string>
   <string name="settings_tv_audio_delay_tunneled_note">La lecture tunnelisée est activée. ExoPlayer ne peut pas appliquer de décalage audio dans ce mode ; mpv le peut.</string>
   <string name="settings_tv_reset_audio_delay_detail">Remet la valeur par défaut sans réglage.</string>
+  <string name="content_safety_blocked">Ce contenu est bloqué par la politique de protection du contenu.</string>
 </resources>

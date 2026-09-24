@@ -107,6 +107,8 @@ data class MediaItem(
      */
     val drmLicenseType: String? = null,
     val drmClearKeys: Map<String, String>? = null,
+    val adult: Boolean = false,
+    val genres: List<String>? = null,
 ) {
     /** TMDB detail routes require the numeric TMDB id, while add-ons often expose IMDb as id. */
     fun detailLookupId(): String = if (AddonMediaReference.decode(id) != null) id else if (!sourceAddonId.isNullOrBlank() && !sourceCatalogType.isNullOrBlank()) {
@@ -956,6 +958,8 @@ data class AddonManifest(
 )
 
 data class AddonCatalogMetaItem(
+    val adult: Boolean = false,
+    val genres: List<String>? = null,
     val videos: List<AddonMetaVideo> = emptyList(),
     val id: String? = null,
     val type: String? = null,

@@ -1696,6 +1696,11 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 externalSubtitles.filter { it.id == selectedExternalSubtitleId },
             )
         }
+        if ((com.streamdek.tv.nativeapp.data.AdultContentFilter.isBlockedItem(title = playbackRequest.title) || com.streamdek.tv.nativeapp.data.AdultContentFilter.isBlocked(source, playbackRequest.mediaId, playbackRequest.sourceAddonId, playbackRequest.sourceAddonName, playbackRequest.sourceCatalogName))) {
+            error = playerResources.getString(R.string.content_safety_blocked)
+            playerView?.setPaused(true)
+            return@LaunchedEffect
+        }
         if (!source.isNullOrBlank()) playerView?.setSource(source)
         // Re-asserted per source: both engines reset caption styling when they reconfigure their
         // subtitle chain, so a size chosen on the last episode would otherwise be lost on this one.
