@@ -38,6 +38,9 @@ object CloudStreamCatalog {
   /** How many of a CloudStream row's titles Home shows; a main page can return hundreds. */
   const val ROW_MAX_ITEMS = 40
 
+  @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+  private val mainPageDispatcher = Dispatchers.IO.limitedParallelism(2)
+
   /** One row a provider's main page offers, as the provider declares it. */
   data class MainPageRow(val provider: MainAPI, val index: Int, val page: MainPageData)
 
@@ -51,8 +54,12 @@ object CloudStreamCatalog {
    * On the IO dispatcher whatever the caller's: Home collects on the main thread, and some providers
    * make blocking network calls inside `getMainPage` — CNC Verse's cookie bypass does — which Android
    * refuses on the main thread, so those rows came back empty and were dropped.
+   *
+   * No more than two at a time, though. A provider parses its whole scraped page, and a cold Home
+   * asks for every row at once: unbounded, they took all four of a Fire TV stick's cores for
+   * seconds, and Continue Watching - at the top of the page - waited behind rows at the bottom.
    */
-  suspend fun mainPageItems(provider: MainAPI, page: MainPageData): List<MediaItem> = withContext(Dispatchers.IO) {
+  suspend fun mainPageItems(provider: MainAPI, page: MainPageData): List<MediaItem> = withContext(mainPageDispatcher) {
     val response = withTimeout(MAIN_PAGE_TIMEOUT_MS) {
       provider.getMainPage(1, MainPageRequest(page.name, page.data, page.horizontalImages))
     } ?: return@withContext emptyList()

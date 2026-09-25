@@ -17,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 data class HomeScreenUiState(
@@ -53,6 +54,9 @@ class HomeViewModel(
     private var heroKey: String? = null
     private var heroDetailJob: Job? = null
     private var loadJob: Job? = null
+    /** True while the first, progressive load of this Home is running. See [deferBehindColdLoad]. */
+    private var coldLoadActive = false
+    private var deferredRefreshKey: String? = null
     private val heroDetailRequests = mutableMapOf<String, Deferred<MediaDetail?>>()
     private val heroDetailCache = mutableMapOf<String, MediaDetail>()
 
@@ -73,11 +77,31 @@ class HomeViewModel(
         if (lastLoadKey == loadKey && (loadJob?.isActive == true || _uiState.value.content != null || _uiState.value.error != null)) {
             return
         }
+        if (deferBehindColdLoad(loadKey)) return
         loadContent(loadKey, forceRefresh = false)
     }
 
     fun forceRefresh(loadKey: String) {
+        if (deferBehindColdLoad(loadKey)) return
         loadContent(loadKey, forceRefresh = true)
+    }
+
+    /**
+     * Holds a refresh until the first load has finished, when all that changed is which CloudStream
+     * sources are loaded or whether the Fuse is on.
+     *
+     * CloudStream sources finish coming up a few seconds into a cold start, and that bumps the load
+     * key. Acting on it at once cancelled the first load mid-flight - library, progress and Next Up
+     * reads included - and started everything again, which put Continue Watching ten seconds or
+     * more behind the rest of the page. The first load is left to finish and the refresh follows it.
+     * A different account, profile or add-on setup is a different Home and still cancels at once.
+     */
+    private fun deferBehindColdLoad(loadKey: String): Boolean {
+        val current = lastLoadKey ?: return false
+        if (!coldLoadActive || loadJob?.isActive != true) return false
+        if (current.substringBefore(":cs") != loadKey.substringBefore(":cs")) return false
+        deferredRefreshKey = loadKey
+        return true
     }
 
     private fun loadContent(loadKey: String, forceRefresh: Boolean) {
@@ -94,6 +118,8 @@ class HomeViewModel(
             // is already populated swaps in one go instead: tearing rows out from under someone
             // who is mid-browse to rebuild them is worse than a moment of stale content.
             val progressive = cachedContent == null
+            coldLoadActive = progressive
+            deferredRefreshKey = null
             // The first frame a cold Home shows is the one it keeps.
             //
             // Rows are held back until the ones that decide the page's order and its opening
@@ -157,6 +183,13 @@ class HomeViewModel(
                         },
                     )
                 }
+            // Not when this load was cancelled by a newer one: that load owns these now.
+            if (progressive && isActive) {
+                coldLoadActive = false
+                val next = deferredRefreshKey
+                deferredRefreshKey = null
+                if (next != null) loadContent(next, forceRefresh = true)
+            }
         }
     }
     private fun HomeContent.personalRowsPending(): Boolean =

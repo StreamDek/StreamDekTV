@@ -25,8 +25,20 @@ object AdultContentFilter {
    * Whether filtering is active. On by default and restored to on whenever the platform policy
    * cannot be read, so an unreachable backend fails closed rather than open.
    */
-  private data class PolicyState(val enabled: Boolean = true, val terms: Set<String> = emptySet(), val rules: List<ContentSafetyRule> = emptyList(), val version: String? = null)
+  private data class PolicyState(val enabled: Boolean = true, val terms: Set<String> = emptySet(), val rules: List<ContentSafetyRule> = emptyList(), val version: String? = null) {
+    /** Each term as [isBlockedItem] compares it to a title, normalised once per policy rather than once per card. */
+    val paddedNormalizedTerms: List<String> by lazy { terms.map { " " + AdultSourceIdentity.normalize(it) + " " } }
+  }
   @Volatile private var policy = PolicyState()
+
+  /**
+   * [matches] results under one policy. The same add-on names, catalogue ids and genres are checked
+   * for every card in a row and again on every refresh; a new policy starts a new cache.
+   */
+  private class MatchCache(val policy: PolicyState) : LinkedHashMap<String, Boolean>(512, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?) = size > 4096
+  }
+  @Volatile private var matchCache = MatchCache(policy)
   private val changeCount = kotlinx.coroutines.flow.MutableStateFlow(0L)
 
   /**
@@ -138,17 +150,20 @@ object AdultContentFilter {
     genres: List<String> = emptyList(),
     vararg extra: String?,
   ): Boolean {
-    if (!enabled) return false
-    val matching = policy.rules.filter { it.matches("media", listOfNotNull(title) + extra.filterNotNull()) }
+    val current = policy
+    if (!current.enabled) return false
+    val matching = if (current.rules.isEmpty()) emptyList() else {
+      val fields = listOfNotNull(title) + extra.filterNotNull()
+      current.rules.filter { it.matches("media", fields) }
+    }
     if (matching.any { it.status == "ADULT" }) return true
     if (matching.any { it.status == "SAFE" }) return false
     if (adultFlag) return true
     if (genres.any { genre -> blockedCategories.contains(genre.trim().lowercase()) }) return true
     // A documentary title mentioning pornography is weak evidence, unlike source identity.
     val titleBlocked = title?.let { value ->
-      AdultSourceIdentity.matches(value) || adminTerms.any { term ->
-        (" " + AdultSourceIdentity.normalize(value) + " ").contains(" " + AdultSourceIdentity.normalize(term) + " ")
-      }
+      AdultSourceIdentity.matches(value) || current.paddedNormalizedTerms.isNotEmpty() &&
+        (" " + AdultSourceIdentity.normalize(value) + " ").let { padded -> current.paddedNormalizedTerms.any { padded.contains(it) } }
     } == true
     return titleBlocked || isBlocked(*extra) || genres.any { genre -> matches(genre) }
   }
@@ -162,6 +177,19 @@ object AdultContentFilter {
 
   private fun matches(value: String): Boolean {
     if (value.isBlank()) return false
+    val current = policy
+    var cache = matchCache
+    if (cache.policy !== current) {
+      cache = MatchCache(current)
+      matchCache = cache
+    }
+    synchronized(cache) { cache[value] }?.let { return it }
+    val result = matchesUncached(value, current)
+    synchronized(cache) { cache[value] = result }
+    return result
+  }
+
+  private fun matchesUncached(value: String, policy: PolicyState): Boolean {
     if (policy.rules.any { it.scope == "*" && it.status == "ADULT" && it.matches("source", listOf(value)) }) return true
     if (AdultSourceIdentity.matches(value)) return true
     // Release names separate words with dots and underscores, so everything that is not a letter,
@@ -170,11 +198,11 @@ object AdultContentFilter {
     // case changes. Both readings are tried: splitting alone would lose brands written the same way
     // ("OnlyFans", "MetArt") that are listed as single words.
     val split = value.replace(caseBoundary, " ")
-    return matchesWords(value.lowercase().replace(wordSeparators, " ").trim()) ||
-      (split != value && matchesWords(split.lowercase().replace(wordSeparators, " ").trim()))
+    return matchesWords(value.lowercase().replace(wordSeparators, " ").trim(), policy.terms) ||
+      (split != value && matchesWords(split.lowercase().replace(wordSeparators, " ").trim(), policy.terms))
   }
 
-  private fun matchesWords(normalized: String): Boolean {
+  private fun matchesWords(normalized: String, adminTerms: Set<String>): Boolean {
     if (normalized.isEmpty()) return false
     val tokens = normalized.split(' ').filter { it.isNotBlank() }
 

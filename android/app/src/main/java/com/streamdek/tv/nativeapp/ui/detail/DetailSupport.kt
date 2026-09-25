@@ -31,6 +31,57 @@ internal data class AmbientBackdropPalette(
     val accentGlow: Color,
 )
 
+/** How much smaller than the page [bakeDetailScrim] draws. A gradient loses nothing at a quarter. */
+private const val DetailScrimScale = 4f
+
+/**
+ * The title page's reading scrim and base fade, composited into one small bitmap.
+ *
+ * The reading scrim darkens the left of the page for the copy, reaching 78% of the width; the base
+ * fade darkens the bottom for the rows. Both pick up the artwork's palette. The page draws the
+ * result stretched to its own size - see where it is used in DetailScreen for why.
+ */
+internal fun bakeDetailScrim(
+    size: androidx.compose.ui.geometry.Size,
+    density: androidx.compose.ui.unit.Density,
+    layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+    backgroundColor: Color,
+    palette: AmbientBackdropPalette,
+): androidx.compose.ui.graphics.ImageBitmap {
+    val width = kotlin.math.ceil(size.width / DetailScrimScale).toInt().coerceAtLeast(1)
+    val height = kotlin.math.ceil(size.height / DetailScrimScale).toInt().coerceAtLeast(1)
+    val bitmap = androidx.compose.ui.graphics.ImageBitmap(width, height)
+    val bakeSize = androidx.compose.ui.geometry.Size(width.toFloat(), height.toFloat())
+    val readingWidth = bakeSize.width * 0.78f
+    val readingScrim = androidx.compose.ui.graphics.Brush.horizontalGradient(
+        colorStops = arrayOf(
+            0f to backgroundColor.copy(alpha = 0.95f),
+            0.45f to palette.leftGlow.copy(alpha = 0.55f),
+            1f to Color.Transparent,
+        ),
+        endX = readingWidth,
+    )
+    val baseFade = androidx.compose.ui.graphics.Brush.verticalGradient(
+        colorStops = arrayOf(
+            0f to Color.Transparent,
+            0.52f to backgroundColor.copy(alpha = 0.34f),
+            0.78f to palette.accentGlow.copy(alpha = 0.40f),
+            1f to backgroundColor.copy(alpha = 0.94f),
+        ),
+    )
+    androidx.compose.ui.graphics.drawscope.CanvasDrawScope().draw(
+        density,
+        layoutDirection,
+        androidx.compose.ui.graphics.Canvas(bitmap),
+        bakeSize,
+    ) {
+        // The same two draws, in the same order, that the page used to make every frame.
+        drawRect(readingScrim, size = bakeSize.copy(width = readingWidth))
+        drawRect(baseFade)
+    }
+    return bitmap
+}
+
 internal fun SeasonEpisode.toEpisodeContext(seasonNumber: Int): EpisodeContext =
     EpisodeContext(seasonNumber, episodeNumber, name, overview, still, runtime, airDate, id)
 
@@ -129,7 +180,26 @@ internal fun playbackEpisodeContext(
  * colours instead of a fixed grey. Decoded at thumbnail size — the palette only needs the broad
  * strokes, and a full-size decode on a Fire TV Stick is a real stall.
  */
+/**
+ * Palettes already worked out, by artwork URL. Coming back from the player or the stream picker
+ * reopens the same page, and the decode and quantise are not free on a stick; a remembered palette
+ * also means the page draws in its own colours from the first frame instead of shifting into them.
+ */
+private val ambientPalettes = object : LinkedHashMap<String, AmbientBackdropPalette>(16, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, AmbientBackdropPalette>?) = size > 32
+}
+
+internal fun cachedAmbientPalette(imageUrl: String?): AmbientBackdropPalette? =
+    imageUrl?.let { synchronized(ambientPalettes) { ambientPalettes[it] } }
+
 internal suspend fun extractAmbientPalette(
+    context: android.content.Context,
+    imageUrl: String,
+): AmbientBackdropPalette = cachedAmbientPalette(imageUrl) ?: extractAmbientPaletteUncached(context, imageUrl).also { palette ->
+    synchronized(ambientPalettes) { ambientPalettes[imageUrl] = palette }
+}
+
+private suspend fun extractAmbientPaletteUncached(
     context: android.content.Context,
     imageUrl: String,
 ): AmbientBackdropPalette = withContext(Dispatchers.IO) {

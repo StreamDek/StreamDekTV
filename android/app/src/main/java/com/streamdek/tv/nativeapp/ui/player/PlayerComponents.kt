@@ -900,7 +900,7 @@ private fun PlayerControlsRow(
     var shownLabel by remember { mutableStateOf("") }
     focusedControl?.label?.let { shownLabel = it }
 
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Box(modifier = Modifier.fillMaxWidth().height(22.dp)) {
             Text(
                 text = shownLabel,
@@ -932,7 +932,8 @@ private fun PlayerControlsRow(
                     }
                 },
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            // Wide enough that a focused icon, grown by the focus scale, never touches its neighbour.
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             controls.forEachIndexed { index, control ->
                 PlayerControlButton(
@@ -953,7 +954,7 @@ private fun PlayerControlsRow(
                     },
                 )
                 // Play stands apart from the options that follow it.
-                if (control.primary) Spacer(Modifier.width(14.dp))
+                if (control.primary) Spacer(Modifier.width(8.dp))
             }
         }
     }
@@ -981,12 +982,13 @@ private fun PlayerControlButton(
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val size = if (control.primary) 58.dp else 48.dp
+    // With no disc to fill, the button is the icon and a hair of room, nothing more.
     val iconSize = if (control.primary) 38.dp else 28.dp
+    val size = iconSize + 4.dp
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(5.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Button(
             onClick = control.onClick,

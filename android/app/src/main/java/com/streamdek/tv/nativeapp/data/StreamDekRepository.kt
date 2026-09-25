@@ -26,6 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1186,6 +1187,23 @@ class StreamDekRepository(
         api.clearSessionExpired()
     }
 
+    /** When [refreshBootstrap] last read a bootstrap successfully, on the elapsed-realtime clock. */
+    @Volatile private var bootstrapReadAt = 0L
+
+    /**
+     * [refreshBootstrap], unless the bootstrap in hand was read within [maxAgeMs].
+     *
+     * A refresh is not just a read: it re-applies plugin settings, warms the scrapers, rebuilds the
+     * CloudStream collections and reloads favourite channels, much of it on the caller's thread.
+     * Changes made on another device are already picked up by the preferences-version watcher, so a
+     * screen that only wants a reasonably current copy should not pay for all of that every visit.
+     */
+    suspend fun refreshBootstrapIfStale(maxAgeMs: Long): AccountBootstrap? {
+        val current = bootstrapState.value
+        if (current != null && bootstrapReadAt > 0L && android.os.SystemClock.elapsedRealtime() - bootstrapReadAt < maxAgeMs) return current
+        return refreshBootstrap()
+    }
+
     suspend fun refreshBootstrap(): AccountBootstrap? = bootstrapRefreshMutex.withLock {
         val session = currentSession() ?: run {
             bootstrapState.value = null
@@ -1212,6 +1230,7 @@ class StreamDekRepository(
                 "Bootstrap",
                 "refreshBootstrap ok profiles=${bootstrap.streamProfiles.size} devices=${bootstrap.devices.size} sessions=${bootstrap.sessions.size}",
             )
+            bootstrapReadAt = android.os.SystemClock.elapsedRealtime()
         } else {
             TvDebugLogger.w("Bootstrap", "refreshBootstrap returned null")
         }
@@ -2293,6 +2312,11 @@ class StreamDekRepository(
         Perf.startupMark("home.allContent")
         send(complete)
     }
+        // Home is collected on the main thread, and everything above between the network calls -
+        // mapping ~600 cards, the content filter over each, ordering and re-snapshotting the page
+        // on every row - used to run there too. On a stick that was seconds of dropped frames
+        // with the finished rows waiting behind them. Only the snapshots cross back to Main.
+        .flowOn(Dispatchers.Default)
 
     /**
      * Series a viewer follows whose most recent episode landed in the last few days.
@@ -2474,9 +2498,30 @@ class StreamDekRepository(
         orderCatalogRows(definitions, bootstrapState.value?.preferences?.home?.homeCatalogRows.orEmpty())
 
     /** Home previews for [definitions], as rails, in one request. */
+    /**
+     * The built-in catalogue rows as last fetched, by region and row list.
+     *
+     * Home refreshes itself every 15 seconds for the sake of Continue Watching, and each refresh
+     * used to fetch, decode and filter all ~600 catalogue cards again (about 300 KB) - on a stick,
+     * seconds of work for rows the backend itself only refreshes every minute or so. They are
+     * reused for a few minutes; an empty answer is never kept, so a failed read is retried next time.
+     */
+    private val catalogHomeRailsCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<HomeRail>>>()
+    private val CATALOG_HOME_RAILS_TTL_MS = 5 * 60_000L
+
     private suspend fun fetchCatalogHomeRails(definitions: List<CatalogDefinition>): List<HomeRail> {
         if (definitions.isEmpty()) return emptyList()
         val ids = URLEncoder.encode(definitions.joinToString(",") { it.id }, "UTF-8")
+        val cacheKey = "$catalogRegion|$ids"
+        catalogHomeRailsCache[cacheKey]?.let { (at, rails) ->
+            if (android.os.SystemClock.elapsedRealtime() - at < CATALOG_HOME_RAILS_TTL_MS) return rails
+        }
+        return fetchCatalogHomeRailsUncached(definitions, ids).also { rails ->
+            if (rails.isNotEmpty()) catalogHomeRailsCache[cacheKey] = android.os.SystemClock.elapsedRealtime() to rails
+        }
+    }
+
+    private suspend fun fetchCatalogHomeRailsUncached(definitions: List<CatalogDefinition>, ids: String): List<HomeRail> {
         val response = runCatching {
             api.get<CatalogHomeResponse>("/tmdb/home?region=$catalogRegion&ids=$ids")
         }.getOrNull() ?: return emptyList()
@@ -3117,21 +3162,32 @@ class StreamDekRepository(
             "fetchLibrary forceRefresh=$forceRefresh user=$cacheKey profile=${sessionStore.activeProfileId() ?: "none"}",
         )
         val failuresBefore = api.failureEpoch
-        val library = runCatching {
-            api.get<LibraryResponse>("/sync/library")
-        }.onFailure {
-            TvDebugLogger.e("Library", "fetchLibrary failed", it)
-        }.getOrNull() ?: LibraryResponse()
-        // The same read the phone makes: every record SyncDek serves in one request, not the 100
-        // /sync/library includes, so a bulk "mark season watched" cannot push unfinished titles off
-        // the television's Continue Watching while the phone still lists them.
-        val allProgress = runCatching {
-            api.get<PlaybackProgressListResponse>("/sync/progress?limit=$PROGRESS_READ_LIMIT")?.results
-        }.onFailure {
-            TvDebugLogger.w("Library", "full progress read failed; using the library page", it)
-        }.getOrNull()
+        // The three reads below do not depend on one another, so they go out together. One after
+        // another they were most of the wait for Continue Watching on a cold Home.
+        val (library, allProgress, servicePlayback) = coroutineScope {
+            val libraryRead = async {
+                runCatching {
+                    api.get<LibraryResponse>("/sync/library")
+                }.onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    TvDebugLogger.e("Library", "fetchLibrary failed", it)
+                }.getOrNull() ?: LibraryResponse()
+            }
+            // The same read the phone makes: every record SyncDek serves in one request, not the 100
+            // /sync/library includes, so a bulk "mark season watched" cannot push unfinished titles
+            // off the television's Continue Watching while the phone still lists them.
+            val progressRead = async {
+                runCatching {
+                    api.get<PlaybackProgressListResponse>("/sync/progress?limit=$PROGRESS_READ_LIMIT")?.results
+                }.onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    TvDebugLogger.w("Library", "full progress read failed; using the library page", it)
+                }.getOrNull()
+            }
+            val playbackRead = async { fetchServicePlayback() }
+            Triple(libraryRead.await(), progressRead.await(), playbackRead.await())
+        }
         val progress = allProgress ?: library.progress
-        val servicePlayback = fetchServicePlayback()
         val mergedContinueWatching = mergeContinueWatching(
             primary = allProgress?.let(::unfinishedPositions) ?: library.continueWatching,
             // A provider's paused session is older news than a mark this account made since.
@@ -4231,11 +4287,23 @@ class StreamDekRepository(
         )
     }
 
+    /**
+     * When each watched history in [watchedHistoryCache] was read.
+     *
+     * A title page asks for the history twice as it opens - once for the series' resume position,
+     * then again, forced, for the watched tick - and it is a single ~120 KB response. A copy read in
+     * the last few seconds is as fresh as a forced read would be. Marking something watched here
+     * clears the cache, so this never hides the viewer's own change.
+     */
+    private val watchedHistoryReadAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val WATCHED_HISTORY_FRESH_MS = 15_000L
+
     suspend fun fetchWatchedKeys(forceRefresh: Boolean = false): Set<String> {
         val session = currentSession() ?: return emptySet()
         val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return emptySet()
         val cacheKey = "${session.user.uid}:$profileId"
-        if (!forceRefresh) {
+        val justRead = android.os.SystemClock.elapsedRealtime() - (watchedHistoryReadAt[cacheKey] ?: Long.MIN_VALUE / 2) < WATCHED_HISTORY_FRESH_MS
+        if (!forceRefresh || justRead) {
             watchedHistoryCache[cacheKey]?.let { return it }
         }
         // Watched history is a Trakt-only feature; a profile tracking elsewhere would otherwise
@@ -4248,6 +4316,7 @@ class StreamDekRepository(
         }.getOrDefault(emptyList())
         val watchedKeys = results.mapNotNull(::historyItemKey).toSet()
         watchedHistoryCache[cacheKey] = watchedKeys
+        watchedHistoryReadAt[cacheKey] = android.os.SystemClock.elapsedRealtime()
         return watchedKeys
     }
 
@@ -6713,6 +6782,7 @@ class StreamDekRepository(
      */
     private fun onContentPolicyChanged() {
         homeCache.clear()
+        catalogHomeRailsCache.clear()
         libraryCache.clear()
         searchCache.clear()
         addonSearchCache.clear()
@@ -6944,7 +7014,7 @@ class StreamDekRepository(
         val anchors = nextUpAnchors(progress).take(NEXT_UP_MAX_SERIES)
         if (anchors.isEmpty()) return emptyList()
         val providerWatched = if (traktHistoryApplies(primarySyncService())) fetchWatchedKeys() else emptySet()
-        val gate = Semaphore(4)
+        val gate = Semaphore(8)
         return supervisorScope {
             anchors.map { anchor ->
                 async {

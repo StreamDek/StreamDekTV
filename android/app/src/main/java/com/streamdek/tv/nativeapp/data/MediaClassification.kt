@@ -2,7 +2,13 @@ package com.streamdek.tv.nativeapp.data
 
 /** Contract: canonical tv is a series; Stremio-native tv is live. Unknown is never a movie. */
 internal object MediaClassification {
-  private fun key(raw: String?): String = raw?.trim()?.lowercase()?.replace(Regex("[\\s_-]+"), "").orEmpty()
+  // Compiled once. These run for every card of every add-on catalogue, several times per card, and
+  // building a Regex each call was the largest single cost of loading Home on a Fire TV stick.
+  private val keySeparators = Regex("[\\s_-]+")
+  private val typedTmdbId = Regex("^tmdb:(movie|tv):[0-9]{1,12}$", RegexOption.IGNORE_CASE)
+  private val titleGaps = Regex("[^\\p{L}\\p{N}]+")
+
+  private fun key(raw: String?): String = raw?.trim()?.lowercase()?.replace(keySeparators, "").orEmpty()
   fun canonical(raw: String?): String = when (key(raw)) {
     "movie", "movies", "film", "films", "featurefilm", "featurefilms", "tvmovie" -> "movie"
     "tv", "series", "show", "shows", "tvshow", "tvshows", "tvseries", "television", "televisionshow", "televisionseries" -> "tv"
@@ -16,7 +22,7 @@ internal object MediaClassification {
   fun item(raw: String?, catalog: String?, id: String, episodic: Boolean = false): String {
     val declared = canonical(raw)
     if (declared == "live" || (declared != "unknown" && key(raw) != "tv")) return declared
-    val typedId = Regex("^tmdb:(movie|tv):[0-9]{1,12}$", RegexOption.IGNORE_CASE)
+    val typedId = typedTmdbId
       .matchEntire(id.trim())?.groupValues?.get(1)?.lowercase()
     if (typedId != null) return typedId
     if (episodic) return "tv"
@@ -31,7 +37,7 @@ internal object MediaClassification {
     return value.takeIf { !providerOwned && MetadataLookupIdentity.tmdbId(it) != null }
   }
 
-  fun titleKey(value: String): String = value.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+  fun titleKey(value: String): String = value.lowercase().replace(titleGaps, " ").trim()
   fun uniqueTitleMatch(title: String, year: String?, candidates: List<MediaItem>, type: String): MediaItem? {
     val key = titleKey(title)
     if (key.isBlank() || year?.take(4)?.toIntOrNull() == null) return null

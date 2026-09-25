@@ -7,10 +7,11 @@ import java.util.Locale
 
 /** Downloaded rules have exact entity scopes; parent checks are performed before child exceptions. */
 data class ContentSafetyRule(val id: String, val scope: String, val kind: String, val value: String, val status: String, val reason: String) {
+  /** Worked out once per rule rather than once per rule per catalogue card. */
+  private val expected by lazy { skeleton(value) }
   fun matches(entityScope: String, fields: List<String>): Boolean {
     if (scope != "*" && scope != entityScope) return false
     if (kind == "domain") return fields.any { raw -> hostOf(raw)?.let { host -> host == value || host.endsWith(".$value") } == true }
-    val expected = skeleton(value)
     return fields.any { skeleton(it) == expected }
   }
   companion object {

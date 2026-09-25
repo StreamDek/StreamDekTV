@@ -6,6 +6,7 @@ import com.streamdek.tv.nativeapp.data.PlaybackProgressRecord
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
@@ -374,8 +375,10 @@ fun DetailScreen(
         resumeTargetSlot = null
         // A signed-in television already holds a bootstrap from start-up. Refreshing it is worth doing,
         // but not worth waiting for: it used to stand in front of every title page's first request.
+        // Nor on every visit: a refresh re-applies plugins, favourites and more, mostly on the main
+        // thread, and changes made elsewhere already arrive through the preferences-version watcher.
         if (repository.bootstrap.value != null) {
-            launch { runCatching { repository.refreshBootstrap() } }
+            launch { runCatching { repository.refreshBootstrapIfStale(maxAgeMs = 5 * 60_000L) } }
         } else {
             runCatching { repository.refreshBootstrap() }
         }
@@ -792,13 +795,19 @@ fun DetailScreen(
     // their ticks before their rows are fetched - arrives with the resume state in the load above.
     // It used to be fetched a second time here, in parallel with that, for the same answer.
 
-    LaunchedEffect(mediaType, mediaId, detail?.id) {
+    // Only while the app is in front. A LaunchedEffect's delay keeps running with the activity
+    // stopped, so a series page left open behind the home screen kept asking the account every four
+    // seconds - twice, for a series with no history, since the empty answer is retried without the
+    // type - until the process died. Coming back bumps lifecycleRefresh, which reloads it anyway.
+    LaunchedEffect(mediaType, mediaId, detail?.id, lifecycleOwner) {
         if (mediaType != "tv" || detail == null) return@LaunchedEffect
-        while (true) {
-            delay(4_000L)
-            if (System.currentTimeMillis() < suppressRemoteWatchedRefreshUntil) continue
-            val synced = runCatching { repository.fetchSyncedEpisodeWatchState(mediaId) }.getOrNull() ?: continue
-            watchedEpisodeKeys = (watchedEpisodeKeys - synced.unwatched) + synced.completed
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(4_000L)
+                if (System.currentTimeMillis() < suppressRemoteWatchedRefreshUntil) continue
+                val synced = runCatching { repository.fetchSyncedEpisodeWatchState(mediaId) }.getOrNull() ?: continue
+                watchedEpisodeKeys = (watchedEpisodeKeys - synced.unwatched) + synced.completed
+            }
         }
     }
 
@@ -913,6 +922,12 @@ fun DetailScreen(
         val progress = entranceProgress(stage)
         alpha = progress
         translationY = (1f - progress) * entranceRisePx
+        // Alpha applied to each draw rather than to an offscreen copy of the whole stage. The
+        // default composites the hero and the rows through their own buffers while they fade -
+        // on a stick that is the GPU's fill budget spent twice over during the page's arrival,
+        // which is exactly when the frames were dropping. Overlaps inside a stage blend a touch
+        // differently for the length of the fade, and not at all once it is done.
+        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.ModulateAlpha
     }
     /**
      * The backdrop's own dissolve, from the moment it is decoded rather than from when the page
@@ -952,7 +967,12 @@ fun DetailScreen(
                 AsyncImage(
                     model = backdrop,
                     contentDescription = null,
-                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = backdropAlpha.value },
+                    // One picture, so modulating its alpha is identical to fading an offscreen copy
+                    // of it - and skips a full-screen buffer for the length of the dissolve.
+                    modifier = Modifier.fillMaxSize().graphicsLayer {
+                        alpha = backdropAlpha.value
+                        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.ModulateAlpha
+                    },
                     contentScale = ContentScale.Crop,
                     onSuccess = onBackdropLoaded,
                 )
@@ -1006,33 +1026,27 @@ fun DetailScreen(
         }
         // Keep scrims, copy and rows in place; only their composited opacity changes.
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = pageAlpha }) {
-        // Two linear passes, tinted by the artwork's own palette. Linear gradients are far cheaper
-        // than the radial ones this replaced, which matters when they cover the whole screen.
+        // Two linear gradients, tinted by the artwork's own palette, drawn as one full-screen pass.
+        //
+        // Painted every frame they were two passes over most of the screen, and a Fire TV stick is
+        // bound by exactly that: how many times a frame fills the screen. So they are composited
+        // once, into a quarter-size bitmap, and that is stretched over the page. Source-over is
+        // associative, so the pair drawn into the bitmap and then onto the page gives the colours
+        // the two drawn one after the other did; and a gradient has no detail for the smaller size
+        // to lose. Rebuilt only when the size or the artwork's palette changes. (Composing the two
+        // into one shader instead was tried and drew the reading scrim wrongly on a stick.)
         Box(
             Modifier.fillMaxSize().drawWithCache {
-                val readingScrim = Brush.horizontalGradient(
-                    colorStops = arrayOf(
-                        0f to backgroundColor.copy(alpha = 0.95f),
-                        0.45f to ambientPalette.leftGlow.copy(alpha = 0.55f),
-                        1f to Color.Transparent,
-                    ),
-                    endX = size.width * 0.78f,
+                val scrim = bakeDetailScrim(
+                    size = size,
+                    density = this,
+                    layoutDirection = layoutDirection,
+                    backgroundColor = backgroundColor,
+                    palette = ambientPalette,
                 )
-                val baseFade = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to Color.Transparent,
-                        0.52f to backgroundColor.copy(alpha = 0.34f),
-                        0.78f to ambientPalette.accentGlow.copy(alpha = 0.40f),
-                        1f to backgroundColor.copy(alpha = 0.94f),
-                    ),
-                )
+                val target = androidx.compose.ui.unit.IntSize(size.width.toInt(), size.height.toInt())
                 onDrawBehind {
-                    // The reading scrim ends at 78% of the width and is transparent beyond it, so
-                    // it is painted only that far: a fifth of a full-screen pass saved for nothing.
-                    // (Composing the two gradients into one shader was tried and drew the reading
-                    // scrim wrongly on a Fire TV Stick, so they stay two draws.)
-                    drawRect(readingScrim, size = size.copy(width = size.width * 0.78f))
-                    drawRect(baseFade)
+                    drawImage(scrim, dstSize = target, filterQuality = androidx.compose.ui.graphics.FilterQuality.Low)
                 }
             },
         )
