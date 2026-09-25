@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.flow.map
@@ -839,6 +840,8 @@ class StreamDekRepository(
                 kotlinx.coroutines.delay(5 * 60_000L)
             }
         }
+        // The first value is the policy restored at start; only later changes flush.
+        repositoryScope.launch { AdultContentFilter.changes.drop(1).collect { onContentPolicyChanged() } }
         // Client funnel capture. The backend can see which add-ons were queried and which debrid
         // providers were tried, but only this device knows whether anything actually played.
         Telemetry.configure(api)
@@ -6701,6 +6704,29 @@ class StreamDekRepository(
         ).joinToString(":")
     }
 
+    /**
+     * Drops everything cached under the previous content policy.
+     *
+     * These caches hold rows, pages and search results that were filtered when they were built, so
+     * after a change they are either missing what a relaxed policy now allows or still carrying
+     * what a stricter one blocks. Bumping [libraryRevision] makes Home and Detail reload.
+     */
+    private fun onContentPolicyChanged() {
+        homeCache.clear()
+        libraryCache.clear()
+        searchCache.clear()
+        addonSearchCache.clear()
+        playlistCache.clear()
+        networkCache.clear()
+        resolvedPlaybackCache.clear()
+        resolvedPlaybackCacheTimes.clear()
+        fuseCatalogCache.clear()
+        fusePreviewCache.clear()
+        fusePageCache.clear()
+        originMetaCache.clear()
+        libraryRevisionState.value = libraryRevisionState.value + 1L
+    }
+
     private fun invalidatePlaybackDerivedCaches() {
         libraryCache.clear()
         homeCache.clear()
@@ -7162,6 +7188,27 @@ internal fun MediaItem.isAdultCard(): Boolean =
 
 /** Drops adult cards from a row. Applied where rows are built rather than where they render. */
 internal fun List<MediaItem>.withoutAdult(): List<MediaItem> = filterNot { it.isAdultCard() }
+
+/**
+ * Home as it should read under the policy now in force: blocked cards removed from every row, rows
+ * left empty by that dropped rather than shown bare, still-loading slots kept in place.
+ */
+internal fun HomeContent.withoutAdult(): HomeContent {
+    val swept = rails.associate { rail ->
+        val kept = rail.items.withoutAdult()
+        rail.id to if (kept.isEmpty() && rail.items.isNotEmpty()) null else rail.copy(items = kept, previewItems = rail.previewItems.withoutAdult())
+    }
+    return copy(
+        featured = featured?.takeUnless { it.isAdultCard() },
+        rails = rails.mapNotNull { swept[it.id] },
+        shelves = shelves.mapNotNull { slot ->
+            when (slot) {
+                is HomeShelfSlot.Loaded -> swept[slot.id]?.let(HomeShelfSlot::Loaded)
+                is HomeShelfSlot.Pending -> slot
+            }
+        },
+    )
+}
 
 internal fun CatalogSectionItem.toMediaItem(sectionMediaType: String?): MediaItem {
     val kind = type?.takeIf { it.isNotBlank() } ?: sectionMediaType?.takeIf { it.isNotBlank() } ?: "movie"

@@ -67,7 +67,9 @@ import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.data.AdultContentFilter
 import com.streamdek.tv.nativeapp.data.FuseCatalog
+import com.streamdek.tv.nativeapp.data.withoutAdult
 import com.streamdek.tv.nativeapp.data.FuseOrigin
 import com.streamdek.tv.nativeapp.data.FusePage
 import com.streamdek.tv.nativeapp.data.FuseViewMemory
@@ -191,7 +193,8 @@ fun FuseScreen(
     // Add-ons and CloudStream rows first, then again with playlists: a large playlist takes a while to
     // read, and the rest of the page should not wait behind it.
     var playlistsReady by remember { mutableStateOf(cachedCatalogs != null) }
-    LaunchedEffect(Unit) {
+    val policyRevision by AdultContentFilter.changes.collectAsState()
+    LaunchedEffect(policyRevision) {
         if (cachedCatalogs == null) {
             catalogs = runCatching { repository.fuseCatalogs(includePlaylists = false) }.getOrDefault(emptyList())
             catalogsReady = true
@@ -236,6 +239,14 @@ fun FuseScreen(
     var loading by remember { mutableStateOf(false) }
     var requestRound by remember { mutableIntStateOf(0) }
     var retry by remember { mutableStateOf(false) }
+    // Pages were filtered under the policy they loaded with; a new policy loads them again.
+    var pagesPolicyRevision by remember { mutableStateOf(policyRevision) }
+    LaunchedEffect(policyRevision) {
+        if (policyRevision == pagesPolicyRevision) return@LaunchedEffect
+        pagesPolicyRevision = policyRevision
+        pages.clear()
+        requestRound++
+    }
     val requestIdentity = remember(scoped, settledQuery) { scoped.map { it.key } to settledQuery }
     LaunchedEffect(requestIdentity, requestRound) {
         loading = true
@@ -275,7 +286,7 @@ fun FuseScreen(
 
     // Everything that decides which titles match. While the page still shows an answer to an older set,
     // it says it is working instead, so choosing a filter never looks like it did nothing.
-    val filterIdentity = listOf(mode, sourceKey, catalogKey, category, settledQuery, categoriesEnabled, requestIdentity.first)
+    val filterIdentity = listOf(mode, sourceKey, catalogKey, category, settledQuery, categoriesEnabled, requestIdentity.first, policyRevision)
     var view by remember { mutableStateOf<FuseView?>(null) }
     LaunchedEffect(filterIdentity, pages.toMap(), favouriteChannels) {
         val snapshot = pages.toMap()
@@ -284,6 +295,7 @@ fun FuseScreen(
             val owners = HashMap<String, String>()
             val loaded = scoped.flatMap { catalog ->
                 (catalog.localItems ?: snapshot[fusePageKey(catalog, settledQuery)]?.items.orEmpty())
+                    .withoutAdult()
                     .onEach { owners.getOrPut(fuseItemKey(it)) { catalog.sourceKey } }
             }
             val loadedIds = loaded.mapTo(hashSetOf()) { it.id }

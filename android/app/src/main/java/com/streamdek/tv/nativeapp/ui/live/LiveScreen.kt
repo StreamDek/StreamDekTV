@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,7 +56,9 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.data.AdultContentFilter
 import com.streamdek.tv.nativeapp.data.LiveCatalogSection
+import com.streamdek.tv.nativeapp.data.withoutAdult
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.LocalSideNavOwnsFocus
@@ -139,8 +142,9 @@ fun LiveScreen(
     var listView by rememberSaveable { mutableStateOf(true) }
     val listState = rememberLazyListState()
 
-    val allItems = remember(sections) {
-        sections.flatMap { it.rails }.flatMap { it.items }.distinctBy(::liveKey)
+    val policyRevision by AdultContentFilter.changes.collectAsState()
+    val allItems = remember(sections, policyRevision) {
+        sections.flatMap { it.rails }.flatMap { it.items }.withoutAdult().distinctBy(::liveKey)
     }
     // What the sidebar lists below the fixed entries: one row per category when categories are on,
     // otherwise one per source. Ids are resolved once here — the old filter walked every rail of

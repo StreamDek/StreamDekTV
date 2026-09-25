@@ -56,7 +56,9 @@ import androidx.tv.material3.MaterialTheme
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.data.AdultContentFilter
 import com.streamdek.tv.nativeapp.data.GenreItem
+import com.streamdek.tv.nativeapp.data.withoutAdult
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.ui.AppPillShape
@@ -237,13 +239,15 @@ fun SearchScreen(
             }
         }
     }
+    val policyRevision by AdultContentFilter.changes.collectAsState()
     val rawItems = if (hasQuery) visibleResults else discoverItems
     // Only a spinner while nothing is on screen yet. Once the TMDB pass has landed, add-ons still
     // answering must not blank out results the viewer can already act on.
     val searchingAnything = searching || addonSearching || pluginSearching
     // Same guard as Library: a repeated entry must not take the screen down.
-    val items = remember(rawItems) {
-        rawItems.distinctBy { listOf(it.type, it.sourceAddonId.orEmpty(), it.sourceCatalogId.orEmpty(), it.id) }
+    // Filtered again here, keyed on the policy, so a policy published mid-search hides at once.
+    val items = remember(rawItems, policyRevision) {
+        rawItems.withoutAdult().distinctBy { listOf(it.type, it.sourceAddonId.orEmpty(), it.sourceCatalogId.orEmpty(), it.id) }
     }
     val loading = if (hasQuery) searchingAnything && items.isEmpty() else discoverLoading
     // A query with no matches leaves nothing holding [firstCardRequester], and focus search
@@ -260,7 +264,7 @@ fun SearchScreen(
         }
     }
 
-    LaunchedEffect(discoverType, discoverGenreId, discoverYear) {
+    LaunchedEffect(discoverType, discoverGenreId, discoverYear, policyRevision) {
         discoverLoading = true
         val payload = runCatching {
             repository.fetchDiscover(discoverType, page = 1, genreId = discoverGenreId, year = discoverYear)
@@ -303,7 +307,7 @@ fun SearchScreen(
         runCatching { queryRequester.requestFocus() }
     }
 
-    LaunchedEffect(query) {
+    LaunchedEffect(query, policyRevision) {
         val normalized = query.trim()
         if (normalized.length < 2) {
             results = emptyList()
@@ -322,7 +326,7 @@ fun SearchScreen(
 
     // Add-on catalogs answer the same query in their own effect, so one slow provider delays only
     // its own results. Cancelled and restarted with the query like the pass above.
-    LaunchedEffect(query) {
+    LaunchedEffect(query, policyRevision) {
         val normalized = query.trim()
         if (normalized.length < 2) {
             addonResults = emptyList()
@@ -337,7 +341,7 @@ fun SearchScreen(
 
     // Plugin catalogues in a third pass of their own. Each provider's matches are shown as it answers,
     // so a slow or unreachable plugin holds back only its own results; a new query cancels the old one.
-    LaunchedEffect(query) {
+    LaunchedEffect(query, policyRevision) {
         val normalized = query.trim()
         if (normalized.length < 2 || !repository.hasSearchablePluginCatalogs()) {
             pluginResults = emptyList()

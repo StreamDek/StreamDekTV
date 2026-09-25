@@ -47,7 +47,9 @@ import androidx.tv.material3.Text
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.data.AdultContentFilter
 import com.streamdek.tv.nativeapp.data.ContinueWatchingItem
+import com.streamdek.tv.nativeapp.data.withoutAdult
 import com.streamdek.tv.nativeapp.data.LibraryResponse
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
@@ -206,7 +208,8 @@ fun LibraryScreen(
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
     val gridState = rememberLazyGridState()
 
-    LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, reloadToken) {
+    val policyRevision by AdultContentFilter.changes.collectAsState()
+    LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, reloadToken, policyRevision) {
         loading = true
         error = null
         try {
@@ -225,14 +228,16 @@ fun LibraryScreen(
         loading = false
     }
 
-    val continueItems = remember(library, typeFilter) {
+    val continueItems = remember(library, typeFilter, policyRevision) {
         library?.continueWatching.orEmpty()
             .map { it.asLibraryMediaItem().copy(cardSubtitle = continueWatchingCardSubtitle(it, nextUpLabel, resumeLabel)) }
+            .withoutAdult()
             .filter { typeFilter == "all" || it.type == typeFilter }
             .distinctBy(::libraryItemKey)
     }
-    val watchlistItems = remember(library, typeFilter) {
+    val watchlistItems = remember(library, typeFilter, policyRevision) {
         library?.watchlist.orEmpty()
+            .withoutAdult()
             .filter { typeFilter == "all" || it.type == typeFilter }
             // A tracking service can hand back the same title twice, and two grid items sharing a
             // key is a hard crash in Compose rather than a cosmetic duplicate.

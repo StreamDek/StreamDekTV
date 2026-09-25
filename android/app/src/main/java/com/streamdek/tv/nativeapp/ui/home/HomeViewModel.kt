@@ -3,7 +3,9 @@ package com.streamdek.tv.nativeapp.ui.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.streamdek.tv.nativeapp.data.AdultContentFilter
 import com.streamdek.tv.nativeapp.data.HomeContent
+import com.streamdek.tv.nativeapp.data.withoutAdult
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
@@ -13,6 +15,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -52,6 +55,19 @@ class HomeViewModel(
     private var loadJob: Job? = null
     private val heroDetailRequests = mutableMapOf<String, Deferred<MediaDetail?>>()
     private val heroDetailCache = mutableMapOf<String, MediaDetail>()
+
+    init {
+        // A policy published while Home is showing takes effect on what is already drawn at once;
+        // the repository then reloads Home through the library revision.
+        viewModelScope.launch {
+            AdultContentFilter.changes.drop(1).collect {
+                val swept = _uiState.value.content?.withoutAdult() ?: return@collect
+                // The spotlight must not keep describing a title the sweep just removed.
+                val heroShown = heroKey == null || swept.rails.any { rail -> rail.items.any { heroItemKey(it) == heroKey } }
+                _uiState.value = _uiState.value.copy(content = swept, heroDetail = _uiState.value.heroDetail.takeIf { heroShown })
+            }
+        }
+    }
 
     fun load(loadKey: String) {
         if (lastLoadKey == loadKey && (loadJob?.isActive == true || _uiState.value.content != null || _uiState.value.error != null)) {

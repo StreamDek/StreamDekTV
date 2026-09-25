@@ -401,11 +401,13 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
             delay(3_000L)
         }
     }
-    LaunchedEffect(session?.user?.uid, activeProfile?.id, liveAddonKey, currentRoute) {
+    // Channels were filtered under the policy they loaded with, so a new policy reloads them.
+    val contentPolicyRevision by com.streamdek.tv.nativeapp.data.AdultContentFilter.changes.collectAsState()
+    LaunchedEffect(session?.user?.uid, activeProfile?.id, liveAddonKey, currentRoute, contentPolicyRevision) {
         if (currentRoute != TopLevelDestination.Live.route || session == null || bootstrap == null) {
             return@LaunchedEffect
         }
-        val catalogKey = "${session?.user?.uid}:${activeProfile?.id}:$liveAddonKey"
+        val catalogKey = "${session?.user?.uid}:${activeProfile?.id}:$liveAddonKey:$contentPolicyRevision"
         if (loadedLiveCatalogKey == catalogKey && liveNavigationState.sections.isNotEmpty()) {
             return@LaunchedEffect
         }
