@@ -45,23 +45,21 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.filled.ClosedCaption
-import androidx.compose.material.icons.filled.ClosedCaptionOff
-import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.filled.Timeline
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.rounded.ClosedCaption
+import androidx.compose.material.icons.rounded.ClosedCaptionOff
+import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.material.icons.rounded.Timeline
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material3.Icon
@@ -526,7 +524,7 @@ internal fun PlayerBottomBar(
                 add(
                     PlayerControlSpec(
                         "captions",
-                        if (captionsOn) Icons.Filled.ClosedCaption else Icons.Filled.ClosedCaptionOff,
+                        if (captionsOn) Icons.Rounded.ClosedCaption else Icons.Rounded.ClosedCaptionOff,
                         captionsLabel,
                         subtitlesRequester,
                         { onOpenPanel(OverlayPanel.Captions) },
@@ -534,26 +532,26 @@ internal fun PlayerBottomBar(
                     ),
                 )
             }
-            add(PlayerControlSpec("timeline", Icons.Filled.Timeline, progressLabel, liveProgressRequester, onToggleLiveProgress, active = showLiveProgress))
+            add(PlayerControlSpec("timeline", Icons.Rounded.Timeline, progressLabel, liveProgressRequester, onToggleLiveProgress, active = showLiveProgress))
         } else {
-            add(PlayerControlSpec("subtitles", Icons.Filled.ClosedCaption, subtitlesLabel, subtitlesRequester, { onOpenPanel(OverlayPanel.Subtitles) }, active = selectedPanel == OverlayPanel.Subtitles))
-            add(PlayerControlSpec("audio", Icons.Filled.VolumeUp, audioLabel, audioRequester, { onOpenPanel(OverlayPanel.Audio) }, active = selectedPanel == OverlayPanel.Audio))
+            add(PlayerControlSpec("subtitles", Icons.Rounded.ClosedCaption, subtitlesLabel, subtitlesRequester, { onOpenPanel(OverlayPanel.Subtitles) }, active = selectedPanel == OverlayPanel.Subtitles))
+            add(PlayerControlSpec("audio", Icons.AutoMirrored.Rounded.VolumeUp, audioLabel, audioRequester, { onOpenPanel(OverlayPanel.Audio) }, active = selectedPanel == OverlayPanel.Audio))
         }
-        add(PlayerControlSpec("sources", Icons.Filled.Cloud, sourcesLabel, sourcesRequester, { onOpenPanel(OverlayPanel.Streams) }, active = selectedPanel == OverlayPanel.Streams))
-        add(PlayerControlSpec("engine", Icons.Filled.Tune, engineLabel, engineRequester, { onOpenPanel(OverlayPanel.Engine) }, active = selectedPanel == OverlayPanel.Engine))
+        add(PlayerControlSpec("sources", Icons.Rounded.Cloud, sourcesLabel, sourcesRequester, { onOpenPanel(OverlayPanel.Streams) }, active = selectedPanel == OverlayPanel.Streams))
+        add(PlayerControlSpec("engine", Icons.Rounded.Tune, engineLabel, engineRequester, { onOpenPanel(OverlayPanel.Engine) }, active = selectedPanel == OverlayPanel.Engine))
         if (isLive) {
             // Favouriting was only possible by holding OK on a channel in the grid, which is no use
             // once you are watching it — this is where you decide you want it.
-            add(PlayerControlSpec("favourite", if (isFavourite) Icons.Filled.Star else Icons.Filled.StarBorder, favouriteLabel, favouriteRequester, onToggleFavourite, active = isFavourite))
+            add(PlayerControlSpec("favourite", if (isFavourite) Icons.Rounded.Star else Icons.Rounded.StarBorder, favouriteLabel, favouriteRequester, onToggleFavourite, active = isFavourite))
             liveBadgeRequester?.let { requester ->
-                add(PlayerControlSpec("badge", Icons.Filled.LiveTv, badgeLabel, requester, onToggleLiveBadge, active = showLiveBadge))
+                add(PlayerControlSpec("badge", Icons.Rounded.LiveTv, badgeLabel, requester, onToggleLiveBadge, active = showLiveBadge))
             }
         } else {
-            if (hasNext) add(PlayerControlSpec("next", Icons.Filled.SkipNext, nextLabel, nextRequester, onNext))
-            add(PlayerControlSpec("watched", Icons.Filled.CheckCircle, watchedLabel, watchedRequester, onMarkWatched))
-            add(PlayerControlSpec("speed", Icons.Filled.Speed, speedLabel, speedRequester, { onOpenPanel(OverlayPanel.Speed) }, active = selectedPanel == OverlayPanel.Speed))
+            if (hasNext) add(PlayerControlSpec("next", Icons.Rounded.SkipNext, nextLabel, nextRequester, onNext))
+            add(PlayerControlSpec("watched", Icons.Rounded.CheckCircle, watchedLabel, watchedRequester, onMarkWatched))
+            add(PlayerControlSpec("speed", Icons.Rounded.Speed, speedLabel, speedRequester, { onOpenPanel(OverlayPanel.Speed) }, active = selectedPanel == OverlayPanel.Speed))
         }
-        add(PlayerControlSpec("info", Icons.Outlined.Info, infoLabel, infoRequester, { onOpenPanel(OverlayPanel.Info) }, active = selectedPanel == OverlayPanel.Info))
+        add(PlayerControlSpec("info", Icons.Rounded.Info, infoLabel, infoRequester, { onOpenPanel(OverlayPanel.Info) }, active = selectedPanel == OverlayPanel.Info))
     }
     val controlRequesters = controls.map { it.requester }
 
@@ -968,9 +966,9 @@ private fun PlayerControlsRow(
  * as [FocusRequester.Cancel] rather than left to spatial focus search: the search is what used to
  * carry the highlight out of the bar and onto whatever happened to be laid out nearby.
  *
- * Focus is a filled disc - the icon inverts to ink on white - with a slight lift, which is legible
- * across the room against any picture. An option that is on carries a small gold pip beneath it, so
- * "on" and "focused" never have to share one signal.
+ * Bare icons, no disc behind them. Focus turns the icon gold and lifts it well past its neighbours,
+ * which reads across the room without a container. An option that is on is full white with a small
+ * gold pip beneath it, so "on" and "focused" never have to share one signal.
  */
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -984,7 +982,7 @@ private fun PlayerControlButton(
 ) {
     var focused by remember { mutableStateOf(false) }
     val size = if (control.primary) 58.dp else 48.dp
-    val iconSize = if (control.primary) 28.dp else 22.dp
+    val iconSize = if (control.primary) 38.dp else 28.dp
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -994,19 +992,15 @@ private fun PlayerControlButton(
             onClick = control.onClick,
             shape = ButtonDefaults.shape(CircleShape),
             colors = ButtonDefaults.colors(
-                containerColor = if (control.primary) Color(0xE6F4EDE2) else Color(0x14FFFFFF),
-                focusedContainerColor = Color.White,
-                contentColor = if (control.primary) PlayerTokens.Ink else Color.White,
-                focusedContentColor = PlayerTokens.Ink,
+                containerColor = Color.Transparent,
+                focusedContainerColor = Color.Transparent,
+                pressedContainerColor = Color.Transparent,
+                contentColor = Color.White,
+                focusedContentColor = PlayerTokens.Accent,
+                pressedContentColor = PlayerTokens.Accent,
             ),
-            border = ButtonDefaults.border(
-                border = Border.None,
-                focusedBorder = Border(
-                    border = BorderStroke(2.dp, PlayerTokens.Accent),
-                    shape = CircleShape,
-                ),
-            ),
-            scale = ButtonDefaults.scale(focusedScale = TvMotion.focusScale()),
+            border = ButtonDefaults.border(border = Border.None, focusedBorder = Border.None),
+            scale = ButtonDefaults.scale(focusedScale = 1.3f, pressedScale = 1.15f),
             modifier = Modifier
                 .size(size)
                 .focusRequester(control.requester)
@@ -1023,9 +1017,9 @@ private fun PlayerControlButton(
             contentPadding = PaddingValues(0.dp),
         ) {
             val iconTint = when {
-                focused || control.primary -> PlayerTokens.Ink
-                control.active -> PlayerTokens.Active
-                else -> Color(0xE6FFFFFF)
+                focused -> PlayerTokens.Accent
+                control.primary || control.active -> Color.White
+                else -> Color(0xB3FFFFFF)
             }
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Icon(
@@ -1409,12 +1403,12 @@ internal fun PlayerOptionPanel(
                     ) {
                         Icon(
                             imageVector = when (panel) {
-                                OverlayPanel.Streams -> Icons.Filled.Cloud
-                                OverlayPanel.Engine -> Icons.Filled.Tune
-                                OverlayPanel.Audio -> Icons.Filled.VolumeUp
-                                OverlayPanel.Subtitles, OverlayPanel.Captions -> Icons.Filled.ClosedCaption
-                                OverlayPanel.Speed -> Icons.Filled.Speed
-                                OverlayPanel.Info -> Icons.Outlined.Info
+                                OverlayPanel.Streams -> Icons.Rounded.Cloud
+                                OverlayPanel.Engine -> Icons.Rounded.Tune
+                                OverlayPanel.Audio -> Icons.AutoMirrored.Rounded.VolumeUp
+                                OverlayPanel.Subtitles, OverlayPanel.Captions -> Icons.Rounded.ClosedCaption
+                                OverlayPanel.Speed -> Icons.Rounded.Speed
+                                OverlayPanel.Info -> Icons.Rounded.Info
                             },
                             contentDescription = null,
                             tint = PlayerTokens.Accent,
@@ -1501,9 +1495,12 @@ internal fun PlayerOptionPanel(
             when (panel) {
                 OverlayPanel.Streams -> {
                     val originalStreams = candidate?.streams.orEmpty()
-                    val streams = originalStreams.sortedByDescending {
-                        stableSourceFavouriteKey(it) in favoriteSourceKeys
-                    }
+                    // What is playing always leads, so the panel opens on it; favourites follow.
+                    val playingStream = candidate?.stream
+                    val streams = originalStreams.sortedWith(
+                        compareByDescending<AddonStream> { it == playingStream }
+                            .thenByDescending { stableSourceFavouriteKey(it) in favoriteSourceKeys },
+                    )
                     if (streams.isEmpty()) {
                         item {
                             PanelNote(stringResource(if (streamsReloading) R.string.player_streams_searching else R.string.player_streams_none_yet))
@@ -1959,7 +1956,7 @@ internal fun PlayerSkipActionChip(
             .focusRequester(focusRequester),
     ) {
         Icon(
-            imageVector = Icons.Filled.SkipNext,
+            imageVector = Icons.Rounded.SkipNext,
             contentDescription = null,
             modifier = Modifier.size(18.dp),
             tint = Color(0xFFF0BA66),
@@ -2244,7 +2241,7 @@ private fun TvRecommendationChoice(
             if (!artwork.isNullOrBlank()) {
                 AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             } else {
-                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White.copy(alpha = 0.28f))
+                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White.copy(alpha = 0.28f))
             }
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -2475,7 +2472,7 @@ private fun StreamOptionButton(
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 Icon(
-                    imageVector = if (favourite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                    imageVector = if (favourite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
                     contentDescription = stringResource(if (favourite) R.string.player_source_pinned_hint else R.string.player_source_pin_hint),
                     tint = if (favourite) Color(0xFFF0BA66) else Color.White.copy(alpha = 0.42f),
                     modifier = Modifier.size(18.dp),
