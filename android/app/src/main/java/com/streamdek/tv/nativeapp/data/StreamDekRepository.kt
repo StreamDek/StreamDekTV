@@ -4345,6 +4345,22 @@ class StreamDekRepository(
     }
 
     suspend fun fetchProgress(mediaType: String, mediaId: String, episode: EpisodeContext? = null): PlaybackProgressRecord? {
+        // A server title resumes where the server says, which includes where another Plex app left it.
+        mediaServerTarget(mediaId)?.let { (provider, ref) ->
+            val progress = runCatching { provider.progress(ref, episode) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .getOrNull() ?: return null
+            return PlaybackProgressRecord(
+                positionSec = progress.positionMs / 1000.0,
+                durationSec = progress.durationMs / 1000.0,
+                progress = if (progress.durationMs > 0) progress.positionMs * 100.0 / progress.durationMs else 0.0,
+                seasonNumber = episode?.seasonNumber,
+                episodeNumber = episode?.episodeNumber,
+                status = if (progress.watched) "completed" else "in-progress",
+                entityType = mediaType,
+                entityId = mediaId,
+            )
+        }
         val episodeKey = buildEpisodeKey(episode)
         val query = buildString {
             append("/sync/progress?entityType=$mediaType&entityId=$mediaId")
@@ -4354,6 +4370,19 @@ class StreamDekRepository(
     }
 
     suspend fun fetchSeriesResumeState(detail: MediaDetail): SeriesResumeState = supervisorScope {
+        mediaServerTarget(detail.id)?.let { (provider, ref) ->
+            val events = runCatching { provider.seriesProgress(ref) }.getOrDefault(emptyList()).map { entry ->
+                SeriesProgressEvent(
+                    seasonNumber = entry.seasonNumber,
+                    episodeNumber = entry.episodeNumber,
+                    positionSec = entry.progress.positionMs / 1000.0,
+                    progress = if (entry.progress.durationMs > 0) entry.progress.positionMs * 100.0 / entry.progress.durationMs else 0.0,
+                    status = if (entry.progress.watched) "completed" else "in-progress",
+                    updatedAtMillis = entry.progress.lastViewedAtMs,
+                )
+            }
+            return@supervisorScope getSeriesResumeState(seriesEpisodeSlots(detail.seasons), events)
+        }
         val progressDeferred = async {
             fetchSeriesProgressRecords(detail.id)
         }

@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +58,7 @@ import com.streamdek.tv.nativeapp.mediaserver.MediaServerRoute
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerView
 import com.streamdek.tv.nativeapp.mediaserver.OfflineReason
 import com.streamdek.tv.nativeapp.ui.auth.rememberQrImage
+import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -101,7 +103,33 @@ internal fun MediaServerSettingsPanel(
     var busy by remember { mutableStateOf(false) }
     var confirmDisconnect by remember { mutableStateOf(false) }
     var quality by remember { mutableStateOf(repository.mediaServerRemoteQualityKbps()) }
-    val codeRequester = remember { FocusRequester() }
+    /**
+     * Focus on a television decides what the Settings rail shows: a rail item that receives focus
+     * opens its page. So nothing on this page may lose focus by vanishing or being disabled under
+     * the viewer - that is how pressing Connect used to land them on another settings page. Two
+     * rules keep it put: controls never disable themselves (a second press is ignored instead),
+     * and before anything focused is taken off screen, focus is parked on the header, which never
+     * leaves, and then handed to the primary button once the new layout is drawn.
+     */
+    val anchorRequester = remember { FocusRequester() }
+    val primaryRequester = remember { FocusRequester() }
+    var focusPrimaryRequest by remember { mutableStateOf(0) }
+
+    fun holdFocus() {
+        runCatching { anchorRequester.requestFocus() }
+    }
+
+    fun focusPrimarySoon() {
+        focusPrimaryRequest += 1
+    }
+
+    LaunchedEffect(focusPrimaryRequest) {
+        if (focusPrimaryRequest == 0) return@LaunchedEffect
+        // One frame, so the button that takes over exists before it is asked to take focus. When
+        // there is no primary button in the new layout, focus simply stays on the header.
+        withFrameNanos { }
+        runCatching { primaryRequester.requestFocus() }
+    }
 
     fun startLink() {
         if (starting) return
@@ -110,8 +138,21 @@ internal fun MediaServerSettingsPanel(
         scope.launch {
             val code = manager.startLink()
             starting = false
-            if (code == null) onStatus(resources.getString(R.string.plex_link_unavailable)) else linkCode = code
+            if (code == null) {
+                onStatus(resources.getString(R.string.plex_link_unavailable))
+            } else {
+                holdFocus()
+                linkCode = code
+                focusPrimarySoon()
+            }
         }
+    }
+
+    fun closeCode() {
+        holdFocus()
+        linkCode = null
+        linkExpired = false
+        focusPrimarySoon()
     }
 
     // Polls while a code is on screen, at the pace StreamDek asked for. Leaving the page, or the
@@ -127,12 +168,12 @@ internal fun MediaServerSettingsPanel(
                     return@LaunchedEffect
                 }
                 MediaServerLinkStatus.Failed -> {
-                    linkCode = null
+                    closeCode()
                     onStatus(resources.getString(R.string.plex_link_failed))
                     return@LaunchedEffect
                 }
                 is MediaServerLinkStatus.Linked -> {
-                    linkCode = null
+                    closeCode()
                     onStatus(
                         result.accountName?.let { resources.getString(R.string.plex_connected_as, it) }
                             ?: resources.getString(R.string.plex_connected),
@@ -143,14 +184,20 @@ internal fun MediaServerSettingsPanel(
         }
     }
 
-    fun act(work: suspend () -> Boolean, success: Int? = null) {
+    fun act(work: suspend () -> Boolean, success: Int? = null, reshapesPage: Boolean = false) {
         if (busy) return
         busy = true
         scope.launch {
+            if (reshapesPage) holdFocus()
             val ok = work()
             busy = false
+            if (reshapesPage) focusPrimarySoon()
             onStatus(resources.getString(if (ok) success ?: R.string.plex_saved else R.string.plex_saving_failed))
         }
+    }
+
+    val leftToRail = Modifier.onPreviewKeyEvent {
+        it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -168,35 +215,38 @@ internal fun MediaServerSettingsPanel(
                 else -> Color.White.copy(alpha = 0.45f)
             },
             body = stringResource(if (!signedIn) R.string.plex_signed_out_note else R.string.plex_intro_body),
+            modifier = Modifier.focusRequester(anchorRequester).then(leftToRail),
         )
 
         val code = linkCode
-        when {
-            !signedIn -> Unit
-            code != null -> {
-                PlexLinkPanel(code = code, expired = linkExpired)
-                LaunchedEffect(Unit) { runCatching { codeRequester.requestFocus() } }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (linkExpired) {
-                        Button(onClick = ::startLink, modifier = Modifier.focusRequester(codeRequester)) {
-                            Text(stringResource(R.string.plex_link_new_code))
-                        }
-                    }
-                    OutlinedButton(
-                        onClick = { linkCode = null },
-                        modifier = if (linkExpired) Modifier else Modifier.focusRequester(codeRequester),
-                    ) { Text(stringResource(R.string.action_cancel)) }
-                }
-            }
-            !state.linked || state.needsAttention -> {
+        if (signedIn && code != null) PlexLinkPanel(code = code, expired = linkExpired)
+
+        // The one primary action, always the same button: Connect, then Cancel while a code is up,
+        // then "Get a new code" if it runs out. Changing its words rather than swapping it for
+        // another button is what keeps the remote's focus on it.
+        if (signedIn && (code != null || !state.linked || state.needsAttention)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
-                    onClick = ::startLink,
-                    enabled = !starting,
-                    modifier = Modifier.onPreviewKeyEvent {
-                        it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess
+                    onClick = {
+                        when {
+                            code == null || linkExpired -> startLink()
+                            else -> closeCode()
+                        }
                     },
+                    modifier = Modifier.focusRequester(primaryRequester).then(leftToRail),
                 ) {
-                    Text(stringResource(if (state.needsAttention) R.string.plex_reconnect else R.string.plex_connect))
+                    Text(
+                        when {
+                            starting -> stringResource(R.string.plex_link_getting_code)
+                            code != null && linkExpired -> stringResource(R.string.plex_link_new_code)
+                            code != null -> stringResource(R.string.action_cancel)
+                            state.needsAttention -> stringResource(R.string.plex_reconnect)
+                            else -> stringResource(R.string.plex_connect)
+                        },
+                    )
+                }
+                if (code != null && linkExpired) {
+                    OutlinedButton(onClick = ::closeCode) { Text(stringResource(R.string.action_cancel)) }
                 }
             }
         }
@@ -210,7 +260,6 @@ internal fun MediaServerSettingsPanel(
                 PlexServerRow(
                     server = server,
                     leftRequester = leftRequester,
-                    enabled = !busy,
                     onToggle = { act({ manager.setServerEnabled(server.id, !server.enabled) }) },
                 )
                 if (server.enabled) {
@@ -221,7 +270,6 @@ internal fun MediaServerSettingsPanel(
                         PlexLibraryRow(
                             library = library,
                             leftRequester = leftRequester,
-                            enabled = !busy,
                             onToggle = { act({ manager.setLibraryEnabled(server.id, library.key, !library.enabled) }) },
                         )
                     }
@@ -243,11 +291,15 @@ internal fun MediaServerSettingsPanel(
             PlexSectionHeading(stringResource(R.string.plex_manage))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
-                    onClick = { scope.launch { manager.refresh(force = true); onStatus(resources.getString(R.string.plex_refreshed)) } },
-                    enabled = !busy && !state.refreshing,
+                    onClick = {
+                        if (!state.refreshing) scope.launch { manager.refresh(force = true); onStatus(resources.getString(R.string.plex_refreshed)) }
+                    },
+                    modifier = leftToRail,
                 ) { Text(stringResource(if (state.refreshing) R.string.plex_status_connecting else R.string.plex_refresh)) }
-                OutlinedButton(onClick = ::startLink, enabled = !busy && !starting) { Text(stringResource(R.string.plex_reconnect)) }
-                OutlinedButton(onClick = { confirmDisconnect = true }, enabled = !busy) { Text(stringResource(R.string.plex_disconnect)) }
+                OutlinedButton(onClick = { if (!busy) startLink() }) {
+                    Text(stringResource(if (starting) R.string.plex_link_getting_code else R.string.plex_reconnect))
+                }
+                OutlinedButton(onClick = { if (!busy) confirmDisconnect = true }) { Text(stringResource(R.string.plex_disconnect)) }
             }
             PlexNote(stringResource(R.string.plex_revoke_note))
         }
@@ -260,7 +312,7 @@ internal fun MediaServerSettingsPanel(
             confirm = stringResource(R.string.plex_disconnect),
             onConfirm = {
                 confirmDisconnect = false
-                act({ manager.disconnect() }, success = R.string.plex_disconnected)
+                act({ manager.disconnect() }, success = R.string.plex_disconnected, reshapesPage = true)
             },
             onDismiss = { confirmDisconnect = false },
         )
@@ -268,11 +320,14 @@ internal fun MediaServerSettingsPanel(
 }
 
 @Composable
-private fun PlexHeader(title: String, status: String, statusColor: Color, body: String) {
+private fun PlexHeader(title: String, status: String, statusColor: Color, body: String, modifier: Modifier = Modifier) {
+    var focused by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth()
-            .background(PanelBackground, RoundedCornerShape(18.dp))
-            .border(1.dp, Color(0x10FFFFFF), RoundedCornerShape(18.dp))
+        modifier.fillMaxWidth()
+            .background(if (focused) RowFocused else PanelBackground, RoundedCornerShape(18.dp))
+            .border(if (focused) 2.dp else 1.dp, if (focused) PlexGold.copy(alpha = 0.6f) else Color(0x10FFFFFF), RoundedCornerShape(18.dp))
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
             .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -401,7 +456,6 @@ private fun PlexSwitchRow(
     detail: String?,
     detailColor: Color,
     checked: Boolean,
-    enabled: Boolean,
     indent: Boolean,
     leftRequester: FocusRequester,
     onToggle: () -> Unit,
@@ -416,7 +470,7 @@ private fun PlexSwitchRow(
             .onPreviewKeyEvent {
                 it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess
             }
-            .clickable(enabled = enabled, onClick = onToggle)
+            .clickable(onClick = onToggle)
             .padding(horizontal = 20.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -438,7 +492,7 @@ private fun PlexSwitchRow(
 }
 
 @Composable
-private fun PlexServerRow(server: MediaServerView, leftRequester: FocusRequester, enabled: Boolean, onToggle: () -> Unit) {
+private fun PlexServerRow(server: MediaServerView, leftRequester: FocusRequester, onToggle: () -> Unit) {
     val (status, color) = reachabilityLabel(server)
     val owner = server.ownerName?.takeIf { !server.owned }?.let { stringResource(R.string.plex_server_shared_by, it) }
     PlexSwitchRow(
@@ -446,7 +500,6 @@ private fun PlexServerRow(server: MediaServerView, leftRequester: FocusRequester
         detail = listOfNotNull(status, owner).joinToString(" · "),
         detailColor = color,
         checked = server.enabled,
-        enabled = enabled,
         indent = false,
         leftRequester = leftRequester,
         onToggle = onToggle,
@@ -454,7 +507,7 @@ private fun PlexServerRow(server: MediaServerView, leftRequester: FocusRequester
 }
 
 @Composable
-private fun PlexLibraryRow(library: MediaServerLibrary, leftRequester: FocusRequester, enabled: Boolean, onToggle: () -> Unit) {
+private fun PlexLibraryRow(library: MediaServerLibrary, leftRequester: FocusRequester, onToggle: () -> Unit) {
     PlexSwitchRow(
         title = library.title,
         detail = stringResource(
@@ -466,7 +519,6 @@ private fun PlexLibraryRow(library: MediaServerLibrary, leftRequester: FocusRequ
         ),
         detailColor = Color.White.copy(alpha = 0.5f),
         checked = library.enabled,
-        enabled = enabled,
         indent = true,
         leftRequester = leftRequester,
         onToggle = onToggle,

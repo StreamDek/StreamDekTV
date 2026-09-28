@@ -66,6 +66,12 @@ interface MediaServerProvider {
      */
     suspend fun streams(ref: MediaServerReference, episode: EpisodeContext?, context: MediaServerPlaybackContext): List<AddonStream>
 
+    /** The server's own resume point and watched state, read fresh. */
+    suspend fun progress(ref: MediaServerReference, episode: EpisodeContext?): MediaServerProgress?
+
+    /** Every episode of a series with its standing, in one read. */
+    suspend fun seriesProgress(ref: MediaServerReference): List<MediaServerEpisodeProgress>
+
     /** Sidecar subtitle files the server holds for a title, if any. */
     suspend fun subtitles(ref: MediaServerReference, episode: EpisodeContext?): List<ExternalSubtitleTrack>
 

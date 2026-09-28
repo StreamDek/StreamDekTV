@@ -12,6 +12,8 @@ import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.mediaserver.DiscoveredMediaServer
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerAuth
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerEndpoint
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerEpisodeProgress
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerProgress
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerLabels
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerLibrary
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerLibraryKind
@@ -615,6 +617,44 @@ internal class PlexProvider(
                 source = "$PLEX_PROVIDER_ID:${option.mode.name.lowercase(Locale.US)}",
                 requestHeaders = headers,
             )
+        }
+    }
+
+    private fun progressOf(meta: PlexMetadata): MediaServerProgress? {
+        val duration = meta.duration?.takeIf { it > 0 } ?: return null
+        val offset = meta.viewOffset?.takeIf { it > 0 } ?: 0L
+        return MediaServerProgress(
+            positionMs = offset,
+            durationMs = duration,
+            // A title part-way through a rewatch is not "watched" for resuming purposes.
+            watched = (meta.viewCount ?: 0) > 0 && offset == 0L,
+            lastViewedAtMs = (meta.lastViewedAt ?: 0L) * 1000L,
+        )
+    }
+
+    override suspend fun progress(ref: MediaServerReference, episode: EpisodeContext?): MediaServerProgress? {
+        val ratingKey = playableKey(ref, episode) ?: return null
+        return metadataFor(ref.serverId, ratingKey, force = true)?.let(::progressOf)
+    }
+
+    override suspend fun seriesProgress(ref: MediaServerReference): List<MediaServerEpisodeProgress> {
+        // allLeaves is every episode of the series in one listing, which is what makes a series
+        // page's resume target one request rather than one per season.
+        val collected = ArrayList<PlexMetadata>()
+        var start = 0
+        while (start < CHILDREN_MAX) {
+            val page = get(ref.serverId, "/library/metadata/${ref.itemKey}/allLeaves", start = start, size = CHILDREN_PAGE) ?: break
+            val items = page.allMetadata()
+            collected += items
+            start += items.size
+            if (items.isEmpty() || start >= (page.totalSize ?: page.size ?: start)) break
+        }
+        return collected.mapNotNull { episode ->
+            val season = episode.parentIndex ?: return@mapNotNull null
+            val number = episode.index ?: return@mapNotNull null
+            val progress = progressOf(episode) ?: return@mapNotNull null
+            if (!progress.watched && progress.positionMs == 0L) return@mapNotNull null
+            MediaServerEpisodeProgress(season, number, progress)
         }
     }
 

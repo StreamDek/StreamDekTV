@@ -152,6 +152,21 @@ data class MediaServerResume(
     val imdbId: String?,
 )
 
+/** Where one title stands on the server: the resume point, and whether it counts as watched. */
+data class MediaServerProgress(
+    val positionMs: Long,
+    val durationMs: Long,
+    val watched: Boolean,
+    val lastViewedAtMs: Long,
+)
+
+/** One episode's standing, for a series page's resume target and watched marks. */
+data class MediaServerEpisodeProgress(
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val progress: MediaServerProgress,
+)
+
 /** What the player reports, mapped onto what a server's timeline understands. */
 enum class MediaServerPlaybackState { Playing, Paused, Stopped }
 

@@ -371,6 +371,21 @@ fun SettingsScreen(
         }
     }
     val selectedRequester = destinationRequesters.getValue(selected)
+    /**
+     * Opens another page from a row inside this one. The row that was pressed is about to leave
+     * the screen, and focus that falls out of the page lands on the rail - which opens whatever
+     * item it lands on. So focus goes to the target's own rail item first (which selects it the
+     * ordinary way) and then into the new page, rather than being left to fall.
+     */
+    fun openDestination(destination: SettingsDestination) {
+        runCatching { destinationRequesters.getValue(destination).requestFocus() }
+        menuFocusedDestination = destination
+        selected = destination
+        scope.launch {
+            delay(160)
+            if (selected == destination) runCatching { contentEntryRequester.requestFocus() }
+        }
+    }
     val activeProfile = repository.activeStreamProfile(bootstrap)
     val prefs = bootstrap?.preferences
     val appPrefs = prefs?.app
@@ -1035,7 +1050,7 @@ fun SettingsScreen(
                         stringResource(R.string.settings_dest_plex_description),
                         mediaServerSummary(repository),
                         selectedRequester,
-                    ) { selected = SettingsDestination.MediaServers }
+                    ) { openDestination(SettingsDestination.MediaServers) }
                     // A sign-in in progress owns the top of the page: the code on it is being read
                     // off the television and typed on a phone, and it must not be somewhere the
                     // viewer has to scroll back to.
@@ -1827,7 +1842,7 @@ fun SettingsScreen(
                         stringResource(R.string.settings_tv_your_own_tmdb_and_mdblist_keys_and),
                         contentServicesSummary(contentServices),
                         selectedRequester,
-                    ) { selected = SettingsDestination.ContentServices }
+                    ) { openDestination(SettingsDestination.ContentServices) }
                     SettingsDropdownRow(
                         stringResource(R.string.settings_tv_where_your_sync_lives),
                         stringResource(R.string.settings_tv_one_source_supplies_continue_watching_and_your),
