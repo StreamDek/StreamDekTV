@@ -742,6 +742,8 @@ class StreamDekRepository(
             else label(R.string.media_server_transcode_quality, "Transcode $quality", quality)
         override fun attribution(provider: String, serverName: String, multipleServers: Boolean) =
             if (multipleServers && serverName.isNotBlank()) label(R.string.media_server_attribution, "$provider · $serverName", provider, serverName) else provider
+        override fun season(number: Int) = label(R.string.detail_season_number, "Season $number", number)
+        override fun episode(number: Int) = label(R.string.plex_episode_number, "Episode $number", number)
     }
 
     /** Who this television is to a Plex server: its own identity, stable across launches, not secret. */

@@ -237,6 +237,8 @@ internal class PlexProvider(
             baseUri = base,
             attribution = labels().attribution(label, state.server.name, multiple),
             libraryTitles = libraries[serverId]?.value.orEmpty().associate { (_, library) -> library.key to library.title },
+            seasonName = labels()::season,
+            episodeName = labels()::episode,
         )
     }
 

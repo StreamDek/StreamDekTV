@@ -33,6 +33,9 @@ internal data class PlexMappingContext(
     /** What a card says it came from: "Plex", or "Plex · Living Room" when there is more than one server. */
     val attribution: String,
     val libraryTitles: Map<String, String> = emptyMap(),
+    /** The app's words for an unnamed season or episode, in its language. */
+    val seasonName: (Int) -> String = { "Season $it" },
+    val episodeName: (Int) -> String = { "Episode $it" },
 )
 
 internal object PlexImages {
@@ -143,7 +146,7 @@ internal object PlexMapping {
             .map { season ->
                 SeasonRef(
                     seasonNumber = season.index!!,
-                    name = season.title?.takeIf { it.isNotBlank() } ?: "Season ${season.index}",
+                    name = season.title?.takeIf { it.isNotBlank() } ?: context.seasonName(season.index!!),
                     episodeCount = season.leafCount ?: 0,
                     airDate = season.originallyAvailableAt,
                 )
@@ -178,7 +181,7 @@ internal object PlexMapping {
     fun season(seasonNumber: Int, seasonMeta: PlexMetadata?, episodes: List<PlexMetadata>, context: PlexMappingContext): SeasonDetail =
         SeasonDetail(
             seasonNumber = seasonNumber,
-            name = seasonMeta?.title?.takeIf { it.isNotBlank() } ?: "Season $seasonNumber",
+            name = seasonMeta?.title?.takeIf { it.isNotBlank() } ?: context.seasonName(seasonNumber),
             overview = seasonMeta?.summary?.takeIf { it.isNotBlank() },
             episodes = episodes
                 .filter { it.index != null }
@@ -187,7 +190,7 @@ internal object PlexMapping {
                     SeasonEpisode(
                         id = episode.ratingKey?.toIntOrNull() ?: 0,
                         episodeNumber = episode.index!!,
-                        name = episode.title?.takeIf { it.isNotBlank() } ?: "Episode ${episode.index}",
+                        name = episode.title?.takeIf { it.isNotBlank() } ?: context.episodeName(episode.index!!),
                         overview = episode.summary?.takeIf { it.isNotBlank() },
                         still = PlexImages.still(context, episode.thumb),
                         runtime = episode.duration?.takeIf { it > 0 }?.let { (it / 60_000L).toInt() },

@@ -110,6 +110,10 @@ interface MediaServerLabels {
     fun transcode(quality: String): String
     /** "Plex", or "Plex · Living Room" when the profile uses more than one server. */
     fun attribution(provider: String, serverName: String, multipleServers: Boolean): String
+    /** "Season 3", for a season the server gave no name of its own. */
+    fun season(number: Int): String = "Season $number"
+    /** "Episode 5", for an episode the server gave no title of its own. */
+    fun episode(number: Int): String = "Episode $number"
 }
 
 /** What the device and the viewer's settings allow, for [MediaServerProvider.streams]. */
