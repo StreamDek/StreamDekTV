@@ -109,6 +109,7 @@ import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerPlaybackState
 import com.streamdek.tv.nativeapp.data.Telemetry
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
 import com.streamdek.tv.nativeapp.data.TvIdlePreferences
@@ -1177,9 +1178,26 @@ fun PlayerScreen(
         )
     }
 
-    suspend fun syncProgressIfEligible() {
+    /**
+     * [leaving] marks the last report of a playback - the viewer backed out, the app stopped, the
+     * player went to sleep. Only a media server reads it: its timeline is told the session ended,
+     * so the server's dashboard stops showing StreamDek as playing and a transcode is released.
+     */
+    suspend fun syncProgressIfEligible(leaving: Boolean = false) {
         if (isLive || completionThresholdReached) return
-        repository.syncProgress(request.mediaType, request.mediaId, positionSec, durationSec, currentEpisode, detail)
+        repository.syncProgress(
+            request.mediaType,
+            request.mediaId,
+            positionSec,
+            durationSec,
+            currentEpisode,
+            detail,
+            mediaServerState = when {
+                leaving -> MediaServerPlaybackState.Stopped
+                paused -> MediaServerPlaybackState.Paused
+                else -> MediaServerPlaybackState.Playing
+            },
+        )
     }
 
     suspend fun markWatchedAndClearProgressIfNeeded(
@@ -2126,7 +2144,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         if (!paused || loading || pausedSleepTriggered) return@LaunchedEffect
         pausedSleepTriggered = true
         queueTraktStop()
-        syncProgressIfEligible()
+        syncProgressIfEligible(leaving = true)
         onExitToDetail()
         // Back to the title page and then the screensaver — not out of the app. Handing the
         // foreground back, which is what this used to do, was a blunt stand-in for sleep: it took
@@ -2294,7 +2312,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             pendingSeekJob?.cancel()
             queueTraktStop()
             scope.launch {
-                syncProgressIfEligible()
+                syncProgressIfEligible(leaving = true)
             }
         }
     }
@@ -2315,7 +2333,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     // stopped process is the one the system reclaims first, and a viewer whose box
                     // killed the app while they were elsewhere used to come back to whatever the
                     // last thirty-second checkpoint happened to have caught.
-                    scope.launch { syncProgressIfEligible() }
+                    scope.launch { syncProgressIfEligible(leaving = true) }
                 }
                 androidx.lifecycle.Lifecycle.Event.ON_START -> playerView?.restoreAfterStop()
                 else -> Unit
@@ -2417,7 +2435,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             TvDebugLogger.i("Player", "back exit to streams mediaType=${request.mediaType} mediaId=${request.mediaId}")
             queueTraktStop()
             scope.launch {
-                syncProgressIfEligible()
+                syncProgressIfEligible(leaving = true)
             }
             backExitPlayback()
         }

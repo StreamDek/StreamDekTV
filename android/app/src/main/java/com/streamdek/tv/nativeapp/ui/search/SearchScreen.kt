@@ -161,6 +161,8 @@ fun SearchScreen(
     var addonResults by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     /** Plugin catalogue matches (CloudStream, SkyStream), filled in provider by provider. */
     var pluginResults by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    /** Matches from the viewer's own media servers (Plex). */
+    var mediaServerResults by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var addonSearching by remember { mutableStateOf(false) }
     var pluginSearching by remember { mutableStateOf(false) }
@@ -228,7 +230,12 @@ fun SearchScreen(
     // the slower add-on pass lands, so nothing shifts under a viewer already moving through the grid.
     // Plugin matches follow the add-ons' for the same reason, and a title found both through TMDB and
     // through a plugin is kept twice on purpose: they open to different sources.
-    val allResults = remember(results, addonResults, pluginResults) { results + addonResults + pluginResults }
+    // The viewer's own copies lead: a film they already have is the most useful answer to a search
+    // for it. A home server answers in a fraction of the TMDB round trip, so they are nearly always
+    // in place before the rest lands and nothing is pushed down under the viewer.
+    val allResults = remember(mediaServerResults, results, addonResults, pluginResults) {
+        mediaServerResults + results + addonResults + pluginResults
+    }
     val visibleResults = remember(allResults, searchScope) {
         allResults.filter {
             when (searchScope) {
@@ -337,6 +344,17 @@ fun SearchScreen(
         delay(260)
         addonResults = runCatching { repository.searchAddonCatalogs(normalized) }.getOrDefault(emptyList())
         addonSearching = false
+    }
+
+    // Media servers in a pass of their own, bounded so a sleeping server only ever delays itself.
+    LaunchedEffect(query, policyRevision) {
+        val normalized = query.trim()
+        if (normalized.length < 2) {
+            mediaServerResults = emptyList()
+            return@LaunchedEffect
+        }
+        delay(260)
+        mediaServerResults = runCatching { repository.searchMediaServers(normalized) }.getOrDefault(emptyList())
     }
 
     // Plugin catalogues in a third pass of their own. Each provider's matches are shown as it answers,

@@ -116,7 +116,7 @@ internal fun steadyFusePreview(content: HomeContent, sourcesResolved: Boolean, s
 }
 
 /** Where a Fuse source's titles come from, which decides how it is asked for more. */
-internal enum class FuseOrigin { Addon, CloudStream, Playlist }
+internal enum class FuseOrigin { Addon, CloudStream, Playlist, MediaServer }
 
 /** One catalogue in the Fuse: an add-on catalogue, a CloudStream row, or one half of a playlist. */
 internal data class FuseCatalog(

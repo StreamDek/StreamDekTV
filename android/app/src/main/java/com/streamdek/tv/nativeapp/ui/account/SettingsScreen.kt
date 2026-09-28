@@ -100,6 +100,7 @@ import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.BuildConfig
 import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.ui.PlexIcons
 import com.streamdek.tv.nativeapp.data.APP_IDLE_CHOICES_MINUTES
 import com.streamdek.tv.nativeapp.data.AccountBootstrap
 import com.streamdek.tv.nativeapp.data.AddonManifest
@@ -237,6 +238,9 @@ private enum class SettingsDestination(
     Streams(R.string.settings_category_playback, R.string.settings_dest_streams, R.string.settings_dest_streams_description, "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
 
     Sources(R.string.settings_category_sources, R.string.settings_dest_sources, R.string.settings_dest_sources_description, "providers addon plugin cloudstream debrid premium install playlist", Icons.Outlined.Extension),
+    // Personal media servers. Its own page rather than a row under Sources: linking, servers and
+    // libraries are a whole screen's worth, and "Plex" is exactly what someone will search for.
+    MediaServers(R.string.settings_category_sources, R.string.media_server_plex, R.string.settings_dest_plex_description, "plex media server personal library libraries link account plex.tv jellyfin emby nas", PlexIcons.Chevron),
 
     ContentServices(R.string.settings_category_connections, R.string.settings_dest_content_services, R.string.settings_dest_content_services_description, "content services tmdb mdblist theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
     Connections(R.string.settings_category_connections, R.string.settings_dest_sync_services, R.string.settings_dest_sync_services_description, "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
@@ -817,12 +821,17 @@ fun SettingsScreen(
                     }
                     // Under the built-in switch it qualifies, and above the presentation settings:
                     // which rows exist is a bigger decision than how their cards are drawn.
+                    val mediaServerRowOptions by androidx.compose.runtime.produceState(
+                        initialValue = emptyList<com.streamdek.tv.nativeapp.data.HomeRowOption>(),
+                        repository,
+                    ) { value = repository.mediaServerHomeRowOptions() }
                     HomeRowsSettings(
                         definitions = catalogDefinitions,
                         addons = addons,
                         layout = homePrefs?.homeCatalogRows.orEmpty(),
                         streamDekRowsEnabled = homePrefs?.defaultAppCatalogsEnabled != false,
                         leftRequester = selectedRequester,
+                        mediaServerRows = mediaServerRowOptions,
                     ) { rows, complete ->
                         savePreference(R.string.settings_home_rows, complete) {
                             repository.updateHomePreferences(mapOf("homeCatalogRows" to rows))
@@ -1011,7 +1020,22 @@ fun SettingsScreen(
                         )
                     }
                 }
+                SettingsDestination.MediaServers -> {
+                    MediaServerSettingsPanel(
+                        repository = repository,
+                        signedIn = session != null,
+                        leftRequester = selectedRequester,
+                        onStatus = { message -> status = message },
+                    )
+                }
                 SettingsDestination.Sources -> {
+                    // Where people look for "add a source", so Plex is signposted here too.
+                    SettingsActionRow(
+                        stringResource(R.string.media_server_plex),
+                        stringResource(R.string.settings_dest_plex_description),
+                        mediaServerSummary(repository),
+                        selectedRequester,
+                    ) { selected = SettingsDestination.MediaServers }
                     // A sign-in in progress owns the top of the page: the code on it is being read
                     // off the television and typed on a phone, and it must not be somewhere the
                     // viewer has to scroll back to.

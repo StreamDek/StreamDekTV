@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.data
 
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -268,8 +269,26 @@ object Telemetry {
 
     // ── Internals ───────────────────────────────────────────────────────────
 
-    private fun track(event: TelemetryEventPayload) {
+    /**
+     * A personal media server's titles are the viewer's own library, not StreamDek's catalogue:
+     * their ids name the viewer's server and item, and their titles can be anything - home video
+     * included. The event still counts, so playback reliability for Plex is measurable; what it was
+     * and where it lives are not sent.
+     */
+    private fun withoutPersonalMedia(event: TelemetryEventPayload): TelemetryEventPayload {
+        val provider = MediaServerReference.decode(event.mediaId)?.provider
+            ?: MediaServerReference.providerOfSource(event.addonKey)
+            ?: return event
+        return event.copy(
+            mediaId = "mediaserver:$provider",
+            mediaTitle = null,
+            addonKey = "mediaserver:$provider",
+        )
+    }
+
+    private fun track(original: TelemetryEventPayload) {
         if (!enabled || api == null) return
+        val event = withoutPersonalMedia(original)
 
         scope.launch {
             runCatching {

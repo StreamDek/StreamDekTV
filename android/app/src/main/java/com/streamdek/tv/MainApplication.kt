@@ -10,6 +10,7 @@ import com.streamdek.tv.nativeapp.data.Perf
 import com.streamdek.tv.nativeapp.data.Stability
 import com.streamdek.tv.nativeapp.data.SkyStreamPlugins
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerAuth
 import com.streamdek.tv.nativeapp.ui.player.AudioSyncOptions
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
@@ -54,6 +55,10 @@ class MainApplication : Application(), ImageLoaderFactory {
                         },
                     )
                     .connectionPool(ConnectionPool(16, 5, TimeUnit.MINUTES))
+                    // Plex artwork is requested by plain URL, and the server's token is added here,
+                    // per request and only for that server - never written into the URL, and so
+                    // never into the image cache's keys. See MediaServerAuth.
+                    .addNetworkInterceptor(MediaServerAuth.interceptor)
                     .build()
             }
             .memoryCache {

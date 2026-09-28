@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -26,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -74,6 +76,8 @@ import kotlinx.coroutines.launch
 private data class BrowseActionState(
     val item: MediaItem,
     val restoreFocusRequester: FocusRequester,
+    /** Which half of the unified page the card was in; see [LibraryScreen]. */
+    val fromContinue: Boolean = false,
 )
 
 private enum class LibrarySection(@StringRes val labelRes: Int) {
@@ -208,6 +212,20 @@ fun LibraryScreen(
     val cardRequesters = remember { mutableMapOf<String, FocusRequester>() }
     val gridState = rememberLazyGridState()
 
+    /**
+     * With Plex connected, Library is one page rather than two tabs: every Continue Watching title,
+     * then every Watchlist title, each under its own heading.
+     *
+     * Plex takes a place in the navigation, and folding these two into one destination is what
+     * pays for it - the phone has them as two bar entries, so there this is the difference
+     * between four destinations and five. On a television the tabs become jump points: Center on
+     * one moves the highlight to that half of the page instead of swapping what the page holds.
+     */
+    val mediaServerState by repository.mediaServers.state.collectAsState()
+    val unified = mediaServerState.navigationVisible
+    /** The card last highlighted on the unified page, so returning from a title lands back on it. */
+    var lastFocusedKey by rememberSaveable { mutableStateOf<String?>(null) }
+
     val policyRevision by AdultContentFilter.changes.collectAsState()
     LaunchedEffect(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, reloadToken, policyRevision) {
         loading = true
@@ -243,13 +261,19 @@ fun LibraryScreen(
             // key is a hard crash in Compose rather than a cosmetic duplicate.
             .distinctBy(::libraryItemKey)
     }
-    val items = if (section == LibrarySection.Continue) continueItems else watchlistItems
+    val items = when {
+        unified -> continueItems + watchlistItems
+        section == LibrarySection.Continue -> continueItems
+        else -> watchlistItems
+    }
+    val watchlistHeaderIndex = 1 + maxOf(continueItems.size, 1)
 
     // A position held from a longer list has no meaning in a shorter one, and leaving the grid
     // scrolled where the previous section was reads as the new section having lost its first rows.
     val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
 
     LaunchedEffect(section, typeFilter) {
+        if (unified && lastFocusedKey != null) return@LaunchedEffect
         runCatching { gridState.scrollToItem(0) }
     }
 
@@ -258,6 +282,14 @@ fun LibraryScreen(
         delay(160)
         // Not while the side navigation owns the D-pad — see LocalSideNavOwnsFocus.
         if (sideNavOwnsFocus) return@LaunchedEffect
+        // Back from a title on the unified page: the same card, not the top of the page.
+        val restoreKey = lastFocusedKey.takeIf { unified }
+        val restoreIndex = restoreKey?.let { key -> unifiedGridIndex(key, continueItems, watchlistItems) }
+        if (restoreKey != null && restoreIndex != null) {
+            runCatching { gridState.scrollToItem(restoreIndex) }
+            delay(40)
+            if (runCatching { cardRequesters.getValue(restoreKey).requestFocus() }.isSuccess) return@LaunchedEffect
+        }
         runCatching { firstChipRequester.requestFocus() }
     }
 
@@ -312,7 +344,19 @@ fun LibraryScreen(
                         leading = count.toString(),
                         modifier = (if (active) Modifier.focusRequester(firstChipRequester) else Modifier)
                             .dpadDownInto(firstCardRequester),
-                        onClick = { selectSection(option) },
+                        onClick = {
+                            selectSection(option)
+                            if (unified) {
+                                // A jump, not a swap: both halves stay on the page.
+                                val target = if (option == LibrarySection.Continue) continueItems.firstOrNull()?.let { "c:" + libraryItemKey(it) }
+                                    else watchlistItems.firstOrNull()?.let { "w:" + libraryItemKey(it) }
+                                scope.launch {
+                                    runCatching { gridState.animateScrollToItem(if (option == LibrarySection.Continue) 0 else watchlistHeaderIndex) }
+                                    delay(60)
+                                    target?.let { key -> runCatching { cardRequesters.getValue(key).requestFocus() } }
+                                }
+                            }
+                        },
                     )
                 }
                 Box(Modifier.width(16.dp))
@@ -351,6 +395,7 @@ fun LibraryScreen(
                     title = stringResource(
                         when {
                             session == null -> R.string.library_sign_in
+                            unified -> R.string.library_unified_empty
                             section == LibrarySection.Continue -> R.string.library_nothing_in_progress
                             else -> R.string.library_watchlist_empty
                         },
@@ -358,13 +403,81 @@ fun LibraryScreen(
                     message = stringResource(
                         when {
                             session == null -> R.string.library_sync_note
+                            unified -> R.string.library_unified_empty_note
                             section == LibrarySection.Continue -> R.string.library_continue_note
                             else -> R.string.library_watchlist_note
                         },
                     ),
                 )
 
-                TvContentPhase.Content -> LazyVerticalGrid(
+                TvContentPhase.Content -> if (unified) LazyVerticalGrid(
+                    columns = GridCells.Fixed(gridColumns),
+                    state = gridState,
+                    modifier = Modifier.fillMaxSize().focusGroup(),
+                    contentPadding = PaddingValues(start = LibraryInset, end = LibraryInset, top = 2.dp, bottom = 72.dp),
+                    horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
+                    verticalArrangement = Arrangement.spacedBy(TvSpacing.Card),
+                ) {
+                    item(key = "heading:continue", span = { GridItemSpan(maxLineSpan) }) {
+                        UnifiedSectionHeading(stringResource(R.string.home_rail_continue_watching), continueItems.size, first = true)
+                    }
+                    if (continueItems.isEmpty()) {
+                        // Compact: an empty half must not push the Watchlist off the screen.
+                        item(key = "empty:continue", span = { GridItemSpan(maxLineSpan) }) {
+                            UnifiedEmptyNote(stringResource(R.string.library_nothing_in_progress))
+                        }
+                    }
+                    itemsIndexed(continueItems, key = { _, item -> "c:" + libraryItemKey(item) }) { index, item ->
+                        val key = "c:" + libraryItemKey(item)
+                        val requester = cardRequesters.getOrPut(key) { FocusRequester() }
+                        val effective = if (index == 0) firstCardRequester else requester
+                        if (index == 0) cardRequesters[key] = firstCardRequester
+                        PremiumMediaCard(
+                            item = item,
+                            variant = TvMediaCardVariant.ContinueWatching,
+                            modifier = Modifier
+                                .focusRequester(effective)
+                                .width(LibraryCardWidth)
+                                .height(LibraryCardHeight)
+                                .focusProperties { if (index < gridColumns) up = firstChipRequester }
+                                .tvCardLongPress { actionState = BrowseActionState(item, effective, fromContinue = true) },
+                            onClick = { onOpenDetail(item.type, item.detailLookupId()) },
+                            onLongPress = { actionState = BrowseActionState(item, effective, fromContinue = true) },
+                            onFocused = { lastFocusedKey = key },
+                        )
+                    }
+                    item(key = "heading:watchlist", span = { GridItemSpan(maxLineSpan) }) {
+                        UnifiedSectionHeading(stringResource(R.string.nav_watchlist), watchlistItems.size, first = false)
+                    }
+                    if (watchlistItems.isEmpty()) {
+                        item(key = "empty:watchlist", span = { GridItemSpan(maxLineSpan) }) {
+                            UnifiedEmptyNote(stringResource(R.string.library_watchlist_empty))
+                        }
+                    }
+                    itemsIndexed(watchlistItems, key = { _, item -> "w:" + libraryItemKey(item) }) { index, item ->
+                        val key = "w:" + libraryItemKey(item)
+                        // With nothing in progress, the first watchlist card is the page's first card.
+                        val isFirstCard = continueItems.isEmpty() && index == 0
+                        val requester = if (isFirstCard) firstCardRequester else cardRequesters.getOrPut(key) { FocusRequester() }
+                        if (isFirstCard) cardRequesters[key] = firstCardRequester
+                        PremiumMediaCard(
+                            item = item,
+                            variant = TvMediaCardVariant.Poster,
+                            showLabels = false,
+                            metaOnTop = true,
+                            metaOnTopAlignment = androidx.compose.ui.Alignment.TopCenter,
+                            modifier = Modifier
+                                .focusRequester(requester)
+                                .width(LibraryCardWidth)
+                                .height(LibraryCardHeight)
+                                .focusProperties { if (continueItems.isEmpty() && index < gridColumns) up = firstChipRequester }
+                                .tvCardLongPress { actionState = BrowseActionState(item, requester) },
+                            onClick = { onOpenDetail(item.type, item.detailLookupId()) },
+                            onLongPress = { actionState = BrowseActionState(item, requester) },
+                            onFocused = { lastFocusedKey = key },
+                        )
+                    }
+                } else LazyVerticalGrid(
                     columns = GridCells.Fixed(gridColumns),
                     state = gridState,
                     modifier = Modifier.fillMaxSize().focusGroup(),
@@ -409,7 +522,7 @@ fun LibraryScreen(
             BrowseItemActionMenu(
                 repository = repository,
                 item = state.item,
-                showRemoveFromContinueWatching = section == LibrarySection.Continue,
+                showRemoveFromContinueWatching = if (unified) state.fromContinue else section == LibrarySection.Continue,
                 onDismiss = {
                     val restoreRequester = state.restoreFocusRequester
                     actionState = null
@@ -428,6 +541,19 @@ fun LibraryScreen(
                     // Do not immediately ask an eventually-consistent provider for the old list.
                     val refreshed = repository.fetchLibrary()
                     library = refreshed
+                    if (unified) {
+                        // The card's own half decides where it went; the page keeps both halves, so
+                        // the highlight moves to the chip for that half when the card is gone.
+                        val stillThere = if (state.fromContinue) {
+                            refreshed.continueWatching.map(ContinueWatchingItem::asLibraryMediaItem).any { libraryItemKey(it) == libraryItemKey(state.item) }
+                        } else refreshed.watchlist.any { libraryItemKey(it) == libraryItemKey(state.item) }
+                        if (!stillThere) {
+                            lastFocusedKey = null
+                            kotlinx.coroutines.delay(80)
+                            runCatching { firstChipRequester.requestFocus() }
+                        }
+                        return@BrowseItemActionMenu
+                    }
                     val removedFromCurrentSection = when (section) {
                         LibrarySection.Continue -> refreshed.continueWatching
                             .map(ContinueWatchingItem::asLibraryMediaItem)
@@ -460,5 +586,55 @@ fun LibraryScreen(
                 },
             )
         }
+    }
+}
+
+/** Where a card of the unified page sits in its grid, counting the two headings and any empty note. */
+private fun unifiedGridIndex(key: String, continueItems: List<MediaItem>, watchlistItems: List<MediaItem>): Int? {
+    val continueIndex = continueItems.indexOfFirst { "c:" + libraryItemKey(it) == key }
+    if (continueIndex >= 0) return 1 + continueIndex
+    val watchlistIndex = watchlistItems.indexOfFirst { "w:" + libraryItemKey(it) == key }
+    if (watchlistIndex >= 0) return 1 + maxOf(continueItems.size, 1) + 1 + watchlistIndex
+    return null
+}
+
+/**
+ * A half's heading on the unified page. Large and spaced, with a rule above the second, so moving
+ * from what is in progress to what is saved for later is unmistakable.
+ */
+@Composable
+private fun UnifiedSectionHeading(title: String, count: Int, first: Boolean) {
+    Column(Modifier.fillMaxWidth().padding(top = if (first) 0.dp else 22.dp, bottom = 2.dp)) {
+        if (!first) {
+            Box(
+                Modifier.fillMaxWidth().height(1.dp)
+                    .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f)),
+            )
+            Box(Modifier.height(18.dp))
+        }
+        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Text(
+                count.toString(),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                modifier = Modifier.padding(bottom = 3.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun UnifiedEmptyNote(text: String) {
+    Box(
+        Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+    ) {
+        Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
     }
 }

@@ -3,6 +3,17 @@ package com.streamdek.tv.nativeapp.data
 import androidx.annotation.StringRes
 import com.google.gson.JsonObject
 import com.streamdek.tv.BuildConfig
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerLabels
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerManager
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerPlaybackContext
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerPlaybackState
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerProvider
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerReference
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerResume
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerSort
+import com.streamdek.tv.nativeapp.mediaserver.withMediaServerAuth
+import com.streamdek.tv.nativeapp.mediaserver.plex.PlexClientIdentity
+import com.streamdek.tv.nativeapp.mediaserver.plex.PlexProvider
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.debrid.DebridKeyStore
 import com.streamdek.tv.nativeapp.debrid.DebridManager
@@ -422,6 +433,16 @@ internal fun isUsableAddonMeta(meta: AddonMetaItem, requestedId: String): Boolea
 
 /** Add-on rows are identified by prefix so they can be ordered as a group. */
 private const val ADDON_RAIL_PREFIX = "addon:"
+private const val MEDIA_SERVER_PREFS = "streamdek_tv_media_servers"
+private const val MEDIA_SERVER_REMOTE_QUALITY_KEY = "remote_quality_kbps"
+/** How long Home, Library and Search wait on a media server before going on without it. */
+private const val MEDIA_SERVER_READ_TIMEOUT_MS = 5_000L
+private const val FUSE_MEDIA_SERVER_PAGE = 60
+/**
+ * What telemetry records in place of a media server title's id. The id names the viewer's own
+ * server and library item, which is theirs and not StreamDek's to collect.
+ */
+private const val MEDIA_SERVER_TELEMETRY_ID = "mediaserver"
 /** How long a filled CloudStream Home row is reused before its provider is asked again. */
 private const val CLOUDSTREAM_ROW_TTL_MS = 10 * 60_000L
 /** How soon a CloudStream Home row that came back empty is asked for again. */
@@ -565,6 +586,19 @@ internal fun playbackRequestFromHandoff(payload: PlaybackHandoffPayload): Playba
         null
     }
     val stream = payload.stream
+    if (MediaServerReference.isReference(payload.mediaId)) {
+        // A Plex title is played from this television's own link to the server: the phone's
+        // source was made for the phone's connection, and carries none of its credential.
+        return PlaybackRequest(
+            mediaId = payload.mediaId,
+            mediaType = payload.mediaType,
+            imdbId = payload.imdbId,
+            episode = episode,
+            title = payload.title,
+            startPositionSec = payload.positionSeconds.coerceAtLeast(0.0),
+            returnToDetailOnBack = false,
+        )
+    }
     return PlaybackRequest(
         mediaId = payload.mediaId,
         mediaType = payload.mediaType,
@@ -695,6 +729,77 @@ class StreamDekRepository(
      */
     private fun label(@StringRes id: Int, fallback: String, vararg args: Any): String =
         appContext?.let { runCatching { localizedContext(it).getString(id, *args) }.getOrNull() } ?: fallback
+
+    /** The words a media server provider puts on rows and sources, in the interface language. */
+    private val mediaServerLabels = object : MediaServerLabels {
+        override fun recentlyAdded(library: String) = label(R.string.media_server_row_recently_added, "Recently Added in $library", library)
+        override fun recentlyWatched(library: String) = label(R.string.media_server_row_recently_watched, "Recently Watched in $library", library)
+        override fun collections(library: String) = label(R.string.media_server_row_collections, "Collections in $library", library)
+        override fun directPlay() = label(R.string.media_server_direct_play, "Direct Play")
+        override fun directStream() = label(R.string.media_server_direct_stream, "Direct Stream")
+        override fun transcode(quality: String) =
+            if (quality.isBlank()) label(R.string.media_server_transcode, "Transcode")
+            else label(R.string.media_server_transcode_quality, "Transcode $quality", quality)
+        override fun attribution(provider: String, serverName: String, multipleServers: Boolean) =
+            if (multipleServers && serverName.isNotBlank()) label(R.string.media_server_attribution, "$provider · $serverName", provider, serverName) else provider
+    }
+
+    /** Who this television is to a Plex server: its own identity, stable across launches, not secret. */
+    private fun mediaServerClientIdentity() = PlexClientIdentity(
+        clientIdentifier = "streamdek-tv-" + sessionStore.deviceId(),
+        product = PlexProvider.PLEX_PRODUCT,
+        version = BuildConfig.VERSION_NAME,
+        platform = "Android",
+        deviceName = sessionStore.deviceName(),
+    )
+
+    /**
+     * Personal media servers (Plex) linked to the active profile.
+     *
+     * A title from one carries a [MediaServerReference] as its id, and every repository entry point
+     * that a title can reach - detail, seasons, streams, playback, progress, watched state, subtitles
+     * - hands such an id to its provider before anything else looks at it, the same way add-on and
+     * CloudStream ids are routed. Search, Home, Continue Watching and the Fuse fold the providers'
+     * results in beside everyone else's.
+     */
+    val mediaServers: MediaServerManager = MediaServerManager(
+        context = appContext,
+        api = api,
+        scopeKey = {
+            currentSession()?.user?.uid?.let { uid -> "$uid:" + (sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: "default") }
+        },
+        identity = ::mediaServerClientIdentity,
+        labels = { mediaServerLabels },
+    )
+
+    /** The provider that owns [id], with the decoded reference, or null for everything else. */
+    private fun mediaServerTarget(id: String?): Pair<MediaServerProvider, MediaServerReference>? {
+        val ref = MediaServerReference.decode(id) ?: return null
+        val provider = mediaServers.providerFor(ref) ?: return null
+        return provider to ref
+    }
+
+    private fun mediaServerPlaybackContext(): MediaServerPlaybackContext {
+        val identity = mediaServerClientIdentity()
+        return MediaServerPlaybackContext(
+            engine = bootstrapState.value?.preferences?.playback?.playerEngine ?: "Auto",
+            remoteMaxBitrateKbps = mediaServerRemoteQualityKbps(),
+            deviceName = identity.deviceName,
+            clientIdentifier = identity.clientIdentifier,
+            appVersion = identity.version,
+        )
+    }
+
+    /** The remote-quality ceiling chosen on this television for media servers; null is original quality. */
+    fun mediaServerRemoteQualityKbps(): Int? = appContext
+        ?.getSharedPreferences(MEDIA_SERVER_PREFS, android.content.Context.MODE_PRIVATE)
+        ?.getInt(MEDIA_SERVER_REMOTE_QUALITY_KEY, 0)
+        ?.takeIf { it > 0 }
+
+    fun setMediaServerRemoteQualityKbps(kbps: Int?) {
+        appContext?.getSharedPreferences(MEDIA_SERVER_PREFS, android.content.Context.MODE_PRIVATE)
+            ?.edit()?.putInt(MEDIA_SERVER_REMOTE_QUALITY_KEY, kbps ?: 0)?.apply()
+    }
 
     /**
      * The locale for counts and dates this repository writes into text a viewer reads.
@@ -1183,8 +1288,11 @@ class StreamDekRepository(
         resolvedPlaybackCacheTimes.clear()
         watchedHistoryCache.clear()
         profilePreferencesState.value = JsonObject()
+        mediaServerSearchCache.clear()
         StreamDekHttp.evictCache()
         api.clearSessionExpired()
+        // Server tokens held on this television belonged to the account that just left.
+        mediaServers.clearDevice()
     }
 
     /** When [refreshBootstrap] last read a bootstrap successfully, on the elapsed-realtime clock. */
@@ -1257,6 +1365,9 @@ class StreamDekRepository(
         // in should already hold its keys by the time someone presses play, and nothing on screen
         // is waiting on the answer.
         if (bootstrap != null) repositoryScope.launch { syncDebridKeys() }
+        // The profile is settled by now, so this is the moment Plex is restored for it - from the
+        // device at once, then refreshed from StreamDek in the background.
+        mediaServers.onSessionChanged()
         return@withLock bootstrap
     }
 
@@ -2130,8 +2241,12 @@ class StreamDekRepository(
         val cloudStreamRowIds = enabledCloudStreamRowIds(homePreferences?.homeCatalogRows.orEmpty())
         val cloudStreamSources = if (cloudStreamRowIds.isEmpty()) "" else loadedCloudStreamProviders().joinToString(",") { it.name }
         val fuseEnabled = fuseEnabledState.value
+        // Media server rows join Home once a library is switched on, and change when the viewer
+        // changes which libraries are; the revision says when.
+        val mediaServerRows = mediaServers.state.value.navigationVisible
         val cacheKey = buildSessionProfileCacheKey() +
-            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout:$cloudStreamSources:fuse=$fuseEnabled"
+            ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout:$cloudStreamSources:fuse=$fuseEnabled" +
+            ":ms=${if (mediaServerRows) mediaServers.revision.value else -1}"
         if (!forceRefresh) {
             homeCache[cacheKey]?.let {
                 send(it)
@@ -2177,6 +2292,7 @@ class StreamDekRepository(
         // With the Fuse on, the source rows are still fetched - an add-on can offer rows the Fuse
         // does not stand in for - but no skeleton is held for them: most arrive only to be left out.
         if (!fuseEnabled) {
+            if (mediaServerRows) reserve(MEDIA_SERVER_HOME_SLOT, "Plex", titleRes = R.string.media_server_plex)
             reserve("addon-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
             if (cloudStreamRowIds.isNotEmpty()) {
                 reserve("cloudstream-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
@@ -2190,12 +2306,14 @@ class StreamDekRepository(
             add("new-episodes")
             add(FUSE_HOME_RAIL_ID)
             addAll(HOME_SLOT_ORDER.filterNot { it == "continue-watching" })
+            add(MEDIA_SERVER_HOME_SLOT)
             add("cloudstream-catalogs")
         } else buildList {
             add("continue-watching")
             add("new-episodes")
             add(FUSE_HOME_RAIL_ID)
             catalogRows.forEach { add(it.id) }
+            add(MEDIA_SERVER_HOME_SLOT)
             add("addon-catalogs")
             add("cloudstream-catalogs")
         }
@@ -2270,6 +2388,21 @@ class StreamDekRepository(
             launch {
                 val addonRails = runCatching { fetchAddonCatalogRails() }.getOrDefault(emptyList())
                 publish("addon-catalogs", addonRails)
+            }
+
+            if (mediaServerRows) {
+                launch {
+                    // Bounded like every other source: a server that is away leaves its slot empty
+                    // and Home complete, rather than holding a skeleton open.
+                    val rails = kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS * 2) {
+                        mediaServers.activeProviders().flatMap { provider ->
+                            runCatching { provider.rows(includeCollections = false) }
+                                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                                .getOrDefault(emptyList())
+                        }
+                    }.orEmpty()
+                    publish(MEDIA_SERVER_HOME_SLOT, mediaServerHomeRails(rails))
+                }
             }
 
             if (cloudStreamRowIds.isNotEmpty()) {
@@ -2759,6 +2892,9 @@ class StreamDekRepository(
                     cloudRowId = row.id,
                 )
             }
+        // Each switched-on library of each media server is a catalogue of its own, grouped under
+        // its server, and searched by the server rather than filtered on the device.
+        mediaServerFuseCatalogs().forEach { catalogs += it }
         val enabledPlaylists = playlists.await()
         if (enabledPlaylists.isNotEmpty()) appContext?.let { M3uPlaylistEngine.initialize(it) }
         enabledPlaylists.forEach { playlist ->
@@ -2792,6 +2928,7 @@ class StreamDekRepository(
         val search = query.trim().takeIf { catalog.searchable && it.isNotEmpty() }
         when (catalog.origin) {
             FuseOrigin.Playlist -> FusePage(catalog.localItems.orEmpty(), end = true)
+            FuseOrigin.MediaServer -> loadMediaServerFusePage(catalog, search, previous)
             FuseOrigin.CloudStream -> {
                 val row = catalog.cloudRowId?.let { resolveCloudStreamHomeRow(it, loadedCloudStreamProviders()) }
                 when {
@@ -3016,6 +3153,17 @@ class StreamDekRepository(
 
 
     suspend fun fetchDetail(id: String, type: String, forceRefresh: Boolean = false): MediaDetail? {
+        mediaServerTarget(id)?.let { (provider, ref) ->
+            // Read fresh each time the page opens: resume position and watched state live on the
+            // server and may have moved in another Plex app since the last visit.
+            val detail = runCatching { provider.detail(ref) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .getOrNull()
+                ?: return detailsCache["${MediaClassification.canonical(type)}:$id"]
+            detailsCache["${MediaClassification.canonical(detail.type)}:$id"] = detail
+            Telemetry.contentOpened(mediaId = MEDIA_SERVER_TELEMETRY_ID, mediaType = detail.type, title = null)
+            return detail
+        }
         AddonMediaReference.decode(id)?.let { return fetchOriginDetail(it, type, forceRefresh) }
         if (isCloudStreamMediaId(id)) return fetchCloudStreamDetail(id, type, forceRefresh)
         val perf = Perf.span("detail", "$type:$id")
@@ -3118,6 +3266,14 @@ class StreamDekRepository(
     }
 
     suspend fun fetchSeason(id: String, seasonNumber: Int, forceRefresh: Boolean = false): SeasonDetail? {
+        mediaServerTarget(id)?.let { (provider, ref) ->
+            val cacheKey = "$id:$seasonNumber"
+            if (!forceRefresh) seasonCache[cacheKey]?.let { return it }
+            return runCatching { provider.season(ref, seasonNumber) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .getOrNull()
+                ?.also { seasonCache[cacheKey] = it }
+        }
         AddonMediaReference.decode(id)?.let { ref ->
             val meta = originMeta(ref)
             if (meta?.videos.isNullOrEmpty()) {
@@ -3153,6 +3309,7 @@ class StreamDekRepository(
     }
 
     suspend fun fetchLibrary(forceRefresh: Boolean = false): LibraryResponse {
+        var mediaServerResumes: kotlinx.coroutines.Deferred<List<MediaServerResume>>? = null
         val cacheKey = buildSessionProfileCacheKey()
         if (!forceRefresh) {
             libraryCache[cacheKey]?.let { return it }
@@ -3185,6 +3342,10 @@ class StreamDekRepository(
                 }.getOrNull()
             }
             val playbackRead = async { fetchServicePlayback() }
+            // Beside the account reads rather than after them, and bounded: a sleeping server
+            // costs Continue Watching at most this wait, never the whole Library.
+            val mediaServerRead = async { fetchMediaServerContinueWatching() }
+            mediaServerResumes = mediaServerRead
             Triple(libraryRead.await(), progressRead.await(), playbackRead.await())
         }
         val progress = allProgress ?: library.progress
@@ -3217,8 +3378,11 @@ class StreamDekRepository(
             // Removing one progress row is an optimistic, targeted edit. A tracking provider may
             // still return its pre-dismissal snapshot for a short time, so keep the local removal
             // over that response instead of replacing the whole Library grid with stale state.
-            continueWatching = applyPendingContinueDismissals(cacheKey, mergedContinueWatching)
-                .filterNot { isLiveChannelResumeItem(it) },
+            continueWatching = applyPendingContinueDismissals(
+                cacheKey,
+                // One card per title across StreamDek and the viewer's media servers.
+                reconcileContinueWatching(mergedContinueWatching, mediaServerResumes?.await().orEmpty()),
+            ).filterNot { isLiveChannelResumeItem(it) },
             // A provider can briefly return its pre-write snapshot. Keep confirmed edits over
             // that answer long enough for Trakt/SIMKL/MDBList to converge, including when the
             // viewer leaves Library and comes straight back.
@@ -3239,6 +3403,36 @@ class StreamDekRepository(
         )
         libraryCache[cacheKey] = merged
         return merged
+    }
+
+    private val mediaServerSearchCache = lruCache<String, List<MediaItem>>(24)
+
+    /**
+     * The query put to every linked media server, their matches together.
+     *
+     * Kept apart from [searchMedia] as add-on search is: the Search screen shows each source as it
+     * answers, and a server that is away must hold up nothing but itself.
+     */
+    suspend fun searchMediaServers(query: String): List<MediaItem> {
+        val normalized = query.trim()
+        if (normalized.length < 2) return emptyList()
+        val providers = mediaServers.activeProviders()
+        if (providers.isEmpty()) return emptyList()
+        val cacheKey = buildSessionProfileCacheKey() + ":" + normalized.lowercase(Locale.US)
+        mediaServerSearchCache[cacheKey]?.let { return it }
+        val results = kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS + 2_000L) {
+            supervisorScope {
+                providers.map { provider ->
+                    async {
+                        runCatching { provider.search(normalized, limit = 20) }
+                            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                            .getOrDefault(emptyList())
+                    }
+                }.flatMap { it.await() }
+            }
+        }.orEmpty().withoutAdult()
+        mediaServerSearchCache[cacheKey] = results
+        return results
     }
 
     suspend fun searchMedia(query: String, forceRefresh: Boolean = false): List<MediaItem> {
@@ -3527,6 +3721,13 @@ class StreamDekRepository(
     }
 
     private suspend fun updateWatchlist(item: MediaItem, remove: Boolean) {
+        // A media server title joins the Watchlist by its TMDB identity, which Plex supplies for
+        // anything its agents matched; its own id is opaque, and digits at the end of it are not
+        // a TMDB id. One that TMDB does not know - a home video - cannot be kept in the list.
+        val serverTitle = MediaServerReference.isReference(item.id)
+        if (serverTitle && item.tmdbId <= 0) {
+            throw ContentUnavailableException(label(R.string.watchlist_add_failed, "Could not add this title to your watchlist."))
+        }
         val tmdbId = item.tmdbId.takeIf { it > 0 }
             ?: Regex("(?:tmdb:)?(\\d+)$", RegexOption.IGNORE_CASE).find(item.id)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val entry: Map<String, Any?> = mapOf(
@@ -3599,6 +3800,7 @@ class StreamDekRepository(
         episode: EpisodeContext? = null,
         imdbId: String? = null,
     ): Boolean {
+        mediaServerTarget(mediaId)?.let { (provider, ref) -> return setMediaServerWatched(provider, ref, episode, true) }
         val watchedAt = Instant.now().toString()
         val parsedTmdbId = mediaId.toIntOrNull()
         val parsedYear = year?.take(4)?.toIntOrNull()
@@ -3714,6 +3916,7 @@ class StreamDekRepository(
      * not even clear the progress, because that was gated on the same result.
      */
     suspend fun markBrowseItemWatched(item: MediaItem): Boolean {
+        mediaServerTarget(item.id)?.let { (provider, ref) -> return setMediaServerWatched(provider, ref, item.episode, true) }
         val recorded = markProgressWatched(item)
         if (item.type == "tv" && item.episode == null) {
             markSeriesWatched(
@@ -3742,6 +3945,21 @@ class StreamDekRepository(
 
     /** Marks every regular episode before [selected] in one SyncDek/provider operation. */
     suspend fun markPreviousEpisodesWatched(detail: MediaDetail, selected: EpisodeContext): Boolean {
+        mediaServerTarget(detail.id)?.let { (provider, ref) ->
+            // Whole earlier seasons in one call each; the selected season episode by episode.
+            val earlierSeasons = detail.seasons.map(SeasonRef::seasonNumber).filter { it in 1 until selected.seasonNumber }.distinct()
+            val thisSeason = fetchSeason(detail.id, selected.seasonNumber)?.episodes.orEmpty()
+                .filter { it.episodeNumber < selected.episodeNumber }
+            val results = earlierSeasons.map { season -> runCatching { provider.setSeasonWatched(ref, season, true) }.getOrDefault(false) } +
+                thisSeason.map { episode ->
+                    runCatching {
+                        provider.setWatched(ref, EpisodeContext(selected.seasonNumber, episode.episodeNumber), true)
+                    }.getOrDefault(false)
+                }
+            seasonCache.keys.toList().filter { it.startsWith("${detail.id}:") }.forEach(seasonCache::remove)
+            invalidatePlaybackDerivedCaches()
+            return results.isNotEmpty() && results.all { it }
+        }
         val seasons = detail.seasons
             .map(SeasonRef::seasonNumber)
             .filter { it > 0 && it <= selected.seasonNumber }
@@ -3829,6 +4047,14 @@ class StreamDekRepository(
         seasonDetail: SeasonDetail? = null,
     ): Boolean {
         val detail = fetchDetail(mediaId, "tv") ?: return false
+        mediaServerTarget(mediaId)?.let { (provider, ref) ->
+            val ok = runCatching { provider.setSeasonWatched(ref, seasonNumber, watched) }.getOrDefault(false)
+            if (ok) {
+                seasonCache.remove("$mediaId:$seasonNumber")
+                invalidatePlaybackDerivedCaches()
+            }
+            return ok
+        }
         val season = seasonDetail ?: fetchSeason(mediaId, seasonNumber) ?: return false
         if (season.episodes.isEmpty()) return false
         val resolvedDetail = detail.copy(title = title.ifBlank { detail.title }, year = year ?: detail.year)
@@ -3911,6 +4137,10 @@ class StreamDekRepository(
         mediaId: String,
         episode: EpisodeContext? = null,
     ): Boolean {
+        mediaServerTarget(mediaId)?.let { (provider, ref) ->
+            return runCatching { provider.removeFromContinueWatching(ref, episode) }.getOrDefault(false)
+                .also { invalidatePlaybackDerivedCaches() }
+        }
         val path = buildString {
             append("/sync/progress/$mediaType/$mediaId")
             buildEpisodeKey(episode)?.let { append("?episodeKey=$it") }
@@ -3944,6 +4174,16 @@ class StreamDekRepository(
         if (!MetadataLookupIdentity.supportsType(entityType)) return false
         val cacheKey = buildSessionProfileCacheKey()
         val previous = libraryCache[cacheKey]
+        mediaServerTarget(item.id)?.let { (provider, ref) ->
+            // The card leaves at once, as every removal does, and the server is told; it is the
+            // server's Continue Watching the card came from.
+            previous?.let { current ->
+                libraryCache[cacheKey] = current.copy(continueWatching = removeContinueWatchingSnapshot(current.continueWatching, item))
+            }
+            homeCache.clear()
+            libraryRevisionState.value = libraryRevisionState.value + 1L
+            return runCatching { provider.removeFromContinueWatching(ref, episode) }.getOrDefault(false)
+        }
         rememberPendingContinueDismissal(cacheKey, item)
         previous?.let { current ->
             libraryCache[cacheKey] = current.copy(
@@ -4097,6 +4337,8 @@ class StreamDekRepository(
         libraryCache.clear()
         homeCache.clear()
         watchedHistoryCache.clear()
+        // A Plex link belongs to a profile; the next one's servers are its own.
+        mediaServers.onSessionChanged()
         // Responses are cached per URL, and the profile only travels in a header, so the previous
         // profile's rows would otherwise be replayed for this one whenever the network drops.
         StreamDekHttp.evictCache()
@@ -4246,6 +4488,10 @@ class StreamDekRepository(
         val episodeKey = buildEpisodeKey(episode)
         val streamKey = streamSelectionKey(stream)
         sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, streamKey)
+        // Which kind of source played is worth remembering for a media server title; the source
+        // itself is not. Its headers carry the server's token, which is never written to plain
+        // preferences, and a transcoder session URL is dead by the next visit anyway.
+        if (MediaServerReference.isReference(mediaId)) return
         sessionStore.saveRememberedPlaybackSource(
             mediaType,
             mediaId,
@@ -4333,6 +4579,7 @@ class StreamDekRepository(
     }
 
     suspend fun setEpisodeWatched(detail: MediaDetail, episode: EpisodeContext, watched: Boolean): Boolean {
+        mediaServerTarget(detail.id)?.let { (provider, ref) -> return setMediaServerWatched(provider, ref, episode, watched) }
         val syncDek = runCatching {
             api.request<Any>(
                 method = "PUT",
@@ -4389,8 +4636,20 @@ class StreamDekRepository(
         durationSec: Double,
         episode: EpisodeContext? = null,
         detail: MediaDetail? = null,
+        mediaServerState: MediaServerPlaybackState = MediaServerPlaybackState.Playing,
     ) {
         if (positionSec <= 0.0 || durationSec <= 0.0) return
+        mediaServerTarget(mediaId)?.let { (provider, ref) ->
+            // The server holds a media server title's progress, and hears it from live playback
+            // only: nothing StreamDek has stored is ever pushed to it, so a newer position made in
+            // another Plex app can never be overwritten by an older one from here. StreamDek keeps
+            // no copy of its own either - that copy is what would appear twice in Continue Watching.
+            runCatching {
+                provider.reportProgress(ref, episode, (positionSec * 1000).toLong(), (durationSec * 1000).toLong(), mediaServerState)
+            }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+            invalidatePlaybackDerivedCaches()
+            return
+        }
         runCatching {
             api.request<Any>(
                 method = "PUT",
@@ -4421,6 +4680,8 @@ class StreamDekRepository(
         year: String? = null,
         progress: Double = 0.0,
     ): Boolean {
+        // A server title's id means nothing to Trakt; the server reports its own plays.
+        if (MediaServerReference.isReference(mediaId)) return false
         val session = currentSession() ?: return false
         val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return false
         val traktConnected = bootstrapState.value?.syncStatus?.traktConnected == true ||
@@ -4476,6 +4737,9 @@ class StreamDekRepository(
         sourceAddonId: String? = null,
         sourceAddonName: String? = null,
     ): ResolvedPlaybackCandidate {
+        mediaServerTarget(mediaId)?.let { (provider, ref) ->
+            return resolveMediaServerPlayback(provider, ref, episode, preferredStreamKey)
+        }
         AddonMediaReference.decode(mediaId)?.let { ref ->
             val streams = streamCandidates(mediaType, mediaId, imdbId, episode,
                 preferredStreamKey = preferredStreamKey, preferredAddonName = preferredAddonName,
@@ -4606,6 +4870,150 @@ class StreamDekRepository(
         return ResolvedPlaybackCandidate(null, null, streams).also {
             writeResolvedPlaybackCache(cacheKey, it)
         }
+    }
+
+    private fun mediaServerFuseCatalogs(): List<FuseCatalog> {
+        val state = mediaServers.state.value
+        if (!state.navigationVisible) return emptyList()
+        val servers = state.servers.filter { it.enabled }
+        return servers.flatMap { server ->
+            val sourceName = mediaServerLabels.attribution(mediaServers.plex.label, server.name, servers.size > 1)
+            server.libraries.filter { it.enabled }.map { library ->
+                FuseCatalog(
+                    key = "${MediaServerReference.sourceIdOf(state.provider, server.id)}:${library.key}",
+                    sourceKey = MediaServerReference.sourceIdOf(state.provider, server.id),
+                    sourceName = sourceName,
+                    title = library.title,
+                    live = false,
+                    origin = FuseOrigin.MediaServer,
+                    addonId = server.id,
+                    rawType = state.provider,
+                    catalogId = library.key,
+                    searchable = true,
+                )
+            }
+        }
+    }
+
+    private suspend fun loadMediaServerFusePage(catalog: FuseCatalog, search: String?, previous: FusePage): FusePage {
+        val provider = catalog.rawType?.let(mediaServers::provider)
+        val serverId = catalog.addonId
+        val libraryKey = catalog.catalogId
+        if (provider == null || serverId == null || libraryKey == null) return previous.copy(failed = true)
+        if (search != null) {
+            val items = provider.search(search, limit = 40)
+                .filter { it.sourceAddonId == catalog.sourceKey && it.sourceCatalogId == libraryKey }
+                .distinctBy(::fuseItemKey)
+            return FusePage(items, end = true)
+        }
+        val page = provider.browse(serverId, libraryKey, previous.nextSkip, FUSE_MEDIA_SERVER_PAGE, MediaServerSort.RecentlyAdded)
+        val merged = (previous.items + page.items.withoutAdult()).distinctBy(::fuseItemKey)
+        return FusePage(
+            items = merged,
+            nextSkip = page.nextStart,
+            end = page.end || merged.size == previous.items.size,
+            failed = page.items.isEmpty() && page.total == 0 && previous.items.isEmpty() &&
+                provider.reachability(serverId) !is com.streamdek.tv.nativeapp.mediaserver.MediaServerReachability.Online,
+        )
+    }
+
+    // ── The Plex destination ────────────────────────────────────────────────────────────────────
+
+    /** In-progress titles from the media servers alone, as Continue Watching cards. */
+    suspend fun mediaServerContinueWatching(): List<MediaItem> =
+        fetchMediaServerContinueWatching().map { continueWatchingCard(it.item) }.withoutAdult()
+
+    /** Every row the provider page shows, collections and recently watched included. */
+    suspend fun mediaServerPageRows(): List<com.streamdek.tv.nativeapp.mediaserver.MediaServerRow> =
+        kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS * 3) {
+            mediaServers.activeProviders().flatMap { provider ->
+                runCatching { provider.rows(includeCollections = true) }
+                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                    .getOrDefault(emptyList())
+            }
+        }.orEmpty()
+
+    suspend fun mediaServerLibraryPage(serverId: String, libraryKey: String, start: Int, size: Int, sort: MediaServerSort) =
+        mediaServers.plex.browse(serverId, libraryKey, start, size, sort)
+
+    suspend fun mediaServerCollectionPage(ref: MediaServerReference, start: Int, size: Int) =
+        mediaServers.providerFor(ref)?.collection(ref, start, size)
+
+    /** Media server rows as Home Rows settings lists them. Empty until the servers have answered once. */
+    suspend fun mediaServerHomeRowOptions(): List<HomeRowOption> {
+        if (!mediaServers.state.value.navigationVisible) return emptyList()
+        val rows = kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS) {
+            mediaServers.activeProviders().flatMap { provider -> runCatching { provider.rows(includeCollections = false) }.getOrDefault(emptyList()) }
+        }.orEmpty()
+        return mediaServerHomeRowOptions(rows)
+    }
+
+    /** In-progress titles from every linked media server, or nothing if they do not answer in time. */
+    private suspend fun fetchMediaServerContinueWatching(): List<MediaServerResume> =
+        kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS) {
+            mediaServers.activeProviders().flatMap { provider ->
+                runCatching { provider.continueWatching() }
+                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                    .getOrDefault(emptyList())
+            }
+        }.orEmpty()
+
+    private suspend fun setMediaServerWatched(
+        provider: MediaServerProvider,
+        ref: MediaServerReference,
+        episode: EpisodeContext?,
+        watched: Boolean,
+    ): Boolean {
+        val ok = runCatching { provider.setWatched(ref, episode, watched) }
+            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+            .getOrDefault(false)
+        if (ok) {
+            seasonCache.keys.toList().filter { it.startsWith("${ref.encode()}:") }.forEach(seasonCache::remove)
+            invalidatePlaybackDerivedCaches()
+        }
+        return ok
+    }
+
+    private suspend fun mediaServerStreams(
+        provider: MediaServerProvider,
+        ref: MediaServerReference,
+        episode: EpisodeContext?,
+    ): List<AddonStream> = runCatching { provider.streams(ref, episode, mediaServerPlaybackContext()) }
+        .onFailure {
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            TvDebugLogger.w("MediaServer", "no sources from ${ref.provider}", it)
+        }
+        .getOrDefault(emptyList())
+
+    /**
+     * Playback for a media server title: the provider's plan, taken in its order.
+     *
+     * The order *is* the decision - Direct Play, then Direct Stream, then Transcode - so the first
+     * source is used as it stands rather than re-ranked by add-on rules that know nothing of it.
+     * A source the viewer picked by hand in the stream list is honoured when it is still offered.
+     */
+    private suspend fun resolveMediaServerPlayback(
+        provider: MediaServerProvider,
+        ref: MediaServerReference,
+        episode: EpisodeContext?,
+        preferredStreamKey: String?,
+    ): ResolvedPlaybackCandidate {
+        val streams = mediaServerStreams(provider, ref, episode)
+        val chosen = preferredStreamKey?.let { key -> streams.firstOrNull { streamSelectionKey(it) == key } }
+            ?: streams.firstOrNull()
+            ?: return ResolvedPlaybackCandidate(null, null, streams)
+        val url = chosen.url ?: return ResolvedPlaybackCandidate(null, null, streams)
+        return ResolvedPlaybackCandidate(
+            source = ResolvedPlaybackSource(
+                url = url,
+                contentType = guessContentType(url),
+                label = describeStream(chosen),
+                filename = effectiveFilename(chosen),
+                requestHeaders = chosen.requestHeaders,
+            ),
+            stream = chosen,
+            streams = streams,
+        )
     }
 
     /**
@@ -5083,6 +5491,12 @@ class StreamDekRepository(
         sourceAddonName: String? = null,
         forceRefresh: Boolean = false,
     ): kotlinx.coroutines.flow.Flow<StreamCandidatesProgress> = kotlinx.coroutines.flow.channelFlow {
+        mediaServerTarget(mediaId)?.let { (provider, ref) ->
+            // The server is the only source a server title has; no add-on is asked.
+            send(StreamCandidatesProgress(emptyList(), pendingSources = 1, done = false))
+            send(StreamCandidatesProgress(mediaServerStreams(provider, ref, episode), pendingSources = 0, done = true))
+            return@channelFlow
+        }
         AddonMediaReference.decode(mediaId)?.let { ref ->
             send(StreamCandidatesProgress(emptyList(), pendingSources = 1, done = false))
             val streams = originStreams(ref, episode, forceRefresh)
@@ -5387,6 +5801,22 @@ class StreamDekRepository(
     private val subtitleRequests = RequestCoalescer<String, List<ExternalSubtitleTrack>>()
 
     suspend fun fetchExternalSubtitles(request: PlaybackRequest): List<ExternalSubtitleTrack> {
+        // A media server's own sidecar files come first: they were chosen for this exact file.
+        val serverTracks = mediaServerTarget(request.mediaId)?.let { (provider, ref) ->
+            runCatching { provider.subtitles(ref, request.episode) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .getOrDefault(emptyList())
+                .mapNotNull { track ->
+                    normalizeSubtitleLanguage(track.language).takeIf { it.isNotBlank() }?.let { track.copy(language = it) }
+                }
+        }.orEmpty()
+        if (serverTracks.isNotEmpty()) {
+            return serverTracks + fetchExternalSubtitlesShared(request)
+        }
+        return fetchExternalSubtitlesShared(request)
+    }
+
+    private suspend fun fetchExternalSubtitlesShared(request: PlaybackRequest): List<ExternalSubtitleTrack> {
         val key = listOf(
             request.mediaType,
             request.imdbId ?: request.mediaId,
@@ -5569,7 +5999,12 @@ class StreamDekRepository(
         detail: MediaDetail?,
         positionSec: Double,
         durationSec: Double,
-    ): Boolean = runCatching {
+    ): Boolean = mediaServerTarget(mediaId)?.let { (provider, ref) ->
+        runCatching {
+            provider.reportProgress(ref, episode, (positionSec * 1000).toLong(), (durationSec * 1000).toLong(), MediaServerPlaybackState.Stopped)
+            provider.setWatched(ref, episode, watched = true).also { invalidatePlaybackDerivedCaches() }
+        }.getOrDefault(false)
+    } ?: runCatching {
         api.request<Any>(
             method = "PUT",
             path = "/sync/progress",
@@ -5615,6 +6050,8 @@ class StreamDekRepository(
                 .url(url)
                 .header("User-Agent", SUBTITLE_USER_AGENT)
                 .header("Accept", "*/*")
+                // A media server's sidecar file needs that server's token, sent as a header.
+                .withMediaServerAuth(url)
                 .apply {
                     runCatching { java.net.URI(url) }.getOrNull()
                         ?.let { uri -> uri.scheme?.let { scheme -> uri.host?.let { host -> "$scheme://$host/" } } }

@@ -392,12 +392,14 @@ fun FuseScreen(
     val originAddon = stringResource(R.string.fuse_origin_addon)
     val originPlaylist = stringResource(R.string.fuse_origin_playlist)
     val originCloudStream = stringResource(R.string.fuse_origin_cloudstream)
-    val sourceOrigins = remember(sources, originAddon, originPlaylist, originCloudStream) {
+    val originMediaServer = stringResource(R.string.fuse_origin_media_server)
+    val sourceOrigins = remember(sources, originAddon, originPlaylist, originCloudStream, originMediaServer) {
         sources.associate {
             it.sourceKey to when (it.origin) {
                 FuseOrigin.Addon -> originAddon
                 FuseOrigin.Playlist -> originPlaylist
                 FuseOrigin.CloudStream -> originCloudStream
+                FuseOrigin.MediaServer -> originMediaServer
             }
         }
     }

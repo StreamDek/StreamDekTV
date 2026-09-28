@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -40,6 +41,12 @@ import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.streamdek.tv.nativeapp.data.MediaItem
+
+/**
+ * Hides the small Plex mark on cards. Provided by the Plex pages themselves, where every card is
+ * Plex's and the mark would only repeat what the page header already says.
+ */
+val LocalHideMediaServerMark = androidx.compose.runtime.staticCompositionLocalOf { false }
 
 enum class TvMediaCardVariant { Landscape, Poster, Episode, Live, ContinueWatching, Compact }
 
@@ -165,6 +172,26 @@ fun PremiumMediaCard(
             ) {
                 if (favourite) CardBadge("★")
                 if (variant == TvMediaCardVariant.Live) CardBadge("LIVE")
+            }
+            // Where a title comes from matters when there are two ways to play it: a Plex copy
+            // beside a streaming result. A small mark in the corner says so without a label.
+            if (!LocalHideMediaServerMark.current &&
+                com.streamdek.tv.nativeapp.mediaserver.MediaServerReference.providerOfSource(item.sourceAddonId) ==
+                com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
+            ) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(8.dp).size(22.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(Color.Black.copy(alpha = 0.72f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    androidx.compose.material3.Icon(
+                        PlexIcons.Chevron,
+                        contentDescription = null,
+                        tint = Color(0xFFE5A00D),
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
             // Plain text, no pill: the badge shape competed with the poster art it sits on.
             if (topMeta) {

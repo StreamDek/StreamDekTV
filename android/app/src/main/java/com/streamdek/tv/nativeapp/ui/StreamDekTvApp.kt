@@ -152,6 +152,8 @@ private enum class TopLevelDestination(
 ) {
     Home("home", R.string.nav_home, Icons.Outlined.Home),
     Search("search", R.string.nav_search, Icons.Outlined.Search),
+    /** Only while Plex is linked with a library switched on; see MediaServerUiState.navigationVisible. */
+    Plex("plex", R.string.media_server_plex, PlexIcons.Chevron),
     Live("live", R.string.nav_live, Icons.Outlined.LiveTv),
     /** Stands in Live's place while StreamDek Fuse is on: Fuse's Live TV view is what Live was. */
     Fuse("fuse", R.string.nav_fuse, Icons.Outlined.Hub),
@@ -219,6 +221,11 @@ private const val NavRailOpenConfirmMs = 260L
 
 /** The navigation route the title page is registered under, kept in one place. */
 private const val DetailRoutePattern = "detail/{type}/{id}"
+/** A whole Plex library or collection as a grid. `kind` is "library" or "collection". */
+private const val PlexBrowseRoutePattern = "plex-browse/{kind}/{server}/{key}/{title}"
+
+private fun plexBrowseRoute(kind: String, serverId: String, key: String, title: String): String =
+    "plex-browse/$kind/${Uri.encode(serverId)}/${Uri.encode(key)}/${Uri.encode(title)}"
 private const val PersonRoutePattern = "person/{id}"
 
 private fun detailRoute(mediaType: String, mediaId: String): String {
@@ -310,6 +317,8 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     val liveBrowseContentRequester = remember { FocusRequester() }
     val networkContentRequester = remember { FocusRequester() }
     val fuseContentRequester = remember { FocusRequester() }
+    val plexContentRequester = remember { FocusRequester() }
+    val plexBrowseContentRequester = remember { FocusRequester() }
     val profileNavRequester = remember { FocusRequester() }
     val settingsContentRequester = remember { FocusRequester() }
     /** The title page's own way back in from the rail, and the rail's way of being reached. */
@@ -445,10 +454,15 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     }
     val showLiveDestination = hasEnabledLiveAddon || hasLoadedLiveContent
     val fuseEnabled by repository.fuseEnabled.collectAsState()
-    val topLevelDestinations = remember(showLiveDestination, fuseEnabled) {
+    val mediaServerState by repository.mediaServers.state.collectAsState()
+    val plexVisible = mediaServerState.navigationVisible
+    val topLevelDestinations = remember(showLiveDestination, fuseEnabled, plexVisible) {
         buildList {
             add(TopLevelDestination.Home)
             add(TopLevelDestination.Search)
+            // Beside Search: the viewer's own library earns a place near the top, and it joins
+            // between two entries the rail already has, so nothing else moves relative to its neighbours.
+            if (plexVisible) add(TopLevelDestination.Plex)
             // One entry for live channels, never two. With StreamDek Fuse on it takes Live's place in the
             // rail - its Live TV view is the Live page, with on-demand sources and favourites beside it -
             // and it is offered whether or not a live add-on is installed, since it holds VOD as well.
@@ -599,6 +613,17 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         }
     }
 
+    // Plex disconnected, or its last library switched off, while the viewer is on its pages: back to
+    // Home, as the Fuse leaves. Only on a settled answer - a refresh in flight is not a reason.
+    LaunchedEffect(plexVisible, mediaServerState.refreshing, currentRoute) {
+        val onPlex = currentRoute == TopLevelDestination.Plex.route || currentRoute == PlexBrowseRoutePattern
+        if (!onPlex || plexVisible || mediaServerState.refreshing) return@LaunchedEffect
+        navController.navigate(TopLevelDestination.Home.route) {
+            popUpTo(TopLevelDestination.Home.route) { inclusive = false }
+            launchSingleTop = true
+        }
+    }
+
     LaunchedEffect(showLiveDestination, liveNavigationState.loading, currentRoute) {
         // Only evict the viewer from the Live tab once loading has settled and there is
         // genuinely no live content. Bouncing on a transient empty result used to throw
@@ -648,6 +673,8 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
             "live-view-all" to liveBrowseContentRequester,
             "network/{id}/{name}" to networkContentRequester,
             "fuse" to fuseContentRequester,
+            TopLevelDestination.Plex.route to plexContentRequester,
+            PlexBrowseRoutePattern to plexBrowseContentRequester,
         )
     }
     /**
@@ -1005,7 +1032,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         // menu. Off the sign-in screen, which is not somewhere to navigate away from.
         val railRoutes = remember {
             topLevelDestinations.map { it.route } +
-                listOf(DetailRoutePattern, "live-view-all", "network/{id}/{name}", "fuse")
+                listOf(DetailRoutePattern, "live-view-all", "network/{id}/{name}", "fuse", TopLevelDestination.Plex.route, PlexBrowseRoutePattern)
         }
         val railOnScreen = currentRoute in railRoutes && !detailNavigationInProgress &&
             !showUpdatePrompt && chromeAlpha > 0.001f
@@ -1191,6 +1218,46 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                         onOpenDetail = openDetail,
                         onPlayLive = playLiveItem,
                     )
+                }
+                composable(TopLevelDestination.Plex.route) {
+                    RailInsetDestination {
+                        com.streamdek.tv.nativeapp.ui.plex.PlexScreen(
+                            repository = repository,
+                            entryFocusRequester = plexContentRequester,
+                            onOpenDetail = openDetail,
+                            onResume = resumeContinueWatching,
+                            onOpenLibrary = { serverId, libraryKey, title ->
+                                navController.navigate(plexBrowseRoute("library", serverId, libraryKey, title))
+                            },
+                            onOpenCollection = { item ->
+                                com.streamdek.tv.nativeapp.mediaserver.MediaServerReference.decode(item.id)?.let { ref ->
+                                    navController.navigate(plexBrowseRoute("collection", ref.serverId, ref.itemKey, item.title))
+                                }
+                            },
+                            onOpenNavigation = ::openSideNavigation,
+                        )
+                    }
+                }
+                composable(PlexBrowseRoutePattern) { backStackEntryInner ->
+                    val kind = backStackEntryInner.arguments?.getString("kind").orEmpty()
+                    val key = Uri.decode(backStackEntryInner.arguments?.getString("key").orEmpty())
+                    RailInsetDestination {
+                        com.streamdek.tv.nativeapp.ui.plex.PlexBrowseScreen(
+                            repository = repository,
+                            serverId = Uri.decode(backStackEntryInner.arguments?.getString("server").orEmpty()),
+                            libraryKey = key.takeIf { kind == "library" },
+                            collectionKey = key.takeIf { kind == "collection" },
+                            title = Uri.decode(backStackEntryInner.arguments?.getString("title").orEmpty()),
+                            entryFocusRequester = plexBrowseContentRequester,
+                            onOpenDetail = openDetail,
+                            onOpenCollection = { item ->
+                                com.streamdek.tv.nativeapp.mediaserver.MediaServerReference.decode(item.id)?.let { ref ->
+                                    navController.navigate(plexBrowseRoute("collection", ref.serverId, ref.itemKey, item.title))
+                                }
+                            },
+                            onBack = { navController.popBackStack() },
+                        )
+                    }
                 }
                 composable("network/{id}/{name}") { backStackEntryInner ->
                     NetworkBrowseScreen(

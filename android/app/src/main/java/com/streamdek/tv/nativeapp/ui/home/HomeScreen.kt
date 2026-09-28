@@ -276,8 +276,10 @@ fun HomeScreen(
     // their rows follow as soon as they do rather than at the next poll.
     val cloudStreamVersion by repository.cloudStreamProvidersVersion.collectAsState()
     val fuseEnabled by repository.fuseEnabled.collectAsState()
-    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration, cloudStreamVersion, fuseEnabled) {
-        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration:cs$cloudStreamVersion:fuse$fuseEnabled"
+    // Linking Plex, or switching one of its libraries on or off, changes which rows Home has.
+    val mediaServerRevision by repository.mediaServers.revision.collectAsState()
+    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration, cloudStreamVersion, fuseEnabled, mediaServerRevision) {
+        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration:cs$cloudStreamVersion:fuse$fuseEnabled:ms$mediaServerRevision"
     }
     LaunchedEffect(loadKey) {
         // A retained HomeViewModel must not turn its first snapshot into a session-long cache.

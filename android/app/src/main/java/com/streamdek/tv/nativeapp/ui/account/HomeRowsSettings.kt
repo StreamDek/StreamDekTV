@@ -76,6 +76,8 @@ internal fun HomeRowsSettings(
     layout: List<HomeCatalogRowPreference>,
     streamDekRowsEnabled: Boolean,
     leftRequester: FocusRequester,
+    /** Rows the profile's media servers (Plex) put on Home; switched and ordered like any other. */
+    mediaServerRows: List<HomeRowOption> = emptyList(),
     onSave: (List<HomeCatalogRowPreference>, (Boolean) -> Unit) -> Unit,
 ) {
     // CloudStream rows come from the sources loaded on this television, and only those: a source
@@ -93,8 +95,8 @@ internal fun HomeRowsSettings(
     // mid-press and the sidebar took the highlight back. Pressing one switch threw you out of the
     // screen. What rows exist depends on the registry, the add-ons and the loaded CloudStream
     // sources; only those rebuild it.
-    val available = remember(definitions, addons, cloudStreamSignature) {
-        homeRowOptions(definitions, addons, layout, cloudStreamHomeRowOptions(cloudStreamProviders))
+    val available = remember(definitions, addons, cloudStreamSignature, mediaServerRows) {
+        homeRowOptions(definitions, addons, layout, cloudStreamHomeRowOptions(cloudStreamProviders) + mediaServerRows)
     }
     var rows by remember(available) { mutableStateOf(available) }
 
