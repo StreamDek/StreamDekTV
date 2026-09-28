@@ -103,3 +103,9 @@
 -dontwarn dev.whyoleg.cryptography.**
 -dontwarn org.mozilla.javascript.**
 -dontwarn org.mozilla.universalchardet.**
+
+# Personal media servers (Plex). Link, server-list and Plex responses and the encrypted
+# on-device snapshot are read with Gson; R8 renaming their fields leaves every value empty
+# ("could not reach Plex", no libraries), so the whole package keeps its names.
+-keepattributes Signature,*Annotation*
+-keep class com.streamdek.tv.nativeapp.mediaserver.** { *; }
