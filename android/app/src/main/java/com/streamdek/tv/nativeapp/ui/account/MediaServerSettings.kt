@@ -288,6 +288,18 @@ internal fun MediaServerSettingsPanel(
                 repository.setMediaServerRemoteQualityKbps(next)
             }
 
+            PlexSectionHeading(stringResource(R.string.plex_page_section))
+            val ambient by manager.ambient.collectAsState()
+            PlexSwitchRow(
+                title = stringResource(R.string.plex_ambient),
+                detail = stringResource(R.string.plex_ambient_detail),
+                detailColor = Color.White.copy(alpha = 0.5f),
+                checked = ambient,
+                indent = false,
+                leftRequester = leftRequester,
+                onToggle = { manager.setAmbient(!ambient) },
+            )
+
             PlexSectionHeading(stringResource(R.string.plex_manage))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(

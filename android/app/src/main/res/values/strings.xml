@@ -1800,6 +1800,9 @@
   <string name="plex_link_expired">That code has expired.</string>
   <string name="plex_link_getting_code">Getting a code…</string>
   <string name="plex_episode_number">Episode %1$d</string>
+  <string name="plex_page_section">Plex page</string>
+  <string name="plex_ambient">Ambient colour</string>
+  <string name="plex_ambient_detail">A soft purple, blue, red and green glow behind the Plex page and Plex lists</string>
   <string name="plex_link_new_code">Get a new code</string>
   <string name="plex_link_failed">Plex could not be linked. Try again.</string>
   <string name="plex_link_unavailable">StreamDek could not reach Plex. Check the connection and try again.</string>

@@ -2403,6 +2403,7 @@ class StreamDekRepository(
                                 .getOrDefault(emptyList())
                         }
                     }.orEmpty()
+                    rememberMediaServerRows(rails)
                     publish(MEDIA_SERVER_HOME_SLOT, mediaServerHomeRails(rails))
                 }
             }
@@ -3154,6 +3155,34 @@ class StreamDekRepository(
         homeContentStream(forceRefresh).last()
 
 
+    /** Catalogue descriptions of media server titles, by "type:lookup id". */
+    private val mediaServerCatalogDetails = java.util.concurrent.ConcurrentHashMap<String, MediaDetail>()
+
+    /**
+     * A server's own description of a title is thin: no logo, trailers, similar titles or
+     * where-it-streams. Where the server knows the title's TMDB or IMDb id, StreamDek's catalogue
+     * entry for it fills those in, as for any catalogue title - read directly rather than through
+     * [fetchDetail], so opening a personal title is never reported as opening a catalogue one. Only
+     * that public id leaves the device, never the server's. A catalogue that is slow or has no
+     * entry leaves the server's page as it was.
+     */
+    private suspend fun withCatalogDescription(native: MediaDetail): MediaDetail {
+        val type = MediaClassification.canonical(native.type)
+        if (!MetadataLookupIdentity.supportsType(type)) return native
+        val lookupId = native.tmdbId.takeIf { it > 0 }?.let { "tmdb:$it" }
+            ?: native.imdbId?.let(MetadataLookupIdentity::imdbId)
+            ?: return native
+        val key = "$type:$lookupId"
+        val catalog = mediaServerCatalogDetails[key]
+            ?: kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS) {
+                runCatching { api.get<MediaDetail>("/tmdb/details/$type/${encodePathSegment(lookupId)}") }
+                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                    .getOrNull()
+            }?.also { mediaServerCatalogDetails[key] = it }
+            ?: return native
+        return native.enrichedFromCatalog(catalog)
+    }
+
     suspend fun fetchDetail(id: String, type: String, forceRefresh: Boolean = false): MediaDetail? {
         mediaServerTarget(id)?.let { (provider, ref) ->
             // Read fresh each time the page opens: resume position and watched state live on the
@@ -3161,6 +3190,7 @@ class StreamDekRepository(
             val detail = runCatching { provider.detail(ref) }
                 .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
                 .getOrNull()
+                ?.let { withCatalogDescription(it) }
                 ?: return detailsCache["${MediaClassification.canonical(type)}:$id"]
             detailsCache["${MediaClassification.canonical(detail.type)}:$id"] = detail
             Telemetry.contentOpened(mediaId = MEDIA_SERVER_TELEMETRY_ID, mediaType = detail.type, title = null)
@@ -3246,7 +3276,8 @@ class StreamDekRepository(
     suspend fun fetchTraktComments(id: String, type: String): List<TraktCommentItem> {
         val canonical = MediaClassification.canonical(type)
         if (!MetadataLookupIdentity.supportsType(canonical)) return emptyList()
-        val lookupId = if (AddonMediaReference.decode(id) != null) {
+        // A media server title is looked up by the TMDB id its page found, never by the server's own id.
+        val lookupId = if (AddonMediaReference.decode(id) != null || MediaServerReference.isReference(id)) {
             peekCachedDetail(id, canonical)?.tmdbId?.takeIf { it > 0 }?.toString() ?: return emptyList()
         } else MediaClassification.enrichmentId(id) ?: return emptyList()
         return api.get<TraktCommentsResponse>("/trakt/comments/$canonical/${encodePathSegment(lookupId)}")?.results.orEmpty()
@@ -3426,7 +3457,7 @@ class StreamDekRepository(
             supervisorScope {
                 providers.map { provider ->
                     async {
-                        runCatching { provider.search(normalized, limit = 20) }
+                        runCatching { provider.search(normalized, limit = 40) }
                             .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
                             .getOrDefault(emptyList())
                     }
@@ -4962,7 +4993,30 @@ class StreamDekRepository(
                     .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
                     .getOrDefault(emptyList())
             }
-        }.orEmpty()
+        }.orEmpty().also(::rememberMediaServerRows)
+
+    /** The media server rows last shown, by id, so a row on Home or the Plex page can ask for more of itself. */
+    private val knownMediaServerRows = java.util.concurrent.ConcurrentHashMap<String, com.streamdek.tv.nativeapp.mediaserver.MediaServerRow>()
+
+    private fun rememberMediaServerRows(rows: List<com.streamdek.tv.nativeapp.mediaserver.MediaServerRow>) {
+        rows.forEach { knownMediaServerRows[it.id] = it }
+    }
+
+    /** Whether a Home or Plex page row is a media server's, and so can grow as it is scrolled. */
+    fun isPageableMediaServerRow(rowId: String): Boolean = knownMediaServerRows.containsKey(rowId)
+
+    /**
+     * The next stretch of a media server row, from [start] - an offset into the row's own order on
+     * the server, which for a row being extended is how far it has read so far. Null for a row this
+     * session has not shown.
+     */
+    suspend fun mediaServerRowPage(rowId: String, start: Int, size: Int): com.streamdek.tv.nativeapp.mediaserver.MediaServerPage? {
+        val row = knownMediaServerRows[rowId] ?: return null
+        val page = kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS * 2) {
+            mediaServers.plex.rowPage(row, start, size)
+        } ?: return null
+        return page.copy(items = page.items.withoutAdult())
+    }
 
     suspend fun mediaServerLibraryPage(serverId: String, libraryKey: String, start: Int, size: Int, sort: MediaServerSort) =
         mediaServers.plex.browse(serverId, libraryKey, start, size, sort)

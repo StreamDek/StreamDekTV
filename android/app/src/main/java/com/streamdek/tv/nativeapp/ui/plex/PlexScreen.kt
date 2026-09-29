@@ -109,6 +109,7 @@ fun PlexScreen(
 ) {
     val state by repository.mediaServers.state.collectAsState()
     val revision by repository.mediaServers.revision.collectAsState()
+    val ambient by repository.mediaServers.ambient.collectAsState()
     val scope = rememberCoroutineScope()
     var rows by remember { mutableStateOf<List<HomeRail>?>(null) }
     var continueRow by remember { mutableStateOf<HomeRail?>(null) }
@@ -124,6 +125,7 @@ fun PlexScreen(
     val firstChipRequester = entryFocusRequester ?: localEntry
     val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
     val continueTitle = stringResource(R.string.home_rail_continue_watching)
+    val rowGrowth = rememberMediaServerRowGrowth(repository)
 
     LaunchedEffect(revision, reloadToken) {
         // The two halves load side by side and land as they are ready.
@@ -157,7 +159,10 @@ fun PlexScreen(
             .background(MaterialTheme.colorScheme.background)
             // A faint wash of Plex's gold at the top: enough to say where the viewer is, not so
             // much that the page stops looking like the rest of StreamDek.
-            .background(Brush.verticalGradient(0f to PlexGold.copy(alpha = 0.10f), 0.35f to Color.Transparent)),
+            .then(
+                if (ambient) Modifier.plexAmbientGlow()
+                else Modifier.background(Brush.verticalGradient(0f to PlexGold.copy(alpha = 0.10f), 0.35f to Color.Transparent)),
+            ),
     ) {
         LazyColumn(
             state = listState,
@@ -217,7 +222,8 @@ fun PlexScreen(
                         onAction = { reloadToken++ },
                     )
                 }
-                else -> items(shelves, key = { it.id }) { rail ->
+                else -> items(shelves, key = { it.id }) { baseRail ->
+                    val rail = rowGrowth.extended(baseRail)
                     val rowState = rowStates.getOrPut(rail.id) { LazyListState() }
                     HomeShelf(
                         row = rail,
@@ -227,7 +233,8 @@ fun PlexScreen(
                         firstCardRequester = null,
                         focusItemKey = lastItemKey.takeIf { rail.id == lastRowId && restoreToken > 0 },
                         onFocusItemHandled = { restoreToken = 0 },
-                        onItemFocused = { _, item ->
+                        onItemFocused = { index, item ->
+                            rowGrowth.onFocused(baseRail, index)
                             lastRowId = rail.id
                             lastItemKey = "${rail.id}:${com.streamdek.tv.nativeapp.ui.home.homeItemKey(item)}"
                         },
@@ -337,6 +344,7 @@ fun PlexBrowseScreen(
     onBack: () -> Unit,
 ) {
     val gridColumns = LocalTvExperienceSettings.current.gridColumns
+    val ambient by repository.mediaServers.ambient.collectAsState()
     var sort by rememberSaveable { mutableStateOf(MediaServerSort.RecentlyAdded) }
     var items by remember(sort) { mutableStateOf<List<MediaItem>>(emptyList()) }
     var nextStart by remember(sort) { mutableIntStateOf(0) }
@@ -383,7 +391,7 @@ fun PlexBrowseScreen(
     }
 
     androidx.compose.runtime.CompositionLocalProvider(com.streamdek.tv.nativeapp.ui.LocalHideMediaServerMark provides true) {
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).then(if (ambient) Modifier.plexAmbientGlow() else Modifier)) {
         Row(
             Modifier.fillMaxWidth().padding(start = PageInset, end = PageInset, top = 30.dp),
             verticalAlignment = Alignment.Bottom,

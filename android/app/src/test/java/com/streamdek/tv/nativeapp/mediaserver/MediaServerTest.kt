@@ -2,6 +2,7 @@ package com.streamdek.tv.nativeapp.mediaserver
 
 import com.streamdek.tv.nativeapp.data.ContinueWatchingItem
 import com.streamdek.tv.nativeapp.data.reconcileContinueWatching
+import com.streamdek.tv.nativeapp.data.enrichedFromCatalog
 import com.streamdek.tv.nativeapp.mediaserver.plex.PlexConnectionRanking
 import com.streamdek.tv.nativeapp.mediaserver.plex.PlexDeviceCaps
 import com.streamdek.tv.nativeapp.mediaserver.plex.PlexMapping
@@ -147,5 +148,49 @@ class ContinueWatchingReconcileTest {
         val streamDek = listOf(row("1399", 1399, "tv", "2026-09-01T00:00:00Z"))
         val merged = reconcileContinueWatching(streamDek, listOf(server("sd-media:s", 1399, "tv", java.time.Instant.parse("2026-09-05T00:00:00Z").toEpochMilli())))
         assertEquals(1, merged.size)
+    }
+}
+
+class MediaServerPageTest {
+    @Test fun `a page reads on after everything the server returned, kept or not`() {
+        // Forty entries came back, only three were kept (the rest were never watched, say).
+        val page = MediaServerPage(items = emptyList(), start = 20, total = 500, returned = 40)
+        assertEquals(60, page.nextStart)
+        assertFalse(page.end)
+    }
+
+    @Test fun `a page with nothing kept is not the end while the server has more`() {
+        assertFalse(MediaServerPage(emptyList(), start = 0, total = Int.MAX_VALUE, returned = 60).end)
+        assertTrue(MediaServerPage(emptyList(), start = 60, total = Int.MAX_VALUE, returned = 0).end)
+    }
+
+    @Test fun `the last page ends the list`() {
+        assertTrue(MediaServerPage(emptyList(), start = 100, total = 120, returned = 20).end)
+    }
+}
+
+class CatalogEnrichmentTest {
+    @Test fun `a plex title page keeps its own identity and takes what it lacks from the catalogue`() {
+        val plexId = MediaServerReference("plex", "server-1", "7").encode()
+        val plex = com.streamdek.tv.nativeapp.data.MediaDetail(
+            id = plexId, tmdbId = 1399, title = "My Show", type = "tv", poster = "plex-poster",
+            seasons = listOf(com.streamdek.tv.nativeapp.data.SeasonRef(seasonNumber = 1, name = "Season 1", episodeCount = 10)),
+        )
+        val catalog = com.streamdek.tv.nativeapp.data.MediaDetail(
+            id = "1399", tmdbId = 1399, title = "Catalogue Show", type = "tv", poster = "tmdb-poster", backdrop = "tmdb-backdrop",
+            titleLogo = "logo.png", trailerKey = "abc", description = "From the catalogue",
+            cast = listOf(com.streamdek.tv.nativeapp.data.CastMember(id = 1, name = "Actor", character = null, photo = null)),
+            seasons = (1..8).map { com.streamdek.tv.nativeapp.data.SeasonRef(seasonNumber = it, name = "Season $it", episodeCount = 10) },
+        )
+        val merged = plex.enrichedFromCatalog(catalog)
+        assertEquals(plexId, merged.id)
+        assertEquals("My Show", merged.title)
+        assertEquals(1, merged.seasons.size)
+        assertEquals("plex-poster", merged.poster)
+        assertEquals("tmdb-backdrop", merged.backdrop)
+        assertEquals("logo.png", merged.titleLogo)
+        assertEquals("abc", merged.trailerKey)
+        assertEquals("From the catalogue", merged.description)
+        assertEquals(1, merged.cast.first().id)
     }
 }

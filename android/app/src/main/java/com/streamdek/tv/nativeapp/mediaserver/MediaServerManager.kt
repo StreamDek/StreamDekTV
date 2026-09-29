@@ -59,6 +59,16 @@ class MediaServerManager internal constructor(
     private val _revision = MutableStateFlow(0L)
     val revision: StateFlow<Long> = _revision.asStateFlow()
 
+    private val displayPrefs = context?.getSharedPreferences(DISPLAY_PREFS, Context.MODE_PRIVATE)
+    private val _ambient = MutableStateFlow(displayPrefs?.getBoolean(KEY_AMBIENT, true) ?: true)
+    /** Whether the Plex page and its lists wear the Plex colour wash. On until switched off. */
+    val ambient: StateFlow<Boolean> = _ambient.asStateFlow()
+
+    fun setAmbient(enabled: Boolean) {
+        _ambient.value = enabled
+        displayPrefs?.edit()?.putBoolean(KEY_AMBIENT, enabled)?.apply()
+    }
+
     internal val plex: PlexProvider = PlexProvider(
         client = PlexClient(identity),
         labels = labels,
@@ -448,3 +458,6 @@ internal data class MediaServerLinkPollDto(
     val error: String? = null,
     val connection: MediaServerStatusDto? = null,
 )
+
+private const val DISPLAY_PREFS = "streamdek_media_servers"
+private const val KEY_AMBIENT = "plexAmbient"

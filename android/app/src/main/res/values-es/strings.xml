@@ -1812,6 +1812,9 @@
   <string name="plex_link_expired">Ese código ha caducado.</string>
   <string name="plex_link_getting_code">Obteniendo un código…</string>
   <string name="plex_episode_number">Episodio %1$d</string>
+  <string name="plex_page_section">Página de Plex</string>
+  <string name="plex_ambient">Color ambiental</string>
+  <string name="plex_ambient_detail">Un suave brillo morado, azul, rojo y verde detrás de la página y las listas de Plex</string>
   <string name="plex_link_new_code">Obtener un código nuevo</string>
   <string name="plex_link_failed">No se pudo vincular Plex. Inténtalo de nuevo.</string>
   <string name="plex_link_unavailable">StreamDek no pudo conectar con Plex. Comprueba la conexión e inténtalo de nuevo.</string>

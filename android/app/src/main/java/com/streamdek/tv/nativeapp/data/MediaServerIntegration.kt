@@ -93,3 +93,35 @@ internal fun reconcileContinueWatching(
 
 /** Whether a title, by its id, belongs to a personal media server rather than to StreamDek or an add-on. */
 internal fun isMediaServerId(id: String?): Boolean = MediaServerReference.isReference(id)
+
+
+/**
+ * A media server's title page with the catalogue's description of the same title filled in.
+ *
+ * The server's own identity, title, seasons and poster stay: they are what plays, and what the
+ * viewer chose on their server. What the server does not know - logo, trailers, similar titles,
+ * certification - comes from the catalogue, and the catalogue's cast (with photos and pages) is
+ * preferred to the server's list of names.
+ */
+internal fun MediaDetail.enrichedFromCatalog(catalog: MediaDetail): MediaDetail = copy(
+    tmdbId = tmdbId.takeIf { it > 0 } ?: catalog.tmdbId.takeIf { it > 0 } ?: catalog.id.toIntOrNull() ?: 0,
+    poster = poster ?: catalog.poster,
+    backdrop = backdrop ?: catalog.backdrop,
+    description = description?.takeIf { it.isNotBlank() } ?: catalog.description,
+    rating = rating ?: catalog.rating,
+    year = year ?: catalog.year,
+    imdbId = imdbId ?: catalog.imdbId,
+    titleLogo = titleLogo ?: catalog.titleLogo,
+    trailerKey = trailerKey ?: catalog.trailerKey,
+    trailerSite = trailerSite ?: catalog.trailerSite,
+    trailerKeys = trailerKeys.ifEmpty { catalog.trailerKeys },
+    certification = certification ?: catalog.certification,
+    certificationCountry = certificationCountry ?: catalog.certificationCountry,
+    genreNames = genreNames.ifEmpty { catalog.genreNames },
+    cast = catalog.cast.ifEmpty { cast },
+    similarTitles = similarTitles.ifEmpty { catalog.similarTitles.withoutAdult() },
+    runtime = runtime ?: catalog.runtime,
+    releaseDate = releaseDate ?: catalog.releaseDate,
+    tagline = tagline ?: catalog.tagline,
+    status = status ?: catalog.status,
+)

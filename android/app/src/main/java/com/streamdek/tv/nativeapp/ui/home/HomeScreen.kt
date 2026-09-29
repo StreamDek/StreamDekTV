@@ -230,6 +230,8 @@ fun HomeScreen(
     val rowStates = remember { mutableMapOf<String, LazyListState>() }
     val rowFocusIndices = remember { mutableStateMapOf<String, Int>() }
     val scope = rememberCoroutineScope()
+    // Plex rows carry on past their first stretch as the highlight nears their end.
+    val mediaServerRowGrowth = com.streamdek.tv.nativeapp.ui.plex.rememberMediaServerRowGrowth(repository)
     /**
      * The active shelf is tracked by id, not position.
      *
@@ -831,7 +833,8 @@ fun HomeScreen(
                                 HomeSkeletonShelf(pending = slot.rail, portraitCards = portraitCards)
                                 return@itemsIndexed
                             }
-                            val row = (slot as HomeShelfSlot.Loaded).rail
+                            val loadedRow = (slot as HomeShelfSlot.Loaded).rail
+                            val row = mediaServerRowGrowth.extended(loadedRow)
                             // Positions among the rows that have items, which is what the focus
                             // policy and the saved position are expressed in; the list's own index
                             // counts reserved slots too and is only used for scrolling.
@@ -849,6 +852,7 @@ fun HomeScreen(
                                 focusItemKey = pendingRestoreKey?.takeIf { it.startsWith("${row.id}:") },
                                 onFocusItemHandled = { pendingRestoreKey = null },
                                 onItemFocused = { index, item ->
+                                    mediaServerRowGrowth.onFocused(loadedRow, index)
                                     rowFocusIndices[row.id] = index
                                     // Publish cached detail before the hero target changes. Doing
                                     // this in the later LaunchedEffect leaves one composed frame in
