@@ -363,6 +363,11 @@ internal fun PlayerPanelVisibility(
 internal fun PlayerGlassSurface(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(20.dp),
+    /**
+     * The option drawer (sources, audio, subtitles, speed, info): darker and more see-through than
+     * a dialog, so the picture stays in view behind it while the text keeps its contrast.
+     */
+    drawer: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     // Layered translucency is the expensive part of a glass panel on a stick; an opaque surface with
@@ -373,7 +378,13 @@ internal fun PlayerGlassSurface(
             .clip(PlayerPanelShape)
             .background(
                 Brush.verticalGradient(
-                    colors = if (layered) listOf(Color(0xF0171A23), Color(0xF40F1117)) else listOf(Color(0xFF161922), Color(0xFF0F1117)),
+                    colors = when {
+                        // A flat translucent fill costs nothing extra to composite, so the drawer
+                        // keeps it even where layered glass is turned off.
+                        drawer -> listOf(Color(0xC4090A0E), Color(0xCC050609))
+                        layered -> listOf(Color(0xF0171A23), Color(0xF40F1117))
+                        else -> listOf(Color(0xFF161922), Color(0xFF0F1117))
+                    },
                 ),
             )
             .border(1.dp, PlayerTokens.Hairline, PlayerPanelShape)
@@ -1352,6 +1363,7 @@ internal fun PlayerOptionPanel(
     val panelResources = LocalContext.current.resources
 
     PlayerGlassSurface(
+        drawer = true,
         modifier = modifier
             .width(540.dp)
             .height(640.dp)

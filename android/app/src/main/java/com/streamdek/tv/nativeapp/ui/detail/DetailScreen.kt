@@ -272,6 +272,8 @@ fun DetailScreen(
     var suppressRemoteWatchedRefreshUntil by remember(mediaType, mediaId) { mutableStateOf(0L) }
     var markingSeasonWatched by remember(mediaType, mediaId, activeSeasonNumber) { mutableStateOf(false) }
     var comments by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
+    /** Critics' reviews from the viewer's own media server, for a title that came from one. */
+    var serverReviews by remember(mediaType, mediaId) { mutableStateOf<List<TraktCommentItem>>(emptyList()) }
     var episodeAction by remember(mediaType, mediaId) { mutableStateOf<SeasonEpisodeEntry?>(null) }
     var episodeActionLoading by remember(mediaType, mediaId) { mutableStateOf(false) }
     var episodeActionError by remember(mediaType, mediaId) { mutableStateOf<String?>(null) }
@@ -831,6 +833,11 @@ fun DetailScreen(
         comments = runCatching { repository.fetchTraktComments(mediaId, mediaType) }.getOrDefault(emptyList())
     }
 
+    LaunchedEffect(mediaId, detail?.id) {
+        if (detail == null) return@LaunchedEffect
+        serverReviews = runCatching { repository.fetchMediaServerReviews(mediaId) }.getOrDefault(emptyList())
+    }
+
     LaunchedEffect(detail?.backdrop, detail?.poster) {
         val artUrl = detail?.backdrop ?: detail?.poster ?: return@LaunchedEffect
         runCatching { extractAmbientPalette(context, artUrl) }.onSuccess { ambientPalette = it }
@@ -1065,12 +1072,13 @@ fun DetailScreen(
                 // The bands actually on screen, in order. Needed because Episodes only exists for
                 // series and any section can be absent, so "the row before this one" cannot be
                 // derived from a fixed list.
-                val bandIds = remember(d.id, d.seasons.size, d.cast.size, d.similarTitles.size, comments.size) {
+                val bandIds = remember(d.id, d.seasons.size, d.cast.size, d.similarTitles.size, comments.size, serverReviews.size) {
                     buildList {
                         if (d.type == "tv" && d.seasons.isNotEmpty()) add("episodes")
                         if (d.cast.isNotEmpty()) add("cast")
                         if (d.similarTitles.isNotEmpty()) add("similar")
                         if (comments.isNotEmpty()) add("comments")
+                        if (serverReviews.isNotEmpty()) add("serverReviews")
                     }
                 }
 
@@ -1417,6 +1425,19 @@ fun DetailScreen(
                                 comments = comments,
                                 compact = focusedRow != null && focusedRow != "comments",
                                 onFocusChanged = { if (it) focusedRow = "comments" },
+                            )
+                            }
+                        }
+                    }
+
+                    if (serverReviews.isNotEmpty()) {
+                        item("serverReviews") {
+                            Box(Modifier.bandRestorePoint(focusedRow == "serverReviews", entryFocusRequester)) {
+                            CommentsBand(
+                                comments = serverReviews,
+                                compact = focusedRow != null && focusedRow != "serverReviews",
+                                title = stringResource(R.string.plex_reviews_title),
+                                onFocusChanged = { if (it) focusedRow = "serverReviews" },
                             )
                             }
                         }

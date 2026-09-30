@@ -744,6 +744,8 @@ class StreamDekRepository(
             if (multipleServers && serverName.isNotBlank()) label(R.string.media_server_attribution, "$provider · $serverName", provider, serverName) else provider
         override fun season(number: Int) = label(R.string.detail_season_number, "Season $number", number)
         override fun episode(number: Int) = label(R.string.plex_episode_number, "Episode $number", number)
+        override fun nextUp() = label(R.string.media_server_next_up, "Next Up")
+        override fun favourites() = label(R.string.media_server_favourites, "Favourites")
     }
 
     /** Who this television is to a Plex server: its own identity, stable across launches, not secret. */
@@ -2245,7 +2247,7 @@ class StreamDekRepository(
         val fuseEnabled = fuseEnabledState.value
         // Media server rows join Home once a library is switched on, and change when the viewer
         // changes which libraries are; the revision says when.
-        val mediaServerRows = mediaServers.state.value.navigationVisible
+        val mediaServerRows = mediaServers.navigableProviders().isNotEmpty()
         val cacheKey = buildSessionProfileCacheKey() +
             ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout:$cloudStreamSources:fuse=$fuseEnabled" +
             ":ms=${if (mediaServerRows) mediaServers.revision.value else -1}"
@@ -2294,7 +2296,11 @@ class StreamDekRepository(
         // With the Fuse on, the source rows are still fetched - an add-on can offer rows the Fuse
         // does not stand in for - but no skeleton is held for them: most arrive only to be left out.
         if (!fuseEnabled) {
-            if (mediaServerRows) reserve(MEDIA_SERVER_HOME_SLOT, "Plex", titleRes = R.string.media_server_plex)
+            if (mediaServerRows) reserve(
+                MEDIA_SERVER_HOME_SLOT,
+                if (mediaServers.navigableProviders().size > 1) "My Media" else mediaServers.navigableProviders().firstOrNull()?.let(mediaServers::provider)?.label ?: "Plex",
+                titleRes = mediaServerDestinationTitleRes(mediaServers.navigableProviders()),
+            )
             reserve("addon-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
             if (cloudStreamRowIds.isNotEmpty()) {
                 reserve("cloudstream-catalogs", "Add-on Catalogues", titleRes = R.string.home_rail_addon_catalogues)
@@ -2396,13 +2402,7 @@ class StreamDekRepository(
                 launch {
                     // Bounded like every other source: a server that is away leaves its slot empty
                     // and Home complete, rather than holding a skeleton open.
-                    val rails = kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS * 2) {
-                        mediaServers.activeProviders().flatMap { provider ->
-                            runCatching { provider.rows(includeCollections = false) }
-                                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-                                .getOrDefault(emptyList())
-                        }
-                    }.orEmpty()
+                    val rails = eachMediaServerProvider(MEDIA_SERVER_READ_TIMEOUT_MS * 2) { it.rows(includeCollections = false) }
                     rememberMediaServerRows(rails)
                     publish(MEDIA_SERVER_HOME_SLOT, mediaServerHomeRails(rails))
                 }
@@ -3281,6 +3281,20 @@ class StreamDekRepository(
             peekCachedDetail(id, canonical)?.tmdbId?.takeIf { it > 0 }?.toString() ?: return emptyList()
         } else MediaClassification.enrichmentId(id) ?: return emptyList()
         return api.get<TraktCommentsResponse>("/trakt/comments/$canonical/${encodePathSegment(lookupId)}")?.results.orEmpty()
+    }
+
+    /**
+     * Critics' reviews of a media server title, from the server itself, as review cards. Empty for
+     * every other title, and for a server that has none or does not answer in time.
+     */
+    suspend fun fetchMediaServerReviews(id: String): List<TraktCommentItem> {
+        val (provider, ref) = mediaServerTarget(id) ?: return emptyList()
+        val reviews = kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS) {
+            runCatching { provider.reviews(ref) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .getOrNull()
+        }.orEmpty()
+        return mediaServerReviewCards(reviews)
     }
 
     suspend fun fetchPerson(id: String): PersonDetail? {
@@ -4934,12 +4948,15 @@ class StreamDekRepository(
         }
     }
 
-    private fun mediaServerFuseCatalogs(): List<FuseCatalog> {
-        val state = mediaServers.state.value
+    private fun mediaServerFuseCatalogs(): List<FuseCatalog> =
+        listOf(mediaServers.state.value, mediaServers.jellyfinState.value).flatMap(::mediaServerFuseCatalogs)
+
+    private fun mediaServerFuseCatalogs(state: com.streamdek.tv.nativeapp.mediaserver.MediaServerUiState): List<FuseCatalog> {
         if (!state.navigationVisible) return emptyList()
         val servers = state.servers.filter { it.enabled }
+        val providerLabel = mediaServers.provider(state.provider)?.label ?: state.provider
         return servers.flatMap { server ->
-            val sourceName = mediaServerLabels.attribution(mediaServers.plex.label, server.name, servers.size > 1)
+            val sourceName = mediaServerLabels.attribution(providerLabel, server.name, servers.size > 1)
             server.libraries.filter { it.enabled }.map { library ->
                 FuseCatalog(
                     key = "${MediaServerReference.sourceIdOf(state.provider, server.id)}:${library.key}",
@@ -4981,19 +4998,38 @@ class StreamDekRepository(
 
     // ── The Plex destination ────────────────────────────────────────────────────────────────────
 
-    /** In-progress titles from the media servers alone, as Continue Watching cards. */
-    suspend fun mediaServerContinueWatching(): List<MediaItem> =
-        fetchMediaServerContinueWatching().map { continueWatchingCard(it.item) }.withoutAdult()
+    /** In-progress titles from one media server provider (or all of them), as Continue Watching cards. */
+    suspend fun mediaServerContinueWatching(provider: String? = null): List<MediaItem> =
+        fetchMediaServerContinueWatching()
+            .filter { provider == null || it.item.lastPlatform == provider }
+            .map { continueWatchingCard(it.item) }.withoutAdult()
 
-    /** Every row the provider page shows, collections and recently watched included. */
-    suspend fun mediaServerPageRows(): List<com.streamdek.tv.nativeapp.mediaserver.MediaServerRow> =
-        kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS * 3) {
-            mediaServers.activeProviders().flatMap { provider ->
-                runCatching { provider.rows(includeCollections = true) }
-                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-                    .getOrDefault(emptyList())
-            }
-        }.orEmpty().also(::rememberMediaServerRows)
+    /** Every row a provider's page shows (or every provider's), collections and recently watched included. */
+    suspend fun mediaServerPageRows(provider: String? = null): List<com.streamdek.tv.nativeapp.mediaserver.MediaServerRow> =
+        eachMediaServerProvider(MEDIA_SERVER_READ_TIMEOUT_MS * 3, only = provider) { it.rows(includeCollections = true) }
+            .also(::rememberMediaServerRows)
+
+    /**
+     * Asks every linked provider (or just [only]) at once, each within its own time. A slow or
+     * unreachable server costs only its own answer: the others are never held up behind it or thrown
+     * away with it, as they were when every provider shared one deadline in turn.
+     */
+    private suspend fun <T> eachMediaServerProvider(timeoutMs: Long, only: String? = null, work: suspend (MediaServerProvider) -> List<T>): List<T> =
+        supervisorScope {
+            mediaServers.activeProviders().filter { only == null || it.id == only }.map { provider ->
+                async {
+                    kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+                        try {
+                            work(provider)
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            TvDebugLogger.w("MediaServers", "${provider.id} failed: ${error.javaClass.simpleName}")
+                            null
+                        }
+                    } ?: emptyList<T>().also { TvDebugLogger.w("MediaServers", "${provider.id} gave nothing within ${timeoutMs}ms") }
+                }
+            }.awaitAll().flatten()
+        }
 
     /** The media server rows last shown, by id, so a row on Home or the Plex page can ask for more of itself. */
     private val knownMediaServerRows = java.util.concurrent.ConcurrentHashMap<String, com.streamdek.tv.nativeapp.mediaserver.MediaServerRow>()
@@ -5012,36 +5048,29 @@ class StreamDekRepository(
      */
     suspend fun mediaServerRowPage(rowId: String, start: Int, size: Int): com.streamdek.tv.nativeapp.mediaserver.MediaServerPage? {
         val row = knownMediaServerRows[rowId] ?: return null
+        val provider = mediaServerProviderOfRow(rowId)?.let(mediaServers::provider) ?: return null
         val page = kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS * 2) {
-            mediaServers.plex.rowPage(row, start, size)
+            provider.rowPage(row, start, size)
         } ?: return null
         return page.copy(items = page.items.withoutAdult())
     }
 
-    suspend fun mediaServerLibraryPage(serverId: String, libraryKey: String, start: Int, size: Int, sort: MediaServerSort) =
-        mediaServers.plex.browse(serverId, libraryKey, start, size, sort)
+    suspend fun mediaServerLibraryPage(provider: String, serverId: String, libraryKey: String, start: Int, size: Int, sort: MediaServerSort) =
+        mediaServers.provider(provider)?.browse(serverId, libraryKey, start, size, sort)
 
     suspend fun mediaServerCollectionPage(ref: MediaServerReference, start: Int, size: Int) =
         mediaServers.providerFor(ref)?.collection(ref, start, size)
 
     /** Media server rows as Home Rows settings lists them. Empty until the servers have answered once. */
     suspend fun mediaServerHomeRowOptions(): List<HomeRowOption> {
-        if (!mediaServers.state.value.navigationVisible) return emptyList()
-        val rows = kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS) {
-            mediaServers.activeProviders().flatMap { provider -> runCatching { provider.rows(includeCollections = false) }.getOrDefault(emptyList()) }
-        }.orEmpty()
+        if (mediaServers.navigableProviders().isEmpty()) return emptyList()
+        val rows = eachMediaServerProvider(MEDIA_SERVER_READ_TIMEOUT_MS) { it.rows(includeCollections = false) }
         return mediaServerHomeRowOptions(rows)
     }
 
     /** In-progress titles from every linked media server, or nothing if they do not answer in time. */
     private suspend fun fetchMediaServerContinueWatching(): List<MediaServerResume> =
-        kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_READ_TIMEOUT_MS) {
-            mediaServers.activeProviders().flatMap { provider ->
-                runCatching { provider.continueWatching() }
-                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-                    .getOrDefault(emptyList())
-            }
-        }.orEmpty()
+        eachMediaServerProvider(MEDIA_SERVER_READ_TIMEOUT_MS) { it.continueWatching() }.sortedByDescending { it.lastViewedAtMs }
 
     private suspend fun setMediaServerWatched(
         provider: MediaServerProvider,
@@ -7825,4 +7854,19 @@ internal fun CatalogSectionItem.toMediaItem(sectionMediaType: String?): MediaIte
         rating = rating,
         year = year,
     )
+}
+
+/** The provider a media server row belongs to, from its Home Rows id (`addon:mediaserver.<provider>.<server>:...`). */
+internal fun mediaServerProviderOfRow(rowId: String): String? =
+    rowId.split(':').getOrNull(1)
+        ?.takeIf { it.startsWith(com.streamdek.tv.nativeapp.mediaserver.HOME_ROW_SOURCE_PREFIX) }
+        ?.removePrefix(com.streamdek.tv.nativeapp.mediaserver.HOME_ROW_SOURCE_PREFIX)
+        ?.substringBefore('.')
+        ?.takeIf { it.isNotBlank() }
+
+/** The media destination's name: "Plex" or "Jellyfin" alone, "My Media" when both are there. */
+internal fun mediaServerDestinationTitleRes(providers: List<String>): Int = when {
+    providers.size > 1 -> R.string.media_server_my_media
+    providers.firstOrNull() == com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> R.string.media_server_jellyfin
+    else -> R.string.media_server_plex
 }

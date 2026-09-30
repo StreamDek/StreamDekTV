@@ -222,7 +222,8 @@ fun LibraryScreen(
      * one moves the highlight to that half of the page instead of swapping what the page holds.
      */
     val mediaServerState by repository.mediaServers.state.collectAsState()
-    val unified = mediaServerState.navigationVisible
+    val jellyfinServerState by repository.mediaServers.jellyfinState.collectAsState()
+    val unified = mediaServerState.navigationVisible || jellyfinServerState.navigationVisible
     /** The card last highlighted on the unified page, so returning from a title lands back on it. */
     var lastFocusedKey by rememberSaveable { mutableStateOf<String?>(null) }
 

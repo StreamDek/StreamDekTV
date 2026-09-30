@@ -23,6 +23,7 @@ import com.streamdek.tv.nativeapp.mediaserver.MediaServerPlaybackState
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerProvider
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerReachability
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerReference
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerReview
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerResume
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerRoute
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerRow
@@ -82,6 +83,7 @@ internal class PlexProvider(
     private val metadata = ConcurrentHashMap<String, Timed<PlexMetadata>>()
     private val children = ConcurrentHashMap<String, Timed<List<PlexMetadata>>>()
     private val rowsCache = ConcurrentHashMap<Boolean, Timed<List<MediaServerRow>>>()
+    private val reviewsCache = ConcurrentHashMap<String, Timed<List<MediaServerReview>>>()
     /** The transcoder session each ratingKey last played under, so the timeline can name it. */
     private val sessions = ConcurrentHashMap<String, String>()
     /** Titles already marked watched this session, so the 90% mark is sent once. */
@@ -114,6 +116,7 @@ internal class PlexProvider(
         metadata.clear()
         children.clear()
         rowsCache.clear()
+        reviewsCache.clear()
         sessions.clear()
         scrobbled.clear()
         onStateChanged()
@@ -310,7 +313,8 @@ internal class PlexProvider(
                 }
             }.awaitAll().flatten()
         }
-        rowsCache[includeCollections] = Timed(now(), rows)
+        // An empty set is what a server not reached yet gives: it is not kept, so the next ask tries again.
+        if (rows.isNotEmpty()) rowsCache[includeCollections] = Timed(now(), rows)
         return rows
     }
 
@@ -442,6 +446,8 @@ internal class PlexProvider(
             }
             MediaServerRowKind.Collections ->
                 pageOf(get(row.serverId, "/library/sections/$section/collections", start = start, size = size), start, size, map = map)
+            // Plex builds neither of these rows.
+            MediaServerRowKind.NextUp, MediaServerRowKind.Favourites -> none
         }
     }
 
@@ -526,6 +532,14 @@ internal class PlexProvider(
         val context = contextFor(ref.serverId) ?: return null
         val seasons = if (meta.type.equals("show", true)) childrenOf(ref.serverId, ref.itemKey) else emptyList()
         return PlexMapping.detail(meta, seasons, context)
+    }
+
+    override suspend fun reviews(ref: MediaServerReference): List<MediaServerReview> {
+        val cacheKey = "${ref.serverId}:${ref.itemKey}"
+        reviewsCache[cacheKey]?.takeIf { now() - it.atMs < METADATA_TTL_MS }?.let { return it.value }
+        val meta = get(ref.serverId, "/library/metadata/${ref.itemKey}", mapOf("includeReviews" to "1"))?.metadata?.firstOrNull()
+            ?: return emptyList()
+        return PlexMapping.reviews(meta).also { reviewsCache[cacheKey] = Timed(now(), it) }
     }
 
     private suspend fun seasonMeta(ref: MediaServerReference, seasonNumber: Int): PlexMetadata? =

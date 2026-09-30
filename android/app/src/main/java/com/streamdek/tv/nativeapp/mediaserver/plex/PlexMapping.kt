@@ -9,6 +9,7 @@ import com.streamdek.tv.nativeapp.data.SeasonDetail
 import com.streamdek.tv.nativeapp.data.SeasonEpisode
 import com.streamdek.tv.nativeapp.data.SeasonRef
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerReference
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerReview
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerResume
 import com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
 import java.net.URLEncoder
@@ -291,4 +292,24 @@ internal object PlexMapping {
     }
 
     const val COLLECTION_TYPE = "collection"
+
+    /**
+     * A title's reviews, those with something to read. A link is kept only when it is an ordinary
+     * web address, since it is opened outside the app.
+     */
+    fun reviews(meta: PlexMetadata): List<MediaServerReview> = meta.reviews.orEmpty().mapNotNull { review ->
+        val text = review.text?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+        val verdict = review.image?.lowercase(java.util.Locale.US).orEmpty()
+        MediaServerReview(
+            author = review.tag?.trim()?.takeIf { it.isNotEmpty() } ?: review.source?.trim().orEmpty(),
+            publication = review.source?.trim()?.takeIf { it.isNotEmpty() && it != review.tag?.trim() },
+            text = text,
+            link = review.link?.trim()?.takeIf { it.startsWith("https://", true) || it.startsWith("http://", true) },
+            positive = when {
+                "fresh" in verdict || "upright" in verdict -> true
+                "rotten" in verdict || "spilled" in verdict -> false
+                else -> null
+            },
+        )
+    }.filter { it.author.isNotEmpty() }
 }

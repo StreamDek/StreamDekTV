@@ -240,7 +240,8 @@ private enum class SettingsDestination(
     Sources(R.string.settings_category_sources, R.string.settings_dest_sources, R.string.settings_dest_sources_description, "providers addon plugin cloudstream debrid premium install playlist", Icons.Outlined.Extension),
     // Personal media servers. Its own page rather than a row under Sources: linking, servers and
     // libraries are a whole screen's worth, and "Plex" is exactly what someone will search for.
-    MediaServers(R.string.settings_category_sources, R.string.media_server_plex, R.string.settings_dest_plex_description, "plex media server personal library libraries link account plex.tv jellyfin emby nas", PlexIcons.Chevron),
+    MediaServers(R.string.settings_category_sources, R.string.media_server_plex, R.string.settings_dest_plex_description, "plex media server personal library libraries link account plex.tv emby nas", PlexIcons.Chevron),
+    Jellyfin(R.string.settings_category_sources, R.string.media_server_jellyfin, R.string.settings_dest_jellyfin_description, "jellyfin media server personal library libraries quick connect self hosted nas address", com.streamdek.tv.nativeapp.ui.JellyfinIcons.Mark),
 
     ContentServices(R.string.settings_category_connections, R.string.settings_dest_content_services, R.string.settings_dest_content_services_description, "content services tmdb mdblist theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
     Connections(R.string.settings_category_connections, R.string.settings_dest_sync_services, R.string.settings_dest_sync_services_description, "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
@@ -1043,6 +1044,14 @@ fun SettingsScreen(
                         onStatus = { message -> status = message },
                     )
                 }
+                SettingsDestination.Jellyfin -> {
+                    JellyfinSettingsPanel(
+                        repository = repository,
+                        signedIn = session != null,
+                        leftRequester = selectedRequester,
+                        onStatus = { message -> status = message },
+                    )
+                }
                 SettingsDestination.Sources -> {
                     // Where people look for "add a source", so Plex is signposted here too.
                     SettingsActionRow(
@@ -1051,6 +1060,12 @@ fun SettingsScreen(
                         mediaServerSummary(repository),
                         selectedRequester,
                     ) { openDestination(SettingsDestination.MediaServers) }
+                    SettingsActionRow(
+                        stringResource(R.string.media_server_jellyfin),
+                        stringResource(R.string.settings_dest_jellyfin_description),
+                        jellyfinSummary(repository),
+                        selectedRequester,
+                    ) { openDestination(SettingsDestination.Jellyfin) }
                     // A sign-in in progress owns the top of the page: the code on it is being read
                     // off the television and typed on a phone, and it must not be somewhere the
                     // viewer has to scroll back to.

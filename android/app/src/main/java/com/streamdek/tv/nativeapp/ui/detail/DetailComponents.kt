@@ -1173,7 +1173,13 @@ private fun CastPortrait(
 }
 
 @Composable
-internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = false, onFocusChanged: (Boolean) -> Unit = {}) {
+internal fun CommentsBand(
+    comments: List<TraktCommentItem>,
+    compact: Boolean = false,
+    /** The row's heading; the Trakt reviews' unless another source's reviews are shown. */
+    title: String = stringResource(R.string.detail_reviews),
+    onFocusChanged: (Boolean) -> Unit = {},
+) {
     val scale = detailBandScale(compact)
     val cardWidth = 340.dp
     val cardHeight = 150.dp
@@ -1184,7 +1190,7 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
         modifier = Modifier.rowFocusEntry(rowFocus).onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalArrangement = detailBandSpacing(compact),
     ) {
-        DetailSectionHeader(stringResource(R.string.detail_reviews), trailing = AppFormats.number(LocalAppLanguage.current, comments.size))
+        DetailSectionHeader(title, trailing = AppFormats.number(LocalAppLanguage.current, comments.size))
         LazyRow(
             modifier = Modifier.detailBandScale(scale, compact),
             state = rowState,
@@ -1223,6 +1229,9 @@ internal fun CommentsBand(comments: List<TraktCommentItem>, compact: Boolean = f
                             modifier = Modifier.weight(1f, fill = false),
                         )
                         comment.userRating?.let { MetaChip(stringResource(R.string.rating_star_value, it), emphasised = true) }
+                        comment.verdict?.let { fresh ->
+                            MetaChip(stringResource(if (fresh) R.string.plex_review_fresh else R.string.plex_review_rotten), emphasised = fresh)
+                        }
                     }
                     Text(
                         // Spoilers stay collapsed: there is no hover on a remote, so a reveal

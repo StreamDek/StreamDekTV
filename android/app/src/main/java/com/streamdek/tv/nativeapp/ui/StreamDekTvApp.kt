@@ -152,7 +152,11 @@ private enum class TopLevelDestination(
 ) {
     Home("home", R.string.nav_home, Icons.Outlined.Home),
     Search("search", R.string.nav_search, Icons.Outlined.Search),
-    /** Only while Plex is linked with a library switched on; see MediaServerUiState.navigationVisible. */
+    /**
+     * The viewer's own media servers. One entry whatever is connected: Plex's mark and name, or
+     * Jellyfin's, or both marks and "My Media" when both are - see [mediaNavIcon]. Only while a
+     * server is linked with a library switched on; see MediaServerUiState.navigationVisible.
+     */
     Plex("plex", R.string.media_server_plex, PlexIcons.Chevron),
     Live("live", R.string.nav_live, Icons.Outlined.LiveTv),
     /** Stands in Live's place while StreamDek Fuse is on: Fuse's Live TV view is what Live was. */
@@ -222,10 +226,17 @@ private const val NavRailOpenConfirmMs = 260L
 /** The navigation route the title page is registered under, kept in one place. */
 private const val DetailRoutePattern = "detail/{type}/{id}"
 /** A whole Plex library or collection as a grid. `kind` is "library" or "collection". */
-private const val PlexBrowseRoutePattern = "plex-browse/{kind}/{server}/{key}/{title}"
+private const val PlexBrowseRoutePattern = "plex-browse/{kind}/{provider}/{server}/{key}/{title}"
 
-private fun plexBrowseRoute(kind: String, serverId: String, key: String, title: String): String =
-    "plex-browse/$kind/${Uri.encode(serverId)}/${Uri.encode(key)}/${Uri.encode(title)}"
+private fun plexBrowseRoute(kind: String, provider: String, serverId: String, key: String, title: String): String =
+    "plex-browse/$kind/${Uri.encode(provider)}/${Uri.encode(serverId)}/${Uri.encode(key)}/${Uri.encode(title)}"
+
+/** The media entry's icon: the one server's mark, or both marks together when both are connected. */
+private fun mediaNavIcon(providers: List<String>) = when {
+    providers.size > 1 -> JellyfinIcons.Stack
+    providers.firstOrNull() == com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> JellyfinIcons.Mark
+    else -> PlexIcons.Chevron
+}
 private const val PersonRoutePattern = "person/{id}"
 
 private fun detailRoute(mediaType: String, mediaId: String): String {
@@ -455,7 +466,14 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     val showLiveDestination = hasEnabledLiveAddon || hasLoadedLiveContent
     val fuseEnabled by repository.fuseEnabled.collectAsState()
     val mediaServerState by repository.mediaServers.state.collectAsState()
-    val plexVisible = mediaServerState.navigationVisible
+    val jellyfinServerState by repository.mediaServers.jellyfinState.collectAsState()
+    val mediaProviders = remember(mediaServerState.navigationVisible, jellyfinServerState.navigationVisible) {
+        buildList {
+            if (mediaServerState.navigationVisible) add(com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID)
+            if (jellyfinServerState.navigationVisible) add(com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID)
+        }
+    }
+    val plexVisible = mediaProviders.isNotEmpty()
     val topLevelDestinations = remember(showLiveDestination, fuseEnabled, plexVisible) {
         buildList {
             add(TopLevelDestination.Home)
@@ -1226,12 +1244,12 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                             entryFocusRequester = plexContentRequester,
                             onOpenDetail = openDetail,
                             onResume = resumeContinueWatching,
-                            onOpenLibrary = { serverId, libraryKey, title ->
-                                navController.navigate(plexBrowseRoute("library", serverId, libraryKey, title))
+                            onOpenLibrary = { provider, serverId, libraryKey, title ->
+                                navController.navigate(plexBrowseRoute("library", provider, serverId, libraryKey, title))
                             },
                             onOpenCollection = { item ->
                                 com.streamdek.tv.nativeapp.mediaserver.MediaServerReference.decode(item.id)?.let { ref ->
-                                    navController.navigate(plexBrowseRoute("collection", ref.serverId, ref.itemKey, item.title))
+                                    navController.navigate(plexBrowseRoute("collection", ref.provider, ref.serverId, ref.itemKey, item.title))
                                 }
                             },
                             onOpenNavigation = ::openSideNavigation,
@@ -1244,6 +1262,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                     RailInsetDestination {
                         com.streamdek.tv.nativeapp.ui.plex.PlexBrowseScreen(
                             repository = repository,
+                            provider = Uri.decode(backStackEntryInner.arguments?.getString("provider").orEmpty()).ifBlank { com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID },
                             serverId = Uri.decode(backStackEntryInner.arguments?.getString("server").orEmpty()),
                             libraryKey = key.takeIf { kind == "library" },
                             collectionKey = key.takeIf { kind == "collection" },
@@ -1252,7 +1271,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                             onOpenDetail = openDetail,
                             onOpenCollection = { item ->
                                 com.streamdek.tv.nativeapp.mediaserver.MediaServerReference.decode(item.id)?.let { ref ->
-                                    navController.navigate(plexBrowseRoute("collection", ref.serverId, ref.itemKey, item.title))
+                                    navController.navigate(plexBrowseRoute("collection", ref.provider, ref.serverId, ref.itemKey, item.title))
                                 }
                             },
                             onBack = { navController.popBackStack() },
@@ -1419,6 +1438,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
             if (railOnScreen) {
                 TvSideNav(
                     destinations = topLevelDestinations,
+                    mediaProviders = mediaProviders,
                     avatarIndex = activeProfile?.avatarIndex ?: 0,
                     avatarLabel = activeProfile?.name ?: "P",
                     profileFocusRequester = profileNavRequester,
@@ -2000,6 +2020,8 @@ private fun RailInsetDestination(content: @Composable () -> Unit) {
 @Composable
 private fun TvSideNav(
     destinations: List<TopLevelDestination>,
+    /** Which media servers the media entry stands for; decides its icon and name. */
+    mediaProviders: List<String>,
     avatarIndex: Int,
     avatarLabel: String,
     profileFocusRequester: FocusRequester,
@@ -2275,10 +2297,10 @@ private fun TvSideNav(
                             size = 24.dp,
                         )
                     } else {
-                        destination.icon?.let { icon ->
+                        (if (destination == TopLevelDestination.Plex) mediaNavIcon(mediaProviders) else destination.icon)?.let { icon ->
                             Icon(
                                 imageVector = icon,
-                                contentDescription = stringResource(destination.labelRes),
+                                contentDescription = stringResource(if (destination == TopLevelDestination.Plex) com.streamdek.tv.nativeapp.data.mediaServerDestinationTitleRes(mediaProviders) else destination.labelRes),
                                 tint = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
                                 modifier = Modifier.size(20.dp),
                             )
@@ -2288,7 +2310,7 @@ private fun TvSideNav(
                 if (showLabels) {
                     Spacer(Modifier.width(12.dp))
                     Text(
-                        text = stringResource(destination.labelRes),
+                        text = stringResource(if (destination == TopLevelDestination.Plex) com.streamdek.tv.nativeapp.data.mediaServerDestinationTitleRes(mediaProviders) else destination.labelRes),
                         color = (if (highlighted) Color.White else MaterialTheme.colorScheme.onBackground)
                             .copy(alpha = 1f),
                         modifier = Modifier.graphicsLayer {

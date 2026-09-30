@@ -34,3 +34,32 @@ private val PlexAmbientPurple = Color(0xFF8B5CF6)
 private val PlexAmbientBlue = Color(0xFF3B82F6)
 private val PlexAmbientRed = Color(0xFFEF4444)
 private val PlexAmbientGreen = Color(0xFF22C55E)
+
+/**
+ * Jellyfin's colour wash: orange and red fields of light rising out of black. The page is first
+ * taken down toward black, so the two colours glow rather than tint grey. Held still, as Plex's is.
+ */
+internal fun Modifier.jellyfinAmbientGlow(): Modifier = drawBehind {
+    drawRect(Color.Black.copy(alpha = 0.55f))
+    val w = size.width
+    val h = size.height
+    val radius = maxOf(w, h) * 0.55f
+    fun glow(color: Color, x: Float, y: Float, scale: Float = 1f, strength: Float = AmbientStrength) {
+        val center = Offset(x * w, y * h)
+        drawCircle(
+            brush = Brush.radialGradient(listOf(color.copy(alpha = strength), color.copy(alpha = 0f)), center = center, radius = radius * scale),
+            radius = radius * scale,
+            center = center,
+        )
+    }
+    glow(JellyfinAmbientOrange, 0.14f, 0.10f, 1.05f)
+    glow(JellyfinAmbientRed, 0.88f, 0.18f)
+    glow(JellyfinAmbientEmber, 0.22f, 0.72f, 0.9f, AmbientStrength * 0.8f)
+    glow(JellyfinAmbientCrimson, 0.84f, 0.84f, 0.95f)
+}
+
+private val JellyfinAmbientOrange = Color(0xFFF97316)
+private val JellyfinAmbientRed = Color(0xFFEF4444)
+private val JellyfinAmbientEmber = Color(0xFFEA580C)
+private val JellyfinAmbientCrimson = Color(0xFFB91C1C)
+

@@ -194,3 +194,101 @@ class CatalogEnrichmentTest {
         assertEquals(1, merged.cast.first().id)
     }
 }
+
+class PlexReviewsTest {
+    @Test fun `reviews keep critic, publication, verdict and only web links`() {
+        val meta = com.streamdek.tv.nativeapp.mediaserver.plex.PlexMetadata(
+            reviews = listOf(
+                com.streamdek.tv.nativeapp.mediaserver.plex.PlexReview(tag = "A Critic", text = "Great.", image = "rottentomatoes://image.review.fresh", link = "https://example.com/r", source = "The Paper"),
+                com.streamdek.tv.nativeapp.mediaserver.plex.PlexReview(tag = "B Critic", text = "Dull.", image = "rottentomatoes://image.review.rotten", link = "javascript:alert(1)"),
+                com.streamdek.tv.nativeapp.mediaserver.plex.PlexReview(tag = "C Critic", text = "  "),
+            ),
+        )
+        val reviews = PlexMapping.reviews(meta)
+        assertEquals(2, reviews.size)
+        assertEquals("The Paper", reviews[0].publication)
+        assertEquals(true, reviews[0].positive)
+        assertEquals("https://example.com/r", reviews[0].link)
+        assertEquals(false, reviews[1].positive)
+        assertNull(reviews[1].link)
+    }
+}
+
+class JellyfinTest {
+    private val context = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinMappingContext(serverId = "srv", baseUrl = "http://192.168.1.20:8096", attribution = "Jellyfin")
+
+    @Test fun `an address is tried the way a viewer means it`() {
+        val local = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinClient.candidates("192.168.1.20")
+        assertEquals("http://192.168.1.20:8096", local.first())
+        val remote = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinClient.candidates("jellyfin.example.com")
+        assertEquals("https://jellyfin.example.com", remote.first())
+        assertEquals(listOf("https://media.example.com/jellyfin"), com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinClient.candidates("https://media.example.com/jellyfin/web/index.html"))
+        assertTrue(com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinClient.candidates("not an address").isEmpty())
+    }
+
+    @Test fun `local addresses are recognised`() {
+        assertTrue(com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinClient.isLocalHost("192.168.0.5"))
+        assertTrue(com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinClient.isLocalHost("nas.local"))
+        assertFalse(com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinClient.isLocalHost("jellyfin.example.com"))
+    }
+
+    @Test fun `the authorization header carries the token and never prints it`() {
+        val identity = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinClientIdentity("StreamDek", "Living Room", "dev-1", "2.0")
+        val header = identity.authorization("secret-token")
+        assertTrue(header.startsWith("MediaBrowser "))
+        assertTrue(header.contains("Token=\"secret-token\""))
+        assertFalse(identity.authorization(null).contains("Token="))
+        val account = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinAccount("srv", "Home", listOf("http://x"), "u1", "me", "secret-token")
+        assertFalse(account.toString().contains("secret-token"))
+    }
+
+    @Test fun `an episode becomes its series and carries ids from the provider list`() {
+        val movie = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinItem(
+            id = "m1", name = "Film", type = "Movie", productionYear = 2020, runTimeTicks = 72_000_000_000L,
+            providerIds = mapOf("Tmdb" to "603", "Imdb" to "tt0133093"),
+            userData = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinUserData(playbackPositionTicks = 36_000_000_000L),
+            imageTags = mapOf("Primary" to "tag1"),
+        )
+        val card = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinMapping.item(movie, context)!!
+        assertEquals(603, card.tmdbId)
+        assertEquals("tt0133093", card.imdbId)
+        assertEquals(50.0, card.progress!!, 0.01)
+        assertTrue(card.poster!!.startsWith("http://192.168.1.20:8096/Items/m1/Images/Primary"))
+        assertFalse(card.poster!!.contains("api_key"))
+        val ref = MediaServerReference.decode(card.id)!!
+        assertEquals(JELLYFIN_PROVIDER_ID, ref.provider)
+        val episode = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinItem(id = "e1", name = "Pilot", type = "Episode", seriesId = "s1", seriesName = "Show", indexNumber = 1, parentIndexNumber = 1)
+        val series = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinMapping.item(episode, context)!!
+        assertEquals("Show", series.title)
+        assertEquals("s1", MediaServerReference.decode(series.id)!!.itemKey)
+    }
+
+    @Test fun `a title part-way through resumes where Jellyfin left it`() {
+        val episode = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinItem(
+            id = "e2", name = "Two", type = "Episode", seriesId = "s1", seriesName = "Show", indexNumber = 2, parentIndexNumber = 1,
+            runTimeTicks = 30_000_000_000L,
+            userData = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinUserData(playbackPositionTicks = 15_000_000_000L, lastPlayedDate = "2026-09-01T10:00:00Z"),
+        )
+        val resume = com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinMapping.resume(episode, context)!!
+        assertEquals(1500.0, resume.item.positionSec!!, 0.01)
+        assertEquals(2, resume.item.episodeNumber)
+        assertEquals(JELLYFIN_PROVIDER_ID, resume.item.lastPlatform)
+        assertTrue(resume.lastViewedAtMs > 0)
+    }
+
+    @Test fun `libraries StreamDek does not play are left out`() {
+        val kind = { type: String? -> com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinMapping.libraryKind(com.streamdek.tv.nativeapp.mediaserver.jellyfin.JellyfinItem(id = "v", collectionType = type)) }
+        assertEquals(MediaServerLibraryKind.Movies, kind("movies"))
+        assertEquals(MediaServerLibraryKind.Shows, kind("tvshows"))
+        assertEquals(MediaServerLibraryKind.Other, kind("homevideos"))
+        assertNull(kind("music"))
+        assertNull(kind("boxsets"))
+    }
+
+    @Test fun `a row id names its provider`() {
+        val id = mediaServerHomeRowId(JELLYFIN_PROVIDER_ID, "srv", "movie", "library-abc", 0)
+        assertEquals(JELLYFIN_PROVIDER_ID, com.streamdek.tv.nativeapp.data.mediaServerProviderOfRow(id))
+        assertEquals(PLEX_PROVIDER_ID, com.streamdek.tv.nativeapp.data.mediaServerProviderOfRow(mediaServerHomeRowId(PLEX_PROVIDER_ID, "x", "tv", "recentlyadded-1", 2)))
+        assertNull(com.streamdek.tv.nativeapp.data.mediaServerProviderOfRow("addon:com.example:movie:top:0"))
+    }
+}

@@ -96,6 +96,20 @@ internal fun isMediaServerId(id: String?): Boolean = MediaServerReference.isRefe
 
 
 /**
+ * A server's critic reviews in the shape the title page's review row draws. The critic and, where
+ * it differs, the publication name the card; the verdict, when there is one, is its chip.
+ */
+internal fun mediaServerReviewCards(reviews: List<com.streamdek.tv.nativeapp.mediaserver.MediaServerReview>): List<TraktCommentItem> =
+    reviews.mapIndexed { index, review ->
+        TraktCommentItem(
+            id = -(index + 1).toLong(),
+            author = listOfNotNull(review.author, review.publication).joinToString(" · "),
+            comment = review.text,
+            verdict = review.positive,
+        )
+    }
+
+/**
  * A media server's title page with the catalogue's description of the same title filled in.
  *
  * The server's own identity, title, seasons and poster stay: they are what plays, and what the

@@ -61,6 +61,9 @@ interface MediaServerProvider {
 
     suspend fun detail(ref: MediaServerReference): MediaDetail?
 
+    /** Critics' reviews of a title, when the server has any. Read apart from [detail], after the page is up. */
+    suspend fun reviews(ref: MediaServerReference): List<MediaServerReview> = emptyList()
+
     suspend fun season(ref: MediaServerReference, seasonNumber: Int): SeasonDetail?
 
     suspend fun search(query: String, limit: Int): List<MediaItem>
@@ -113,6 +116,8 @@ interface MediaServerLabels {
     fun recentlyAdded(library: String): String
     fun recentlyWatched(library: String): String
     fun collections(library: String): String
+    fun nextUp(): String = "Next Up"
+    fun favourites(): String = "Favourites"
     fun directPlay(): String
     fun directStream(): String
     fun transcode(quality: String): String

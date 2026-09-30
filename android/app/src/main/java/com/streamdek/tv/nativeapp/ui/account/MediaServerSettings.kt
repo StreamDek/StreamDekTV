@@ -424,7 +424,7 @@ private fun PlexLinkPanel(code: MediaServerLinkCode, expired: Boolean) {
 }
 
 @Composable
-private fun PlexSectionHeading(text: String) {
+internal fun PlexSectionHeading(text: String) {
     Text(
         text,
         color = Color.White.copy(alpha = 0.7f),
@@ -434,7 +434,7 @@ private fun PlexSectionHeading(text: String) {
 }
 
 @Composable
-private fun PlexNote(text: String, indent: Boolean = false) {
+internal fun PlexNote(text: String, indent: Boolean = false) {
     Text(
         text,
         color = Color.White.copy(alpha = 0.5f),
@@ -444,7 +444,7 @@ private fun PlexNote(text: String, indent: Boolean = false) {
 }
 
 @Composable
-private fun reachabilityLabel(server: MediaServerView): Pair<String, Color> = when {
+internal fun reachabilityLabel(server: MediaServerView): Pair<String, Color> = when {
     !server.enabled -> stringResource(R.string.plex_status_off) to Color.White.copy(alpha = 0.4f)
     else -> when (val reach = server.reachability) {
         is MediaServerReachability.Online -> when (reach.route) {
@@ -463,13 +463,14 @@ private fun reachabilityLabel(server: MediaServerView): Pair<String, Color> = wh
 
 /** A focusable row with a switch at its end. The whole row is the switch. */
 @Composable
-private fun PlexSwitchRow(
+internal fun PlexSwitchRow(
     title: String,
     detail: String?,
     detailColor: Color,
     checked: Boolean,
     indent: Boolean,
     leftRequester: FocusRequester,
+    accent: Color = PlexGold,
     onToggle: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -477,7 +478,7 @@ private fun PlexSwitchRow(
         Modifier.fillMaxWidth()
             .padding(start = if (indent) 32.dp else 0.dp)
             .background(if (focused) RowFocused else RowIdle, RoundedCornerShape(16.dp))
-            .border(if (focused) 2.dp else 1.dp, if (focused) PlexGold else Color(0x10FFFFFF), RoundedCornerShape(16.dp))
+            .border(if (focused) 2.dp else 1.dp, if (focused) accent else Color(0x10FFFFFF), RoundedCornerShape(16.dp))
             .onFocusChanged { focused = it.isFocused }
             .onPreviewKeyEvent {
                 it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess
@@ -494,7 +495,7 @@ private fun PlexSwitchRow(
         // A pill switch drawn here, so it matches the page rather than a platform control.
         Box(
             Modifier.width(46.dp).padding(vertical = 2.dp)
-                .background(if (checked) PlexGold else Color.White.copy(alpha = 0.18f), RoundedCornerShape(50))
+                .background(if (checked) accent else Color.White.copy(alpha = 0.18f), RoundedCornerShape(50))
                 .padding(3.dp),
             contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
         ) {
@@ -504,7 +505,7 @@ private fun PlexSwitchRow(
 }
 
 @Composable
-private fun PlexServerRow(server: MediaServerView, leftRequester: FocusRequester, onToggle: () -> Unit) {
+internal fun PlexServerRow(server: MediaServerView, leftRequester: FocusRequester, accent: Color = PlexGold, onToggle: () -> Unit) {
     val (status, color) = reachabilityLabel(server)
     val owner = server.ownerName?.takeIf { !server.owned }?.let { stringResource(R.string.plex_server_shared_by, it) }
     PlexSwitchRow(
@@ -514,12 +515,13 @@ private fun PlexServerRow(server: MediaServerView, leftRequester: FocusRequester
         checked = server.enabled,
         indent = false,
         leftRequester = leftRequester,
+        accent = accent,
         onToggle = onToggle,
     )
 }
 
 @Composable
-private fun PlexLibraryRow(library: MediaServerLibrary, leftRequester: FocusRequester, onToggle: () -> Unit) {
+internal fun PlexLibraryRow(library: MediaServerLibrary, leftRequester: FocusRequester, accent: Color = PlexGold, onToggle: () -> Unit) {
     PlexSwitchRow(
         title = library.title,
         detail = stringResource(
@@ -533,6 +535,7 @@ private fun PlexLibraryRow(library: MediaServerLibrary, leftRequester: FocusRequ
         checked = library.enabled,
         indent = true,
         leftRequester = leftRequester,
+        accent = accent,
         onToggle = onToggle,
     )
 }
@@ -562,7 +565,7 @@ private fun PlexChoiceRow(title: String, detail: String, value: String, leftRequ
 }
 
 @Composable
-private fun PlexConfirmDialog(title: String, body: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+internal fun PlexConfirmDialog(title: String, body: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val cancelRequester = remember { FocusRequester() }
     Dialog(onDismissRequest = onDismiss) {
         Column(

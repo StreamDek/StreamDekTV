@@ -323,6 +323,11 @@ data class TraktCommentItem(
     val userRating: Int? = null,
     val spoiler: Boolean = false,
     val createdAt: String? = null,
+    /**
+     * A critic's verdict, for a review from a media server: true fresh, false rotten. Never part of
+     * what the backend sends, so Gson leaves it alone.
+     */
+    @Transient val verdict: Boolean? = null,
 )
 
 data class TraktCommentsResponse(
