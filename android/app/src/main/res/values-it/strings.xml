@@ -1814,10 +1814,10 @@
   <string name="plex_episode_number">Episodio %1$d</string>
   <string name="jellyfin_link_waiting">In attesa di Jellyfin. Questa schermata si aggiorna da sola.</string>
   <string name="jellyfin_refreshed">Librerie Jellyfin aggiornate</string>
-  <string name="jellyfin_signed_out_note">Accedi prima a StreamDek. Jellyfin viene collegato al tuo profilo StreamDek su questo dispositivo.</string>
+  <string name="jellyfin_signed_out_note">Accedi prima a StreamDek. Jellyfin viene salvato con il tuo profilo StreamDek, così ogni dispositivo che lo usa ha i tuoi server.</string>
   <string name="jellyfin_search_badge">Elenco Jellyfin</string>
   <string name="settings_dest_jellyfin_description">Collega il tuo server Jellyfin e scegli quali librerie mostrare</string>
-  <string name="jellyfin_intro_body">Accedi una volta al tuo server Jellyfin. Le sue librerie compariranno in Home, in Cerca e nella pagina dei media di questo dispositivo.</string>
+  <string name="jellyfin_intro_body">Accedi una volta al tuo server Jellyfin. Le sue librerie compariranno nella Home, nella Ricerca e nella pagina dei media di ogni dispositivo che usa questo profilo.</string>
   <string name="jellyfin_needs_attention">Accedi di nuovo a Jellyfin per continuare</string>
   <string name="jellyfin_find_server">Trova il tuo server</string>
   <string name="jellyfin_enter_address">Inserisci l’indirizzo del server</string>
@@ -1837,9 +1837,9 @@
   <string name="jellyfin_ambient_detail">Un bagliore arancione e rosso sul nero dietro la pagina e gli elenchi di Jellyfin</string>
   <string name="jellyfin_add_server">Aggiungi un altro server</string>
   <string name="jellyfin_sign_out">Esci da Jellyfin</string>
-  <string name="jellyfin_sign_out_note">L’uscita chiude la sessione di questo dispositivo sui tuoi server. Librerie e cronologia restano su Jellyfin.</string>
+  <string name="jellyfin_sign_out_note">Uscendo, Jellyfin viene rimosso da questo profilo su tutti i tuoi dispositivi e la sessione di StreamDek sui tuoi server termina. Librerie e cronologia restano su Jellyfin.</string>
   <string name="jellyfin_sign_out_title">Uscire da Jellyfin?</string>
-  <string name="jellyfin_sign_out_body">I titoli Jellyfin spariscono da Home, Cerca e dalla pagina dei media su questo dispositivo finché non accedi di nuovo.</string>
+  <string name="jellyfin_sign_out_body">I titoli di Jellyfin spariscono dalla Home, dalla Ricerca e dalla pagina dei media su ogni dispositivo con questo profilo finché non accedi di nuovo.</string>
   <string name="jellyfin_signed_out">Uscito da Jellyfin</string>
   <string name="jellyfin_logo_credit">Logo Jellyfin © collaboratori di Jellyfin, CC BY-SA 4.0</string>
   <string name="jellyfin_address_hint">L’indirizzo con cui apri Jellyfin nel browser. Sulla rete di casa spesso è l’IP del server con la porta 8096.</string>
@@ -1908,4 +1908,6 @@
   <string name="plex_sort_title">A–Z</string>
   <string name="plex_sort_release">Data di uscita</string>
   <string name="plex_browse_empty">Ancora niente qui</string>
+  <string name="media_server_rows_missing_title">Le tue librerie non sono state caricate</string>
+  <string name="media_server_rows_missing_note">Seleziona Riprova per riprovare. Qui sotto trovi la risposta del server.</string>
 </resources>

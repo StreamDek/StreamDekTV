@@ -14,6 +14,7 @@ on:
       - "android/app/src/test/java/**"
       - "scripts/check-translations.mjs"
       - "scripts/check-hardcoded-strings.mjs"
+      - "scripts/check-hardcoded-strings.test.mjs"
       - "scripts/hardcoded-strings-baseline.json"
       - ".github/workflows/localization.yml"
   pull_request:
@@ -36,6 +37,9 @@ jobs:
 
       # A ratchet, not a gate: this fails only when the count of hard-coded interface strings goes
       # up. Migrating them makes it go down. See the header of the script.
+      - name: Test the interface string checker
+        run: node --test scripts/check-hardcoded-strings.test.mjs
+
       - name: Check for new hard-coded interface strings
         run: node scripts/check-hardcoded-strings.mjs
 

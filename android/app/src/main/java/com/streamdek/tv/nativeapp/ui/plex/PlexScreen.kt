@@ -164,6 +164,14 @@ fun PlexScreen(
         state.servers.filter { it.enabled && it.reachability is MediaServerReachability.Offline }
     }
     val shelves = listOfNotNull(continueRow) + rows.orEmpty()
+    // What the server last said when its titles did not come (a route and a status, never an address or token).
+    val problem = remember(state) { state.servers.filter { it.enabled }.firstNotNullOfOrNull { it.problem } }
+    val retryRows: () -> Unit = {
+        scope.launch {
+            if (isJellyfin) repository.mediaServers.refreshJellyfin(force = true) else repository.mediaServers.refresh(force = true)
+            reloadToken++
+        }
+    }
 
     androidx.compose.runtime.CompositionLocalProvider(com.streamdek.tv.nativeapp.ui.LocalHideMediaServerMark provides true) {
     Box(
@@ -243,13 +251,14 @@ fun PlexScreen(
                         names = offline.joinToString(", ") { it.name },
                         refused = offline.all { (it.reachability as? MediaServerReachability.Offline)?.reason == OfflineReason.Unauthorized },
                         jellyfin = isJellyfin,
-                        onRetry = {
-                            scope.launch {
-                                if (isJellyfin) repository.mediaServers.refreshJellyfin(force = true) else repository.mediaServers.refresh(force = true)
-                                reloadToken++
-                            }
-                        },
+                        onRetry = retryRows,
                     )
+                }
+            }
+            if (rows?.isEmpty() == true && continueRow != null && offline.size < state.servers.count { it.enabled }) {
+                // Continue Watching came but the libraries did not: say so, and what the server said.
+                item(key = "rows-missing") {
+                    RowsMissingNotice(problem = problem, onRetry = retryRows)
                 }
             }
             when {
@@ -271,9 +280,9 @@ fun PlexScreen(
                                 isJellyfin -> R.string.jellyfin_page_empty_note
                                 else -> R.string.plex_page_empty_note
                             },
-                        ),
+                        ) + (problem?.takeIf { offline.isEmpty() && enabledLibraries.isNotEmpty() }?.let { "\n\n$it" } ?: ""),
                         actionLabel = stringResource(R.string.action_retry),
-                        onAction = { reloadToken++ },
+                        onAction = retryRows,
                     )
                 }
                 else -> items(shelves, key = { it.id }) { baseRail ->
@@ -382,6 +391,34 @@ private fun OfflineNotice(names: String, refused: Boolean, jellyfin: Boolean, on
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f),
             modifier = Modifier.weight(1f),
         )
+        SearchChip(label = stringResource(R.string.action_retry), selected = false, onClick = onRetry)
+    }
+}
+
+@Composable
+private fun RowsMissingNotice(problem: String?, onRetry: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = PageInset)
+            .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                stringResource(R.string.media_server_rows_missing_title),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Text(
+                stringResource(R.string.media_server_rows_missing_note),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+            )
+            if (problem != null) {
+                Text(problem, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f))
+            }
+        }
         SearchChip(label = stringResource(R.string.action_retry), selected = false, onClick = onRetry)
     }
 }

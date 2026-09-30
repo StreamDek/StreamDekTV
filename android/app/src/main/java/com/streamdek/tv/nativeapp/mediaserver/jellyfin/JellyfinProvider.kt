@@ -36,6 +36,10 @@ import com.streamdek.tv.nativeapp.mediaserver.plex.PlexMediaFacts
 import com.streamdek.tv.nativeapp.mediaserver.plex.PlexPlaybackMode
 import com.streamdek.tv.nativeapp.mediaserver.plex.PlexPlaybackPlanner
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -48,6 +52,7 @@ import java.net.URLEncoder
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * A Jellyfin server the viewer signed in to on this device.
@@ -64,6 +69,12 @@ data class JellyfinAccount(
     val token: String,
     val enabled: Boolean = true,
     val libraryChoices: Map<String, Boolean> = emptyMap(),
+    /** Whether the profile's copy at StreamDek has this sign-in: false for one made offline, or before sync. */
+    val cloudSynced: Boolean = false,
+    /** When this device signed in, to tell a sign-in here from a removal made elsewhere afterwards. */
+    val signedInAtMs: Long = 0L,
+    /** When choices were changed here without StreamDek having heard yet; 0 when nothing is waiting. */
+    val choicesChangedAtMs: Long = 0L,
 ) {
     override fun toString(): String = "JellyfinAccount(serverId=$serverId, name=$name, addresses=${addresses.size}, token=[redacted])"
 }
@@ -109,6 +120,15 @@ internal class JellyfinProvider(
     private val seasons = ConcurrentHashMap<String, Timed<List<JellyfinItem>>>()
     private val episodes = ConcurrentHashMap<String, Timed<List<JellyfinItem>>>()
     private val rowsCache = ConcurrentHashMap<Boolean, Timed<List<MediaServerRow>>>()
+    /**
+     * Rows being read, shared by everyone who asks meanwhile. They are read in the provider's own
+     * scope, so a page that stops waiting (it reloaded, or its time ran out) does not throw the work
+     * away: the rows still land in [rowsCache] and the next ask gets them at once. [rowsGeneration]
+     * moves on whenever what the rows would show changes, so rows read before that are not kept.
+     */
+    private val rowsInFlight = ConcurrentHashMap<Boolean, Deferred<List<MediaServerRow>>>()
+    private val rowsGeneration = AtomicInteger()
+    private val rowsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessions = ConcurrentHashMap<String, Session>()
 
     var onAddressChosen: (serverId: String, url: String) -> Unit = { _, _ -> }
@@ -119,7 +139,7 @@ internal class JellyfinProvider(
         libraries.keys.retainAll(incoming.keys)
         incoming.forEach { (id, account) ->
             val previous = servers[id]
-            val same = previous != null && previous.account.token == account.token && previous.account.addresses == account.addresses
+            val same = previous != null && previous.account.token == account.token && previous.account.addresses.toSet() == account.addresses.toSet()
             servers[id] = if (same) previous!!.copy(account = account) else ServerState(account)
             // Choices are applied to libraries already read, so a switch shows at once.
             libraries[id]?.let { cached ->
@@ -127,7 +147,7 @@ internal class JellyfinProvider(
             }
         }
         registerAuth()
-        rowsCache.clear()
+        forgetRows()
         onStateChanged()
     }
 
@@ -155,7 +175,7 @@ internal class JellyfinProvider(
         items.clear()
         seasons.clear()
         episodes.clear()
-        rowsCache.clear()
+        forgetRows()
         sessions.clear()
         onStateChanged()
     }
@@ -415,8 +435,22 @@ internal class JellyfinProvider(
 
     // ── Rows ────────────────────────────────────────────────────────────────────────────────────
 
+    private fun forgetRows() {
+        rowsGeneration.incrementAndGet()
+        rowsCache.clear()
+        rowsInFlight.clear()
+    }
+
     override suspend fun rows(includeCollections: Boolean): List<MediaServerRow> {
         rowsCache[includeCollections]?.takeIf { now() - it.atMs < ROWS_TTL_MS }?.let { return it.value }
+        val generation = rowsGeneration.get()
+        val running = rowsInFlight.compute(includeCollections) { _, current ->
+            current?.takeIf { it.isActive } ?: rowsScope.async { readRows(includeCollections, generation) }
+        }!!
+        return running.await()
+    }
+
+    private suspend fun readRows(includeCollections: Boolean, generation: Int): List<MediaServerRow> {
         val text = labels()
         val rows = supervisorScope {
             enabledServerIds().map { serverId ->
@@ -428,7 +462,7 @@ internal class JellyfinProvider(
             }.awaitAll().flatten()
         }
         // An empty set is what a server not reached yet gives: it is not kept, so the next ask tries again.
-        if (rows.isNotEmpty()) rowsCache[includeCollections] = Timed(now(), rows)
+        if (rows.isNotEmpty() && generation == rowsGeneration.get()) rowsCache[includeCollections] = Timed(now(), rows)
         return rows
     }
 
@@ -453,14 +487,17 @@ internal class JellyfinProvider(
             val perLibrary = enabled.map { library ->
                 async {
                     val type = library.mediaType ?: "movie"
-                    listOfNotNull(
-                        row(MediaServerRowKind.RecentlyAdded, text.recentlyAdded(library.title), type,
-                            within(MediaServerRowKind.RecentlyAdded, library), library.key),
-                        row(MediaServerRowKind.Library, library.title, type,
-                            within(MediaServerRowKind.Library, library), library.key),
+                    // These queries are independent. Waiting in sequence could take 36 seconds,
+                    // exceeding the page budget even when one of the shelves was already available.
+                    val recent = async { row(MediaServerRowKind.RecentlyAdded, text.recentlyAdded(library.title), type,
+                        within(MediaServerRowKind.RecentlyAdded, library), library.key) }
+                    val all = async { row(MediaServerRowKind.Library, library.title, type,
+                        within(MediaServerRowKind.Library, library), library.key) }
+                    val watched = async {
                         if (includeCollections) row(MediaServerRowKind.RecentlyWatched, text.recentlyWatched(library.title), type,
-                            within(MediaServerRowKind.RecentlyWatched, library), library.key) else null,
-                    )
+                            within(MediaServerRowKind.RecentlyWatched, library), library.key) else null
+                    }
+                    listOfNotNull(recent.await(), all.await(), watched.await())
                 }
             }
             val favourites = async {
@@ -882,7 +919,7 @@ internal class JellyfinProvider(
                 } else {
                     send(ref.serverId, "POST", "/Sessions/Playing/Progress", body + mapOf("EventName" to if (state == MediaServerPlaybackState.Paused) "Pause" else "TimeUpdate"))
                 }
-                rowsCache.clear()
+                forgetRows()
             }
         }
     }
@@ -924,7 +961,7 @@ internal class JellyfinProvider(
         items.keys.removeIf { it.startsWith("$serverId:") }
         seasons.keys.removeIf { it.startsWith("$serverId:") }
         episodes.keys.removeIf { it.startsWith("$serverId:") }
-        rowsCache.clear()
+        forgetRows()
     }
 
     companion object {

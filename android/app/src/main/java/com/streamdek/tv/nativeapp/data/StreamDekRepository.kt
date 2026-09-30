@@ -437,6 +437,14 @@ private const val MEDIA_SERVER_PREFS = "streamdek_tv_media_servers"
 private const val MEDIA_SERVER_REMOTE_QUALITY_KEY = "remote_quality_kbps"
 /** How long Home, Library and Search wait on a media server before going on without it. */
 private const val MEDIA_SERVER_READ_TIMEOUT_MS = 5_000L
+/**
+ * The media page and Home's server rows wait longer, as the phone does: a Jellyfin server reads
+ * each row within 12 s of its own after being reached, so a shorter wait here ended every read of a
+ * slower server before it could finish and left its page empty.
+ */
+private const val MEDIA_SERVER_HOME_ROWS_TIMEOUT_MS = 12_000L
+private const val MEDIA_SERVER_PAGE_ROWS_TIMEOUT_MS = 25_000L
+private const val MEDIA_SERVER_PAGE_CONTINUE_TIMEOUT_MS = 12_000L
 private const val FUSE_MEDIA_SERVER_PAGE = 60
 /**
  * What telemetry records in place of a media server title's id. The id names the viewer's own
@@ -2402,7 +2410,7 @@ class StreamDekRepository(
                 launch {
                     // Bounded like every other source: a server that is away leaves its slot empty
                     // and Home complete, rather than holding a skeleton open.
-                    val rails = eachMediaServerProvider(MEDIA_SERVER_READ_TIMEOUT_MS * 2) { it.rows(includeCollections = false) }
+                    val rails = eachMediaServerProvider(MEDIA_SERVER_HOME_ROWS_TIMEOUT_MS) { it.rows(includeCollections = false) }
                     rememberMediaServerRows(rails)
                     publish(MEDIA_SERVER_HOME_SLOT, mediaServerHomeRails(rails))
                 }
@@ -5000,13 +5008,13 @@ class StreamDekRepository(
 
     /** In-progress titles from one media server provider (or all of them), as Continue Watching cards. */
     suspend fun mediaServerContinueWatching(provider: String? = null): List<MediaItem> =
-        fetchMediaServerContinueWatching()
+        fetchMediaServerContinueWatching(MEDIA_SERVER_PAGE_CONTINUE_TIMEOUT_MS)
             .filter { provider == null || it.item.lastPlatform == provider }
             .map { continueWatchingCard(it.item) }.withoutAdult()
 
     /** Every row a provider's page shows (or every provider's), collections and recently watched included. */
     suspend fun mediaServerPageRows(provider: String? = null): List<com.streamdek.tv.nativeapp.mediaserver.MediaServerRow> =
-        eachMediaServerProvider(MEDIA_SERVER_READ_TIMEOUT_MS * 3, only = provider) { it.rows(includeCollections = true) }
+        eachMediaServerProvider(MEDIA_SERVER_PAGE_ROWS_TIMEOUT_MS, only = provider) { it.rows(includeCollections = true) }
             .also(::rememberMediaServerRows)
 
     /**
@@ -5064,13 +5072,13 @@ class StreamDekRepository(
     /** Media server rows as Home Rows settings lists them. Empty until the servers have answered once. */
     suspend fun mediaServerHomeRowOptions(): List<HomeRowOption> {
         if (mediaServers.navigableProviders().isEmpty()) return emptyList()
-        val rows = eachMediaServerProvider(MEDIA_SERVER_READ_TIMEOUT_MS) { it.rows(includeCollections = false) }
+        val rows = eachMediaServerProvider(MEDIA_SERVER_HOME_ROWS_TIMEOUT_MS) { it.rows(includeCollections = false) }
         return mediaServerHomeRowOptions(rows)
     }
 
     /** In-progress titles from every linked media server, or nothing if they do not answer in time. */
-    private suspend fun fetchMediaServerContinueWatching(): List<MediaServerResume> =
-        eachMediaServerProvider(MEDIA_SERVER_READ_TIMEOUT_MS) { it.continueWatching() }.sortedByDescending { it.lastViewedAtMs }
+    private suspend fun fetchMediaServerContinueWatching(timeoutMs: Long = MEDIA_SERVER_READ_TIMEOUT_MS): List<MediaServerResume> =
+        eachMediaServerProvider(timeoutMs) { it.continueWatching() }.sortedByDescending { it.lastViewedAtMs }
 
     private suspend fun setMediaServerWatched(
         provider: MediaServerProvider,

@@ -19,8 +19,8 @@
  *   node scripts/check-hardcoded-strings.mjs --list     show what is left, worst file first
  *   node scripts/check-hardcoded-strings.mjs --update   accept the current count as the new ceiling
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { join, dirname, relative, sep } from "node:path";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { join, dirname, relative, sep, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -59,6 +59,8 @@ function isProse(text) {
   if (/^[a-z]+([A-Z][a-z]+)+$/.test(text)) return false;     // camelCase
   if (/^(https?|content|file|android|market):/.test(text)) return false;
   if (/^[\w.-]+\/[\w.+-]+$/.test(text)) return false;        // mime types, paths
+  // Absolute API paths, including Kotlin interpolation, are protocol values like URLs.
+  if (/^\/(?:[A-Za-z0-9_{}$.-]+\/)*[A-Za-z0-9_{}$.-]*$/.test(text)) return false;
   if (/^%[sd\d]/.test(text)) return false;
   return true;
 }
@@ -118,14 +120,13 @@ const literalPattern = /"((?:[^"\\\n]|\\.)*)"/g;
  */
 // `-> "Some words"`: a `when` arm handing back a sentence.
 const whenArmPattern = /->\s*"((?:[^"\\\n]|\\.)*)"/g;
-// `ShowFull("show_full", "Show Full")`: an enum constant carrying its own label.
-const enumEntryPattern = /^\s{2,4}[A-Z]\w*\(\s*[^)\n]*"((?:[^"\\\n]|\\.)*)"/gm;
+// Enum labels are matched against their constructor parameters below.
 // `SomeComposable("Some words", ...)`: words in the first position of a call.
 const positionalCallPattern = /\b([A-Z]\w+)\s*\(\s*"((?:[^"\\\n]|\\.)*)"/g;
 
 /**
- * Calls whose first argument is an id, a key, a pattern or a message for a log - never something a
- * viewer reads. Without this the positional rule buries the real findings under `Regex(...)`,
+ * Calls whose first argument is an id, key, pattern, annotation value or log message,
+ * rather than text a viewer reads. Without this the positional rule buries the real findings under `Regex(...)`,
  * `Color(...)` and every exception constructor in the codebase.
  */
 const NOT_INTERFACE_CALLS = new Set([
@@ -134,7 +135,7 @@ const NOT_INTERFACE_CALLS = new Set([
   "Builder", "MediaItem", "HomeCatalogRow", "Exception", "RuntimeException", "Throwable", "Error",
   "IllegalStateException", "IllegalArgumentException", "UnknownHostException", "IOException",
   "SaveableStateProvider", "CsTestMedia", "ExternalRating", "OAEPParameterSpec",
-  "DebridNotReadyException",
+  "DebridNotReadyException", "SerializedName", "Deprecated",
 ]);
 
 
@@ -163,14 +164,65 @@ function argumentsOf(src, open) {
   return src.slice(open);
 }
 
-const perFile = new Map();
-let total = 0;
+/** Split Kotlin arguments without treating commas inside nested calls or strings as separators. */
+function splitArguments(src) {
+  const parts = [];
+  let start = 0;
+  let depth = 0;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '"') {
+      i += 1;
+      while (i < src.length && src[i] !== '"') i += src[i] === "\\" ? 2 : 1;
+    } else if ("([{<".includes(ch)) depth += 1;
+    else if (")]}>".includes(ch)) depth -= 1;
+    else if (ch === "," && depth === 0) { parts.push(src.slice(start, i)); start = i + 1; }
+  }
+  parts.push(src.slice(start));
+  return parts;
+}
 
-for (const path of kotlinFiles(sourceRoot)) {
-  let src = readFileSync(path, "utf8");
+/**
+ * Only an enum constructor's display parameters are interface text. The former line regex also
+ * counted JSON annotations, Regex calls, locale tags, and search keywords as enum labels.
+ */
+function scanEnums(src) {
+  const hits = [];
+  const entries = new Set();
+  for (const declaration of src.matchAll(/\benum\s+class\s+\w+\s*\(/g)) {
+    const open = declaration.index + declaration[0].length - 1;
+    const constructor = argumentsOf(src, open);
+    const parameters = splitArguments(constructor.slice(1)).map(part => /\b(?:val|var)\s+(\w+)\s*:/.exec(part)?.[1]);
+    let cursor = open + constructor.length + 1;
+    // Optional interfaces between the constructor and body contain no enum entries.
+    cursor = src.indexOf("{", cursor) + 1;
+    if (!cursor) continue;
+    while (cursor < src.length) {
+      const entry = /^\s*,?\s*([A-Z]\w*)\s*\(/.exec(src.slice(cursor));
+      if (!entry) break;
+      entries.add(cursor + entry[0].indexOf(entry[1]));
+      const entryOpen = cursor + entry[0].length - 1;
+      const args = argumentsOf(src, entryOpen);
+      splitArguments(args.slice(1)).forEach((arg, index) => {
+        const named = /^\s*(\w+)\s*=/.exec(arg);
+        // Named display arguments are already counted by paramPattern.
+        if (named) return;
+        const parameter = parameters[index];
+        if (!USER_FACING_PARAMS.includes(parameter)) return;
+        const literal = /^\s*(?:\w+\s*=\s*)?"((?:[^"\\\n]|\\.)*)"\s*$/.exec(arg);
+        if (literal && isProse(literal[1])) hits.push(literal[1]);
+      });
+      cursor = entryOpen + args.length + 1;
+    }
+  }
+  return { hits, entries };
+}
+
+export function scanSource(src) {
   // Comments are not interface text, and the codebase has a great many of them.
   src = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
+  const enums = scanEnums(src);
   const hits = [];
   for (const pattern of [paramPattern, textPattern]) {
     pattern.lastIndex = 0;
@@ -185,7 +237,7 @@ for (const path of kotlinFiles(sourceRoot)) {
       if (isProse(literal[1])) hits.push(literal[1]);
     }
   }
-  for (const pattern of [whenArmPattern, enumEntryPattern]) {
+  for (const pattern of [whenArmPattern]) {
     pattern.lastIndex = 0;
     for (const match of src.matchAll(pattern)) {
       if (isProse(match[1])) hits.push(match[1]);
@@ -193,48 +245,62 @@ for (const path of kotlinFiles(sourceRoot)) {
   }
   positionalCallPattern.lastIndex = 0;
   for (const match of src.matchAll(positionalCallPattern)) {
-    if (NOT_INTERFACE_CALLS.has(match[1])) continue;
+    if (NOT_INTERFACE_CALLS.has(match[1]) || enums.entries.has(match.index)) continue;
+    // Custom exception classes have the same non-interface role as standard exceptions.
+    if (/\bthrow\s+$/.test(src.slice(0, match.index))) continue;
     if (isProse(match[2])) hits.push(match[2]);
   }
-  if (hits.length) {
-    perFile.set(relative(root, path).split(sep).join("/"), hits);
-    total += hits.length;
-  }
+  hits.push(...enums.hits);
+  return hits;
 }
 
-if (list) {
-  const ordered = [...perFile.entries()].sort((a, b) => b[1].length - a[1].length);
-  for (const [file, hits] of ordered) {
-    console.log(`${String(hits.length).padStart(5)}  ${file}`);
-    if (process.argv.includes("--verbose")) {
-      for (const hit of hits.slice(0, 20)) console.log(`         ${JSON.stringify(hit)}`);
+function main() {
+  const perFile = new Map();
+  let total = 0;
+  for (const path of kotlinFiles(sourceRoot)) {
+    const hits = scanSource(readFileSync(path, "utf8"));
+    if (hits.length) {
+      perFile.set(relative(root, path).split(sep).join("/"), hits);
+      total += hits.length;
     }
   }
-  console.log("");
+
+  if (list) {
+    const ordered = [...perFile.entries()].sort((a, b) => b[1].length - a[1].length);
+    for (const [file, hits] of ordered) {
+      console.log(`${String(hits.length).padStart(5)}  ${file}`);
+      if (process.argv.includes("--verbose")) {
+        for (const hit of hits.slice(0, 20)) console.log(`         ${JSON.stringify(hit)}`);
+      }
+    }
+    console.log("");
+  }
+
+  const baseline = existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, "utf8")) : null;
+
+  if (update || !baseline) {
+    writeFileSync(
+      baselinePath,
+      `${JSON.stringify({ ceiling: total, note: "Upper bound on hard-coded interface strings. Only ever lower this - see check-hardcoded-strings.mjs." }, null, 2)}\n`,
+    );
+    console.log(`Baseline set to ${total}.`);
+    process.exit(0);
+  }
+
+  console.log(`${total} hard-coded interface string(s); ceiling is ${baseline.ceiling}.`);
+
+  if (total > baseline.ceiling) {
+    console.error(
+      `\nThat is ${total - baseline.ceiling} more than the ceiling. New interface text belongs in ` +
+        `res/values/strings.xml and reaches the screen through stringResource(R.string.…).\n` +
+        `Run with --list to see where they are.`,
+    );
+    process.exit(1);
+  }
+
+  if (total < baseline.ceiling) {
+    console.log(`${baseline.ceiling - total} fewer than the ceiling - run with --update to lock the gain in.`);
+  }
 }
 
-const baseline = existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, "utf8")) : null;
-
-if (update || !baseline) {
-  writeFileSync(
-    baselinePath,
-    `${JSON.stringify({ ceiling: total, note: "Upper bound on hard-coded interface strings. Only ever lower this - see check-hardcoded-strings.mjs." }, null, 2)}\n`,
-  );
-  console.log(`Baseline set to ${total}.`);
-  process.exit(0);
-}
-
-console.log(`${total} hard-coded interface string(s); ceiling is ${baseline.ceiling}.`);
-
-if (total > baseline.ceiling) {
-  console.error(
-    `\nThat is ${total - baseline.ceiling} more than the ceiling. New interface text belongs in ` +
-      `res/values/strings.xml and reaches the screen through stringResource(R.string.…).\n` +
-      `Run with --list to see where they are.`,
-  );
-  process.exit(1);
-}
-
-if (total < baseline.ceiling) {
-  console.log(`${baseline.ceiling - total} fewer than the ceiling - run with --update to lock the gain in.`);
-}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
