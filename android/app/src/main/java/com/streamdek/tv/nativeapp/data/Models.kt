@@ -595,6 +595,8 @@ data class PlaybackPreferences(
     val streamingServer: String = "addon",
     val defaultSubtitleLanguage: String = "en",
     val defaultAudioLanguage: String = "en",
+    val preferredAudioLanguage: String? = null,
+    val preferredSubtitleLanguage: String? = null,
     val externalPlayerEnabled: Boolean = false,
     val preferEmbeddedMpvByDefault: Boolean = true,
     val skipSegmentsEnabled: Boolean? = null,
@@ -790,6 +792,7 @@ data class PreferencesEnvelope(
 
 /** Reply shape of `PUT /profiles/:id/preferences`. */
 data class ProfilePreferencesEnvelope(
+    val settingsPatchVersion: Int = 0,
     val success: Boolean = false,
     val preferences: com.google.gson.JsonObject? = null,
 )

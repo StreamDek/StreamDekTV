@@ -76,6 +76,8 @@ import com.streamdek.tv.nativeapp.ui.home.HomeShelf
 import com.streamdek.tv.nativeapp.ui.search.SearchChip
 import com.streamdek.tv.nativeapp.ui.tvCardLongPress
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
@@ -122,32 +124,38 @@ fun PlexScreen(
     val jellyfinAmbient by repository.mediaServers.jellyfinAmbient.collectAsState()
     val ambient = if (isJellyfin) jellyfinAmbient else plexAmbient
     val scope = rememberCoroutineScope()
-    var rows by remember { mutableStateOf<List<HomeRail>?>(null) }
-    var continueRow by remember { mutableStateOf<HomeRail?>(null) }
+    var rows by remember(provider) { mutableStateOf<List<HomeRail>?>(null) }
+    var continueRow by remember(provider) { mutableStateOf<HomeRail?>(null) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var menu by remember { mutableStateOf<Pair<MediaItem, FocusRequester>?>(null) }
     val listState = rememberLazyListState()
     val rowStates = remember { mutableStateMapOf<String, LazyListState>() }
     /** Which row and card had the highlight, so coming back from a title lands on it. */
-    var lastRowId by rememberSaveable { mutableStateOf<String?>(null) }
-    var lastItemKey by rememberSaveable { mutableStateOf<String?>(null) }
-    var restoreToken by remember { mutableIntStateOf(0) }
+    var lastRowId by rememberSaveable(provider) { mutableStateOf<String?>(null) }
+    var lastItemKey by rememberSaveable(provider) { mutableStateOf<String?>(null) }
+    var restoreToken by remember(provider) { mutableIntStateOf(0) }
     val localEntry = remember { FocusRequester() }
     val firstChipRequester = entryFocusRequester ?: localEntry
     val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
     val continueTitle = stringResource(R.string.home_rail_continue_watching)
     val rowGrowth = rememberMediaServerRowGrowth(repository)
 
+    LaunchedEffect(repository) { repository.mediaServers.refreshInBackground() }
+
     LaunchedEffect(revision, reloadToken, provider) {
-        repository.mediaServers.lastPageProvider = provider
+        val loadingProvider = provider
+        repository.mediaServers.lastPageProvider = loadingProvider
         // The two halves load side by side and land as they are ready.
         launch {
-            val resumes = runCatching { repository.mediaServerContinueWatching(provider) }.getOrDefault(emptyList())
+            val resumes = runCatching { repository.mediaServerContinueWatching(loadingProvider) }.getOrDefault(emptyList())
+            currentCoroutineContext().ensureActive()
             continueRow = HomeRail("continue-watching", continueTitle, resumes).takeIf { resumes.isNotEmpty() }
         }
-        rows = runCatching { repository.mediaServerPageRows(provider) }.getOrDefault(emptyList())
+        val loadedRows = runCatching { repository.mediaServerPageRows(loadingProvider) }.getOrDefault(emptyList())
             .map { row -> HomeRail(row.id, row.title, row.items.withoutAdult()) }
             .filter { it.items.isNotEmpty() }
+        currentCoroutineContext().ensureActive()
+        rows = loadedRows
         if (lastRowId != null) restoreToken++
     }
 
@@ -198,7 +206,7 @@ fun PlexScreen(
                     // Plex and Jellyfin side by side at the top of the page: the one entry in the menu
                     // stands for both, and this is where the viewer picks which library to browse.
                     Row(
-                        Modifier.fillMaxWidth().focusGroup().padding(horizontal = PageInset),
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).focusGroup().padding(horizontal = PageInset),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         providers.forEach { option ->
@@ -208,9 +216,8 @@ fun PlexScreen(
                                 modifier = if (option == providers.first()) Modifier.focusRequester(firstChipRequester) else Modifier,
                                 onClick = {
                                     if (option != provider) {
-                                        rows = null
-                                        continueRow = null
                                         provider = option
+                                        scope.launch { listState.scrollToItem(0) }
                                     }
                                 },
                             )
@@ -255,8 +262,8 @@ fun PlexScreen(
                     )
                 }
             }
-            if (rows?.isEmpty() == true && continueRow != null && offline.size < state.servers.count { it.enabled }) {
-                // Continue Watching came but the libraries did not: say so, and what the server said.
+            if (rows != null && shelves.isNotEmpty() && problem != null && offline.size < state.servers.count { it.enabled }) {
+                // One server can fail while the other has content. Keep that failure visible.
                 item(key = "rows-missing") {
                     RowsMissingNotice(problem = problem, onRetry = retryRows)
                 }
@@ -280,7 +287,7 @@ fun PlexScreen(
                                 isJellyfin -> R.string.jellyfin_page_empty_note
                                 else -> R.string.plex_page_empty_note
                             },
-                        ) + (problem?.takeIf { offline.isEmpty() && enabledLibraries.isNotEmpty() }?.let { "\n\n$it" } ?: ""),
+                        ) + (problem?.takeIf { offline.isEmpty() }?.let { "\n\n$it" } ?: ""),
                         actionLabel = stringResource(R.string.action_retry),
                         onAction = retryRows,
                     )

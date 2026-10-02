@@ -31,10 +31,7 @@ internal fun idleTimeoutLabel(resources: Resources, minutes: Int): String = when
 
 /** TV-local because these values describe the room/display, not the viewing profile. */
 internal class TvIdlePreferences(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences(
-        "streamdek_tv_idle",
-        Context.MODE_PRIVATE,
-    )
+    private val preferences = context.durableTvPreferences("streamdek_tv_idle")
 
     var pausedTimeoutMinutes: Int
         get() = preferences.getInt("paused_timeout_minutes", IDLE_TIMEOUT_OFF)

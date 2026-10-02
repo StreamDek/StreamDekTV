@@ -1996,4 +1996,5 @@
   <string name="plex_browse_empty">Na razie nic tu nie ma</string>
   <string name="media_server_rows_missing_title">Twoje biblioteki się nie wczytały</string>
   <string name="media_server_rows_missing_note">Wybierz „Spróbuj ponownie”. Odpowiedź serwera jest poniżej.</string>
+  <string name="settings_save_failed">Nie udało się zapisać ustawień na tym urządzeniu. Sprawdź dostępne miejsce i spróbuj ponownie.</string>
 </resources>

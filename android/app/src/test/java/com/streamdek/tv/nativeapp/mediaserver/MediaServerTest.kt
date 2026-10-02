@@ -18,6 +18,29 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+class MediaServerNavigationTest {
+    private fun server(libraries: List<MediaServerLibrary> = emptyList(), enabled: Boolean = true) =
+        MediaServerView("srv", "Home", true, null, enabled, MediaServerReachability.Unknown, libraries)
+
+    @Test fun `linked providers remain selectable before library discovery completes`() {
+        for (provider in listOf(PLEX_PROVIDER_ID, JELLYFIN_PROVIDER_ID)) {
+            val state = MediaServerUiState(provider = provider, linked = true, servers = listOf(server()))
+            assertTrue(state.navigationVisible)
+            assertTrue(state.copy(servers = listOf(server().copy(
+                reachability = MediaServerReachability.Offline(OfflineReason.Unreachable),
+            ))).navigationVisible)
+        }
+    }
+
+    @Test fun `explicitly disabled servers and libraries do not enable navigation`() {
+        val library = MediaServerLibrary("srv", "movies", "Movies", MediaServerLibraryKind.Movies, false)
+        assertFalse(MediaServerUiState(linked = true, servers = listOf(server(enabled = false))).navigationVisible)
+        assertFalse(MediaServerUiState(linked = true, servers = listOf(server(listOf(library)))).navigationVisible)
+        assertTrue(MediaServerUiState(linked = true, servers = listOf(server(listOf(library.copy(enabled = true))))).navigationVisible)
+        assertFalse(MediaServerUiState(linked = false, servers = listOf(server())).navigationVisible)
+    }
+}
+
 class MediaServerReferenceTest {
     @Test fun `a reference survives navigation and is opaque`() {
         val ref = MediaServerReference("plex", "abc123", "4567")

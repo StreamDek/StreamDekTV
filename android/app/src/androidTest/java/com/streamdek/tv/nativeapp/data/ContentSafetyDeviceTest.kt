@@ -16,7 +16,9 @@ class ContentSafetyInstrumentation : Instrumentation() {
   override fun onStart() {
     val output = Bundle()
     try {
-      output.putString("stream", ContentSafetyDeviceChecks(targetContext).run(arguments.getString("phase") ?: "write"))
+      output.putString("stream", if (arguments.getString("suite") == "settings")
+        SettingsDeviceChecks(targetContext).run(arguments.getString("phase") ?: "write")
+      else ContentSafetyDeviceChecks(targetContext).run(arguments.getString("phase") ?: "write"))
       finish(Activity.RESULT_OK, output)
     } catch (failure: Throwable) {
       output.putString("stream", "Content safety FAILED: ${failure.stackTraceToString().take(2500)}")

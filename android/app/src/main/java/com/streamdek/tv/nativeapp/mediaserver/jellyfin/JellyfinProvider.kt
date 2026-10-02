@@ -46,6 +46,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.net.URLEncoder
@@ -95,6 +97,7 @@ internal class JellyfinProvider(
     private val client: JellyfinClient,
     private val labels: () -> MediaServerLabels,
     private val onStateChanged: () -> Unit = {},
+    private val onRowsChanged: () -> Unit = {},
     private val now: () -> Long = System::currentTimeMillis,
 ) : MediaServerProvider {
     override val id: String = JELLYFIN_PROVIDER_ID
@@ -120,6 +123,7 @@ internal class JellyfinProvider(
     private val seasons = ConcurrentHashMap<String, Timed<List<JellyfinItem>>>()
     private val episodes = ConcurrentHashMap<String, Timed<List<JellyfinItem>>>()
     private val rowsCache = ConcurrentHashMap<Boolean, Timed<List<MediaServerRow>>>()
+    private val rowReads = ConcurrentHashMap<String, Semaphore>()
     /**
      * Rows being read, shared by everyone who asks meanwhile. They are read in the provider's own
      * scope, so a page that stops waiting (it reloaded, or its time ran out) does not throw the work
@@ -242,6 +246,7 @@ internal class JellyfinProvider(
     }
 
     override suspend fun connect(force: Boolean) {
+        if (force) forgetRows()
         supervisorScope {
             servers.values.filter { it.account.enabled }.map { async { connectServer(it.account.serverId, force) } }.awaitAll()
         }
@@ -438,6 +443,7 @@ internal class JellyfinProvider(
     private fun forgetRows() {
         rowsGeneration.incrementAndGet()
         rowsCache.clear()
+        rowsInFlight.values.forEach { it.cancel() }
         rowsInFlight.clear()
     }
 
@@ -452,17 +458,29 @@ internal class JellyfinProvider(
 
     private suspend fun readRows(includeCollections: Boolean, generation: Int): List<MediaServerRow> {
         val text = labels()
+        val serverIds = enabledServerIds()
+        val arrived = ConcurrentHashMap<String, List<MediaServerRow>>()
         val rows = supervisorScope {
-            enabledServerIds().map { serverId ->
+            serverIds.map { serverId ->
                 async {
-                    runCatching { serverRows(serverId, includeCollections, text) }
+                    val result = runCatching { serverRows(serverId, includeCollections, text) }
                         .onFailure { if (it is CancellationException) throw it }
                         .getOrDefault(emptyList())
+                    if (result.isNotEmpty() && generation == rowsGeneration.get()) {
+                        synchronized(arrived) {
+                            arrived[serverId] = result
+                            rowsCache[includeCollections] = Timed(now(), serverIds.flatMap { arrived[it].orEmpty() })
+                        }
+                        onRowsChanged()
+                    }
+                    result
                 }
             }.awaitAll().flatten()
         }
         // An empty set is what a server not reached yet gives: it is not kept, so the next ask tries again.
-        if (rows.isNotEmpty() && generation == rowsGeneration.get()) rowsCache[includeCollections] = Timed(now(), rows)
+        if (rows.isNotEmpty() && generation == rowsGeneration.get()) {
+            rowsCache[includeCollections] = Timed(now(), rows)
+        }
         return rows
     }
 
@@ -475,10 +493,13 @@ internal class JellyfinProvider(
         val showsKey = enabled.firstOrNull { it.kind == MediaServerLibraryKind.Shows }?.key
         fun row(kind: MediaServerRowKind, title: String, type: String, items: List<MediaItem>, key: String?) =
             items.takeIf { it.isNotEmpty() }?.let { MediaServerRow("", title, serverId, serverName, kind, type, it, key) }
-        // Each row within its own time: one slow query (Next Up can be, on a big library) costs only its own row.
+        // The HTTP client bounds each read after it leaves the shared request queue. Starting a
+        // timeout here would discard later libraries merely because earlier ones are still loading.
         suspend fun within(kind: MediaServerRowKind, library: MediaServerLibrary?): List<MediaItem> =
-            withTimeoutOrNull(ROW_TIMEOUT_MS) { rowItems(serverId, kind, library, 0, ROW_SIZE, context).items }
-                ?: emptyList<MediaItem>().also { problems[serverId] = "${kind.name}: no answer within ${ROW_TIMEOUT_MS / 1000}s" }
+            rowReads.getOrPut(serverId) { Semaphore(2) }.withPermit {
+                // Leave capacity for a library or title the viewer opens while shelves load.
+                rowItems(serverId, kind, library, 0, ROW_SIZE, context).items
+            }
         val built = coroutineScope {
             val nextUp = async {
                 if (showsKey == null) null
@@ -968,7 +989,6 @@ internal class JellyfinProvider(
         const val AUTH_HEADER = "Authorization"
         private const val FIELDS = "ProviderIds,Overview,Genres,DateCreated,ParentId,ChildCount,RecursiveItemCount"
         private const val ROW_SIZE = 20
-        private const val ROW_TIMEOUT_MS = 12_000L
         private const val CONTINUE_SIZE = 24
         private const val MAX_VERSIONS = 3
         private const val SEARCH_TIMEOUT_MS = 6_000L

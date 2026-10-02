@@ -1898,4 +1898,5 @@
   <string name="plex_browse_empty">Nothing in here yet</string>
   <string name="media_server_rows_missing_title">Your libraries didn\'t load</string>
   <string name="media_server_rows_missing_note">Select Try again. What the server said is below.</string>
+  <string name="settings_save_failed">Could not save settings to this device. Please check available storage and try again.</string>
 </resources>

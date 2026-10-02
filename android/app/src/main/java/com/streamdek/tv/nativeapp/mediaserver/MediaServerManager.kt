@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.mediaserver
 
+import com.streamdek.tv.nativeapp.data.durableTvPreferences
 import android.content.Context
 import com.streamdek.tv.nativeapp.data.StreamDekApi
 import com.streamdek.tv.nativeapp.data.TvDebugLogger
@@ -72,7 +73,7 @@ class MediaServerManager internal constructor(
     private val _revision = MutableStateFlow(0L)
     val revision: StateFlow<Long> = _revision.asStateFlow()
 
-    private val displayPrefs = context?.getSharedPreferences(DISPLAY_PREFS, Context.MODE_PRIVATE)
+    private val displayPrefs = context?.durableTvPreferences(DISPLAY_PREFS)
     private val _ambient = MutableStateFlow(displayPrefs?.getBoolean(KEY_AMBIENT, true) ?: true)
     /** Whether the Plex page and its lists wear the Plex colour wash. On until switched off. */
     val ambient: StateFlow<Boolean> = _ambient.asStateFlow()
@@ -104,6 +105,7 @@ class MediaServerManager internal constructor(
         client = jellyfinClient,
         labels = labels,
         onStateChanged = { publishJellyfin() },
+        onRowsChanged = { bump() },
     ).also { provider ->
         provider.onAddressChosen = { serverId, url -> jellyfinPreferred[serverId] = url }
     }

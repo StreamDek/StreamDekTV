@@ -27,6 +27,18 @@ internal object PreferenceScopes {
         // once rather than copied into every profile blob.
         "detail" to null,
         "playback" to setOf(
+            "preferredAudioLanguage",
+            "secondaryAudioLanguage",
+            "preferredSubtitleLanguage",
+            "useForcedSubtitles",
+            "subtitleDefaultSource",
+            "subtitleTextSize",
+            "subtitleVerticalOffset",
+            "subtitleBold",
+            "subtitleTextColor",
+            "subtitleBackgroundColor",
+            "subtitleOutline",
+            "subtitleOutlineColor",
             "preferredQuality",
             "maxFileSizeGB",
             "skipSegmentsEnabled",

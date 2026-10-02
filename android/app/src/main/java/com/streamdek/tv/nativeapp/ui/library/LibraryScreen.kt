@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.library
 
+import com.streamdek.tv.nativeapp.data.durableTvPreferences
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
@@ -167,7 +168,7 @@ fun LibraryScreen(
     var actionState by remember { mutableStateOf<BrowseActionState?>(null) }
 
     val viewStore = remember {
-        context.getSharedPreferences("streamdek_tv_library", android.content.Context.MODE_PRIVATE)
+        context.durableTvPreferences("streamdek_tv_library")
     }
     /**
      * The one authoritative answer to "which tab is Library on".

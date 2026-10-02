@@ -1910,4 +1910,5 @@
   <string name="plex_browse_empty">Ancora niente qui</string>
   <string name="media_server_rows_missing_title">Le tue librerie non sono state caricate</string>
   <string name="media_server_rows_missing_note">Seleziona Riprova per riprovare. Qui sotto trovi la risposta del server.</string>
+  <string name="settings_save_failed">Impossibile salvare le impostazioni sul dispositivo. Controlla lo spazio disponibile e riprova.</string>
 </resources>

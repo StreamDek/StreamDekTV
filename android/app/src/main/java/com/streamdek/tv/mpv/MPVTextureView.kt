@@ -8,7 +8,9 @@ import android.view.KeyEvent
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import com.streamdek.tv.nativeapp.data.BufferedRange
 import com.streamdek.tv.nativeapp.data.PlaybackStats
+import com.streamdek.tv.nativeapp.data.parseMpvSeekableRanges
 import dev.jdtech.mpv.MPVLib
 import java.io.File
 import java.io.FileOutputStream
@@ -623,6 +625,22 @@ class MPVTextureView @JvmOverloads constructor(
             hardwareDecoder = MPVLib.getPropertyString("hwdec-current")?.trim()
                 ?.takeIf { it.isNotEmpty() && !it.equals("no", ignoreCase = true) },
         )
+    }
+
+    /**
+     * What mpv's demuxer cache is holding, for the timeline.
+     *
+     * `demuxer-cache-state` lists every cached stretch, including ones left behind by a seek, which
+     * mpv can still play without the network. When that cannot be read, the single stretch ahead of
+     * the playhead is taken from `demuxer-cache-time` instead.
+     */
+    override fun bufferedRanges(): List<BufferedRange> {
+        if (!initialized || isDestroyed) return emptyList()
+        val cached = parseMpvSeekableRanges(runCatching { MPVLib.getPropertyString("demuxer-cache-state") }.getOrNull())
+        if (cached.isNotEmpty()) return cached
+        val position = MPVLib.getPropertyDouble("time-pos") ?: return emptyList()
+        val cachedUntil = MPVLib.getPropertyDouble("demuxer-cache-time") ?: return emptyList()
+        return if (cachedUntil > position) listOf(BufferedRange(position, cachedUntil)) else emptyList()
     }
 
     private fun dispatchTracksChanged() {

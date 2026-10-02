@@ -128,7 +128,7 @@ class SkyStreamPluginManager(private val context: Context) {
   }
 
   private val prefs: SharedPreferences =
-    context.applicationContext.getSharedPreferences("streamdek_sky_plugins", Context.MODE_PRIVATE)
+    context.applicationContext.durableTvPreferences("streamdek_sky_plugins")
   private val http = OkHttpClient.Builder()
     .connectTimeout(15, TimeUnit.SECONDS)
     .readTimeout(30, TimeUnit.SECONDS)

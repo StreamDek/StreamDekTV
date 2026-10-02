@@ -1945,4 +1945,5 @@
   <string name="plex_browse_empty">Rien ici pour l’instant</string>
   <string name="media_server_rows_missing_title">Vos bibliothèques ne se sont pas chargées</string>
   <string name="media_server_rows_missing_note">Sélectionnez Réessayer pour recommencer. La réponse du serveur est indiquée ci-dessous.</string>
+  <string name="settings_save_failed">Impossible d’enregistrer les paramètres sur cet appareil. Vérifiez l’espace disponible et réessayez.</string>
 </resources>

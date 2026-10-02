@@ -1,5 +1,6 @@
 package com.streamdek.tv.mpv
 
+import com.streamdek.tv.nativeapp.data.BufferedRange
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 
@@ -72,6 +73,14 @@ interface MpvPlayerController {
 
     /** What this engine can say about the stream it is pulling, for the info panel. */
     fun playbackStats(): PlaybackStats = PlaybackStats()
+
+    /**
+     * The stretches of media this engine is holding right now, for the timeline's buffered state.
+     *
+     * In the same seconds as the position handed to [onProgressCallback]. Empty when the engine has
+     * nothing to say - the timeline then shows no buffered state rather than a made-up one.
+     */
+    fun bufferedRanges(): List<BufferedRange> = emptyList()
 
     /**
      * Lets go of everything held for the current source, keeping only where to pick it up.

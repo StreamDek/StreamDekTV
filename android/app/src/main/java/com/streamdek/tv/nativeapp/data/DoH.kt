@@ -32,7 +32,7 @@ val StreamDekDoHProviders = listOf(
 )
 
 class DoHSettings(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+    private val preferences = context.durableTvPreferences(PREFERENCES)
 
     var enabled: Boolean
         get() = preferences.getBoolean(KEY_ENABLED, false)

@@ -32,20 +32,20 @@ object PlaybackCodecOptions {
 
     /** Seeds the in-memory copy the player reads. Safe to call more than once. */
     fun initialize(context: Context) {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = context.durableTvPreferences(PREFS_NAME)
         dv7HevcFallback = prefs.getBoolean(DV7_HEVC_KEY, true)
         tunneledPlayback = prefs.getBoolean(TUNNELED_KEY, false)
     }
 
     fun setDv7HevcFallback(context: Context, enabled: Boolean) {
         dv7HevcFallback = enabled
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        context.durableTvPreferences(PREFS_NAME)
             .edit().putBoolean(DV7_HEVC_KEY, enabled).apply()
     }
 
     fun setTunneledPlayback(context: Context, enabled: Boolean) {
         tunneledPlayback = enabled
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        context.durableTvPreferences(PREFS_NAME)
             .edit().putBoolean(TUNNELED_KEY, enabled).apply()
     }
 }

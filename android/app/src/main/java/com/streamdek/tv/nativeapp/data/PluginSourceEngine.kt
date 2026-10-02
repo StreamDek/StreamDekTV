@@ -247,7 +247,7 @@ private fun domNodeHandle(raw: Any?): Int? = when (raw) {
  * mobile/control-center job. The TV is a consumer.
  */
 class PluginSourceEngine(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("streamdek_tv_plugins", Context.MODE_PRIVATE)
+    private val prefs = context.applicationContext.durableTvPreferences("streamdek_tv_plugins")
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)

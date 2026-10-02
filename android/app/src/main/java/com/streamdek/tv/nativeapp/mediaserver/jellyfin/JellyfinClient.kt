@@ -22,6 +22,9 @@ import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 
 /** Who StreamDek says it is to a Jellyfin server. None of it is secret. */
 internal data class JellyfinClientIdentity(
@@ -82,7 +85,9 @@ internal class JellyfinClient(
     class UnauthorizedException : IOException("The server refused this sign-in.")
 
     /** The server answered, but not with success: 404 is how an older server says it has no such route. */
-    class StatusException(val code: Int) : IOException("status $code")
+    class StatusException(val code: Int, val retryAfterMs: Long? = null) : IOException("status $code")
+
+    private val readGates = ConcurrentHashMap<String, JellyfinRequestGate>()
 
     /** The header a request to a signed-in server carries, for requests made outside this client. */
     fun authorizationFor(token: String?): String = identity().authorization(token)
@@ -114,6 +119,24 @@ internal class JellyfinClient(
         query: Map<String, String>,
         body: Any?,
         type: Class<T>?,
+    ): Result<T?> {
+        // Pace catalogue reads; playback reports and connection probes must remain responsive.
+        if (method == "GET" && client === http) {
+            return readGates.getOrPut(endpoint.baseUrl) { JellyfinRequestGate() }.read {
+                callOnce(client, endpoint, method, path, query, body, type)
+            }
+        }
+        return callOnce(client, endpoint, method, path, query, body, type)
+    }
+
+    private suspend fun <T> callOnce(
+        client: OkHttpClient,
+        endpoint: JellyfinEndpoint,
+        method: String,
+        path: String,
+        query: Map<String, String>,
+        body: Any?,
+        type: Class<T>?,
     ): Result<T?> = withContext(Dispatchers.IO) {
         val request = request(endpoint, path, query, method, body?.let(::json)) ?: return@withContext Result.failure(IOException("bad address"))
         try {
@@ -121,7 +144,14 @@ internal class JellyfinClient(
                 if (response.code == 401 || response.code == 403) throw UnauthorizedException()
                 if (!response.isSuccessful) {
                     TvDebugLogger.w("Jellyfin", "$method ${logPath(path)} answered ${response.code}")
-                    return@use Result.failure(StatusException(response.code))
+                    val retryAfter = response.header("Retry-After")?.let { value ->
+                        value.toLongOrNull()?.coerceIn(0L, 86_400L)?.times(1_000L)
+                            ?: runCatching {
+                                (ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME)
+                                    .toInstant().toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(0L)
+                            }.getOrNull()
+                    }
+                    return@use Result.failure(StatusException(response.code, retryAfter))
                 }
                 if (type == null) return@use Result.success(null)
                 val text = response.body?.charStream() ?: return@use Result.success(null)

@@ -105,6 +105,7 @@ import com.streamdek.tv.nativeapp.data.NextEpisodeAvailabilityPolicy
 import com.streamdek.tv.nativeapp.data.PlaybackPreferences
 import com.streamdek.tv.nativeapp.data.PlaybackRequest
 import com.streamdek.tv.nativeapp.data.PlaybackSegment
+import com.streamdek.tv.nativeapp.data.BufferedRange
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
@@ -604,6 +605,8 @@ fun PlayerScreen(
     // correction for one release carried into the next would put a synced one out.
     var audioDelay by remember(currentSourceUrl) { mutableDoubleStateOf(AudioSyncOptions.defaultDelaySeconds) }
     var playbackStats by remember { mutableStateOf<PlaybackStats?>(null) }
+    /** What the engine is holding, for the timeline. Empty whenever the bar is not on screen. */
+    var bufferedRanges by remember { mutableStateOf<List<BufferedRange>>(emptyList()) }
     var streamsReloading by remember { mutableStateOf(false) }
     /**
      * A skip prompt owns the remote while it is up.
@@ -1744,6 +1747,21 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }
     }
 
+    // The timeline's buffered state, sampled the same way and for the same reason: only while the
+    // bar that draws it is on screen. Keyed on the source and the engine so a switch of either
+    // starts from nothing instead of showing the last stream's buffer over the new one, and the
+    // state is only written when the answer changed, so a paused, fully buffered film costs no
+    // recomposition at all.
+    LaunchedEffect(bottomBarOnScreen, hasSeekableTimeline, playerView, currentSourceUrl) {
+        if (bufferedRanges.isNotEmpty()) bufferedRanges = emptyList()
+        if (!bottomBarOnScreen || !hasSeekableTimeline) return@LaunchedEffect
+        while (true) {
+            val sampled = runCatching { playerView?.bufferedRanges() }.getOrNull().orEmpty()
+            if (sampled != bufferedRanges) bufferedRanges = sampled
+            delay(500)
+        }
+    }
+
 
     LaunchedEffect(currentSourceUrl, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber, detail?.imdbId) {
         externalSubtitles = emptyList()
@@ -1767,7 +1785,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         }.getOrDefault(emptyList())
         if (currentSourceUrl != source) return@LaunchedEffect
         val allowedLanguages = listOf(
-            playbackPreferences.defaultSubtitleLanguage,
+            (playbackPreferences.preferredSubtitleLanguage ?: playbackPreferences.defaultSubtitleLanguage),
             playbackPreferences.secondarySubtitleLanguage,
         ).map(Languages::normalize).filter { it.isNotBlank() && it != Languages.NONE }.toSet()
         externalSubtitles = if (playbackPreferences.showOnlyPreferredSubtitleLanguages) {
@@ -1776,7 +1794,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         if (playbackPreferences.autoLoadSubtitles && selectedSubtitleId < 0 && selectedExternalSubtitleId == null &&
             !(isLive && !repository.liveCaptionsEnabled())
         ) {
-            val preferredLanguage = playbackPreferences.defaultSubtitleLanguage
+            val preferredLanguage = (playbackPreferences.preferredSubtitleLanguage ?: playbackPreferences.defaultSubtitleLanguage)
             val preferred = externalSubtitles.firstOrNull { Languages.matches(it.language, preferredLanguage) }
                 ?: externalSubtitles.firstOrNull { Languages.matches(it.language, playbackPreferences.secondarySubtitleLanguage) }
             if (preferred != null) {
@@ -3030,7 +3048,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             audioPreferenceAppliedForSource = currentSource
                             preferredAudioTrack(
                                 audioTracks = audio,
-                                preferredLanguage = activeProfile?.audioLanguage?.takeIf { it.isNotBlank() }
+                                preferredLanguage = currentBootstrap?.preferences?.playback?.preferredAudioLanguage
+                                    ?: activeProfile?.audioLanguage?.takeIf { it.isNotBlank() }
                                     ?: currentBootstrap?.preferences?.playback?.defaultAudioLanguage
                                     ?: "en",
                             )?.let { preferredTrack ->
@@ -3058,7 +3077,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                             (
                                 preferredSubtitleTrack(
                                     subtitles = eligibleSubtitles,
-                                    preferredLanguage = currentBootstrap?.preferences?.playback?.defaultSubtitleLanguage
+                                    preferredLanguage = currentBootstrap?.preferences?.playback?.preferredSubtitleLanguage
+                                        ?: currentBootstrap?.preferences?.playback?.defaultSubtitleLanguage
                                         ?: "en",
                                 ) ?: eligibleSubtitles.firstOrNull()?.takeIf {
                                     isLive && repository.liveCaptionsChosen() && eligibleSubtitles.all { track -> track.language.isNullOrBlank() }
@@ -3501,6 +3521,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     hasNext = nextEpisode != null,
                     positionSec = positionSec,
                     durationSec = durationSec,
+                    bufferedRanges = bufferedRanges,
                     selectedPanel = panel,
                     playRequester = playRequester,
                     subtitlesRequester = subtitlesRequester,
@@ -3927,7 +3948,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         externalSubtitles = externalSubtitles,
                         showOnlyPreferredSubtitleLanguages = playbackPreferences.showOnlyPreferredSubtitleLanguages,
                         preferredSubtitleLanguages = listOf(
-                            playbackPreferences.defaultSubtitleLanguage,
+                            (playbackPreferences.preferredSubtitleLanguage ?: playbackPreferences.defaultSubtitleLanguage),
                             playbackPreferences.secondarySubtitleLanguage,
                         ),
                         subtitlesLoading = subtitlesLoading,

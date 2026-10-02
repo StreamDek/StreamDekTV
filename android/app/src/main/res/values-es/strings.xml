@@ -1910,4 +1910,5 @@
   <string name="plex_browse_empty">Aquí no hay nada todavía</string>
   <string name="media_server_rows_missing_title">Tus bibliotecas no se cargaron</string>
   <string name="media_server_rows_missing_note">Selecciona Reintentar para volver a intentarlo. Abajo está lo que respondió el servidor.</string>
+  <string name="settings_save_failed">No se pudieron guardar los ajustes en este dispositivo. Comprueba el espacio disponible e inténtalo de nuevo.</string>
 </resources>

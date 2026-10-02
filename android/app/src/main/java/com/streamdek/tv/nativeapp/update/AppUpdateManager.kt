@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.update
 
+import com.streamdek.tv.nativeapp.data.durableTvPreferences
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -46,7 +47,7 @@ class AppUpdateManager(
     private val client: OkHttpClient = OkHttpClient(),
 ) {
     private val preferences: SharedPreferences =
-        context.getSharedPreferences("streamdek_updates", Context.MODE_PRIVATE)
+        context.durableTvPreferences("streamdek_updates")
 
     /**
      * Status and error lines, in the interface language.

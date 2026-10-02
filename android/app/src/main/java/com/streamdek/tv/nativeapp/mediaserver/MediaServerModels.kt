@@ -95,10 +95,8 @@ data class DiscoveredMediaServer(
 /**
  * The whole integration, as the navigation, the settings page and the Plex page need it.
  *
- * [navigationVisible] is the rule the brief sets for the Plex destination: linked, and at least one
- * server with a switched-on library. It deliberately does not require a server to be *reachable*:
- * a sleeping NAS should show its offline state on the Plex page, not make the tab vanish and the
- * layout jump under the viewer's remote.
+ * A linked, enabled server stays accessible while its libraries are being discovered or could not
+ * be read. Once libraries are known, explicitly disabling all of them hides the destination.
  */
 data class MediaServerUiState(
     val provider: String = PLEX_PROVIDER_ID,
@@ -116,7 +114,9 @@ data class MediaServerUiState(
     val usableLibraries: List<MediaServerLibrary>
         get() = servers.filter { it.enabled }.flatMap { server -> server.libraries.filter { it.enabled } }
 
-    val navigationVisible: Boolean get() = linked && usableLibraries.isNotEmpty()
+    val navigationVisible: Boolean get() = linked && servers.any { server ->
+        server.enabled && (server.libraries.isEmpty() || server.libraries.any { it.enabled })
+    }
 }
 
 /** One row on Home or on the Plex page. */

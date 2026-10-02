@@ -41,6 +41,7 @@ import com.streamdek.tv.nativeapp.data.shouldUseDv7Fallback
 import com.streamdek.tv.nativeapp.data.Dv7Hevc
 import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.PlaybackCodecOptions
+import com.streamdek.tv.nativeapp.data.BufferedRange
 import com.streamdek.tv.nativeapp.data.PlaybackStats
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleTrack
 import com.streamdek.tv.nativeapp.data.localizedContext
@@ -542,6 +543,21 @@ class ExoPlaybackView @JvmOverloads constructor(
       frameRate = videoFormat?.frameRate?.takeIf { it > 0f && it != Format.NO_VALUE.toFloat() }?.toDouble(),
       bufferedSeconds = bufferedAhead,
     )
+  }
+
+  /**
+   * What Media3 is holding, for the timeline.
+   *
+   * Media3 keeps one continuous stretch from the playhead and throws the rest away on a seek
+   * outside it, so there is only ever one range to report. Both ends are in the current window,
+   * which is also what the progress callback reports - so a live channel with a seek window lines up.
+   */
+  override fun bufferedRanges(): List<BufferedRange> {
+    val active = exoPlayer ?: return emptyList()
+    val position = active.currentPosition
+    val buffered = active.bufferedPosition
+    if (buffered == C.TIME_UNSET || buffered <= position) return emptyList()
+    return listOf(BufferedRange(position / 1000.0, buffered / 1000.0))
   }
 
   private fun prepareSource(url: String, startPositionMs: Long = 0L) {

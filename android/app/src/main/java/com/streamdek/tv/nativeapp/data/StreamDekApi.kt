@@ -27,7 +27,7 @@ class AuthSessionStore(
     private val gson: Gson = Gson(),
 ) {
     internal val appContext = context.applicationContext
-    private val preferences = appContext.getSharedPreferences("streamdek_tv_native", Context.MODE_PRIVATE)
+    private val preferences = appContext.durableTvPreferences("streamdek_tv_native")
     private val authKey = "streamdek_tv_auth_session_v1"
     private val deviceIdKey = "streamdek_tv_device_id"
     private val previousDeviceIdKey = "streamdek_tv_previous_device_id"
@@ -49,6 +49,7 @@ class AuthSessionStore(
     fun currentSession(): AuthSession? = _session.value
 
     fun saveSession(next: AuthSession) {
+        if (currentSession()?.user?.uid != next.user.uid) preferences.edit().remove(activeProfileIdKey).commit()
         preferences.edit().putString(authKey, gson.toJson(next)).apply()
         _session.value = next
     }
@@ -78,10 +79,17 @@ class AuthSessionStore(
         preferences.edit().putInt(subtitlePositionKey, position.coerceIn(50, 110)).apply()
     }
 
-    fun activeProfileId(): String? = preferences.getString(activeProfileIdKey, null)
+    fun activeProfileId(): String? {
+        val account = currentSession()?.user?.uid ?: return null
+        val key = "$activeProfileIdKey:$account"
+        if (!preferences.contains(key)) preferences.getString(activeProfileIdKey, null)?.let {
+            preferences.edit().putString(key, it).remove(activeProfileIdKey).commit()
+        }
+        return preferences.getString(key, null)
+    }
 
     fun setActiveProfileId(profileId: String?) {
-        preferences.edit().putString(activeProfileIdKey, profileId).apply()
+        preferences.edit().putString("$activeProfileIdKey:${currentSession()?.user?.uid ?: "guest"}", profileId).apply()
     }
 
     /** TV-local because this controls the startup experience of this television only. */

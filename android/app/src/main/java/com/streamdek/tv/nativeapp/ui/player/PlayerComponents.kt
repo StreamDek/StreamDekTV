@@ -76,6 +76,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -119,7 +120,9 @@ import com.streamdek.tv.nativeapp.data.Languages
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.NextEpisodeAvailability
+import com.streamdek.tv.nativeapp.data.BufferedRange
 import com.streamdek.tv.nativeapp.data.PlaybackStats
+import com.streamdek.tv.nativeapp.data.bufferedSegments
 import com.streamdek.tv.nativeapp.data.ProfilePluginState
 import com.streamdek.tv.nativeapp.data.ResolvedPlaybackCandidate
 import com.streamdek.tv.nativeapp.data.formatBitrate
@@ -497,6 +500,8 @@ internal fun PlayerBottomBar(
     scrubTargetSec: Double? = null,
     /** The current playback speed, so "ends at" is honest at 1.5x. */
     playbackSpeed: Double = 1.0,
+    /** What the engine is holding, drawn on the timeline ahead of the playhead. */
+    bufferedRanges: List<BufferedRange> = emptyList(),
 ) {
     // Live broadcasts have no seekable timeline — the progress bar is replaced
     // by a LIVE indicator, so focus targets that pointed at it move to Play.
@@ -644,6 +649,7 @@ internal fun PlayerBottomBar(
                                 if (it) onFocusRegionChanged(PlayerControlsFocusRegion.Seek)
                             },
                             scrubTargetSec = scrubTargetSec,
+                            bufferedRanges = bufferedRanges,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         AnimatedVisibility(
@@ -1083,6 +1089,7 @@ private fun PlayerSeekFocusGroup(
     onInteract: () -> Unit,
     onFocusedChanged: (Boolean) -> Unit,
     scrubTargetSec: Double? = null,
+    bufferedRanges: List<BufferedRange> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -1109,10 +1116,25 @@ private fun PlayerSeekFocusGroup(
             onInteract = onInteract,
             onFocusedChanged = onFocusedChanged,
             scrubTargetSec = scrubTargetSec,
+            bufferedRanges = bufferedRanges,
             modifier = Modifier.fillMaxWidth(),
         )
     }
 }
+
+/**
+ * The timeline's buffered tone: the theme's accent, lightened and let through.
+ *
+ * Derived rather than named, so every theme gets its own and none can drift from its accent. Mixed
+ * toward white so it reads as the softer relative of the watched fill, and translucent so it sits
+ * between that fill and the neutral track in brightness on the dark scrim the bar is drawn on.
+ */
+internal fun timelineBufferedColor(accent: Color): Color =
+    androidx.compose.ui.graphics.lerp(accent, Color.White, 0.35f).copy(alpha = 0.62f)
+
+/** The deeper end of the watched fill's gradient, from the same accent. */
+internal fun timelinePlayedDeepColor(accent: Color): Color =
+    androidx.compose.ui.graphics.lerp(accent, Color.Black, 0.14f).copy(alpha = 1f)
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -1127,10 +1149,20 @@ internal fun PlayerTimeline(
     onFocusedChanged: (Boolean) -> Unit = {},
     /** Where a scrub in flight will land. Shown in a bubble over the head while it is non-null. */
     scrubTargetSec: Double? = null,
+    /** What the engine is holding. Drawn ahead of the playhead in a lighter shade of the accent. */
+    bufferedRanges: List<BufferedRange> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
     val progress = if (durationSec > 0.0) (positionSec / durationSec).coerceIn(0.0, 1.0).toFloat() else 0f
+    // All three states come from the selected theme: watched is the accent itself, buffered its
+    // lighter relative, and what is left is the neutral track every theme shares.
+    val accent = androidx.tv.material3.MaterialTheme.colorScheme.primary
+    val playedBrush = remember(accent) { Brush.horizontalGradient(listOf(timelinePlayedDeepColor(accent), accent)) }
+    val bufferedColor = remember(accent) { timelineBufferedColor(accent) }
+    val buffered = remember(bufferedRanges, durationSec, positionSec) {
+        bufferedSegments(bufferedRanges, durationSec, positionSec)
+    }
     // Read from the state object inside the key handler rather than from a captured Boolean, so
     // the first press after focus arrives sees this frame's value and not the previous one.
     val durationState = remember { mutableStateOf(durationSec) }
@@ -1207,21 +1239,42 @@ internal fun PlayerTimeline(
                     .clip(trackShape)
                     .background(PlayerTokens.TrackRest),
             ) {
+                if (buffered.isNotEmpty()) {
+                    // One draw pass under the watched fill, no layout and no animation: this is
+                    // redrawn twice a second at most, while video is decoding underneath.
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .drawBehind {
+                                val radius = size.height / 2f
+                                buffered.forEach { segment ->
+                                    // A stretch that begins at the playhead is tucked under the
+                                    // watched fill's rounded end, so no notch shows between them.
+                                    val joinsPlayhead = segment.start <= progress + 0.0005f
+                                    val left = (size.width * segment.start - if (joinsPlayhead) radius else 0f).coerceAtLeast(0f)
+                                    val right = (size.width * segment.end).coerceAtMost(size.width)
+                                    if (right > left) {
+                                        drawRoundRect(
+                                            color = bufferedColor,
+                                            topLeft = androidx.compose.ui.geometry.Offset(left, 0f),
+                                            size = androidx.compose.ui.geometry.Size(right - left, size.height),
+                                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius),
+                                        )
+                                    }
+                                }
+                            },
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(progress.coerceAtLeast(0f))
                         .fillMaxHeight()
                         .clip(trackShape)
-                        .background(
-                            if (focused) {
-                                Brush.horizontalGradient(listOf(Color(0xFFE9A94F), PlayerTokens.Accent))
-                            } else {
-                                Brush.horizontalGradient(listOf(Color(0xE6FFFFFF), Color.White))
-                            },
-                        ),
+                        .background(playedBrush),
                 )
             }
-            // The head: a small white dot at rest that swells into the gold scrub handle.
+            // The head: a small white dot at rest that swells into the scrub handle - the accent
+            // inside a white ring, so it stands clear of both the watched and the buffered tone.
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
@@ -1233,7 +1286,8 @@ internal fun PlayerTimeline(
                         scaleY = scale
                     }
                     .clip(CircleShape)
-                    .background(if (focused) PlayerTokens.Accent else Color.White),
+                    .background(Color.White)
+                    .then(if (focused) Modifier.padding(2.5.dp).clip(CircleShape).background(accent) else Modifier),
             )
             if (scrubTargetSec != null || bubbleAlpha > 0f) {
                 Box(
@@ -1247,14 +1301,14 @@ internal fun PlayerTimeline(
                         }
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color(0xF2171A23))
-                        .border(1.dp, PlayerTokens.AccentSoft, RoundedCornerShape(10.dp))
+                        .border(1.dp, accent.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
                         .padding(vertical = 4.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         text = formatPlaybackClock(scrubTargetSec ?: positionSec),
                         style = androidx.tv.material3.MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                        color = PlayerTokens.Accent,
+                        color = accent,
                         maxLines = 1,
                     )
                 }

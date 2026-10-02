@@ -1894,4 +1894,5 @@
   <string name="plex_browse_empty">Hier staat nog niets</string>
   <string name="media_server_rows_missing_title">Je bibliotheken zijn niet geladen</string>
   <string name="media_server_rows_missing_note">Kies Opnieuw proberen om het nog eens te proberen. Wat de server antwoordde staat hieronder.</string>
+  <string name="settings_save_failed">De instellingen konden niet worden opgeslagen. Controleer de beschikbare opslagruimte en probeer het opnieuw.</string>
 </resources>

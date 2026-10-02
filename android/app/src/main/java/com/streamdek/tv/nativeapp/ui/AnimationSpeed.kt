@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui
 
+import com.streamdek.tv.nativeapp.data.durableTvPreferences
 import android.content.Context
 import android.provider.Settings
 import androidx.annotation.StringRes
@@ -209,10 +210,7 @@ val LocalMotionSettings: ProvidableCompositionLocal<MotionSettings> =
  * animation in the tree picks it up on the spot - no restart, and no screen to back out of first.
  */
 internal class TvAnimationPreferences(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences(
-        "streamdek_tv_motion",
-        Context.MODE_PRIVATE,
-    )
+    private val preferences = context.applicationContext.durableTvPreferences("streamdek_tv_motion")
 
     var speed: AnimationSpeed by mutableStateOf(
         AnimationSpeed.fromKey(preferences.getString(KEY, null)),

@@ -415,7 +415,7 @@ fun SettingsScreen(
         // wrapped in the chosen language. The three lines are whole sentences with the setting's
         // name as an argument, not a name glued to a fragment.
         val label = settingsResources.getString(labelRes)
-        scope.launch {
+        scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
             status = settingsResources.getString(R.string.settings_saving_named, label)
             val updated = runCatching { update() }.getOrNull()
             if (updated == null) {
@@ -597,6 +597,7 @@ fun SettingsScreen(
                     ) { value ->
                         pausedTimeoutMinutes = value.toInt()
                         idlePreferences.pausedTimeoutMinutes = pausedTimeoutMinutes
+                        repository.queueDevicePreferences(mapOf(PlatformPreferences.Device.SLEEP_WHEN_PAUSED_MINUTES to pausedTimeoutMinutes))
                         scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.SLEEP_WHEN_PAUSED_MINUTES to pausedTimeoutMinutes)) }
                         status = settingsResources.getString(R.string.settings_status_paused_sleep_set, idleTimeoutLabel(settingsResources, pausedTimeoutMinutes))
                     }
@@ -608,6 +609,7 @@ fun SettingsScreen(
                     ) { value ->
                         appIdleTimeoutMinutes = value.toInt()
                         idlePreferences.appIdleTimeoutMinutes = appIdleTimeoutMinutes
+                        repository.queueDevicePreferences(mapOf(PlatformPreferences.Device.APP_IDLE_TIMEOUT_MINUTES to appIdleTimeoutMinutes))
                         scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.APP_IDLE_TIMEOUT_MINUTES to appIdleTimeoutMinutes)) }
                         status = settingsResources.getString(R.string.settings_status_app_idle_set, idleTimeoutLabel(settingsResources, appIdleTimeoutMinutes))
                     }
@@ -627,7 +629,7 @@ fun SettingsScreen(
                     SettingsPanel(stringResource(R.string.settings_tv_section_subtitle_language)) {
                         InfoLine(stringResource(R.string.info_cloud_scope), stringResource(R.string.info_changes_apply_on_this_tv_and_sync))
                     }
-                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_subtitles), stringResource(R.string.settings_tv_choose_a_preferred_subtitle_language_or_leave), normalizeLanguage(playbackPrefs?.defaultSubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_subtitles), stringResource(R.string.settings_tv_choose_a_preferred_subtitle_language_or_leave), normalizeLanguage(playbackPrefs?.preferredSubtitleLanguage ?: playbackPrefs?.defaultSubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
                         savePreference(R.string.settings_tv_default_subtitles) { repository.updatePlaybackPreferences(mapOf("defaultSubtitleLanguage" to value)) }
                     }
                     SettingsDropdownRow(stringResource(R.string.settings_tv_secondary_subtitles), stringResource(R.string.settings_tv_used_only_when_the_preferred_language_is), normalizeLanguage(playbackPrefs?.secondarySubtitleLanguage, allowOff = true), languageOptions(includeOff = true)) { value ->
@@ -664,7 +666,7 @@ fun SettingsScreen(
                     SettingsPanel(stringResource(R.string.settings_tv_section_audio_language)) {
                         InfoLine(stringResource(R.string.info_cloud_scope), stringResource(R.string.info_changes_apply_on_this_tv_and_sync))
                     }
-                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_audio), stringResource(R.string.settings_tv_select_the_first_matching_audio_track), normalizeLanguage(playbackPrefs?.defaultAudioLanguage), languageOptions(includeOff = false)) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_audio), stringResource(R.string.settings_tv_select_the_first_matching_audio_track), normalizeLanguage(playbackPrefs?.preferredAudioLanguage ?: repository.activeStreamProfile(bootstrap)?.audioLanguage ?: playbackPrefs?.defaultAudioLanguage), languageOptions(includeOff = false)) { value ->
                         savePreference(R.string.settings_tv_default_audio) { repository.updatePlaybackPreferences(mapOf("defaultAudioLanguage" to value)) }
                     }
                     SettingsPanel(stringResource(R.string.settings_tv_section_audio_sync)) {
@@ -1794,6 +1796,7 @@ fun SettingsScreen(
                     ) { value ->
                         val speed = AnimationSpeed.fromKey(value)
                         animationPreferences?.select(speed)
+                        repository.queueDevicePreferences(mapOf(PlatformPreferences.Device.ANIMATION_SPEED to speed.key))
                         scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.ANIMATION_SPEED to speed.key)) }
                     }
                     // This television's own setting like Animation speed above, and mirrored to
@@ -1810,7 +1813,8 @@ fun SettingsScreen(
                     ) { value ->
                         languagePreferences?.select(value)
                         languagePreferences?.let { chosen ->
-                            scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.APP_LANGUAGE to chosen.selection)) }
+                            repository.queueDevicePreferences(mapOf(PlatformPreferences.Device.APP_LANGUAGE to chosen.selection))
+                        scope.launch { repository.updateDevicePreferences(mapOf(PlatformPreferences.Device.APP_LANGUAGE to chosen.selection)) }
                         }
                     }
                     SettingsToggleRow(stringResource(R.string.settings_tv_background_depth), stringResource(R.string.settings_tv_subtle_cinematic_depth_behind_content), appPrefs?.backgroundBlur != false, selectedRequester) { next, complete ->

@@ -1,5 +1,6 @@
 package com.streamdek.tv.nativeapp.ui.player
 
+import com.streamdek.tv.nativeapp.data.durableTvPreferences
 import android.content.Context
 import androidx.annotation.OptIn
 import androidx.compose.runtime.getValue
@@ -140,13 +141,13 @@ internal object AudioSyncOptions {
   val defaultDelaySeconds: Double get() = defaultDelayMs / 1000.0
 
   fun initialize(context: Context) {
-    defaultDelayMs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    defaultDelayMs = context.applicationContext.durableTvPreferences(PREFS_NAME)
       .getInt(DEFAULT_DELAY_KEY, 0).coerceIn(-limitMs, limitMs)
   }
 
   fun setDefaultDelayMs(context: Context, delayMs: Int) {
     defaultDelayMs = delayMs.coerceIn(-limitMs, limitMs)
-    context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    context.applicationContext.durableTvPreferences(PREFS_NAME)
       .edit().putInt(DEFAULT_DELAY_KEY, defaultDelayMs).apply()
   }
 }

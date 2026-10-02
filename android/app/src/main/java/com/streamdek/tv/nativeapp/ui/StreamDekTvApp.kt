@@ -992,6 +992,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
         }
         val plan = PlatformPreferences.reconcileDevice(bootstrap?.preferences?.platforms, local)
         for ((key, value) in plan.apply) {
+            if (key in repository.pendingDevicePreferenceKeys()) continue
             runCatching {
                 when (key) {
                     PlatformPreferences.Device.ANIMATION_SPEED -> AnimationSpeed.fromKey(value.asString)
@@ -1003,7 +1004,7 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
                 }
             }
         }
-        if (plan.upload.isNotEmpty()) repository.updateDevicePreferences(plan.upload)
+        // Absent cloud fields preserve local values; only an explicit edit queues an upload.
     }
     CompositionLocalProvider(LocalTvAnimationPreferences provides animationPreferences) {
     StreamDekTvTheme(appPreferences = appPrefs, homePreferences = homePrefs, motion = motionSettings) {

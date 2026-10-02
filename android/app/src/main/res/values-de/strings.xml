@@ -1894,4 +1894,5 @@
   <string name="plex_browse_empty">Hier ist noch nichts</string>
   <string name="media_server_rows_missing_title">Deine Mediatheken wurden nicht geladen</string>
   <string name="media_server_rows_missing_note">Wähle „Erneut versuchen“. Die Antwort des Servers steht darunter.</string>
+  <string name="settings_save_failed">Die Einstellungen konnten nicht gespeichert werden. Prüfe den verfügbaren Speicherplatz und versuche es erneut.</string>
 </resources>

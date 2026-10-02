@@ -21,7 +21,7 @@ internal object TvLanguagePreferences {
     private const val KEY = "app_language"
 
     private fun preferences(context: Context) =
-        context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        context.durableTvPreferences(FILE)
 
     /** Either [AppLanguage.SystemSelection] or a supported language tag. */
     fun selection(context: Context): String =

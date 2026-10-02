@@ -278,7 +278,9 @@ fun HomeScreen(
     // their rows follow as soon as they do rather than at the next poll.
     val cloudStreamVersion by repository.cloudStreamProvidersVersion.collectAsState()
     val fuseEnabled by repository.fuseEnabled.collectAsState()
-    // Linking Plex, or switching one of its libraries on or off, changes which rows Home has.
+    // Pick up servers linked on another device when Home is entered again.
+    LaunchedEffect(repository) { repository.mediaServers.refreshInBackground() }
+    // Linking a provider or changing its libraries changes which rows Home has.
     val mediaServerRevision by repository.mediaServers.revision.collectAsState()
     val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration, cloudStreamVersion, fuseEnabled, mediaServerRevision) {
         "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration:cs$cloudStreamVersion:fuse$fuseEnabled:ms$mediaServerRevision"

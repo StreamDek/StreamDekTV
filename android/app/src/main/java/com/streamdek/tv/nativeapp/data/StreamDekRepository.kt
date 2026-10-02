@@ -804,12 +804,12 @@ class StreamDekRepository(
 
     /** The remote-quality ceiling chosen on this television for media servers; null is original quality. */
     fun mediaServerRemoteQualityKbps(): Int? = appContext
-        ?.getSharedPreferences(MEDIA_SERVER_PREFS, android.content.Context.MODE_PRIVATE)
+        ?.durableTvPreferences(MEDIA_SERVER_PREFS)
         ?.getInt(MEDIA_SERVER_REMOTE_QUALITY_KEY, 0)
         ?.takeIf { it > 0 }
 
     fun setMediaServerRemoteQualityKbps(kbps: Int?) {
-        appContext?.getSharedPreferences(MEDIA_SERVER_PREFS, android.content.Context.MODE_PRIVATE)
+        appContext?.durableTvPreferences(MEDIA_SERVER_PREFS)
             ?.edit()?.putInt(MEDIA_SERVER_REMOTE_QUALITY_KEY, kbps ?: 0)?.apply()
     }
 
@@ -943,7 +943,37 @@ class StreamDekRepository(
     /** One CloudStream Home row's fetch, shared by every Home load that wants it; see [fetchCloudStreamRails]. */
     private class CloudStreamRowFetch(val startedAt: Long, val job: kotlinx.coroutines.Deferred<HomeRail?>)
     private val cloudStreamRowFetches = java.util.concurrent.ConcurrentHashMap<String, CloudStreamRowFetch>()
-    private val bootstrapState = MutableStateFlow<AccountBootstrap?>(null)
+    private val settingsDisk = sessionStore.appContext.durableTvPreferences("streamdek_tv_settings_journal")
+    private val settingsJournal = TvSettingsJournal(
+        read = { settingsDisk.getString("state_v1", null) },
+        write = { settingsDisk.edit().putString("state_v1", it).commit() },
+        diagnostic = { TvDebugLogger.w("Settings", it) },
+    )
+    private var settingsUploadJob: kotlinx.coroutines.Job? = null
+    @Volatile private var settingsOwnerGeneration = 0L
+    private fun settingsOwner(session: AuthSession? = currentSession()) =
+        TvSettingsOwner(session?.user?.uid ?: "guest", sessionStore.activeProfileId())
+    private fun readSettingsBootstrap(): AccountBootstrap? = settingsJournal.snapshot(settingsOwner())?.let { raw ->
+        runCatching { api.gson.fromJson(raw, AccountBootstrap::class.java) }.getOrNull()
+    }
+    private val bootstrapState = MutableStateFlow<AccountBootstrap?>(readSettingsBootstrap())
+    init {
+        // Migrate only values actually present in the older local stores, never generated defaults.
+        if (!settingsDisk.getBoolean("legacy_device_migrated_v1", false)) {
+            val values = linkedMapOf<String, Any?>()
+            listOf(
+                Triple("streamdek_tv_motion", "animation_speed", PlatformPreferences.Device.ANIMATION_SPEED),
+                Triple("streamdek_tv_language", "app_language", PlatformPreferences.Device.APP_LANGUAGE),
+                Triple("streamdek_tv_idle", "paused_timeout_minutes", PlatformPreferences.Device.SLEEP_WHEN_PAUSED_MINUTES),
+                Triple("streamdek_tv_idle", "app_idle_timeout_minutes", PlatformPreferences.Device.APP_IDLE_TIMEOUT_MINUTES),
+            ).forEach { (file, key, field) ->
+                sessionStore.appContext.getSharedPreferences(file, android.content.Context.MODE_PRIVATE).all[key]?.let { values[field] = it }
+            }
+            if (values.isEmpty() || queuePreferencePatch(mapOf(PlatformPreferences.KEY to mapOf(PlatformPreferences.PLATFORM to values)))) {
+                settingsDisk.edit().putBoolean("legacy_device_migrated_v1", true).commit()
+            }
+        }
+    }
     /** Prevent an older bootstrap response from publishing after a newer settings mutation. */
     private val bootstrapRefreshMutex = kotlinx.coroutines.sync.Mutex()
     private val addonEntitlementsMutex = kotlinx.coroutines.sync.Mutex()
@@ -1270,19 +1300,22 @@ class StreamDekRepository(
             user = normalizeUser(result.user, token),
         )
         sessionStore.saveSession(session)
+        settingsOwnerGeneration++
+        bootstrapState.value = readSettingsBootstrap()
         TvDebugLogger.i("Auth", "completeTvSession user=${session.user.uid}")
         runCatching { refreshBootstrap() }
         return session
     }
 
     fun signOut() {
+        settingsOwnerGeneration++
         sessionStore.clearSession()
         clearDebridKeys()
         // The content-service keys belonged to the account that just left -- including one kept on
         // this television, which was still that viewer's key and not the box's.
         serviceCredentials.clearAll()
         contentServicesState.value = ContentServicesState()
-        bootstrapState.value = null
+        bootstrapState.value = readSettingsBootstrap()
         addonEntitlementsUserId = null
         serverSideStreamsEnabled = false
         fusionBadgeSourcesState.value = emptyMap()
@@ -1326,12 +1359,14 @@ class StreamDekRepository(
 
     suspend fun refreshBootstrap(): AccountBootstrap? = bootstrapRefreshMutex.withLock {
         val session = currentSession() ?: run {
-            bootstrapState.value = null
-            TvDebugLogger.w("Bootstrap", "refreshBootstrap skipped: no session")
-            return@withLock null
+            bootstrapState.value = readSettingsBootstrap()
+            return@withLock bootstrapState.value
         }
-        TvDebugLogger.i("Bootstrap", "refreshBootstrap start user=${session.user.uid}")
+        var owner = settingsOwner(session)
+        var generation = settingsOwnerGeneration
+        flushPreferenceJournal(session, owner)
         var bootstrap = fetchBootstrap(session)
+        if (settingsOwner() != owner || generation != settingsOwnerGeneration) return@withLock bootstrapState.value
         if (bootstrap != null) {
             val activeProfileId = sessionStore.activeProfileId()
             if (activeProfileId.isNullOrBlank()) {
@@ -1341,6 +1376,10 @@ class StreamDekRepository(
                     ?: bootstrap.streamProfiles.firstOrNull()?.id
                 if (!preferredProfileId.isNullOrBlank()) {
                     sessionStore.setActiveProfileId(preferredProfileId)
+                    settingsOwnerGeneration++
+                    owner = settingsOwner(session)
+                    generation = settingsOwnerGeneration
+                    flushPreferenceJournal(session, owner)
                     TvDebugLogger.i("Bootstrap", "selected initial profile=$preferredProfileId")
                     // Re-read so the profile-scoped overrides for the profile just picked are applied.
                     bootstrap = fetchBootstrap(session) ?: bootstrap
@@ -1354,6 +1393,8 @@ class StreamDekRepository(
         } else {
             TvDebugLogger.w("Bootstrap", "refreshBootstrap returned null")
         }
+        if (settingsOwner() != owner || generation != settingsOwnerGeneration) return@withLock bootstrapState.value
+        bootstrap = bootstrap ?: bootstrapState.value ?: readSettingsBootstrap()
         bootstrapState.value = bootstrap
         // Account-saved TMDB and MDBList keys ride along on the bootstrap, which is what lets a
         // television that has only just been signed into find them already there -- and what makes
@@ -1389,192 +1430,72 @@ class StreamDekRepository(
      * for the profile actually in use.
      */
     private suspend fun fetchBootstrap(session: AuthSession): AccountBootstrap? {
+        val owner = settingsOwner(session)
+        val generation = settingsOwnerGeneration
         val raw = api.get<JsonObject>("/account/bootstrap", session) ?: return null
-        val profilePreferences = raw.asObjectOrNull("profilePreferences") ?: JsonObject()
-        profilePreferencesState.value = profilePreferences
-        val accountPreferences = raw.asObjectOrNull("preferences") ?: JsonObject()
-        // This television's own values go on last: they are a device choice, so they win over the
-        // profile's copy of the shared value just as they win over the account's.
-        raw.add(
-            "preferences",
-            PlatformPreferences.applyToPreferences(
-                PreferenceScopes.mergeIntoAccountPreferences(accountPreferences, profilePreferences),
-            ),
-        )
+        if (settingsOwner() != owner || generation != settingsOwnerGeneration) {
+            TvDebugLogger.i("Settings", "stale_owner_response_ignored")
+            return null
+        }
+        val profile = raw.asObjectOrNull("profilePreferences") ?: JsonObject()
+        // Keep legacy profile metadata authoritative; unsent local language edits are overlaid by the journal.
+        raw.getAsJsonArray("streamProfiles")?.firstOrNull { it.asJsonObject.get("id")?.asString == owner.profile }
+            ?.asJsonObject?.get("audioLanguage")?.takeUnless { it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }?.let { language ->
+                val playback = profile.asObjectOrNull("playback") ?: JsonObject().also { profile.add("playback", it) }
+                playback.addProperty("preferredAudioLanguage", language)
+            }
+        val account = raw.asObjectOrNull("preferences") ?: JsonObject()
+        settingsJournal.acceptRemote(owner, account, profile, raw.getAsJsonArray("streamProfiles"))
+        val restored = settingsJournal.snapshot(owner) ?: return null
+        profilePreferencesState.value = restored.asObjectOrNull("profilePreferences") ?: JsonObject()
+        raw.add("preferences", mergeSettingsObjects(account, restored.getAsJsonObject("preferences")))
         return runCatching { api.gson.fromJson(raw, AccountBootstrap::class.java) }
-            .onFailure { TvDebugLogger.e("Bootstrap", "could not read bootstrap payload", it) }
+            .onFailure { TvDebugLogger.w("Settings", "bootstrap_decode_failed type=${it.javaClass.simpleName}") }
             .getOrNull()
     }
 
     suspend fun updatePlaybackPreferences(partial: Map<String, Any?>): AccountBootstrap? {
-        val existing = bootstrapState.value?.preferences?.playback ?: PlaybackPreferences()
-        if (!patchPreferences(
-            mapOf(
-                "playback" to mapOf(
-                    "autoplayNextEpisode" to (partial["autoplayNextEpisode"] ?: existing.autoplayNextEpisode),
-                    "preferredQuality" to (partial["preferredQuality"] ?: existing.preferredQuality),
-                    "maxFileSizeGB" to (partial["maxFileSizeGB"] ?: existing.maxFileSizeGB),
-                    "streamingServer" to (partial["streamingServer"] ?: existing.streamingServer),
-                    "defaultSubtitleLanguage" to (partial["defaultSubtitleLanguage"] ?: existing.defaultSubtitleLanguage),
-                    "defaultAudioLanguage" to (partial["defaultAudioLanguage"] ?: existing.defaultAudioLanguage),
-                    "externalPlayerEnabled" to (partial["externalPlayerEnabled"] ?: existing.externalPlayerEnabled),
-                    "preferEmbeddedMpvByDefault" to (partial["preferEmbeddedMpvByDefault"] ?: existing.preferEmbeddedMpvByDefault),
-                    "skipSegmentsEnabled" to (partial["skipSegmentsEnabled"]
-                        ?: listOf(
-                            partial["skipIntroEnabled"] as? Boolean ?: existing.isSegmentEnabled("intro"),
-                            partial["skipRecapEnabled"] as? Boolean ?: existing.isSegmentEnabled("recap"),
-                            partial["skipEndingEnabled"] as? Boolean ?: existing.isSegmentEnabled("outro"),
-                        ).any { it }),
-                    "skipIntroEnabled" to (partial["skipIntroEnabled"] ?: existing.isSegmentEnabled("intro")),
-                    "skipRecapEnabled" to (partial["skipRecapEnabled"] ?: existing.isSegmentEnabled("recap")),
-                    "skipEndingEnabled" to (partial["skipEndingEnabled"] ?: existing.isSegmentEnabled("outro")),
-                    "autoSkipIntroEnabled" to (partial["autoSkipIntroEnabled"] ?: existing.autoSkipIntroEnabled),
-                    "autoSkipRecapEnabled" to (partial["autoSkipRecapEnabled"] ?: existing.autoSkipRecapEnabled),
-                    "autoSkipEndingEnabled" to (partial["autoSkipEndingEnabled"] ?: existing.autoSkipEndingEnabled),
-                    "autoPlayNextEpisodeEnabled" to (partial["autoPlayNextEpisodeEnabled"]
-                        ?: partial["autoplayNextEpisode"]
-                        ?: existing.isAutoPlayNextEpisodeEnabled()),
-                    "preferBingeGroupNextEpisode" to (partial["preferBingeGroupNextEpisode"] ?: existing.preferBingeGroupNextEpisode),
-                    "autoLoadSubtitles" to (partial["autoLoadSubtitles"] ?: existing.autoLoadSubtitles),
-                    "showOnlyPreferredSubtitleLanguages" to (partial["showOnlyPreferredSubtitleLanguages"] ?: existing.showOnlyPreferredSubtitleLanguages),
-                    "secondarySubtitleLanguage" to (partial["secondarySubtitleLanguage"] ?: existing.secondarySubtitleLanguage),
-                    "addonSubtitleLoading" to (partial["addonSubtitleLoading"] ?: existing.addonSubtitleLoading),
-                    "subtitleDefaultSource" to (partial["subtitleDefaultSource"] ?: existing.subtitleDefaultSource),
-                    "nextEpisodeThresholdMode" to (partial["nextEpisodeThresholdMode"] ?: existing.nextEpisodeThresholdMode),
-                    "nextEpisodeThresholdPercent" to (partial["nextEpisodeThresholdPercent"] ?: existing.nextEpisodeThresholdPercent),
-                    "nextEpisodeThresholdMinutes" to (partial["nextEpisodeThresholdMinutes"] ?: existing.nextEpisodeThresholdMinutes),
-                    "endOfPlaybackRecommendationsEnabled" to (partial["endOfPlaybackRecommendationsEnabled"] ?: existing.endOfPlaybackRecommendationsEnabled),
-                    "recommendationTiming" to (partial["recommendationTiming"] ?: existing.recommendationTiming),
-                    "recommendationItemCount" to (partial["recommendationItemCount"] ?: existing.recommendationItemCount),
-                    "timingProvider" to (partial["timingProvider"] ?: existing.timingProvider),
-                    "timingProviderFallbackEnabled" to (partial["timingProviderFallbackEnabled"] ?: existing.timingProviderFallbackEnabled),
-                    "decoderMode" to (partial["decoderMode"] ?: existing.decoderMode),
-                    "renderSurface" to (partial["renderSurface"] ?: existing.renderSurface),
-                    "playerEngine" to (partial["playerEngine"] ?: existing.playerEngine),
-                    "rememberLastSource" to (partial["rememberLastSource"] ?: existing.rememberLastSource),
-                    "manualStreamSelectionEnabled" to (partial["manualStreamSelectionEnabled"] ?: existing.manualStreamSelectionEnabled),
-                    "liveProgressBarEnabled" to (partial["liveProgressBarEnabled"] ?: existing.liveProgressBarEnabled),
-                    "liveBadgeEnabled" to (partial["liveBadgeEnabled"] ?: existing.liveBadgeEnabled),
-                ),
-            ),
-        )) return null
-        return refreshBootstrap()
+        val changes = partial.toMutableMap()
+        if ("defaultAudioLanguage" in changes) changes["preferredAudioLanguage"] = changes.remove("defaultAudioLanguage")
+        if ("defaultSubtitleLanguage" in changes) changes["preferredSubtitleLanguage"] = changes.remove("defaultSubtitleLanguage")
+        if ("autoplayNextEpisode" in changes) changes["autoPlayNextEpisodeEnabled"] = changes["autoplayNextEpisode"]
+        if ("autoPlayNextEpisodeEnabled" in changes) changes["autoplayNextEpisode"] = changes["autoPlayNextEpisodeEnabled"]
+        if (!patchPreferences(mapOf("playback" to changes))) return null
+        return bootstrapState.value
     }
 
     suspend fun updateAppPreferences(partial: Map<String, Any?>): AccountBootstrap? {
-        val existing = bootstrapState.value?.preferences?.app ?: AppPreferences()
-        if (!patchPreferences(
-            mapOf(
-                "app" to mapOf(
-                    "theme" to (partial["theme"] ?: existing.theme),
-                    "colorMode" to (partial["colorMode"] ?: existing.colorMode),
-                    "startScreen" to (partial["startScreen"] ?: existing.startScreen),
-                    "homeRowCardStyle" to (partial["homeRowCardStyle"] ?: existing.homeRowCardStyle),
-                    "compactMode" to (partial["compactMode"] ?: existing.compactMode),
-                    "syncOverCellular" to (partial["syncOverCellular"] ?: existing.syncOverCellular),
-                    "cardDensity" to (partial["cardDensity"] ?: existing.cardDensity),
-                    // Carried through untouched rather than dropped: this television no longer
-                    // reads it, but an older client on the same account still might, and a PATCH
-                    // that omitted the key would clear their setting.
-                    "animationSpeed" to (partial["animationSpeed"] ?: @Suppress("DEPRECATION") existing.animationSpeed),
-                    "navigationStyle" to (partial["navigationStyle"] ?: existing.navigationStyle),
-                    "gridSize" to (partial["gridSize"] ?: existing.gridSize),
-                    "backgroundBlur" to (partial["backgroundBlur"] ?: existing.backgroundBlur),
-                    "highContrast" to (partial["highContrast"] ?: existing.highContrast),
-                    "largeText" to (partial["largeText"] ?: existing.largeText),
-                    "reducedMotion" to (partial["reducedMotion"] ?: existing.reducedMotion),
-                    "hideHomeSynopsis" to (partial["hideHomeSynopsis"] ?: existing.hideHomeSynopsis),
-                    "hideHomeCardTitles" to (partial["hideHomeCardTitles"] ?: existing.hideHomeCardTitles),
-                    "transparentNavigation" to (partial["transparentNavigation"] ?: existing.transparentNavigation),
-                ),
-            ),
-        )) return null
-        return refreshBootstrap()
+        if (!patchPreferences(mapOf("app" to partial))) return null
+        return bootstrapState.value
     }
 
     suspend fun updateHomePreferences(partial: Map<String, Any?>): AccountBootstrap? {
-        val existing = bootstrapState.value?.preferences?.home ?: HomePreferences()
-        if (!patchPreferences(
-            mapOf(
-                "home" to mapOf(
-                    "primarySyncService" to (partial["primarySyncService"] ?: existing.primarySyncService),
-                    "defaultAppCatalogsEnabled" to (partial["defaultAppCatalogsEnabled"] ?: existing.defaultAppCatalogsEnabled),
-                    "continueWatchingStyle" to (partial["continueWatchingStyle"] ?: existing.continueWatchingStyle),
-                    "networkCardStyle" to (partial["networkCardStyle"] ?: existing.networkCardStyle),
-                    "liveCategoriesEnabled" to (partial["liveCategoriesEnabled"] ?: existing.liveCategoriesEnabled),
-                    "liveLandscapeCards" to (partial["liveLandscapeCards"] ?: existing.liveLandscapeCards),
-                    "liveFavouriteDrawerCards" to (partial["liveFavouriteDrawerCards"] ?: existing.liveFavouriteDrawerCards),
-                    "showHeroSynopsis" to (partial["showHeroSynopsis"] ?: existing.showHeroSynopsis),
-                    "detailPageStyle" to (partial["detailPageStyle"] ?: existing.detailPageStyle),
-                    "vividAmbient" to (partial["vividAmbient"] ?: existing.vividAmbient),
-                    "ambientTintPercent" to (partial["ambientTintPercent"] ?: existing.ambientTintPercent),
-                    "homeCatalogRows" to (partial["homeCatalogRows"] ?: existing.homeCatalogRows),
-                ),
-            ),
-        )) return null
+        if (!patchPreferences(mapOf("home" to partial))) return null
         homeCache.clear()
-        return refreshBootstrap()
+        return bootstrapState.value
     }
 
     suspend fun updateDetailPreferences(partial: Map<String, Any?>): AccountBootstrap? {
-        val existing = bootstrapState.value?.preferences?.detail ?: DetailPreferences()
-        // Trailer choices are split off into `platforms.tv` (see PlatformPreferences); everything
-        // else stays in the shared section.
-        if (!patchPreferences(
-            PlatformPreferences.splitSectionUpdate(
-                "detail",
-                mapOf(
-                    "seasonTabStyle" to (partial["seasonTabStyle"] ?: existing.seasonTabStyle),
-                    "heroTrailerAutoplay" to (partial["heroTrailerAutoplay"] ?: existing.heroTrailerAutoplay),
-                    "heroTrailerDelaySeconds" to (partial["heroTrailerDelaySeconds"] ?: existing.heroTrailerDelaySeconds),
-                    "heroTrailerResolution" to (partial["heroTrailerResolution"] ?: existing.heroTrailerResolution),
-                    "trailerCacheClearHours" to (partial["trailerCacheClearHours"] ?: existing.trailerCacheClearHours),
-                    "ratingsEnabled" to (partial["ratingsEnabled"] ?: existing.ratingsEnabled),
-                    "externalRatingsEnabled" to (partial["externalRatingsEnabled"] ?: existing.externalRatingsEnabled),
-                    "enabledRatingProviders" to (partial["enabledRatingProviders"] ?: existing.enabledRatingProviders),
-                    // Deliberately not carried through any more. The MDBList key was a secret
-                    // travelling on an ordinary settings document; it lives in the encrypted
-                    // credential store now and is managed under Content Services. The field is left
-                    // out entirely rather than echoed back, so a trailer setting saved from the
-                    // television cannot resurrect a plaintext copy the migration has just cleared.
-                ),
-            ),
-        )) return null
-        return refreshBootstrap()
+        if (!patchPreferences(PlatformPreferences.splitSectionUpdate("detail", partial))) return null
+        return bootstrapState.value
     }
 
-    /**
-     * Saves settings that belong to this television alone, under `platforms.tv`. The backend merges
-     * that section a client at a time, so only these keys are sent and the phone's are left alone.
-     */
+    fun queueDevicePreferences(values: Map<String, Any?>) {
+        queuePreferencePatch(mapOf(PlatformPreferences.KEY to mapOf(PlatformPreferences.PLATFORM to values)))
+    }
+
+    fun pendingDevicePreferenceKeys(): Set<String> = settingsJournal.pending(settingsOwner()).account.keySet()
+        .filter { it.startsWith("platforms.tv.") }.map { it.removePrefix("platforms.tv.") }.toSet()
+
     suspend fun updateDevicePreferences(values: Map<String, Any?>): AccountBootstrap? {
         if (values.isEmpty()) return bootstrapState.value
         if (!patchPreferences(mapOf(PlatformPreferences.KEY to mapOf(PlatformPreferences.PLATFORM to values)))) return null
-        return refreshBootstrap()
+        return bootstrapState.value
     }
 
     suspend fun updateStreamsPreferences(partial: Map<String, Any?>): AccountBootstrap? {
-        val existing = bootstrapState.value?.preferences?.streams ?: StreamsPreferences()
-        if (!patchPreferences(
-            mapOf(
-                "streams" to mapOf(
-                    "fusionBadgesEnabled" to (partial["fusionBadgesEnabled"] ?: existing.fusionBadgesEnabled),
-                    "showSizeBadges" to (partial["showSizeBadges"] ?: existing.showSizeBadges),
-                    "badgePosition" to (partial["badgePosition"] ?: existing.badgePosition),
-                    "fusionBadgeUrls" to (partial["fusionBadgeUrls"] ?: existing.fusionBadgeUrls),
-                    "activeFusionBadgeUrl" to (if (partial.containsKey("activeFusionBadgeUrl")) partial["activeFusionBadgeUrl"] else existing.activeFusionBadgeUrl),
-                    // Carried through untouched so writing a badge setting from the TV does not
-                    // blank out the stream-picker keys the other clients own.
-                    "showStreamsList" to (partial["showStreamsList"] ?: existing.showStreamsList),
-                    "rememberLastSource" to (partial["rememberLastSource"] ?: existing.rememberLastSource),
-                    "blurUnwatchedEpisodes" to (partial["blurUnwatchedEpisodes"] ?: existing.blurUnwatchedEpisodes),
-                    "streamDekFormattingEnabled" to (partial["streamDekFormattingEnabled"] ?: existing.streamDekFormattingEnabled),
-                    "showAddonTmdbRatings" to (partial["showAddonTmdbRatings"] ?: existing.showAddonTmdbRatings),
-                    "favoriteSourceKeys" to (partial["favoriteSourceKeys"] ?: existing.favoriteSourceKeys),
-                ),
-            ),
-        )) return null
-        return refreshBootstrap()
+        if (!patchPreferences(mapOf("streams" to partial))) return null
+        return bootstrapState.value
     }
 
     suspend fun fetchFusionBadgeSource(url: String, forceRefresh: Boolean = false): FusionBadgeSource? {
@@ -2255,7 +2176,7 @@ class StreamDekRepository(
         val fuseEnabled = fuseEnabledState.value
         // Media server rows join Home once a library is switched on, and change when the viewer
         // changes which libraries are; the revision says when.
-        val mediaServerRows = mediaServers.navigableProviders().isNotEmpty()
+        val mediaServerRows = mediaServers.activeProviders().isNotEmpty()
         val cacheKey = buildSessionProfileCacheKey() +
             ":${homePreferences?.defaultAppCatalogsEnabled != false}:$addonConfiguration:$rowLayout:$cloudStreamSources:fuse=$fuseEnabled" +
             ":ms=${if (mediaServerRows) mediaServers.revision.value else -1}"
@@ -4388,6 +4309,9 @@ class StreamDekRepository(
     fun setActiveStreamProfile(profileId: String?) {
         if (profileId == sessionStore.activeProfileId()) return
         sessionStore.setActiveProfileId(profileId)
+        settingsOwnerGeneration++
+        bootstrapState.value = readSettingsBootstrap()
+        profilePreferencesState.value = JsonObject()
         reloadFavouriteChannels()
         libraryCache.clear()
         homeCache.clear()
@@ -5960,7 +5884,7 @@ class StreamDekRepository(
         val type = if (isSeries) "series" else "movie"
         val preferences = bootstrapState.value?.preferences?.playback ?: PlaybackPreferences()
         val preferredLanguages = listOf(
-            preferences.defaultSubtitleLanguage,
+            (preferences.preferredSubtitleLanguage ?: preferences.defaultSubtitleLanguage),
             preferences.secondarySubtitleLanguage,
         ).map(Languages::normalize).filter { it.isNotBlank() && it != Languages.NONE }.toSet()
         val cloudSources = (preferences.subtitleSources + preferences.customSubtitleSources)
@@ -6057,7 +5981,7 @@ class StreamDekRepository(
                 }
                 .sortedWith(compareBy<ExternalSubtitleTrack> {
                     when (it.language) {
-                        normalizeSubtitleLanguage(preferences.defaultSubtitleLanguage) -> 0
+                        normalizeSubtitleLanguage((preferences.preferredSubtitleLanguage ?: preferences.defaultSubtitleLanguage)) -> 0
                         "en" -> 1
                         else -> 2
                     }
@@ -6965,7 +6889,7 @@ class StreamDekRepository(
     }
 
     private fun debridPreferences() =
-        appContext?.getSharedPreferences("streamdek_tv_debrid", android.content.Context.MODE_PRIVATE)
+        appContext?.durableTvPreferences("streamdek_tv_debrid")
 
     /**
      * Whether this account's premium keys are kept in StreamDek's database as well as on this
@@ -7245,8 +7169,9 @@ class StreamDekRepository(
     private fun preferredAudioLanguageForAutoSelection(): String? {
         val activeProfile = activeStreamProfile(bootstrapState.value)
         val profileLanguage = activeProfile?.audioLanguage?.trim()?.takeIf { it.isNotBlank() }
+        val selectedLanguage = bootstrapState.value?.preferences?.playback?.preferredAudioLanguage?.takeIf { it.isNotBlank() }
         val playbackLanguage = bootstrapState.value?.preferences?.playback?.defaultAudioLanguage?.trim()?.takeIf { it.isNotBlank() }
-        val preferredLanguage = profileLanguage ?: playbackLanguage
+        val preferredLanguage = selectedLanguage ?: profileLanguage ?: playbackLanguage
         return preferredLanguage?.takeUnless { it.equals("auto", ignoreCase = true) }
     }
 
@@ -7507,42 +7432,69 @@ class StreamDekRepository(
         }
     }
 
-    /**
-     * Writes a settings change to both scopes: the account copy keeps devices that have no profile
-     * selected in step, and the profile copy is what mobile and web read back for this viewer.
-     * Sending only the account copy would leave the change invisible to them, and a later profile
-     * write from another client would silently undo it.
-     */
-    private suspend fun patchPreferences(payload: Map<String, Any?>): Boolean {
-        val response = api.patch<JsonObject>(
-            "/account/preferences",
-            mapOf("preferences" to payload),
-        ) ?: return false
-        if (!response.has("preferences")) return false
-        return writeProfilePreferences(payload)
+    /** Persist each edit in its owning scope before scheduling network work. */
+    private fun queuePreferencePatch(payload: Map<String, Any?>): Boolean {
+        val patch = api.gson.toJsonTree(payload).asJsonObject
+        if (!settingsJournal.enqueue(settingsOwner(), patch)) return false
+        val cached = readSettingsBootstrap() ?: return true
+        bootstrapState.value = bootstrapState.value?.copy(preferences = cached.preferences) ?: cached
+        return true
     }
 
-    private suspend fun writeProfilePreferences(payload: Map<String, Any?>): Boolean {
-        val profileId = sessionStore.activeProfileId()?.takeIf { it.isNotBlank() } ?: return true
-        if (currentSession() == null) return true
-        val changed = runCatching { api.gson.toJsonTree(payload).asJsonObject }.getOrNull() ?: return false
-        // The whole blob is resent, so it has to be current: another client may have changed a
-        // favourite channel since this one last read it, and settings writes are rare enough that
-        // one extra read costs nothing.
-        val current = api.get<ProfilePreferencesEnvelope>(
-            "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/preferences",
-        )?.preferences ?: profilePreferencesState.value
-        val next = PreferenceScopes.applyToProfileBlob(current, changed) ?: return true
-        val response = api.put<ProfilePreferencesEnvelope>(
-            "/profiles/${URLEncoder.encode(profileId, "UTF-8")}/preferences",
-            mapOf("preferences" to next),
-        )
-        if (response == null) {
-            TvDebugLogger.w("Preferences", "profile preference sync failed; account copy was still saved")
-            return false
+    private suspend fun patchPreferences(payload: Map<String, Any?>): Boolean {
+        val session = currentSession()
+        val owner = settingsOwner(session)
+        if (!queuePreferencePatch(payload)) return false
+        if (session != null) {
+            settingsUploadJob?.cancel()
+            settingsUploadJob = repositoryScope.launch {
+                delay(350)
+                repeat(3) { attempt ->
+                    if (settingsOwner() != owner) return@launch
+                    bootstrapRefreshMutex.withLock { flushPreferenceJournal(session, owner) }
+                    if (settingsJournal.pending(owner).empty) return@launch
+                    delay(if (attempt == 0) 2_000 else 15_000)
+                }
+            }
         }
-        profilePreferencesState.value = response.preferences ?: next
         return true
+    }
+
+    /** Called under the same mutex as bootstrap reads. A failed write stays pending across restarts. */
+    private suspend fun flushPreferenceJournal(session: AuthSession, owner: TvSettingsOwner) {
+        while (settingsOwner() == owner) {
+            val sent = settingsJournal.pending(owner)
+            if (sent.empty) return
+            val accountPatch = pendingSettingsPayload(sent.account)
+            if (accountPatch.size() > 0 && api.patch<JsonObject>("/account/preferences", mapOf("preferences" to accountPatch), session) == null) {
+                TvDebugLogger.w("Settings", "account_upload_pending")
+                return
+            }
+            val profilePatch = pendingSettingsPayload(sent.profile)
+            if (profilePatch.size() > 0 && !owner.profile.isNullOrBlank()) {
+                val path = "/profiles/${URLEncoder.encode(owner.profile, "UTF-8")}/preferences"
+                val envelope = api.get<ProfilePreferencesEnvelope>(path, session)
+                val current = envelope?.preferences ?: run {
+                    TvDebugLogger.w("Settings", "profile_read_failed_pending")
+                    return
+                }
+                val merged = PreferenceScopes.applyToProfileBlob(current, profilePatch) ?: JsonObject()
+                val sections = JsonObject().apply { profilePatch.keySet().forEach { key -> merged.get(key)?.let { add(key, it) } } }
+                val sparse = envelope.settingsPatchVersion >= 1
+                if (api.put<JsonObject>(path, mapOf("preferences" to if (sparse) profilePatch else sections, "merge" to sparse), session) == null) {
+                    TvDebugLogger.w("Settings", "profile_upload_pending")
+                    return
+                }
+                profilePatch.asObjectOrNull("playback")?.get("preferredAudioLanguage")?.let { language ->
+                    if (api.patch<JsonObject>("/profiles/${URLEncoder.encode(owner.profile, "UTF-8")}", mapOf("audioLanguage" to language.asString), session) == null) {
+                        TvDebugLogger.w("Settings", "profile_language_upload_pending")
+                        return
+                    }
+                }
+            }
+            settingsJournal.acknowledge(owner, sent)
+            TvDebugLogger.i("Settings", "upload_acknowledged")
+        }
     }
 
     /**
@@ -7727,6 +7679,8 @@ class StreamDekRepository(
             refreshToken = response.refreshToken ?: response.refresh_token,
         )
         sessionStore.saveSession(session)
+        settingsOwnerGeneration++
+        bootstrapState.value = readSettingsBootstrap()
         return session
     }
 
