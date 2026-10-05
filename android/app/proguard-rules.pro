@@ -115,3 +115,18 @@
 -keep class org.videolan.libvlc.** { *; }
 -keep interface org.videolan.libvlc.** { *; }
 -dontwarn org.videolan.libvlc.**
+
+# --- Media3 FFmpeg audio decoders (libs/lib-decoder-ffmpeg-release.aar) ---
+# The software decoders for AC-3, E-AC-3, DTS, TrueHD and the rest - the audio most downloaded
+# films and episodes carry, and which many devices have no decoder of their own for.
+#
+# libffmpegJNI.so looks FfmpegAudioDecoder.growOutputBuffer up by name in JNI_OnLoad and refuses
+# to load without it. Nothing in Java calls that method, so R8 removed it, the library failed to
+# load in release builds only, and Media3 was left with the device's decoders alone: every such
+# track was reported unsupported, and it either played silent or needed another engine. The
+# AAR ships without the consumer rules the upstream module has, so they are stated here.
+-keep class androidx.media3.decoder.ffmpeg.** { *; }
+-keep class androidx.media3.decoder.SimpleDecoderOutputBuffer { *; }
+-keepclassmembers class androidx.media3.decoder.ffmpeg.FfmpegAudioDecoder {
+    private java.nio.ByteBuffer growOutputBuffer(androidx.media3.decoder.SimpleDecoderOutputBuffer, int);
+}

@@ -42,6 +42,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
@@ -98,8 +103,13 @@ private val EpisodeThumbShape = RoundedCornerShape(10.dp)
  *    the highlight can never slide off the panel onto the picture.
  *
  * It opens with the highlight already on the episode that is playing, in its own season, so OK
- * straight away is "carry on" and one press either way is the neighbouring episode. Back closes it
- * and returns the highlight to the Episodes button, which is the player's doing, not this panel's.
+ * straight away is "carry on" and one press either way is the neighbouring episode.
+ *
+ * One press of Back closes it, and so does the Close button in its heading; either way the player
+ * puts the highlight back on the Episodes button. The panel takes Back itself rather than leaving
+ * it to the player's back handler, because Compose spends a Back press on stepping the highlight
+ * out to the nearest focusable ancestor before any back handler is asked - and here there are two
+ * of those, this panel and the player behind it, so closing used to take three presses.
  */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -154,6 +164,9 @@ internal fun PlayerEpisodePanel(
     val seasonRequesters = remember(seasons) { seasons.associate { it.seasonNumber to FocusRequester() } }
     val entryRequester = remember { FocusRequester() }
     val panelRequester = remember { FocusRequester() }
+    val closeRequester = remember { FocusRequester() }
+    /** A Back release only closes the panel if the press began in it. */
+    var backPressedHere by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val showSeasons = seasons.size > 1
 
@@ -167,7 +180,7 @@ internal fun PlayerEpisodePanel(
             // Something in the panel holds the highlight while the first season is read, so the
             // remote is never left pointing at controls that are no longer on screen.
             delay(80)
-            runCatching { ((seasonRequesters[selectedSeason]?.takeIf { showSeasons }) ?: panelRequester).requestFocus() }
+            runCatching { ((seasonRequesters[selectedSeason]?.takeIf { showSeasons }) ?: closeRequester).requestFocus() }
             return@LaunchedEffect
         }
         if (episodes.isEmpty()) {
@@ -192,6 +205,18 @@ internal fun PlayerEpisodePanel(
         modifier = modifier
             .width(600.dp)
             .fillMaxHeight()
+            .onPreviewKeyEvent { event ->
+                if (event.key != Key.Back && event.key != Key.Escape) return@onPreviewKeyEvent false
+                when (event.type) {
+                    KeyEventType.KeyDown -> backPressedHere = true
+                    KeyEventType.KeyUp -> if (backPressedHere) {
+                        backPressedHere = false
+                        onClose()
+                    }
+                    else -> Unit
+                }
+                true
+            }
             .focusRequester(panelRequester)
             .focusable(),
     ) {
@@ -222,6 +247,37 @@ internal fun PlayerEpisodePanel(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                OutlinedButton(
+                    onClick = onClose,
+                    shape = ButtonDefaults.shape(AppPillShape),
+                    modifier = Modifier
+                        .focusRequester(closeRequester)
+                        .focusProperties {
+                            up = FocusRequester.Cancel
+                            left = FocusRequester.Cancel
+                            right = FocusRequester.Cancel
+                            // Down goes to the season on show, or straight into the list when the
+                            // series has one season - and nowhere while there is nothing below yet.
+                            down = seasonRequesters[selectedSeason]?.takeIf { showSeasons }
+                                ?: if (episodes.isNullOrEmpty() && failedSeason != selectedSeason) FocusRequester.Cancel else entryRequester
+                        }
+                        .onFocusChanged {
+                            if (it.isFocused) {
+                                // The viewer went there themselves; the opening highlight must not
+                                // arrive late and take them off it.
+                                initialFocusPlaced = true
+                                onInteract()
+                            }
+                        },
+                    colors = ButtonDefaults.colors(
+                        containerColor = Color(0x10FFFFFF),
+                        focusedContainerColor = Color(0x22FFFFFF),
+                        contentColor = Color.White,
+                        focusedContentColor = Color.White,
+                    ),
+                ) {
+                    Text(stringResource(R.string.action_close))
+                }
             }
 
             if (showSeasons) {
@@ -251,7 +307,8 @@ internal fun PlayerEpisodePanel(
                                     // Into the list, or onto Try Again when the season could not be read.
                                     FocusDirection.Down ->
                                         if (episodes.isNullOrEmpty() && failedSeason != selectedSeason) FocusRequester.Cancel else entryRequester
-                                    FocusDirection.Up, FocusDirection.Left, FocusDirection.Right -> FocusRequester.Cancel
+                                    FocusDirection.Up -> closeRequester
+                                    FocusDirection.Left, FocusDirection.Right -> FocusRequester.Cancel
                                     else -> FocusRequester.Default
                                 }
                             }
@@ -353,7 +410,7 @@ internal fun PlayerEpisodePanel(
                                     .focusProperties {
                                         left = FocusRequester.Cancel
                                         right = FocusRequester.Cancel
-                                        if (index == 0) up = seasonRequesters[selectedSeason]?.takeIf { showSeasons } ?: FocusRequester.Cancel
+                                        if (index == 0) up = seasonRequesters[selectedSeason]?.takeIf { showSeasons } ?: closeRequester
                                         if (index == episodes.lastIndex) down = FocusRequester.Cancel
                                     },
                                 onFocused = {
