@@ -41,6 +41,7 @@ class MPVView @JvmOverloads constructor(
 
     companion object {
         private const val TAG = "StreamDekMPVView"
+        private const val PROGRESS_INTERVAL_MS = 250L
         private const val MPV_EVENT_END_FILE = 7
         private const val MPV_EVENT_FILE_LOADED = 8
         private const val MPV_EVENT_PLAYBACK_RESTART = 21
@@ -56,6 +57,12 @@ class MPVView @JvmOverloads constructor(
     private var subtitleDelaySeconds = 0.0
     private var audioDelaySeconds = 0.0
     private var pendingSource: String? = null
+    // mpv reports its position once per frame. The screen is told four times a second, and at
+    // once when the position jumps (a seek), which is twice as often as Media3 reports.
+    @Volatile private var lastProgressDispatchMs = 0L
+    @Volatile private var lastProgressPosition = -1.0
+    @Volatile private var knownFullDuration = 0.0
+    @Volatile private var knownDuration = 0.0
     private var activeSource: String? = null
     private var paused = false
     private var headers: Map<String, String>? = null
@@ -310,6 +317,9 @@ class MPVView @JvmOverloads constructor(
     }
 
     private fun loadFile(url: String) {
+        knownFullDuration = 0.0
+        knownDuration = 0.0
+        lastProgressPosition = -1.0
         if (isDestroyed) return
         Log.i(
             TAG,
@@ -788,13 +798,22 @@ class MPVView @JvmOverloads constructor(
         if (isDestroyed) return
         when (property) {
             "time-pos" -> {
-                val duration = MPVLib.getPropertyDouble("duration/full")
+                val now = android.os.SystemClock.elapsedRealtime()
+                val jumped = kotlin.math.abs(value - lastProgressPosition) >= 1.0
+                if (!jumped && now - lastProgressDispatchMs < PROGRESS_INTERVAL_MS) return
+                lastProgressDispatchMs = now
+                lastProgressPosition = value
+                // The duration arrives through its own event; it is only asked for here until then.
+                val duration = knownFullDuration.takeIf { it > 0.0 }
+                    ?: knownDuration.takeIf { it > 0.0 }
+                    ?: MPVLib.getPropertyDouble("duration/full")
                     ?: MPVLib.getPropertyDouble("duration")
                     ?: 0.0
                 dispatchOnMain("onProgressCallback") { onProgressCallback?.invoke(value, duration) }
             }
 
             "duration/full", "duration" -> {
+                if (property == "duration/full") knownFullDuration = value else knownDuration = value
                 if (loadWaitsForPlayback && !playbackStarted) {
                     pendingLoadDuration = value
                     return

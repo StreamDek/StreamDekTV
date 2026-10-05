@@ -282,18 +282,39 @@ fun HomeScreen(
     LaunchedEffect(repository) { repository.mediaServers.refreshInBackground() }
     // Linking a provider or changing its libraries changes which rows Home has.
     val mediaServerRevision by repository.mediaServers.revision.collectAsState()
-    val loadKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id, homeContentConfiguration, cloudStreamVersion, fuseEnabled, mediaServerRevision) {
-        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}:$homeContentConfiguration:cs$cloudStreamVersion:fuse$fuseEnabled:ms$mediaServerRevision"
+    /**
+     * Whose Home this is. The only thing that starts Home over.
+     *
+     * This used to be one string that also carried the add-on set, the CloudStream version, the
+     * Fuse switch and the media server revision, and the screen keyed its own state on it: whether
+     * the first artwork had loaded, which row held the entry card. Those four settle one after
+     * another in the first seconds of a cold start. Each change reset that state, so the finished
+     * page was swapped for its skeleton, rebuilt, and given its opening highlight again - once per
+     * change. That was Home appearing to load, reload, and reload again.
+     *
+     * Identity and content are now separate. What Home is built from is handed to the view model,
+     * which decides whether anything needs reading; nothing on this screen is reset by it.
+     */
+    val identityKey = remember(session?.user?.uid, repository.activeStreamProfile(bootstrap)?.id) {
+        "${session?.user?.uid ?: "guest"}:${repository.activeStreamProfile(bootstrap)?.id ?: "default"}"
     }
-    LaunchedEffect(loadKey) {
-        // A retained HomeViewModel must not turn its first snapshot into a session-long cache.
-        // Refresh immediately when Home is re-entered, then poll only while this screen is visible
-        // so progress written by another device appears without restarting the TV app.
-        if (homeViewModel.uiState.value.content == null) homeViewModel.load(loadKey)
-        else homeViewModel.forceRefresh(loadKey)
+    // What settles late and only fills rows in; see [HomeViewModel.bind].
+    val sourcesKey = "cs$cloudStreamVersion:fuse$fuseEnabled:ms$mediaServerRevision"
+    LaunchedEffect(identityKey, homeContentConfiguration, sourcesKey) {
+        homeViewModel.bind(identityKey, homeContentConfiguration, sourcesKey)
+    }
+    LaunchedEffect(identityKey) {
+        // A retained HomeViewModel must not turn its first page into a session-long cache.
+        // Refresh when Home is re-entered, then poll only while this screen is visible so progress
+        // written by another device appears without restarting the TV app. Both are requests: the
+        // view model folds them into whatever read is already running.
+        // A Home that failed last time is tried again on the way back in, too.
+        if (homeViewModel.uiState.value.let { it.identity == identityKey && (it.content != null || it.error != null) }) {
+            homeViewModel.requestRefresh("entered")
+        }
         while (true) {
             delay(15_000L)
-            homeViewModel.forceRefresh(loadKey)
+            homeViewModel.requestRefresh("poll")
         }
     }
     /**
@@ -306,26 +327,35 @@ fun HomeScreen(
      * three or four seconds of work and made Home visibly begin a second time. Revisions seen
      * before Home has content are recorded as already covered by the load in flight.
      */
-    var handledLibraryRevision by remember(loadKey) { mutableLongStateOf(0L) }
-    LaunchedEffect(loadKey, libraryRevision, screenState.content != null) {
+    // Seeded with the revision current when this Home was first drawn, which the load in flight
+    // already covers. It used to be reset to zero with every change of the old load key, so each
+    // of those changes also looked like an unseen library write and asked for a second refresh.
+    var handledLibraryRevision by remember(identityKey) { mutableLongStateOf(libraryRevision) }
+    // Only what a fresh read has put on screen counts as seen: the saved page predates the library.
+    val freshContentShown = screenState.identity == identityKey && screenState.content != null && !screenState.fromSnapshot
+    LaunchedEffect(identityKey, libraryRevision, freshContentShown) {
         if (libraryRevision <= 0L) return@LaunchedEffect
-        if (screenState.content == null) {
+        if (!freshContentShown) {
             handledLibraryRevision = libraryRevision
             return@LaunchedEffect
         }
         if (libraryRevision == handledLibraryRevision) return@LaunchedEffect
         handledLibraryRevision = libraryRevision
-        homeViewModel.forceRefresh(loadKey)
+        homeViewModel.requestRefresh("library")
     }
 
-    val content = screenState.content
+    // Never another profile's shelves: until the view model has taken up this identity there is
+    // nothing to draw, which is the skeleton, not the page that was here before.
+    val content = screenState.content.takeIf { screenState.identity == identityKey }
     // Before anything has the highlight, the spotlight shows the card the opening highlight lands on.
     // It used to show the featured title, which skips Continue Watching, and then switch to the first
     // Continue Watching card a moment later when focus arrived - one more change on a page that had
     // just appeared, and part of why Home looked as though it loaded twice.
     val openingItem = content?.rails?.let { rails -> rails.getOrNull(firstFocusableHomeRowIndex(rails))?.items?.firstOrNull() }
     val spotlightItem = focusedItem ?: openingItem ?: content?.featured
-    var initialArtworkReady by remember(loadKey) { mutableStateOf(false) }
+    // Once per identity. Home is revealed when its first screenful of artwork is ready and is
+    // never un-revealed: later content replaces what is drawn, in place.
+    var initialArtworkReady by remember(identityKey) { mutableStateOf(false) }
     val initialArtworkUrls = remember(content, portraitCards) {
         buildList {
             (openingItem ?: content?.featured)?.let { opening ->
@@ -346,7 +376,7 @@ fun HomeScreen(
     }
     val initialArtworkKey = initialArtworkUrls.joinToString("|")
 
-    LaunchedEffect(loadKey, initialArtworkKey) {
+    LaunchedEffect(identityKey, initialArtworkKey) {
         if (initialArtworkReady || content == null || initialArtworkUrls.isEmpty()) {
             if (content != null && initialArtworkUrls.isEmpty()) initialArtworkReady = true
             return@LaunchedEffect
@@ -586,7 +616,7 @@ fun HomeScreen(
                     if (screenState.isLoading) R.string.action_retrying else R.string.action_try_again,
                 ),
                 primaryEnabled = !screenState.isLoading,
-                onPrimary = { homeViewModel.forceRefresh(loadKey) },
+                onPrimary = { homeViewModel.requestRefresh("retry", immediate = true) },
                 entryRequester = firstCardRequester,
             )
 
@@ -595,7 +625,7 @@ fun HomeScreen(
                 message = stringResource(R.string.home_empty_detail),
                 primaryLabel = stringResource(if (screenState.isLoading) R.string.action_refreshing else R.string.action_refresh),
                 primaryEnabled = !screenState.isLoading,
-                onPrimary = { homeViewModel.forceRefresh(loadKey) },
+                onPrimary = { homeViewModel.requestRefresh("retry", immediate = true) },
                 secondaryLabel = stringResource(R.string.action_open_settings),
                 onSecondary = onOpenAccount,
                 entryRequester = firstCardRequester,
@@ -734,7 +764,7 @@ fun HomeScreen(
                 // hand-back all pointed somewhere new, and the hero followed. Pinning the answer
                 // to a row id means late data cannot move it. It is re-picked only if that row
                 // genuinely leaves the page.
-                var entryRowId by remember(loadKey) { mutableStateOf<String?>(null) }
+                var entryRowId by remember(identityKey) { mutableStateOf<String?>(null) }
                 LaunchedEffect(homeEntryReady, firstFocusableRow?.id, rows) {
                     if (!homeEntryReady) return@LaunchedEffect
                     val current = entryRowId
@@ -928,7 +958,7 @@ fun HomeScreen(
                 // refreshed canonical rail will choose the surviving card during recomposition.
                 onDismissAfterRemoval = { actionState = null },
                 onOpenDetail = { onOpenDetail(state.item.type, state.item.detailLookupId()) },
-                onChanged = { homeViewModel.forceRefresh(loadKey) },
+                onChanged = { homeViewModel.requestRefresh("card action", immediate = true) },
             )
         }
         }

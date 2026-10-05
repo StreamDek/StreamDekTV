@@ -295,26 +295,20 @@ internal fun JellyfinSettingsPanel(
         }
 
         if (signedIn && state.linked && !adding) {
-            PlexSectionHeading(stringResource(R.string.plex_servers))
-            state.servers.forEach { server ->
-                PlexServerRow(
-                    server = server,
-                    leftRequester = leftRequester,
-                    accent = JellyfinPurple,
-                    onToggle = { manager.setJellyfinServerEnabled(server.id, !server.enabled) },
-                )
-                if (server.enabled) {
-                    if (server.libraries.isEmpty()) PlexNote(stringResource(R.string.plex_no_libraries), indent = true)
-                    server.libraries.forEach { library ->
-                        PlexLibraryRow(
-                            library = library,
-                            leftRequester = leftRequester,
-                            accent = JellyfinPurple,
-                            onToggle = { manager.setJellyfinLibraryEnabled(server.id, library.key, !library.enabled) },
-                        )
-                    }
-                }
-            }
+            MediaServerGroups(
+                provider = com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID,
+                manager = manager,
+                servers = state.servers,
+                accent = JellyfinPurple,
+                leftRequester = leftRequester,
+                emptyNote = null,
+                onToggleServer = { server -> manager.setJellyfinServerEnabled(server.id, !server.enabled) },
+                onToggleLibrary = { server, library -> manager.setJellyfinLibraryEnabled(server.id, library.key, !library.enabled) },
+                holdFocus = ::holdFocus,
+                onStatus = onStatus,
+                // Signing out of the last server turns this page back into the connect flow.
+                onServerRemoved = ::focusPrimarySoon,
+            )
 
             PlexSectionHeading(stringResource(R.string.jellyfin_page_section))
             PlexSwitchRow(

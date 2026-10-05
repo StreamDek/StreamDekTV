@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -57,6 +58,15 @@ import com.streamdek.tv.nativeapp.mediaserver.MediaServerReachability
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerRoute
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerView
 import com.streamdek.tv.nativeapp.mediaserver.OfflineReason
+import com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
+import com.streamdek.tv.nativeapp.mediaserver.MediaServerManager
+import com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
+import com.streamdek.tv.nativeapp.mediaserver.RemovedMediaServerEntry
+import com.streamdek.tv.nativeapp.mediaserver.listedMediaServers
+import com.streamdek.tv.nativeapp.mediaserver.mediaServerEntryKey
+import com.streamdek.tv.nativeapp.mediaserver.removedMediaServerEntries
+import com.streamdek.tv.nativeapp.ui.StreamDekPlayerIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekSettingsIcons
 import com.streamdek.tv.nativeapp.ui.auth.rememberQrImage
 import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.delay
@@ -252,29 +262,18 @@ internal fun MediaServerSettingsPanel(
         }
 
         if (signedIn && state.linked && code == null) {
-            PlexSectionHeading(stringResource(R.string.plex_servers))
-            if (state.servers.isEmpty()) {
-                PlexNote(stringResource(if (state.refreshing) R.string.plex_status_connecting else R.string.plex_no_servers))
-            }
-            state.servers.forEach { server ->
-                PlexServerRow(
-                    server = server,
-                    leftRequester = leftRequester,
-                    onToggle = { act({ manager.setServerEnabled(server.id, !server.enabled) }) },
-                )
-                if (server.enabled) {
-                    if (server.libraries.isEmpty()) {
-                        PlexNote(stringResource(R.string.plex_no_libraries), indent = true)
-                    }
-                    server.libraries.forEach { library ->
-                        PlexLibraryRow(
-                            library = library,
-                            leftRequester = leftRequester,
-                            onToggle = { act({ manager.setLibraryEnabled(server.id, library.key, !library.enabled) }) },
-                        )
-                    }
-                }
-            }
+            MediaServerGroups(
+                provider = PLEX_PROVIDER_ID,
+                manager = manager,
+                servers = state.servers,
+                accent = PlexGold,
+                leftRequester = leftRequester,
+                emptyNote = stringResource(if (state.refreshing) R.string.plex_status_connecting else R.string.plex_no_servers),
+                onToggleServer = { server -> act({ manager.setServerEnabled(server.id, !server.enabled) }) },
+                onToggleLibrary = { server, library -> act({ manager.setLibraryEnabled(server.id, library.key, !library.enabled) }) },
+                holdFocus = ::holdFocus,
+                onStatus = onStatus,
+            )
 
             PlexSectionHeading(stringResource(R.string.plex_playback))
             PlexChoiceRow(
@@ -461,6 +460,270 @@ internal fun reachabilityLabel(server: MediaServerView): Pair<String, Color> = w
     }
 }
 
+/**
+ * The servers and their libraries, as groups that fold, with a way to take one library or one
+ * server off the list. Shared by the Plex and Jellyfin pages so the two behave alike.
+ *
+ * Built for a remote. A server's own row folds and unfolds its group; the rows inside it are the
+ * server's switch, each library, and "Remove this server". A library row is two stops: the row
+ * itself is the switch, and Right reaches its remove button. Nothing is a long-press, because
+ * nothing on screen would say so.
+ *
+ * Removing is not disconnecting: every other server and library stays exactly as it was, and what
+ * was removed is kept under "Removed" to be brought back; see MediaServerListTidy.kt. Because the
+ * row that had the highlight leaves the page when it is removed or restored, focus is parked first
+ * ([holdFocus]) and then handed to the server row it belonged to - the rule this page lives by.
+ */
+@Composable
+internal fun MediaServerGroups(
+    provider: String,
+    manager: MediaServerManager,
+    servers: List<MediaServerView>,
+    accent: Color,
+    leftRequester: FocusRequester,
+    emptyNote: String?,
+    onToggleServer: (MediaServerView) -> Unit,
+    onToggleLibrary: (MediaServerView, MediaServerLibrary) -> Unit,
+    holdFocus: () -> Unit,
+    onStatus: (String) -> Unit,
+    /** After a whole server has gone, for a page that may have changed shape under the viewer. */
+    onServerRemoved: () -> Unit = {},
+) {
+    val removed by manager.removedEntries.collectAsState()
+    val collapsed by manager.collapsedServers.collectAsState()
+    val scope = rememberCoroutineScope()
+    val resources = LocalContext.current.resources
+    var working by remember { mutableStateOf(false) }
+    var removingServer by remember { mutableStateOf<MediaServerView?>(null) }
+    var removingLibrary by remember { mutableStateOf<MediaServerLibrary?>(null) }
+    val listed = remember(provider, servers, removed) { listedMediaServers(provider, servers, removed) }
+    val gone = remember(provider, servers, removed) { removedMediaServerEntries(provider, servers, removed) }
+    val headerRequesters = remember { mutableMapOf<String, FocusRequester>() }
+    var focusServerId by remember { mutableStateOf<String?>(null) }
+    var focusServerRequest by remember { mutableStateOf(0) }
+
+    LaunchedEffect(focusServerRequest) {
+        if (focusServerRequest == 0) return@LaunchedEffect
+        // One frame, so the server's row is laid out before it is asked to take the highlight.
+        withFrameNanos { }
+        focusServerId?.let { headerRequesters[it] }?.let { runCatching { it.requestFocus() } }
+    }
+
+    fun perform(name: String, doneRes: Int, focusServer: String?, work: suspend () -> Boolean) {
+        if (working) return
+        working = true
+        holdFocus()
+        scope.launch {
+            val ok = work()
+            working = false
+            if (focusServer != null) {
+                focusServerId = focusServer
+                focusServerRequest += 1
+            } else {
+                onServerRemoved()
+            }
+            onStatus(if (ok) resources.getString(doneRes, name) else resources.getString(R.string.plex_saving_failed))
+        }
+    }
+
+    PlexSectionHeading(stringResource(R.string.plex_servers))
+    if (listed.isEmpty()) emptyNote?.let { PlexNote(it) }
+    listed.forEach { server ->
+        val folded = mediaServerEntryKey(provider, server.id) in collapsed
+        MediaServerGroupHeader(
+            server = server,
+            folded = folded,
+            accent = accent,
+            leftRequester = leftRequester,
+            requester = headerRequesters.getOrPut(server.id) { FocusRequester() },
+            onFold = { manager.setServerCollapsed(provider, server.id, !folded) },
+        )
+        if (!folded) {
+            PlexSwitchRow(
+                title = stringResource(R.string.media_server_use_server),
+                detail = null,
+                detailColor = Color.White.copy(alpha = 0.5f),
+                checked = server.enabled,
+                indent = true,
+                leftRequester = leftRequester,
+                accent = accent,
+                onToggle = { onToggleServer(server) },
+            )
+            if (server.enabled) {
+                if (server.libraries.isEmpty()) PlexNote(stringResource(R.string.plex_no_libraries), indent = true)
+                server.libraries.forEach { library ->
+                    PlexLibraryRow(
+                        library = library,
+                        leftRequester = leftRequester,
+                        accent = accent,
+                        onRemove = { removingLibrary = library },
+                        onToggle = { onToggleLibrary(server, library) },
+                    )
+                }
+            }
+            MediaServerActionRow(
+                text = stringResource(R.string.media_server_remove_server),
+                value = null,
+                detail = null,
+                textColor = Color(0xFFF87171),
+                accent = accent,
+                leftRequester = leftRequester,
+                indent = true,
+                onClick = { removingServer = server },
+            )
+        }
+    }
+
+    if (gone.isNotEmpty()) {
+        PlexSectionHeading(stringResource(R.string.media_server_removed))
+        PlexNote(stringResource(R.string.media_server_removed_note))
+        gone.forEach { entry ->
+            val library = entry.library
+            MediaServerActionRow(
+                text = library?.title ?: entry.serverName,
+                value = stringResource(R.string.media_server_restore),
+                detail = if (library == null) stringResource(R.string.media_server_whole_server) else entry.serverName,
+                textColor = Color.White,
+                accent = accent,
+                leftRequester = leftRequester,
+                indent = false,
+                onClick = {
+                    if (library == null) perform(entry.serverName, R.string.media_server_restored_done, entry.serverId) { manager.restoreServer(provider, entry.serverId) }
+                    else perform(library.title, R.string.media_server_restored_done, entry.serverId) { manager.restoreLibrary(provider, entry.serverId, library.key) }
+                },
+            )
+        }
+    }
+
+    removingLibrary?.let { library ->
+        PlexConfirmDialog(
+            title = stringResource(R.string.media_server_remove_title, library.title),
+            body = stringResource(R.string.media_server_remove_library_body),
+            confirm = stringResource(R.string.media_server_remove),
+            onConfirm = {
+                removingLibrary = null
+                perform(library.title, R.string.media_server_removed_done, library.serverId) { manager.removeLibrary(provider, library.serverId, library.key) }
+            },
+            onDismiss = { removingLibrary = null },
+        )
+    }
+    removingServer?.let { server ->
+        PlexConfirmDialog(
+            title = stringResource(R.string.media_server_remove_title, server.name),
+            body = stringResource(if (provider == JELLYFIN_PROVIDER_ID) R.string.jellyfin_remove_server_body else R.string.media_server_remove_server_body),
+            confirm = stringResource(R.string.media_server_remove),
+            onConfirm = {
+                removingServer = null
+                perform(server.name, R.string.media_server_removed_done, null) { manager.removeServer(provider, server.id) }
+            },
+            onDismiss = { removingServer = null },
+        )
+    }
+}
+
+/** A server's own row. Pressing it folds or unfolds the group beneath; it never switches anything. */
+@Composable
+private fun MediaServerGroupHeader(
+    server: MediaServerView,
+    folded: Boolean,
+    accent: Color,
+    leftRequester: FocusRequester,
+    requester: FocusRequester,
+    onFold: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val (status, color) = reachabilityLabel(server)
+    val owner = server.ownerName?.takeIf { !server.owned }?.let { stringResource(R.string.plex_server_shared_by, it) }
+    // Folded, the row says what is inside it, so nothing has to be opened to find out.
+    val count = if (folded && server.enabled && server.libraries.isNotEmpty()) {
+        stringResource(R.string.media_server_libraries_on_of, server.libraries.count { it.enabled }, server.libraries.size)
+    } else null
+    Row(
+        Modifier.fillMaxWidth()
+            .focusRequester(requester)
+            .background(if (focused) RowFocused else RowIdle, RoundedCornerShape(16.dp))
+            .border(if (focused) 2.dp else 1.dp, if (focused) accent else Color(0x10FFFFFF), RoundedCornerShape(16.dp))
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent {
+                it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess
+            }
+            .clickable(
+                onClickLabel = stringResource(if (folded) R.string.media_server_show_libraries else R.string.media_server_hide_libraries),
+                onClick = onFold,
+            )
+            .padding(horizontal = 20.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(server.name, color = Color.White, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold))
+            Text(listOfNotNull(status, owner, count).joinToString(" · "), color = color, style = MaterialTheme.typography.bodySmall)
+        }
+        Icon(
+            if (folded) StreamDekPlayerIcons.ChevronDown else StreamDekSettingsIcons.ChevronUp,
+            contentDescription = null,
+            tint = if (focused) accent else Color.White.copy(alpha = 0.6f),
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+/** A row that does one thing when pressed: remove this server, or restore what was removed. */
+@Composable
+private fun MediaServerActionRow(
+    text: String,
+    value: String?,
+    detail: String?,
+    textColor: Color,
+    accent: Color,
+    leftRequester: FocusRequester,
+    indent: Boolean,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth()
+            .padding(start = if (indent) 32.dp else 0.dp)
+            .background(if (focused) RowFocused else RowIdle, RoundedCornerShape(16.dp))
+            .border(if (focused) 2.dp else 1.dp, if (focused) accent else Color(0x10FFFFFF), RoundedCornerShape(16.dp))
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent {
+                it.type == KeyEventType.KeyDown && it.key == Key.DirectionLeft && runCatching { leftRequester.requestFocus() }.isSuccess
+            }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(text, color = textColor, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold))
+            detail?.let { Text(it, color = Color.White.copy(alpha = 0.5f), style = MaterialTheme.typography.bodySmall) }
+        }
+        value?.let { Text(it, color = accent, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)) }
+    }
+}
+
+/** The button at the end of a library row. Reached with Right; Left goes back to the row. */
+@Composable
+private fun MediaServerRemoveButton(label: String, accent: Color, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        Modifier.size(52.dp)
+            .background(if (focused) RowFocused else RowIdle, RoundedCornerShape(16.dp))
+            .border(if (focused) 2.dp else 1.dp, if (focused) accent else Color(0x10FFFFFF), RoundedCornerShape(16.dp))
+            .onFocusChanged { focused = it.isFocused }
+            .clickable(onClickLabel = label, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            StreamDekSettingsIcons.Close,
+            contentDescription = label,
+            tint = if (focused) Color.White else Color.White.copy(alpha = 0.55f),
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
 /** A focusable row with a switch at its end. The whole row is the switch. */
 @Composable
 internal fun PlexSwitchRow(
@@ -471,11 +734,12 @@ internal fun PlexSwitchRow(
     indent: Boolean,
     leftRequester: FocusRequester,
     accent: Color = PlexGold,
+    modifier: Modifier = Modifier,
     onToggle: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .padding(start = if (indent) 32.dp else 0.dp)
             .background(if (focused) RowFocused else RowIdle, RoundedCornerShape(16.dp))
             .border(if (focused) 2.dp else 1.dp, if (focused) accent else Color(0x10FFFFFF), RoundedCornerShape(16.dp))
@@ -521,23 +785,51 @@ internal fun PlexServerRow(server: MediaServerView, leftRequester: FocusRequeste
 }
 
 @Composable
-internal fun PlexLibraryRow(library: MediaServerLibrary, leftRequester: FocusRequester, accent: Color = PlexGold, onToggle: () -> Unit) {
-    PlexSwitchRow(
-        title = library.title,
-        detail = stringResource(
-            when (library.kind) {
-                MediaServerLibraryKind.Movies -> R.string.plex_library_movies
-                MediaServerLibraryKind.Shows -> R.string.plex_library_shows
-                MediaServerLibraryKind.Other -> R.string.plex_library_other
-            },
-        ),
-        detailColor = Color.White.copy(alpha = 0.5f),
-        checked = library.enabled,
-        indent = true,
-        leftRequester = leftRequester,
-        accent = accent,
-        onToggle = onToggle,
+internal fun PlexLibraryRow(
+    library: MediaServerLibrary,
+    leftRequester: FocusRequester,
+    accent: Color = PlexGold,
+    onRemove: (() -> Unit)? = null,
+    onToggle: () -> Unit,
+) {
+    val detail = stringResource(
+        when (library.kind) {
+            MediaServerLibraryKind.Movies -> R.string.plex_library_movies
+            MediaServerLibraryKind.Shows -> R.string.plex_library_shows
+            MediaServerLibraryKind.Other -> R.string.plex_library_other
+        },
     )
+    if (onRemove == null) {
+        PlexSwitchRow(
+            title = library.title,
+            detail = detail,
+            detailColor = Color.White.copy(alpha = 0.5f),
+            checked = library.enabled,
+            indent = true,
+            leftRequester = leftRequester,
+            accent = accent,
+            onToggle = onToggle,
+        )
+        return
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 32.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        PlexSwitchRow(
+            title = library.title,
+            detail = detail,
+            detailColor = Color.White.copy(alpha = 0.5f),
+            checked = library.enabled,
+            indent = false,
+            leftRequester = leftRequester,
+            accent = accent,
+            modifier = Modifier.weight(1f),
+            onToggle = onToggle,
+        )
+        MediaServerRemoveButton(stringResource(R.string.media_server_remove_named, library.title), accent, onRemove)
+    }
 }
 
 @Composable

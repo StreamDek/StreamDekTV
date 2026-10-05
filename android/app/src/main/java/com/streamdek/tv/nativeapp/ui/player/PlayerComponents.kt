@@ -44,24 +44,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.LiveTv
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.ClosedCaption
-import androidx.compose.material.icons.rounded.ClosedCaptionOff
-import androidx.compose.material.icons.rounded.Cloud
-import androidx.compose.material.icons.rounded.SkipNext
-import androidx.compose.material.icons.rounded.Speed
-import androidx.compose.material.icons.rounded.Star
-import androidx.compose.material.icons.rounded.StarBorder
-import androidx.compose.material.icons.rounded.Timeline
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.Bookmark
-import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -111,6 +93,8 @@ import androidx.tv.material3.OutlinedButton
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.ui.StreamDekNavIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekPlayerIcons
 import com.streamdek.tv.mpv.MpvTrackInfo
 import com.streamdek.tv.nativeapp.data.AddonStream
 import com.streamdek.tv.nativeapp.data.EpisodeContext
@@ -159,6 +143,8 @@ internal enum class OverlayPanel {
     Info,
     /** A live channel's own captions: off, or one of the caption tracks the stream was seen to carry. */
     Captions,
+    /** The series being played, season by season. Drawn by [PlayerEpisodePanel] rather than the option panel. */
+    Episodes,
 }
 
 /** One predictable remote press, with a slightly larger step for feature-length playback. */
@@ -502,6 +488,8 @@ internal fun PlayerBottomBar(
     playbackSpeed: Double = 1.0,
     /** What the engine is holding, drawn on the timeline ahead of the playhead. */
     bufferedRanges: List<BufferedRange> = emptyList(),
+    /** The Episodes control's place in the row. Null for anything that is not an episode of a series. */
+    episodesRequester: FocusRequester? = null,
 ) {
     // Live broadcasts have no seekable timeline — the progress bar is replaced
     // by a LIVE indicator, so focus targets that pointed at it move to Play.
@@ -524,6 +512,7 @@ internal fun PlayerBottomBar(
     val favouriteLabel = stringResource(if (isFavourite) R.string.action_favourited else R.string.action_favourite)
     val badgeLabel = stringResource(if (showLiveBadge) R.string.player_live_badge_on else R.string.player_live_badge_off)
     val nextLabel = stringResource(R.string.player_next)
+    val episodesLabel = stringResource(R.string.detail_episodes)
     val watchedLabel = stringResource(R.string.player_watched)
     val speedLabel = stringResource(R.string.player_playback_speed)
     val infoLabel = stringResource(R.string.player_stream_info)
@@ -532,7 +521,7 @@ internal fun PlayerBottomBar(
     // named by hand on every button, so a control that comes or goes - captions arriving mid-broadcast,
     // Next on the last episode - can never leave a neighbour pointing at something that is not there.
     val controls = buildList {
-        add(PlayerControlSpec("play", if (paused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, playLabel, playRequester, onPlayPause, primary = true))
+        add(PlayerControlSpec("play", if (paused) StreamDekPlayerIcons.Play else StreamDekPlayerIcons.Pause, playLabel, playRequester, onPlayPause, primary = true))
         if (isLive) {
             // A channel's own captions sit where a film's subtitles do: first after Play. Only once
             // the stream has actually been seen to carry some; see ExoPlaybackView.setCaptionProbe.
@@ -540,7 +529,7 @@ internal fun PlayerBottomBar(
                 add(
                     PlayerControlSpec(
                         "captions",
-                        if (captionsOn) Icons.Rounded.ClosedCaption else Icons.Rounded.ClosedCaptionOff,
+                        if (captionsOn) StreamDekPlayerIcons.Captions else StreamDekPlayerIcons.CaptionsOff,
                         captionsLabel,
                         subtitlesRequester,
                         { onOpenPanel(OverlayPanel.Captions) },
@@ -548,26 +537,30 @@ internal fun PlayerBottomBar(
                     ),
                 )
             }
-            add(PlayerControlSpec("timeline", Icons.Rounded.Timeline, progressLabel, liveProgressRequester, onToggleLiveProgress, active = showLiveProgress))
+            add(PlayerControlSpec("timeline", StreamDekPlayerIcons.Progress, progressLabel, liveProgressRequester, onToggleLiveProgress, active = showLiveProgress))
         } else {
-            add(PlayerControlSpec("subtitles", Icons.Rounded.ClosedCaption, subtitlesLabel, subtitlesRequester, { onOpenPanel(OverlayPanel.Subtitles) }, active = selectedPanel == OverlayPanel.Subtitles))
-            add(PlayerControlSpec("audio", Icons.AutoMirrored.Rounded.VolumeUp, audioLabel, audioRequester, { onOpenPanel(OverlayPanel.Audio) }, active = selectedPanel == OverlayPanel.Audio))
+            add(PlayerControlSpec("subtitles", StreamDekPlayerIcons.Captions, subtitlesLabel, subtitlesRequester, { onOpenPanel(OverlayPanel.Subtitles) }, active = selectedPanel == OverlayPanel.Subtitles))
+            add(PlayerControlSpec("audio", StreamDekPlayerIcons.Audio, audioLabel, audioRequester, { onOpenPanel(OverlayPanel.Audio) }, active = selectedPanel == OverlayPanel.Audio))
         }
-        add(PlayerControlSpec("sources", Icons.Rounded.Cloud, sourcesLabel, sourcesRequester, { onOpenPanel(OverlayPanel.Streams) }, active = selectedPanel == OverlayPanel.Streams))
-        add(PlayerControlSpec("engine", Icons.Rounded.Tune, engineLabel, engineRequester, { onOpenPanel(OverlayPanel.Engine) }, active = selectedPanel == OverlayPanel.Engine))
+        add(PlayerControlSpec("sources", StreamDekPlayerIcons.Sources, sourcesLabel, sourcesRequester, { onOpenPanel(OverlayPanel.Streams) }, active = selectedPanel == OverlayPanel.Streams))
+        add(PlayerControlSpec("engine", StreamDekPlayerIcons.Engine, engineLabel, engineRequester, { onOpenPanel(OverlayPanel.Engine) }, active = selectedPanel == OverlayPanel.Engine))
         if (isLive) {
             // Favouriting was only possible by holding OK on a channel in the grid, which is no use
             // once you are watching it — this is where you decide you want it.
-            add(PlayerControlSpec("favourite", if (isFavourite) Icons.Rounded.Star else Icons.Rounded.StarBorder, favouriteLabel, favouriteRequester, onToggleFavourite, active = isFavourite))
+            add(PlayerControlSpec("favourite", if (isFavourite) StreamDekPlayerIcons.Star else StreamDekPlayerIcons.StarOutline, favouriteLabel, favouriteRequester, onToggleFavourite, active = isFavourite))
             liveBadgeRequester?.let { requester ->
-                add(PlayerControlSpec("badge", Icons.Rounded.LiveTv, badgeLabel, requester, onToggleLiveBadge, active = showLiveBadge))
+                add(PlayerControlSpec("badge", StreamDekPlayerIcons.LiveBadge, badgeLabel, requester, onToggleLiveBadge, active = showLiveBadge))
             }
         } else {
-            if (hasNext) add(PlayerControlSpec("next", Icons.Rounded.SkipNext, nextLabel, nextRequester, onNext))
-            add(PlayerControlSpec("watched", Icons.Rounded.CheckCircle, watchedLabel, watchedRequester, onMarkWatched))
-            add(PlayerControlSpec("speed", Icons.Rounded.Speed, speedLabel, speedRequester, { onOpenPanel(OverlayPanel.Speed) }, active = selectedPanel == OverlayPanel.Speed))
+            // Beside Next, which it generalises: Next is one episode on, this is any of them.
+            episodesRequester?.let { requester ->
+                add(PlayerControlSpec("episodes", StreamDekNavIcons.LibraryOutline, episodesLabel, requester, { onOpenPanel(OverlayPanel.Episodes) }, active = selectedPanel == OverlayPanel.Episodes))
+            }
+            if (hasNext) add(PlayerControlSpec("next", StreamDekPlayerIcons.Next, nextLabel, nextRequester, onNext))
+            add(PlayerControlSpec("watched", StreamDekPlayerIcons.Watched, watchedLabel, watchedRequester, onMarkWatched))
+            add(PlayerControlSpec("speed", StreamDekPlayerIcons.Speed, speedLabel, speedRequester, { onOpenPanel(OverlayPanel.Speed) }, active = selectedPanel == OverlayPanel.Speed))
         }
-        add(PlayerControlSpec("info", Icons.Rounded.Info, infoLabel, infoRequester, { onOpenPanel(OverlayPanel.Info) }, active = selectedPanel == OverlayPanel.Info))
+        add(PlayerControlSpec("info", StreamDekPlayerIcons.Info, infoLabel, infoRequester, { onOpenPanel(OverlayPanel.Info) }, active = selectedPanel == OverlayPanel.Info))
     }
     val controlRequesters = controls.map { it.requester }
 
@@ -851,7 +844,7 @@ internal fun LiveBadgeChip(isVod: Boolean, modifier: Modifier = Modifier) {
     ) {
         if (isVod) {
             Icon(
-                imageVector = Icons.Rounded.PlayArrow,
+                imageVector = StreamDekPlayerIcons.Play,
                 contentDescription = null,
                 modifier = Modifier.size(12.dp),
                 tint = PlayerTokens.VodBlue,
@@ -1167,8 +1160,8 @@ internal fun PlayerTimeline(
     // the first press after focus arrives sees this frame's value and not the previous one.
     val durationState = remember { mutableStateOf(durationSec) }
     durationState.value = durationSec
-    // The bar thickens and the head grows when the row is reached, so "you are on the timeline" is
-    // said by the timeline itself. Both ride graphics layers: nothing around the bar moves.
+    // The bar thickens when the row is reached, so "you are on the timeline" is said by the
+    // timeline itself. It rides a graphics layer: nothing around the bar moves.
     val emphasis by animateFloatAsState(
         targetValue = if (focused) 1f else 0f,
         animationSpec = TvMotion.standardSpec(TvMotion.Quick),
@@ -1273,22 +1266,9 @@ internal fun PlayerTimeline(
                         .background(playedBrush),
                 )
             }
-            // The head: a small white dot at rest that swells into the scrub handle - the accent
-            // inside a white ring, so it stands clear of both the watched and the buffered tone.
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .offset(x = headX - 9.dp)
-                    .size(18.dp)
-                    .graphicsLayer {
-                        val scale = 0.55f + 0.45f * emphasis
-                        scaleX = scale
-                        scaleY = scale
-                    }
-                    .clip(CircleShape)
-                    .background(Color.White)
-                    .then(if (focused) Modifier.padding(2.5.dp).clip(CircleShape).background(accent) else Modifier),
-            )
+            // No head on the bar. The watched fill's own rounded end is the position, and a dot
+            // sitting on it covered the first of what is buffered - the part a viewer most wants
+            // to see. Being on the timeline is said by the bar thickening and the clock beside it.
             if (scrubTargetSec != null || bubbleAlpha > 0f) {
                 Box(
                     modifier = Modifier
@@ -1471,12 +1451,13 @@ internal fun PlayerOptionPanel(
                     ) {
                         Icon(
                             imageVector = when (panel) {
-                                OverlayPanel.Streams -> Icons.Rounded.Cloud
-                                OverlayPanel.Engine -> Icons.Rounded.Tune
-                                OverlayPanel.Audio -> Icons.AutoMirrored.Rounded.VolumeUp
-                                OverlayPanel.Subtitles, OverlayPanel.Captions -> Icons.Rounded.ClosedCaption
-                                OverlayPanel.Speed -> Icons.Rounded.Speed
-                                OverlayPanel.Info -> Icons.Rounded.Info
+                                OverlayPanel.Streams -> StreamDekPlayerIcons.Sources
+                                OverlayPanel.Engine -> StreamDekPlayerIcons.Engine
+                                OverlayPanel.Audio -> StreamDekPlayerIcons.Audio
+                                OverlayPanel.Subtitles, OverlayPanel.Captions -> StreamDekPlayerIcons.Captions
+                                OverlayPanel.Speed -> StreamDekPlayerIcons.Speed
+                                OverlayPanel.Info -> StreamDekPlayerIcons.Info
+                                OverlayPanel.Episodes -> StreamDekNavIcons.LibraryOutline
                             },
                             contentDescription = null,
                             tint = PlayerTokens.Accent,
@@ -1494,6 +1475,7 @@ internal fun PlayerOptionPanel(
                                     OverlayPanel.Subtitles -> R.string.player_subtitles
                                     OverlayPanel.Speed -> R.string.player_playback_speed
                                     OverlayPanel.Info -> R.string.player_stream_info
+                                    OverlayPanel.Episodes -> R.string.detail_episodes
                                 },
                             ),
                             style = androidx.tv.material3.MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
@@ -1509,6 +1491,7 @@ internal fun PlayerOptionPanel(
                                     OverlayPanel.Speed -> R.string.player_panel_speed_description
                                     OverlayPanel.Info -> R.string.player_panel_info_description
                                     OverlayPanel.Captions -> R.string.player_panel_captions_description
+                                    OverlayPanel.Episodes -> R.string.player_panel_episodes_description
                                 },
                             ),
                             style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
@@ -1561,6 +1544,8 @@ internal fun PlayerOptionPanel(
             }
 
             when (panel) {
+                // The episode browser has a panel of its own; see PlayerEpisodePanel.
+                OverlayPanel.Episodes -> Unit
                 OverlayPanel.Streams -> {
                     val originalStreams = candidate?.streams.orEmpty()
                     // What is playing always leads, so the panel opens on it; favourites follow.
@@ -1608,6 +1593,16 @@ internal fun PlayerOptionPanel(
                             activeBadge = selectedBadge.takeIf { activeEngine == ActivePlaybackEngine.MPV },
                             onInteract = onInteract,
                             onClick = { onSelectEngine(ActivePlaybackEngine.MPV) },
+                        )
+                    }
+                    item {
+                        OptionButton(
+                            label = ActivePlaybackEngine.VLC.displayName,
+                            subtitle = stringResource(R.string.player_engine_vlc_description),
+                            active = activeEngine == ActivePlaybackEngine.VLC,
+                            activeBadge = selectedBadge.takeIf { activeEngine == ActivePlaybackEngine.VLC },
+                            onInteract = onInteract,
+                            onClick = { onSelectEngine(ActivePlaybackEngine.VLC) },
                         )
                     }
                     item {
@@ -1929,6 +1924,8 @@ internal fun PlayerOptionPanel(
                             ?.let { add(panelResources.getString(R.string.player_info_resolution) to it) }
                         val videoLine = listOfNotNull(
                             prettyCodecName(playbackStats?.videoCodec),
+                            playbackStats?.videoProfile,
+                            playbackStats?.videoBitDepth?.let { String.format(java.util.Locale.US, "%d-bit", it) },
                             formatBitrate(playbackStats?.videoBitrateBps),
                             playbackStats?.frameRate?.let {
                                 panelResources.getString(R.string.player_video_fps, AppFormats.number(appLanguage, it))
@@ -1947,8 +1944,23 @@ internal fun PlayerOptionPanel(
                                     else -> panelResources.getString(R.string.player_audio_mono)
                                 }
                             },
+                            playbackStats?.audioSampleRateHz?.let { String.format(java.util.Locale.US, "%.1f kHz", it / 1000.0) },
+                            formatBitrate(playbackStats?.audioBitrateBps),
+                            playbackStats?.audioLanguage?.let { com.streamdek.tv.nativeapp.data.Languages.label(it) },
                         ).joinToString(" · ")
                         if (audioLine.isNotBlank()) add(panelResources.getString(R.string.player_audio) to audioLine)
+                        formatBitrate(playbackStats?.contentBitrateBps)
+                            ?.let { add(panelResources.getString(R.string.player_info_bitrate_now) to it) }
+                        playbackStats?.decodedFrames?.let { decoded ->
+                            add(
+                                panelResources.getString(R.string.player_info_frames) to
+                                    panelResources.getString(
+                                        R.string.player_info_frames_value,
+                                        AppFormats.number(appLanguage, decoded),
+                                        AppFormats.number(appLanguage, playbackStats?.droppedFrames ?: 0L),
+                                    ),
+                            )
+                        }
                         playbackStats?.bufferedSeconds?.let {
                             add(
                                 panelResources.getString(R.string.player_info_buffered) to
@@ -2024,7 +2036,7 @@ internal fun PlayerSkipActionChip(
             .focusRequester(focusRequester),
     ) {
         Icon(
-            imageVector = Icons.Rounded.SkipNext,
+            imageVector = StreamDekPlayerIcons.Next,
             contentDescription = null,
             modifier = Modifier.size(18.dp),
             tint = Color(0xFFF0BA66),
@@ -2309,7 +2321,7 @@ private fun TvRecommendationChoice(
             if (!artwork.isNullOrBlank()) {
                 AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             } else {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White.copy(alpha = 0.28f))
+                Icon(StreamDekPlayerIcons.Play, contentDescription = null, tint = Color.White.copy(alpha = 0.28f))
             }
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -2351,7 +2363,7 @@ private fun TvRecommendationChoice(
                     ),
                 ) {
                     Icon(
-                        imageVector = if (saved) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
+                        imageVector = if (saved) StreamDekNavIcons.WatchlistFilled else StreamDekNavIcons.WatchlistOutline,
                         contentDescription = stringResource(R.string.action_add_to_watchlist),
                         modifier = Modifier.size(18.dp),
                     )
@@ -2540,7 +2552,7 @@ private fun StreamOptionButton(
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 Icon(
-                    imageVector = if (favourite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                    imageVector = if (favourite) StreamDekPlayerIcons.Star else StreamDekPlayerIcons.StarOutline,
                     contentDescription = stringResource(if (favourite) R.string.player_source_pinned_hint else R.string.player_source_pin_hint),
                     tint = if (favourite) Color(0xFFF0BA66) else Color.White.copy(alpha = 0.42f),
                     modifier = Modifier.size(18.dp),

@@ -12,10 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import com.streamdek.tv.nativeapp.ui.StreamDekNavIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekPlayerIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekSettingsIcons
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -292,7 +291,7 @@ private fun HomeRowsDisclosure(
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
         )
         Icon(
-            imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+            imageVector = if (expanded) StreamDekSettingsIcons.ChevronUp else StreamDekPlayerIcons.ChevronDown,
             contentDescription = null,
             tint = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = alpha * 0.6f),
             modifier = Modifier.size(20.dp),
@@ -377,7 +376,7 @@ private fun HomeRowToggle(
         ) {
             if (visualEnabled) {
                 Icon(
-                    imageVector = Icons.Outlined.Check,
+                    imageVector = StreamDekSettingsIcons.Check,
                     contentDescription = null,
                     tint = Color(0xFF0B0B0B),
                     modifier = Modifier.size(15.dp),

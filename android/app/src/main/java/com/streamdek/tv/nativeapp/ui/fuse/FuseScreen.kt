@@ -50,6 +50,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.graphics.Brush
+import com.streamdek.tv.nativeapp.ui.plex.fuseAmbientGlow
+import com.streamdek.tv.nativeapp.ui.StreamDekPlayerIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekSettingsIcons
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -505,19 +508,11 @@ fun FuseScreen(
         } else false
     }
 
+    val fuseAccent = MaterialTheme.colorScheme.primary
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // Runs under the navigation rail, so a transparent rail has the page behind it.
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                        0.45f to MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
-                        1f to MaterialTheme.colorScheme.background,
-                    ),
-                ),
-            ),
-        )
+        // The Fuse's own colour wash, as the Plex and Jellyfin pages have theirs. It runs under the
+        // navigation rail, so a transparent rail has the page behind it.
+        Box(Modifier.fillMaxSize().fuseAmbientGlow(fuseAccent))
         Column(Modifier.fillMaxSize().padding(start = TvNavRailInset)) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = FuseInset, end = FuseInset, top = 34.dp),
@@ -902,7 +897,7 @@ private fun FuseSourceHeader(
             }
             if (count > 0) {
                 Icon(
-                    if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+                    if (expanded) StreamDekSettingsIcons.ChevronUp else StreamDekPlayerIcons.ChevronDown,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                 )

@@ -34,13 +34,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -88,6 +81,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.streamdek.tv.R
+import com.streamdek.tv.nativeapp.ui.StreamDekPlayerIcons
 import com.streamdek.tv.TvRemoteKeyRouter
 import com.streamdek.tv.mpv.MPVTextureView
 import com.streamdek.tv.mpv.MPVView
@@ -227,6 +221,7 @@ private class PlayerFocusRequesters {
     val sources = FocusRequester()
     val engine = FocusRequester()
     val next = FocusRequester()
+    val episodes = FocusRequester()
     val watched = FocusRequester()
     val speed = FocusRequester()
     val info = FocusRequester()
@@ -249,7 +244,21 @@ private enum class SegmentActionKind {
     Skip,
 }
 
-internal enum class ActivePlaybackEngine { Media3, MPV }
+internal enum class ActivePlaybackEngine { Media3, MPV, VLC }
+
+// Engine names are product names, the same in every language, so they are constants rather than
+// string resources.
+internal const val EXOPLAYER_ENGINE_NAME = "ExoPlayer"
+internal const val MPV_ENGINE_NAME = "mpv"
+internal const val LIBVLC_ENGINE_NAME = "libVLC"
+
+/** The engine's name as a viewer sees it, in the engine panel and the info panel. */
+internal val ActivePlaybackEngine.displayName: String
+    get() = when (this) {
+        ActivePlaybackEngine.Media3 -> EXOPLAYER_ENGINE_NAME
+        ActivePlaybackEngine.MPV -> MPV_ENGINE_NAME
+        ActivePlaybackEngine.VLC -> LIBVLC_ENGINE_NAME
+    }
 
 internal enum class LiveRetryAction { Reload, Refetch, GiveUp }
 
@@ -313,11 +322,19 @@ internal fun crossDeviceContinueNotice(
 internal fun normalizePlayerEngineSetting(raw: String?): String = when (raw?.trim()?.lowercase()) {
     "media3", "exo", "exoplayer" -> "Media3"
     "mpv" -> "MPV"
+    "vlc", "libvlc" -> "VLC"
     else -> "Auto"
 }
 
-internal fun initialPlaybackEngine(preference: String?): ActivePlaybackEngine =
-    if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
+/**
+ * Which engine a source starts on. "Auto" starts on Media3, as it always has; libVLC is used only
+ * when the viewer has chosen it by name, and is never something Auto falls back to.
+ */
+internal fun initialPlaybackEngine(preference: String?): ActivePlaybackEngine = when {
+    preference.equals("MPV", ignoreCase = true) -> ActivePlaybackEngine.MPV
+    preference.equals("VLC", ignoreCase = true) -> ActivePlaybackEngine.VLC
+    else -> ActivePlaybackEngine.Media3
+}
 
 /** How often playback position is written back while a title is running. */
 private const val PROGRESS_CHECKPOINT_INTERVAL_MS = 30_000L
@@ -434,6 +451,13 @@ fun PlayerScreen(
      */
     var activePlaybackEngine by remember { mutableStateOf(initialPlaybackEngine(playbackPreferences.playerEngine)) }
     var autoEngineFallbackUsed by remember { mutableStateOf(false) }
+    // Which engines the current source has been on and which could not play it, so none is tried
+    // on it twice; and what is known about the source that rules libVLC out before it is opened.
+    var engineTrail by remember { mutableStateOf(PlaybackEngineTrail(initialPlaybackEngine(playbackPreferences.playerEngine))) }
+    var engineTrailSource by remember { mutableStateOf<String?>(null) }
+    var libVlcBlockerForSource by remember { mutableStateOf<LibVlcBlocker?>(null) }
+    // The source the viewer switched engine on by hand; their choice is not routed away from.
+    var manualEngineSource by remember { mutableStateOf<String?>(null) }
     var failedStreamKeys by remember(request.mediaId, request.mediaType, currentEpisode?.seasonNumber, currentEpisode?.episodeNumber) { mutableStateOf(emptySet<String>()) }
     var sourceFallbackInProgress by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
     /**
@@ -593,6 +617,17 @@ fun PlayerScreen(
     var episodeLoadGeneration by remember(request.mediaId, request.mediaType) { mutableIntStateOf(0) }
     var streamKeyOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamKey) }
     var streamLabelOverride by remember(request.mediaId, request.mediaType) { mutableStateOf(request.selectedStreamLabel) }
+    /**
+     * Set once an episode has been chosen from the in-player episode browser.
+     *
+     * The request this screen was opened with describes one episode: the source picked for it, the
+     * position a hand-off or "start over" asked for, and that it came from Continue Watching. None
+     * of that is true of an episode chosen afterwards, so from then on [loadPlayback] reads the
+     * request without them. [episodeSwitchStartSec] is the one thing that replaces them: zero when
+     * an already watched episode is chosen, so it starts again rather than resuming at its credits.
+     */
+    var episodeChosenInPlayer by remember(request.mediaId, request.mediaType) { mutableStateOf(false) }
+    var episodeSwitchStartSec by remember(request.mediaId, request.mediaType) { mutableStateOf<Double?>(null) }
     // Subtitle appearance, seeded from what this device last settled on and applied to whichever
     // engine is playing. Kept per-device rather than synced: it is a property of the panel and the
     // seat in front of it.
@@ -638,6 +673,7 @@ fun PlayerScreen(
     val sourcesRequester = focusRequesters.sources
     val engineRequester = focusRequesters.engine
     val nextRequester = focusRequesters.next
+    val episodesRequester = focusRequesters.episodes
     val watchedRequester = focusRequesters.watched
     val speedRequester = focusRequesters.speed
     val infoRequester = focusRequesters.info
@@ -1021,6 +1057,7 @@ fun PlayerScreen(
                 OverlayPanel.Speed -> speedRequester
                 OverlayPanel.Info -> infoRequester
                 OverlayPanel.Captions -> subtitlesRequester
+                OverlayPanel.Episodes -> episodesRequester
             },
         )
     }
@@ -1402,10 +1439,93 @@ fun PlayerScreen(
         streamLabelOverride = repository.describeStreamOption(selectedStream)
         nextEpisodeCandidate = null
         paused = false
+        // "Start again" belonged to an episode picked in the browser, not to the one after it.
+        episodeSwitchStartSec = null
         currentEpisode = targetEpisode
         // A generation guarantees a fresh load even if a stale callback races with Compose's
         // episode-key update. The in-progress guard prevents the repeated onEnd/click path
         // observed on .15 from queueing the same episode twice.
+        episodeLoadGeneration += 1
+    }
+
+    /**
+     * Moves the player to an episode chosen in the episode browser.
+     *
+     * The same hand-off [beginNextEpisode] makes, with two differences. The episode being left is
+     * not finished, so its position is saved rather than its completion recorded - it should show
+     * as part watched in the list it was left from, and resume there later. And no source has been
+     * looked up in advance, so [loadPlayback] finds one for the new episode the way it would for
+     * any episode opened from the series page: the source remembered for it, else the best one.
+     */
+    fun switchToEpisode(targetEpisode: EpisodeContext, startOver: Boolean) {
+        if (nextEpisodeTransitionInProgress) return
+        val fromEpisode = currentEpisode
+        val leavingPositionSec = positionSec
+        val leavingDurationSec = durationSec
+        val leavingDetail = detail
+        val leavingCompleted = completionThresholdReached
+        val leavingTraktProgress = traktProgressPercent()
+        val shouldStopLeavingScrobble = traktScrobbledStart
+        traktScrobbledStart = false
+        nextEpisodeTransitionInProgress = true
+        episodeChosenInPlayer = true
+        episodeSwitchStartSec = if (startOver) 0.0 else null
+        pendingEpisodeSelection = null
+        queuedNextEpisode = false
+        autoplayEndClaimed = false
+        nextEpisodeDialogVisible = false
+        nextEpisodeCountdown = null
+        // The episode on screen goes at once, as it does for Next: its source stays attached
+        // otherwise, and its position would look authoritative while the new one is found.
+        paused = true
+        pauseInfoVisible = false
+        controlsVisible = false
+        panel = null
+        panelClosedAtMs = System.currentTimeMillis()
+        loading = true
+        currentLabel = playerResources.getString(R.string.player_selecting_stream)
+        continueSourceNotice = null
+        sourceFallbackNotice = null
+        currentSourceUrl = null
+        candidate = null
+        pendingResumePositionSec = null
+        pendingResumeContentKey = null
+        positionSec = 0.0
+        durationSec = 0.0
+        scope.launch {
+            if (!leavingCompleted) {
+                runCatching {
+                    repository.syncProgress(
+                        request.mediaType,
+                        request.mediaId,
+                        leavingPositionSec,
+                        leavingDurationSec,
+                        fromEpisode,
+                        leavingDetail,
+                        mediaServerState = MediaServerPlaybackState.Stopped,
+                    )
+                }
+            }
+            if (shouldStopLeavingScrobble) {
+                repository.traktScrobble(
+                    action = "stop",
+                    mediaType = request.mediaType,
+                    mediaId = request.mediaId,
+                    title = leavingDetail?.title ?: request.title,
+                    year = leavingDetail?.year,
+                    progress = leavingTraktProgress,
+                )
+            }
+            TvDebugLogger.i(
+                "EpisodeTransition",
+                "browser from=S${fromEpisode?.seasonNumber}E${fromEpisode?.episodeNumber} to=S${targetEpisode.seasonNumber}E${targetEpisode.episodeNumber} startOver=$startOver",
+            )
+        }
+        streamKeyOverride = null
+        streamLabelOverride = null
+        nextEpisodeCandidate = null
+        paused = false
+        currentEpisode = targetEpisode
         episodeLoadGeneration += 1
     }
 
@@ -1501,7 +1621,20 @@ fun PlayerScreen(
         handledSegmentTypes = emptySet()
         segments = emptyList()
         val loadStartedAt = android.os.SystemClock.elapsedRealtime()
-        val activeRequest = playbackRequest
+        // See episodeChosenInPlayer: what the opening request says about its own episode does not
+        // carry over to one chosen from the episode browser.
+        val activeRequest = if (episodeChosenInPlayer && !isLive) {
+            playbackRequest.copy(
+                selectedStreamKey = null,
+                selectedStreamLabel = null,
+                selectedStream = null,
+                availableStreams = emptyList(),
+                startPositionSec = episodeSwitchStartSec,
+                fromContinueWatching = false,
+            )
+        } else {
+            playbackRequest
+        }
         val loadResult = runCatching {
             val queuedEpisodeSelection = pendingEpisodeSelection?.takeIf { selection ->
                 selection.episode.seasonNumber == currentEpisode?.seasonNumber &&
@@ -1711,6 +1844,29 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             }
             val drm = drmBySourceUrl[source]
             (playerView as? ExoPlaybackView)?.setDrmClearKeys(drm?.first, drm?.second)
+            // A new source starts a new record of which engines it has been on.
+            if (engineTrailSource != source) {
+                engineTrailSource = source
+                engineTrail = PlaybackEngineTrail(activePlaybackEngine)
+            }
+            // A source libVLC is known not to be able to open - it needs request headers libVLC
+            // cannot send, or it is ClearKey-protected - is not tried on it. It goes to the Auto
+            // path, and the loading screen says why. A viewer who switched to libVLC by hand on
+            // this very source is left with their choice.
+            libVlcBlockerForSource = libVlcBlocker(
+                currentRequestHeaders,
+                clearKeyProtected = drm?.first.equals("clearkey", ignoreCase = true) && !drm?.second.isNullOrEmpty(),
+            )
+            val blocker = libVlcBlockerForSource
+            if (activePlaybackEngine == ActivePlaybackEngine.VLC && blocker != null && manualEngineSource != source) {
+                sourceFallbackNotice = playerResources.getString(
+                    if (blocker == LibVlcBlocker.ClearKey) R.string.player_engine_notice_protected else R.string.player_engine_notice_headers,
+                )
+                TvDebugLogger.i("Player", "libVLC skipped for this source ($blocker): ${headersLibVlcCannotSend(currentRequestHeaders)}")
+                engineTrail = PlaybackEngineTrail(ActivePlaybackEngine.Media3)
+                activePlaybackEngine = ActivePlaybackEngine.Media3
+                return@LaunchedEffect
+            }
         }
         if (activePlaybackEngine == ActivePlaybackEngine.Media3) {
             playerView?.setExternalSubtitleTracks(
@@ -1843,7 +1999,28 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
         selectedAudioId = -1
         selectedSubtitleId = -1
         externalSubtitleAppliedKey = null
-        TvDebugLogger.i("Player", "Manual engine switch ${activePlaybackEngine.name} -> ${target.name} at ${positionSec}s")
+        manualEngineSource = currentSourceUrl
+        engineTrail.moveTo(target)
+        TvDebugLogger.i("Player", "Manual engine switch ${activePlaybackEngine.name} -> ${target.name} at ${positionSec}s; engines so far: ${engineTrail.describe()}")
+        activePlaybackEngine = target
+    }
+
+    /**
+     * Takes the source off libVLC and gives it to [target], keeping the position, and says why on
+     * the loading screen. The caller has already recorded libVLC as failed in [engineTrail].
+     */
+    fun handOverFromLibVlc(target: ActivePlaybackEngine, reason: String, noticeRes: Int) {
+        pendingEngineResumePositionSec = positionSec.takeIf { it > 0.0 }
+        loading = true
+        error = null
+        audioTracks = emptyList()
+        subtitleTracks = emptyList()
+        selectedAudioId = -1
+        selectedSubtitleId = -1
+        externalSubtitleAppliedKey = null
+        sourceFallbackNotice = playerResources.getString(noticeRes)
+        engineTrail.moveTo(target)
+        TvDebugLogger.w("Player", "libVLC -> ${target.name} at ${positionSec}s ($reason); engines so far: ${engineTrail.describe()}")
         activePlaybackEngine = target
     }
 
@@ -1854,6 +2031,25 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     @Composable
     fun EngineAndStallEffects() {
     LaunchedEffect(playbackPreferences.playerEngine) { resetPlaybackEngineForNewSource() }
+
+    // libVLC playing only half of a source - a picture with no sound, or sound with no picture -
+    // hands it to the next engine, once. Its own counters decide: a track that exists and is
+    // selected but has produced nothing while the other half runs. Two looks a moment apart, so a
+    // decoder that is merely slow to start is not mistaken for one that never will.
+    LaunchedEffect(currentSourceUrl, activePlaybackEngine, loading, error, playerView) {
+        if (activePlaybackEngine != ActivePlaybackEngine.VLC || loading || error != null || isLive) return@LaunchedEffect
+        val vlc = playerView as? VlcPlaybackView ?: return@LaunchedEffect
+        delay(6_000L)
+        val problem = vlc.compatibilityProblem() ?: return@LaunchedEffect
+        delay(2_000L)
+        if (activePlaybackEngine != ActivePlaybackEngine.VLC || vlc.compatibilityProblem() != problem) return@LaunchedEffect
+        val target = engineTrail.nextAfterFailure(ActivePlaybackEngine.VLC, libVlcBlockerForSource) ?: return@LaunchedEffect
+        handOverFromLibVlc(
+            target,
+            if (problem == LibVlcCompatibilityProblem.NoAudio) "no audio decoded" else "no picture shown",
+            R.string.player_engine_notice_fallback,
+        )
+    }
 
     LaunchedEffect(activePlaybackEngine, loading, selectedExternalSubtitleId, currentSourceUrl, subtitleTracks) {
         val selected = externalSubtitles.firstOrNull { it.id == selectedExternalSubtitleId } ?: return@LaunchedEffect
@@ -2230,7 +2426,8 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
     }
 
     LaunchedEffect(panel) {
-        if (panel == null) return@LaunchedEffect
+        // The episode browser places its own highlight, on the episode that is playing.
+        if (panel == null || panel == OverlayPanel.Episodes) return@LaunchedEffect
         delay(80)
         // Info is read, not chosen from, so it has no first row to land on — and an empty source
         // list has no row either. Both focus Close, which is the only thing the remote can do there
@@ -2689,6 +2886,24 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                 (player as? ExoPlaybackView)?.onStallChangedCallback = { buffering ->
                     media3Buffering = buffering
                 }
+                // libVLC reports rebuffering the same way, so the stall watch and the offer of
+                // another source cover it too. It starts from "not buffering": whatever the engine
+                // before it last said is not about this one.
+                (player as? VlcPlaybackView)?.let { vlc ->
+                    media3Buffering = false
+                    vlc.onStallChangedCallback = { buffering -> media3Buffering = buffering }
+                    // libVLC plays a Dolby Vision-only stream as plain HEVC, without its metadata.
+                    // Media3 can use the device's Dolby Vision decoder, and already knows when to
+                    // pass profile 7 to mpv, so the source goes there - unless Media3 has already
+                    // failed on it.
+                    vlc.onDolbyVisionCallback = {
+                        if (activePlaybackEngine == ActivePlaybackEngine.VLC && !engineTrail.hasFailed(ActivePlaybackEngine.Media3)) {
+                            engineTrail.markFailed(ActivePlaybackEngine.VLC)
+                            handOverFromLibVlc(ActivePlaybackEngine.Media3, "Dolby Vision without HDR10 signalling", R.string.player_engine_notice_dolby_vision)
+                            true
+                        } else false
+                    }
+                }
                 val controller = player as MpvPlayerController
                 controller.apply {
                     // Before any source is set, so the first load already knows what counts as loaded.
@@ -2964,14 +3179,23 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         val sourceHasPlayed = !isLive &&
                             lastWorkingSourceUrl != null &&
                             lastWorkingSourceUrl == currentSourceUrl
-                        if (shouldAutoFallbackToMpv(
-                                playbackPreferences.playerEngine,
+                        // libVLC failing on a source it never got going is the engine, not the
+                        // source: the next engine that has not already failed on it takes over.
+                        val afterLibVlc = if (activePlaybackEngine == ActivePlaybackEngine.VLC && !sourceHasPlayed) {
+                            engineTrail.nextAfterFailure(ActivePlaybackEngine.VLC, libVlcBlockerForSource)
+                        } else null
+                        if (afterLibVlc != null) {
+                            handOverFromLibVlc(afterLibVlc, message, R.string.player_engine_notice_fallback)
+                        } else if (shouldAutoFallbackToMpv(
+                                effectiveEnginePreference(playbackPreferences.playerEngine, activePlaybackEngine),
                                 activePlaybackEngine,
                                 autoEngineFallbackUsed,
                                 sourceHasPlayed,
-                            )
+                            ) && !engineTrail.hasFailed(ActivePlaybackEngine.MPV)
                         ) {
                             autoEngineFallbackUsed = true
+                            engineTrail.markFailed(ActivePlaybackEngine.Media3)
+                            engineTrail.moveTo(ActivePlaybackEngine.MPV)
                             pendingEngineResumePositionSec = positionSec.takeIf { it > 0.0 }
                             loading = true
                             error = null
@@ -3529,6 +3753,15 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                     sourcesRequester = sourcesRequester,
                     engineRequester = engineRequester,
                     nextRequester = nextRequester,
+                    // Whenever what is playing is an episode of a series, however it was started:
+                    // decided from the playback itself - its type, the episode being played and
+                    // the title it belongs to - and not from the screen it was launched from. The
+                    // title's season list is not required; a title that arrives without one (some
+                    // add-on and Continue Watching starts) still has the season being played, and
+                    // the browser opens on that.
+                    episodesRequester = episodesRequester.takeIf {
+                        !isLive && (request.mediaType == "tv" || request.mediaType == "series") && currentEpisode != null && detail != null
+                    },
                     watchedRequester = watchedRequester,
                     speedRequester = speedRequester,
                     infoRequester = infoRequester,
@@ -3556,6 +3789,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         }
                     },
                     onNext = {
+                        episodeSwitchStartSec = null
                         nextEpisode?.let { currentEpisode = it }
                         registerInteraction()
                     },
@@ -3938,9 +4172,33 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             ) {
                 PlayerPanelVisibility(
                     visible = panel != null,
-                    modifier = Modifier.padding(end = 36.dp, top = 52.dp, bottom = 52.dp),
+                    // The episode browser is a list of stills, so it takes more of the height.
+                    modifier = if (activePanel == OverlayPanel.Episodes) {
+                        Modifier.padding(end = 36.dp, top = 28.dp, bottom = 28.dp)
+                    } else {
+                        Modifier.padding(end = 36.dp, top = 52.dp, bottom = 52.dp)
+                    },
                 ) {
-                    PlayerOptionPanel(
+                    val browserDetail = detail
+                    val browserEpisode = currentEpisode
+                    if (activePanel == OverlayPanel.Episodes) {
+                        if (browserDetail != null && browserEpisode != null) {
+                            PlayerEpisodePanel(
+                                repository = repository,
+                                mediaId = request.mediaId,
+                                detail = browserDetail,
+                                currentEpisode = browserEpisode,
+                                currentFraction = if (durationSec > 0.0) (positionSec / durationSec).toFloat().coerceIn(0f, 1f) else null,
+                                onInteract = ::registerInteraction,
+                                onSelectEpisode = ::switchToEpisode,
+                                onClose = {
+                                    panel = null
+                                    panelClosedAtMs = System.currentTimeMillis()
+                                    restoreControlsAfterPanel(OverlayPanel.Episodes)
+                                },
+                            )
+                        }
+                    } else PlayerOptionPanel(
                         panel = activePanel,
                         candidate = candidate,
                         audioTracks = audioTracks,
@@ -4159,7 +4417,7 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
                         playbackStats = playbackStats,
                         currentStreamUrl = currentSourceUrl,
                         currentLabel = currentLabel,
-                        engineLabel = if (activePlaybackEngine == ActivePlaybackEngine.MPV) "mpv" else "ExoPlayer",
+                        engineLabel = activePlaybackEngine.displayName,
                         durationSec = durationSec,
                         isLive = isLive,
                         pluginState = bootstrap?.profilePlugins ?: ProfilePluginState(),
@@ -4197,7 +4455,7 @@ private fun LiveStatusBadge(
     ) {
         if (isVod) {
             Icon(
-                imageVector = Icons.Filled.PlayArrow,
+                imageVector = StreamDekPlayerIcons.Play,
                 contentDescription = null,
                 modifier = Modifier.size(12.dp),
                 tint = Color(0xFF60A5FA),
@@ -4264,7 +4522,7 @@ private fun LiveChannelDownHint(
             color = Color.White,
         )
         Icon(
-            imageVector = Icons.Default.KeyboardArrowDown,
+            imageVector = StreamDekPlayerIcons.ChevronDown,
             contentDescription = stringResource(R.string.player_live_channels_hint),
             tint = Color.White,
             modifier = Modifier
@@ -4290,7 +4548,7 @@ private fun LiveFavouritesRightHint(
             color = Color.White,
         )
         Icon(
-            imageVector = Icons.Default.KeyboardArrowRight,
+            imageVector = StreamDekPlayerIcons.ChevronRight,
             contentDescription = stringResource(R.string.player_favourite_channels_hint),
             tint = Color.White,
             modifier = Modifier.size(26.dp).offset(x = offsetX.dp),
@@ -4364,7 +4622,7 @@ private fun LiveFavouritesDrawer(
             ) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = if (cardView) Icons.Filled.ViewList else Icons.Filled.GridView,
+                        imageVector = if (cardView) StreamDekPlayerIcons.ListView else StreamDekPlayerIcons.Sources,
                         contentDescription = if (cardView) "Switch to text list" else "Switch to card view",
                         modifier = Modifier.size(18.dp),
                     )
@@ -4603,7 +4861,7 @@ private fun LivePlayerChannelCard(
             )
             if (favourite) {
                 Icon(
-                    imageVector = Icons.Filled.Star,
+                    imageVector = StreamDekPlayerIcons.Star,
                     contentDescription = stringResource(R.string.player_favourite_channel),
                     tint = Color(0xFFFACC15),
                     modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(20.dp),
@@ -4760,6 +5018,7 @@ private fun createPlayerView(
     engine: ActivePlaybackEngine,
 ): android.view.View {
     if (engine == ActivePlaybackEngine.Media3) return ExoPlaybackView(context)
+    if (engine == ActivePlaybackEngine.VLC) return VlcPlaybackView(context, useTextureView = renderSurface == "texture")
     return when (renderSurface) {
         "texture" -> MPVTextureView(context)
         else -> MPVView(context)

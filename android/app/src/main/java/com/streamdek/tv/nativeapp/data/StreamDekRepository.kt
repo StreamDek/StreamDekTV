@@ -860,6 +860,22 @@ class StreamDekRepository(
     private val detailsCache = lruCache<String, MediaDetail>(48)
     private val seasonCache = lruCache<String, SeasonDetail>(32)
     private val homeCache = lruCache<String, HomeContent>(4)
+
+    /** The last finished Home per profile, on disk; see HomeSnapshot.kt. Absent in unit tests. */
+    private val homeSnapshots: HomeSnapshotStore? by lazy {
+        appContext?.let { HomeSnapshotStore(File(it.filesDir, "home-snapshots"), com.streamdek.tv.BuildConfig.VERSION_CODE) }
+    }
+
+    /**
+     * The Home this profile last finished loading, for a cold start to open on while the fresh
+     * read is made. Null when there is none this build can vouch for.
+     */
+    suspend fun loadHomeSnapshot(): HomeContent? = withContext(Dispatchers.IO) {
+        val key = buildSessionProfileCacheKey()
+        val perf = Perf.span("home.snapshot", "read")
+        homeSnapshots?.read(key)?.withoutAdult()
+            .also { perf.end(if (it == null) "miss" else "hit", "rails=${it?.rails?.size ?: 0}") }
+    }
     private val libraryCache = lruCache<String, LibraryResponse>(4)
     /** Absent in unit tests, which have no [appContext]; the watchlist is then the service's alone. */
     private val localWatchlistStore: LocalWatchlistStore? by lazy { appContext?.let(::LocalWatchlistStore) }
@@ -1323,6 +1339,7 @@ class StreamDekRepository(
         detailsCache.clear()
         seasonCache.clear()
         homeCache.clear()
+        homeSnapshots?.let { store -> repositoryScope.launch { store.clear() } }
         libraryCache.clear()
         searchCache.clear()
         addonSearchCache.clear()
@@ -2161,6 +2178,9 @@ class StreamDekRepository(
      */
     fun homeContentStream(forceRefresh: Boolean = false): Flow<HomeContent> = channelFlow {
         val perf = Perf.span("home", if (forceRefresh) "forced" else "normal")
+        // Whose Home this is, read once: a profile switch mid-load must not file this page under
+        // the profile that was switched to.
+        val snapshotKey = buildSessionProfileCacheKey()
         val homePreferences = bootstrapState.value?.preferences?.home
         val addonConfiguration = bootstrapState.value?.integrations?.addons?.items.orEmpty()
             .joinToString("|") { "${it.id}:${it.enabled}:${it.position}" }
@@ -2373,6 +2393,8 @@ class StreamDekRepository(
         }
 
         homeCache[cacheKey] = complete
+        // Kept for the next cold start. Written off this flow, which the screen is waiting on.
+        homeSnapshots?.let { store -> repositoryScope.launch { store.write(snapshotKey, complete) } }
         perf.end("complete", "rails=${complete.rails.size} items=${complete.rails.sumOf { it.items.size }}")
         Perf.startupMark("home.allContent")
         send(complete)
@@ -4348,7 +4370,24 @@ class StreamDekRepository(
         return api.get<PlaybackProgressResponse>(query)?.progress
     }
 
-    suspend fun fetchSeriesResumeState(detail: MediaDetail): SeriesResumeState = supervisorScope {
+    suspend fun fetchSeriesResumeState(detail: MediaDetail): SeriesResumeState {
+        val (events, providerWatched) = fetchSeriesProgressEvents(detail)
+        return getSeriesResumeState(seriesEpisodeSlots(detail.seasons), events, providerWatched)
+    }
+
+    /**
+     * Watched and part-watched, episode by episode, for a list of a series' episodes.
+     *
+     * Read from exactly what [fetchSeriesResumeState] reads, so the player's episode browser and
+     * the series page are two views of one history rather than two histories.
+     */
+    suspend fun fetchSeriesEpisodeStanding(detail: MediaDetail): SeriesEpisodeStanding {
+        val (events, providerWatched) = fetchSeriesProgressEvents(detail)
+        return getSeriesEpisodeStanding(events, providerWatched)
+    }
+
+    /** Every progress event known for a series, and the episodes a tracking service calls watched. */
+    private suspend fun fetchSeriesProgressEvents(detail: MediaDetail): Pair<List<SeriesProgressEvent>, Set<String>> = supervisorScope {
         mediaServerTarget(detail.id)?.let { (provider, ref) ->
             val events = runCatching { provider.seriesProgress(ref) }.getOrDefault(emptyList()).map { entry ->
                 SeriesProgressEvent(
@@ -4360,7 +4399,7 @@ class StreamDekRepository(
                     updatedAtMillis = entry.progress.lastViewedAtMs,
                 )
             }
-            return@supervisorScope getSeriesResumeState(seriesEpisodeSlots(detail.seasons), events)
+            return@supervisorScope events to emptySet<String>()
         }
         val progressDeferred = async {
             fetchSeriesProgressRecords(detail.id)
@@ -4397,7 +4436,7 @@ class StreamDekRepository(
         val providerWatched = watchedDeferred.await().mapNotNull { key ->
             key.takeIf { it.startsWith(prefix) }?.removePrefix(prefix)
         }.toSet()
-        getSeriesResumeState(seriesEpisodeSlots(detail.seasons), syncDekEvents + providerEvents, providerWatched)
+        (syncDekEvents + providerEvents) to providerWatched
     }
 
     /**

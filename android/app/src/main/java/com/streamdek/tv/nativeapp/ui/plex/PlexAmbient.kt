@@ -63,3 +63,31 @@ private val JellyfinAmbientRed = Color(0xFFEF4444)
 private val JellyfinAmbientEmber = Color(0xFFEA580C)
 private val JellyfinAmbientCrimson = Color(0xFFB91C1C)
 
+/**
+ * StreamDek Fuse's colour wash: the viewer's accent colour with a cool blue and a violet beside it
+ * and a warm ember low down - several sources of light meeting on one page, which is what the Fuse
+ * is. The accent leads, so the page follows the theme rather than fighting it. Held still, as the
+ * other two are, and drawn behind the content only.
+ */
+internal fun Modifier.fuseAmbientGlow(accent: Color): Modifier = drawBehind {
+    drawRect(Color.Black.copy(alpha = 0.35f))
+    val w = size.width
+    val h = size.height
+    val radius = maxOf(w, h) * 0.55f
+    fun glow(color: Color, x: Float, y: Float, scale: Float = 1f, strength: Float = AmbientStrength) {
+        val center = Offset(x * w, y * h)
+        drawCircle(
+            brush = Brush.radialGradient(listOf(color.copy(alpha = strength), color.copy(alpha = 0f)), center = center, radius = radius * scale),
+            radius = radius * scale,
+            center = center,
+        )
+    }
+    glow(accent, 0.10f, 0.06f, 1.1f, AmbientStrength * 1.1f)
+    glow(FuseAmbientBlue, 0.90f, 0.12f)
+    glow(FuseAmbientViolet, 0.86f, 0.82f, 0.95f, AmbientStrength * 0.9f)
+    glow(FuseAmbientEmber, 0.18f, 0.78f, 0.85f, AmbientStrength * 0.55f)
+}
+
+private val FuseAmbientBlue = Color(0xFF38BDF8)
+private val FuseAmbientViolet = Color(0xFFA855F7)
+private val FuseAmbientEmber = Color(0xFFF59E0B)

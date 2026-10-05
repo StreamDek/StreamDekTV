@@ -23,31 +23,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Accessibility
-import androidx.compose.material.icons.outlined.AccountCircle
-import androidx.compose.material.icons.outlined.ArrowDropDown
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.ClosedCaption
-import androidx.compose.material.icons.outlined.Dns
-import androidx.compose.material.icons.outlined.Extension
-import androidx.compose.material.icons.outlined.GraphicEq
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.LiveTv
-import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.SkipNext
-import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.VideoLibrary
-import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material.icons.outlined.VpnKey
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
+import com.streamdek.tv.nativeapp.ui.StreamDekNavIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekPlayerIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekSettingsIcons
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -221,33 +199,33 @@ private enum class SettingsDestination(
     val terms: String,
     val icon: ImageVector,
 ) {
-    Account(R.string.settings_category_account, R.string.settings_dest_account, R.string.settings_dest_account_description, "accounts profile pin sign in switch household", Icons.Outlined.AccountCircle),
+    Account(R.string.settings_category_account, R.string.settings_dest_account, R.string.settings_dest_account_description, "accounts profile pin sign in switch household", StreamDekSettingsIcons.Account),
 
-    Appearance(R.string.settings_category_appearance, R.string.settings_appearance, R.string.settings_dest_appearance_description, "accent colour theme animation blur transparent navigation language interface translation", Icons.Outlined.Palette),
-    Library(R.string.settings_category_appearance, R.string.settings_dest_home_screen, R.string.settings_dest_home_screen_description, "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page card titles hide titles overlay label", Icons.Outlined.VideoLibrary),
-    LiveTv(R.string.settings_category_appearance, R.string.live_tv, R.string.settings_dest_live_tv_description, "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", Icons.Outlined.LiveTv),
-    Accessibility(R.string.settings_category_appearance, R.string.settings_dest_accessibility, R.string.settings_dest_accessibility_description, "vision screen reader high contrast large text compact", Icons.Outlined.Accessibility),
+    Appearance(R.string.settings_category_appearance, R.string.settings_appearance, R.string.settings_dest_appearance_description, "accent colour theme animation blur transparent navigation language interface translation", StreamDekSettingsIcons.Appearance),
+    Library(R.string.settings_category_appearance, R.string.settings_dest_home_screen, R.string.settings_dest_home_screen_description, "home catalogs rows poster landscape grid columns density start screen trailer trailers autoplay title page card titles hide titles overlay label", StreamDekNavIcons.HomeOutline),
+    LiveTv(R.string.settings_category_appearance, R.string.live_tv, R.string.settings_dest_live_tv_description, "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar", StreamDekNavIcons.LiveOutline),
+    Accessibility(R.string.settings_category_appearance, R.string.settings_dest_accessibility, R.string.settings_dest_accessibility_description, "vision screen reader high contrast large text compact", StreamDekSettingsIcons.Accessibility),
 
-    Playback(R.string.settings_category_playback, R.string.settings_dest_player, R.string.settings_dest_player_description, "engine mpv media3 exoplayer decoder display surface live progress sleep idle compatibility", Icons.Outlined.PlayArrow),
+    Playback(R.string.settings_category_playback, R.string.settings_dest_player, R.string.settings_dest_player_description, "engine mpv media3 exoplayer decoder display surface live progress sleep idle compatibility", StreamDekPlayerIcons.Play),
     // Their own pages rather than rows under the player: a language, a delay and a list of
     // sources are what people come looking for, and under "Player" they sat between the engine
     // choice and the sleep timer.
-    Subtitles(R.string.settings_category_playback, R.string.player_subtitles, R.string.settings_dest_subtitles_description, "subtitles subtitle captions language secondary preferred only auto load sources addons timing delay sync", Icons.Outlined.ClosedCaption),
-    Audio(R.string.settings_category_playback, R.string.player_audio, R.string.settings_dest_audio_description, "audio sound language spoken dub delay sync synchronisation lip sync lag latency soundbar receiver bluetooth", Icons.Outlined.GraphicEq),
-    SkipAndAutoplay(R.string.settings_category_playback, R.string.settings_dest_skip_autoplay, R.string.settings_dest_skip_autoplay_description, "skip intro recap ending credits autoplay next episode binge threshold", Icons.Outlined.SkipNext),
-    Streams(R.string.settings_category_playback, R.string.settings_dest_streams, R.string.settings_dest_streams_description, "quality resolution 4k 1080p file size picker source badges labels", Icons.Outlined.Tune),
+    Subtitles(R.string.settings_category_playback, R.string.player_subtitles, R.string.settings_dest_subtitles_description, "subtitles subtitle captions language secondary preferred only auto load sources addons timing delay sync", StreamDekPlayerIcons.Captions),
+    Audio(R.string.settings_category_playback, R.string.player_audio, R.string.settings_dest_audio_description, "audio sound language spoken dub delay sync synchronisation lip sync lag latency soundbar receiver bluetooth", StreamDekPlayerIcons.Audio),
+    SkipAndAutoplay(R.string.settings_category_playback, R.string.settings_dest_skip_autoplay, R.string.settings_dest_skip_autoplay_description, "skip intro recap ending credits autoplay next episode binge threshold", StreamDekPlayerIcons.Next),
+    Streams(R.string.settings_category_playback, R.string.settings_dest_streams, R.string.settings_dest_streams_description, "quality resolution 4k 1080p file size picker source badges labels", StreamDekSettingsIcons.Sliders),
 
-    Sources(R.string.settings_category_sources, R.string.settings_dest_sources, R.string.settings_dest_sources_description, "providers addon plugin cloudstream debrid premium install playlist", Icons.Outlined.Extension),
+    Sources(R.string.settings_category_sources, R.string.settings_dest_sources, R.string.settings_dest_sources_description, "providers addon plugin cloudstream debrid premium install playlist", StreamDekPlayerIcons.Sources),
     // Personal media servers. Its own page rather than a row under Sources: linking, servers and
     // libraries are a whole screen's worth, and "Plex" is exactly what someone will search for.
     MediaServers(R.string.settings_category_sources, R.string.media_server_plex, R.string.settings_dest_plex_description, "plex media server personal library libraries link account plex.tv emby nas", PlexIcons.Chevron),
     Jellyfin(R.string.settings_category_sources, R.string.media_server_jellyfin, R.string.settings_dest_jellyfin_description, "jellyfin media server personal library libraries quick connect self hosted nas address", com.streamdek.tv.nativeapp.ui.JellyfinIcons.Mark),
 
-    ContentServices(R.string.settings_category_connections, R.string.settings_dest_content_services, R.string.settings_dest_content_services_description, "content services tmdb mdblist theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential", Icons.Outlined.VpnKey),
-    Connections(R.string.settings_category_connections, R.string.settings_dest_sync_services, R.string.settings_dest_sync_services_description, "tracking trakt simkl mdblist sync devices television session cloud", Icons.Outlined.Sync),
-    Network(R.string.settings_category_connections, R.string.settings_dest_network, R.string.settings_dest_network_description, "network dns doh dns over https privacy resolver", Icons.Outlined.Dns),
+    ContentServices(R.string.settings_category_connections, R.string.settings_dest_content_services, R.string.settings_dest_content_services_description, "content services tmdb mdblist theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential", StreamDekSettingsIcons.Key),
+    Connections(R.string.settings_category_connections, R.string.settings_dest_sync_services, R.string.settings_dest_sync_services_description, "tracking trakt simkl mdblist sync devices television session cloud", StreamDekSettingsIcons.Sync),
+    Network(R.string.settings_category_connections, R.string.settings_dest_network, R.string.settings_dest_network_description, "network dns doh dns over https privacy resolver", StreamDekSettingsIcons.Network),
 
-    About(R.string.settings_category_about, R.string.settings_dest_about, R.string.settings_dest_about_description, "release update version diagnostics health cache network runtime", Icons.Outlined.Info),
+    About(R.string.settings_category_about, R.string.settings_dest_about, R.string.settings_dest_about_description, "release update version diagnostics health cache network runtime", StreamDekPlayerIcons.Info),
 }
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -577,7 +555,7 @@ fun SettingsScreen(
                     SettingsPanel(stringResource(R.string.settings_tv_synced_tv_playback)) {
                         InfoLine(stringResource(R.string.info_cloud_scope), stringResource(R.string.info_changes_apply_on_this_tv_and_sync))
                     }
-                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_player), stringResource(R.string.settings_tv_auto_uses_media3_first_with_one_mpv), normalizePlayerEngine(playbackPrefs?.playerEngine), listOf(PlayerEngineValues.AUTO to stringResource(R.string.settings_opt_auto), PlayerEngineValues.EXOPLAYER to stringResource(R.string.settings_opt_media3_exoplayer), PlayerEngineValues.MPV to PlayerEngineValues.MPV)) { value ->
+                    SettingsDropdownRow(stringResource(R.string.settings_tv_default_player), stringResource(R.string.settings_tv_auto_uses_media3_first_with_one_mpv), normalizePlayerEngine(playbackPrefs?.playerEngine), listOf(PlayerEngineValues.AUTO to stringResource(R.string.settings_opt_auto), PlayerEngineValues.EXOPLAYER to stringResource(R.string.settings_opt_media3_exoplayer), PlayerEngineValues.MPV to PlayerEngineValues.MPV, PlayerEngineValues.VLC to PlayerEngineValues.VLC_LABEL)) { value ->
                         savePreference(R.string.settings_tv_default_player) { repository.updatePlaybackPreferences(mapOf("playerEngine" to value)) }
                     }
                     SettingsPanel(stringResource(R.string.settings_tv_player_display)) {
@@ -2127,7 +2105,7 @@ private fun SettingsSearchBox(query: String, onQueryChange: (String) -> Unit, na
         Row(
             Modifier.fillMaxWidth().height(46.dp).background(if (focused) Color(0xFF151C28) else Color(0xFF0D1118), androidx.compose.foundation.shape.RoundedCornerShape(14.dp)).border(if (focused) 2.dp else 1.dp, if (focused) MaterialTheme.colorScheme.primary else Color(0x18FFFFFF), androidx.compose.foundation.shape.RoundedCornerShape(14.dp)).focusRequester(launcherRequester).onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent(keyHandler).clickable { editing = true }.padding(horizontal = 13.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) { Icon(Icons.Outlined.Search, null, tint = Color.White.copy(alpha = 0.62f), modifier = Modifier.size(18.dp)); Text(query.ifBlank { stringResource(R.string.settings_find) }, color = Color.White.copy(alpha = if (query.isBlank()) 0.58f else 0.9f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ) { Icon(StreamDekNavIcons.SearchOutline, null, tint = Color.White.copy(alpha = 0.62f), modifier = Modifier.size(18.dp)); Text(query.ifBlank { stringResource(R.string.settings_find) }, color = Color.White.copy(alpha = if (query.isBlank()) 0.58f else 0.9f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
     }
 }
 
@@ -2407,9 +2385,9 @@ private fun RevealableInfoLine(label: String, value: String) {
             )
             Icon(
                 imageVector = if (revealed) {
-                    Icons.Outlined.VisibilityOff
+                    StreamDekSettingsIcons.EyeOff
                 } else {
-                    Icons.Outlined.Visibility
+                    StreamDekSettingsIcons.Eye
                 },
                 contentDescription = stringResource(if (revealed) R.string.a11y_hide_named else R.string.a11y_show_named, label),
                 tint = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.55f),
@@ -2494,7 +2472,7 @@ private fun SettingsDropdownRow(
                 optionColors[value]?.let { color -> ThemeColorSwatch(color) }
                 optionPreview?.invoke(value)
                 Text(displayValue, color = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                Icon(Icons.Outlined.ArrowDropDown, null, tint = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.72f), modifier = Modifier.size(22.dp))
+                Icon(StreamDekPlayerIcons.ChevronDown, null, tint = if (focused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.72f), modifier = Modifier.size(22.dp))
             }
         }
         DropdownMenu(
@@ -2524,7 +2502,7 @@ private fun SettingsDropdownRow(
                         }
                     },
                     trailingIcon = {
-                        if (optionValue.equals(value, true)) Icon(Icons.Outlined.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        if (optionValue.equals(value, true)) Icon(StreamDekSettingsIcons.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     },
                     onClick = { expanded = false; onSelect(optionValue) },
                     modifier = Modifier.fillMaxWidth()
@@ -2666,7 +2644,7 @@ private fun SettingsSourceRow(
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     if (visualFavourite) {
-                        Icon(Icons.Filled.Star, contentDescription = null, tint = FavouriteStarColor, modifier = Modifier.size(15.dp))
+                        Icon(StreamDekPlayerIcons.Star, contentDescription = null, tint = FavouriteStarColor, modifier = Modifier.size(15.dp))
                     }
                 }
                 Text(
@@ -2679,7 +2657,7 @@ private fun SettingsSourceRow(
             }
             if (expanded != null) {
                 Icon(
-                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    if (expanded) StreamDekSettingsIcons.ChevronUp else StreamDekPlayerIcons.ChevronDown,
                     contentDescription = stringResource(if (expanded) R.string.action_collapse else R.string.action_expand),
                     tint = if (cardFocused) accent else Color.White.copy(alpha = 0.55f),
                     modifier = Modifier.size(22.dp),
@@ -2715,7 +2693,7 @@ private fun SettingsFavouriteButton(favourite: Boolean, itemName: String, onClic
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(
-            if (favourite) Icons.Filled.Star else Icons.Filled.StarBorder,
+            if (favourite) StreamDekPlayerIcons.Star else StreamDekPlayerIcons.StarOutline,
             contentDescription = null,
             tint = when {
                 favourite -> FavouriteStarColor
@@ -2934,6 +2912,9 @@ private fun serviceStatus(resources: Resources, connected: Boolean, username: St
  */
 private object PlayerEngineValues {
     const val MPV = "MPV"
+    const val VLC = "VLC"
+    /** A product name, the same in every language. */
+    const val VLC_LABEL = "libVLC"
     const val EXOPLAYER = "ExoPlayer"
     const val AUTO = "Auto"
 }
@@ -2969,6 +2950,7 @@ private object SubtitleSourceValues {
 
 private fun normalizePlayerEngine(value: String?): String = when (value?.trim()?.lowercase()) {
     "mpv" -> PlayerEngineValues.MPV
+    "vlc", "libvlc" -> PlayerEngineValues.VLC
     "media3", "exo", "exoplayer" -> PlayerEngineValues.EXOPLAYER
     else -> PlayerEngineValues.AUTO
 }

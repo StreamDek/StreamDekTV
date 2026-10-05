@@ -146,6 +146,8 @@ dependencies {
     // against it. Same version the mobile app tests these with.
     testImplementation("org.json:json:20251224")
     implementation files("libs/libmpv-release.aar")
+    // libVLC: a third playback engine, used only when the viewer selects it.
+    implementation("org.videolan.android:libvlc-all:3.7.7")
     implementation files("libs/lib-decoder-ffmpeg-release.aar")
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-exoplayer-hls:1.8.0")

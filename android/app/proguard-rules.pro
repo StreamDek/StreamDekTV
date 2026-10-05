@@ -109,3 +109,9 @@
 # ("could not reach Plex", no libraries), so the whole package keeps its names.
 -keepattributes Signature,*Annotation*
 -keep class com.streamdek.tv.nativeapp.mediaserver.** { *; }
+
+# libVLC is driven from native code through JNI, which looks its classes, fields and methods up
+# by name.
+-keep class org.videolan.libvlc.** { *; }
+-keep interface org.videolan.libvlc.** { *; }
+-dontwarn org.videolan.libvlc.**

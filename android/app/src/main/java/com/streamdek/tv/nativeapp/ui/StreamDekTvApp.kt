@@ -34,11 +34,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Hub
-import androidx.compose.material.icons.outlined.LiveTv
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -149,19 +144,21 @@ private enum class TopLevelDestination(
     val route: String,
     @StringRes val labelRes: Int,
     val icon: ImageVector?,
+    /** The filled drawing shown while the entry is highlighted. Null where the icon has only one. */
+    val highlightedIcon: ImageVector? = icon,
 ) {
-    Home("home", R.string.nav_home, Icons.Outlined.Home),
-    Search("search", R.string.nav_search, Icons.Outlined.Search),
+    Home("home", R.string.nav_home, StreamDekNavIcons.HomeOutline, StreamDekNavIcons.HomeFilled),
+    Search("search", R.string.nav_search, StreamDekNavIcons.SearchOutline, StreamDekNavIcons.SearchFilled),
     /**
      * The viewer's own media servers. One entry whatever is connected: Plex's mark and name, or
      * Jellyfin's, or both marks and "My Media" when both are - see [mediaNavIcon]. Only while a
      * server is linked with a library switched on; see MediaServerUiState.navigationVisible.
      */
     Plex("plex", R.string.media_server_plex, PlexIcons.Chevron),
-    Live("live", R.string.nav_live, Icons.Outlined.LiveTv),
+    Live("live", R.string.nav_live, StreamDekNavIcons.LiveOutline, StreamDekNavIcons.LiveFilled),
     /** Stands in Live's place while StreamDek Fuse is on: Fuse's Live TV view is what Live was. */
-    Fuse("fuse", R.string.nav_fuse, Icons.Outlined.Hub),
-    Library("library", R.string.nav_library, Icons.Outlined.VideoLibrary),
+    Fuse("fuse", R.string.nav_fuse, StreamDekNavIcons.FuseOutline, StreamDekNavIcons.FuseFilled),
+    Library("library", R.string.nav_library, StreamDekNavIcons.LibraryOutline, StreamDekNavIcons.LibraryFilled),
     Profile("profile", R.string.nav_settings, null),
 }
 
@@ -2298,7 +2295,13 @@ private fun TvSideNav(
                             size = 24.dp,
                         )
                     } else {
-                        (if (destination == TopLevelDestination.Plex) mediaNavIcon(mediaProviders) else destination.icon)?.let { icon ->
+                        // StreamDek's own marks fill when highlighted; the media server's mark is
+                        // that service's own and has the one drawing.
+                        (when {
+                            destination == TopLevelDestination.Plex -> mediaNavIcon(mediaProviders)
+                            highlighted -> destination.highlightedIcon
+                            else -> destination.icon
+                        })?.let { icon ->
                             Icon(
                                 imageVector = icon,
                                 contentDescription = stringResource(if (destination == TopLevelDestination.Plex) com.streamdek.tv.nativeapp.data.mediaServerDestinationTitleRes(mediaProviders) else destination.labelRes),

@@ -28,8 +28,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Search
+import com.streamdek.tv.nativeapp.ui.StreamDekNavIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekPlayerIcons
+import com.streamdek.tv.nativeapp.ui.StreamDekSettingsIcons
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
@@ -354,13 +355,13 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
                             onValueChange = { query = it },
                             modifier = Modifier.fillMaxWidth().focusRequester(searchRequester),
                             placeholder = { Text(stringResource(R.string.hint_search_this_list)) },
-                            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                            leadingIcon = { Icon(StreamDekNavIcons.SearchOutline, contentDescription = null) },
                             singleLine = true,
                             shape = ControlShape,
                         )
                     } else if (toggleCount > SEARCH_THRESHOLD) {
                         FilledTonalButton(onClick = { searching = true }, shape = ControlShape, modifier = Modifier.focusRing()) {
-                            Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Icon(StreamDekNavIcons.SearchOutline, contentDescription = null, modifier = Modifier.size(20.dp))
                             Text(stringResource(R.string.hint_search_this_list), modifier = Modifier.padding(start = 8.dp))
                         }
                     }
