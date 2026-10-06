@@ -135,6 +135,8 @@ class ExoPlaybackView @JvmOverloads constructor(
   private val bandwidthMeter = DefaultBandwidthMeter.Builder(context).build()
 
   private var exoPlayer: ExoPlayer? = null
+  var onProviderEvidence: ((Boolean, String) -> Unit)? = null
+  private val providerProbe = ProviderPlaybackProbe { ok, attempt -> onProviderEvidence?.invoke(ok, attempt) }
   private var source: String? = null
   private var requestHeaders: Map<String, String> = emptyMap()
   private var drmLicenseType: String? = null
@@ -170,6 +172,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     override fun run() {
       exoPlayer?.let { active ->
         val durationMs = active.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L
+        providerProbe.tick(active.currentPosition, active.isPlaying)
         onProgressCallback?.invoke(active.currentPosition / 1000.0, durationMs / 1000.0)
       }
       postDelayed(this, 500L)
@@ -263,6 +266,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   override fun setSource(url: String?) {
     val next = url?.trim().orEmpty()
     if (next.isBlank() || next == source) return
+    providerProbe.reset()
     source = next
     if (isAttachedToWindow) prepareSource(next)
   }
@@ -312,6 +316,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   override fun seekTo(positionSeconds: Double) {
+    providerProbe.seek((positionSeconds * 1000.0).toLong())
     exoPlayer?.seekTo((positionSeconds * 1000.0).toLong().coerceAtLeast(0L))
   }
 
@@ -628,6 +633,14 @@ class ExoPlaybackView @JvmOverloads constructor(
       .build()
     exoPlayer = active
     player = active
+    active.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+      override fun onAudioPositionAdvancing(eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, playoutStartSystemTimeMs: Long) {
+        if (exoPlayer === active) providerProbe.audio()
+      }
+      override fun onAudioSinkError(eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, audioSinkError: Exception) {
+        if (exoPlayer === active) providerProbe.fail()
+      }
+    })
     active.addListener(listener)
     preferredAudioLanguageTags(preferredAudioLanguage).takeIf(List<String>::isNotEmpty)?.let { tags ->
       active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
@@ -674,10 +687,12 @@ class ExoPlaybackView @JvmOverloads constructor(
 
     /** The moment a picture actually exists on screen — the number "time to first frame" means. */
     override fun onRenderedFirstFrame() {
+      providerProbe.frame()
       com.streamdek.tv.nativeapp.data.Perf.playback?.mark("player.firstFrame")
     }
 
     override fun onPlayerError(error: PlaybackException) {
+      providerProbe.fail()
       Log.e(TAG, "Media3 playback failed", error)
       if (error.errorCode in PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED &&
         requestDv7Fallback(decoderFailed = true)) return
@@ -818,6 +833,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   private fun clearCallbacks() {
+    onProviderEvidence = null
     onLoadCallback = null
     onProgressCallback = null
     onEndCallback = null

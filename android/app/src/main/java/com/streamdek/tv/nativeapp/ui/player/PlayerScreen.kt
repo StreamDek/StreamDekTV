@@ -1878,6 +1878,9 @@ LaunchedEffect(isLive, playbackRequest.sourceAddonId, playbackRequest.sourceCata
             playerView?.setPaused(true)
             return@LaunchedEffect
         }
+        (playerView as? ExoPlaybackView)?.onProviderEvidence = { ok, attempt ->
+            Telemetry.providerPlaybackEvidence(request.mediaId, request.mediaType, candidate?.stream?.addonName, candidate?.stream?.source, ok, attempt)
+        }
         if (!source.isNullOrBlank()) playerView?.setSource(source)
         // Re-asserted per source: both engines reset caption styling when they reconfigure their
         // subtitle chain, so a size chosen on the last episode would otherwise be lost on this one.
