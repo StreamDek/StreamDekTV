@@ -1924,4 +1924,11 @@
   <string name="media_server_hide_libraries">Bibliotheken verbergen</string>
   <string name="media_server_whole_server">Server met al zijn bibliotheken</string>
   <string name="media_server_use_server">Tonen in StreamDek</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Films en series</string>
+  <string name="search_section_your_library">Je bibliotheek</string>
+  <string name="search_section_plugin">Plug-in</string>
+  <string name="search_show_all">Alles tonen</string>
+  <string name="search_show_less">Minder tonen</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
 </resources>

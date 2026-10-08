@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -90,6 +91,10 @@ private enum class SearchScope(@StringRes val labelRes: Int) {
 }
 
 private enum class OpenTray { None, Type, Genre, Year }
+
+/** A card's identity on the page: the same title from two add-ons is two cards. */
+private fun searchCardKey(item: MediaItem): String =
+    listOf(item.type, item.sourceAddonId.orEmpty(), item.sourceCatalogId.orEmpty(), item.id).joinToString(":")
 
 private val DiscoverTypes = listOf("movie", "tv", "documentary")
 
@@ -233,29 +238,40 @@ fun SearchScreen(
     // The viewer's own copies lead: a film they already have is the most useful answer to a search
     // for it. A home server answers in a fraction of the TMDB round trip, so they are nearly always
     // in place before the rest lands and nothing is pushed down under the viewer.
-    val allResults = remember(mediaServerResults, results, addonResults, pluginResults) {
-        mediaServerResults + results + addonResults + pluginResults
-    }
-    val visibleResults = remember(allResults, searchScope) {
-        allResults.filter {
-            when (searchScope) {
-                SearchScope.All -> true
-                SearchScope.Movies -> it.type == "movie"
-                SearchScope.Series -> it.type == "tv"
-                SearchScope.Live -> it.type == "live"
-            }
-        }
-    }
     val policyRevision by AdultContentFilter.changes.collectAsState()
-    val rawItems = if (hasQuery) visibleResults else discoverItems
+    // Each source in a section of its own, in a fixed order: the viewer's own Plex and Jellyfin
+    // servers, StreamDek's catalogue, each add-on, each plugin. See SearchSections.kt.
+    val searchSections = remember(mediaServerResults, results, addonResults, pluginResults, searchScope, policyRevision) {
+        fun List<MediaItem>.prepared() = withoutAdult()
+            .filter {
+                when (searchScope) {
+                    SearchScope.All -> true
+                    SearchScope.Movies -> it.type == "movie"
+                    SearchScope.Series -> it.type == "tv"
+                    SearchScope.Live -> it.type == "live"
+                }
+            }
+            .distinctBy { listOf(it.type, it.sourceAddonId.orEmpty(), it.sourceCatalogId.orEmpty(), it.id) }
+        searchResultSections(
+            library = mediaServerResults.prepared(),
+            catalogue = results.prepared(),
+            addons = addonResults.prepared(),
+            plugins = pluginResults.prepared(),
+        )
+    }
+    val visibleResultCount = searchSections.sumOf { it.items.size }
+    // The sections opened with "Show all", forgotten with each new query.
+    var expandedSearchSections by remember(query) { mutableStateOf(emptySet<String>()) }
+    val sectionToggleRequesters = remember { mutableMapOf<String, FocusRequester>() }
     // Only a spinner while nothing is on screen yet. Once the TMDB pass has landed, add-ons still
     // answering must not blank out results the viewer can already act on.
     val searchingAnything = searching || addonSearching || pluginSearching
     // Same guard as Library: a repeated entry must not take the screen down.
     // Filtered again here, keyed on the policy, so a policy published mid-search hides at once.
-    val items = remember(rawItems, policyRevision) {
-        rawItems.withoutAdult().distinctBy { listOf(it.type, it.sourceAddonId.orEmpty(), it.sourceCatalogId.orEmpty(), it.id) }
+    val discoverShown = remember(discoverItems, policyRevision) {
+        discoverItems.withoutAdult().distinctBy { listOf(it.type, it.sourceAddonId.orEmpty(), it.sourceCatalogId.orEmpty(), it.id) }
     }
+    val items = if (hasQuery) searchSections.flatMap { it.items } else discoverShown
     val loading = if (hasQuery) searchingAnything && items.isEmpty() else discoverLoading
     // A query with no matches leaves nothing holding [firstCardRequester], and focus search
     // resolving to an unclaimed requester throws rather than doing nothing. Default hands the press
@@ -393,6 +409,28 @@ fun SearchScreen(
         if (openTray == OpenTray.None) return@LaunchedEffect
         delay(60)
         runCatching { trayRequester.requestFocus() }
+    }
+
+    @Composable
+    fun SearchResultCard(item: MediaItem, requester: FocusRequester, upTarget: FocusRequester?) {
+        PremiumMediaCard(
+            item = item,
+            variant = if (item.type == "live") TvMediaCardVariant.Live else TvMediaCardVariant.Poster,
+            modifier = Modifier
+                .focusRequester(requester)
+                .width(SearchCardWidth)
+                .height(SearchCardHeight)
+                .focusProperties { upTarget?.let { up = it } }
+                .tvCardLongPress {
+                    if (item.type != "live") actionState = BrowseActionState(item, requester)
+                },
+            onClick = {
+                if (item.type == "live") onPlayLive(item) else onOpenDetail(item.type, item.detailLookupId())
+            },
+            onLongPress = {
+                if (item.type != "live") actionState = BrowseActionState(item, requester)
+            },
+        )
     }
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -588,7 +626,7 @@ fun SearchScreen(
                     loading -> stringResource(R.string.streams_searching)
                     hasQuery -> stringResource(
                         R.string.search_results_for,
-                        pluralStringResource(R.plurals.search_result_count, visibleResults.size, visibleResults.size),
+                        pluralStringResource(R.plurals.search_result_count, visibleResultCount, visibleResultCount),
                         query.trim(),
                     )
                     else -> pluralStringResource(R.plurals.search_discover_count, discoverItems.size, discoverItems.size)
@@ -623,34 +661,49 @@ fun SearchScreen(
                     horizontalArrangement = Arrangement.spacedBy(TvSpacing.Card),
                     verticalArrangement = Arrangement.spacedBy(TvSpacing.Card),
                 ) {
-                    itemsIndexed(
-                        items,
-                        key = { _, item ->
-                            listOf(item.type, item.sourceAddonId.orEmpty(), item.sourceCatalogId.orEmpty(), item.id)
-                                .joinToString(":")
-                        },
-                    ) { index, item ->
-                        val key = listOf(item.type, item.sourceAddonId.orEmpty(), item.id).joinToString(":")
-                        val requester = cardRequesters.getOrPut(key) { FocusRequester() }
-                        val effective = if (index == 0) firstCardRequester else requester
-                        PremiumMediaCard(
-                            item = item,
-                            variant = if (item.type == "live") TvMediaCardVariant.Live else TvMediaCardVariant.Poster,
-                            modifier = Modifier
-                                .focusRequester(effective)
-                                .width(SearchCardWidth)
-                                .height(SearchCardHeight)
-                                .focusProperties { if (index < gridColumns) up = firstChipRequester }
-                                .tvCardLongPress {
-                                    if (item.type != "live") actionState = BrowseActionState(item, effective)
-                                },
-                            onClick = {
-                                if (item.type == "live") onPlayLive(item) else onOpenDetail(item.type, item.detailLookupId())
-                            },
-                            onLongPress = {
-                                if (item.type != "live") actionState = BrowseActionState(item, effective)
-                            },
-                        )
+                    if (hasQuery) {
+                        // One section per source; see SearchSections.kt. A title found in two places
+                        // is offered from both, so every key and focus target is the section's own.
+                        val onlySection = searchSections.size == 1
+                        searchSections.forEachIndexed { sectionIndex, section ->
+                            val expanded = section.key in expandedSearchSections
+                            val folds = searchSectionFolds(section.items.size, gridColumns, onlySection)
+                            val shown = section.items.take(searchSectionVisibleCount(section.items.size, gridColumns, expanded, onlySection))
+                            val toggleRequester = sectionToggleRequesters.getOrPut(section.key) { FocusRequester() }
+                            item(key = "section:${section.key}", span = { GridItemSpan(maxLineSpan) }) {
+                                SearchSectionHeader(
+                                    section = section,
+                                    folds = folds,
+                                    expanded = expanded,
+                                    onToggle = {
+                                        expandedSearchSections = if (expanded) expandedSearchSections - section.key else expandedSearchSections + section.key
+                                    },
+                                    toggleModifier = Modifier
+                                        .focusRequester(toggleRequester)
+                                        .focusProperties { if (sectionIndex == 0) up = firstChipRequester },
+                                )
+                            }
+                            itemsIndexed(shown, key = { _, item -> section.key + "|" + searchCardKey(item) }) { index, item ->
+                                SearchResultCard(
+                                    item = item,
+                                    requester = if (sectionIndex == 0 && index == 0) firstCardRequester
+                                    else cardRequesters.getOrPut(section.key + "|" + searchCardKey(item)) { FocusRequester() },
+                                    // The first row of the first section leads back up to the filters,
+                                    // by way of its "Show all" when it has one.
+                                    upTarget = if (sectionIndex == 0 && index < gridColumns) {
+                                        if (folds) toggleRequester else firstChipRequester
+                                    } else null,
+                                )
+                            }
+                        }
+                    } else {
+                        itemsIndexed(items, key = { _, item -> searchCardKey(item) }) { index, item ->
+                            SearchResultCard(
+                                item = item,
+                                requester = if (index == 0) firstCardRequester else cardRequesters.getOrPut(searchCardKey(item)) { FocusRequester() },
+                                upTarget = if (index < gridColumns) firstChipRequester else null,
+                            )
+                        }
                     }
                 }
                 TvContentPhase.Error -> Unit

@@ -1940,4 +1940,11 @@
   <string name="media_server_hide_libraries">Nascondi librerie</string>
   <string name="media_server_whole_server">Server e tutte le sue librerie</string>
   <string name="media_server_use_server">Mostra in StreamDek</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Film e serie</string>
+  <string name="search_section_your_library">La tua libreria</string>
+  <string name="search_section_plugin">Plugin</string>
+  <string name="search_show_all">Mostra tutto</string>
+  <string name="search_show_less">Mostra meno</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
 </resources>

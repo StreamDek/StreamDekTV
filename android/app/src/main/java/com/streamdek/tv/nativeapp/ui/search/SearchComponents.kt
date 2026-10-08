@@ -4,6 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,10 +19,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -30,10 +34,13 @@ import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.JellyfinIcons
+import com.streamdek.tv.nativeapp.ui.PlexIcons
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
 import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvSpacing
@@ -218,6 +225,82 @@ internal fun SearchQueryDisplay(
                     maxLines = 1,
                 )
             }
+        }
+    }
+}
+
+/**
+ * The heading of one search section: whose results these are, what kind of source that is, how
+ * many it found and, when the section is folded to two rows, the way to see the rest.
+ *
+ * Plex and Jellyfin sections carry the service's mark, so the viewer's own copies can be picked
+ * out from across the room.
+ */
+@Composable
+internal fun SearchSectionHeader(
+    section: SearchResultSection,
+    folds: Boolean,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    toggleModifier: Modifier = Modifier,
+) {
+    val title = when (section.kind) {
+        SearchSourceKind.Plex -> section.name ?: stringResource(R.string.media_server_plex)
+        SearchSourceKind.Jellyfin -> section.name ?: stringResource(R.string.media_server_jellyfin)
+        SearchSourceKind.Catalogue -> stringResource(R.string.search_section_catalogue)
+        SearchSourceKind.Addon -> section.name ?: stringResource(R.string.source_origin_addon)
+        SearchSourceKind.Plugin -> section.name ?: stringResource(R.string.search_section_plugin)
+    }
+    val caption = when (section.kind) {
+        SearchSourceKind.Plex, SearchSourceKind.Jellyfin -> stringResource(R.string.search_section_your_library)
+        SearchSourceKind.Catalogue -> stringResource(R.string.search_section_catalogue_caption)
+        SearchSourceKind.Addon -> stringResource(R.string.source_origin_addon)
+        SearchSourceKind.Plugin -> stringResource(R.string.search_section_plugin)
+    }
+    val mark = when (section.kind) {
+        SearchSourceKind.Plex -> PlexIcons.Chevron
+        SearchSourceKind.Jellyfin -> JellyfinIcons.Mark
+        else -> null
+    }
+    val count = pluralStringResource(R.plurals.search_result_count, section.items.size, section.items.size)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (mark != null) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(AppPillShape)
+                    .background(Color.White.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(mark, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.88f), modifier = Modifier.size(20.dp))
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stringResource(R.string.search_section_caption, caption, count),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+                maxLines = 1,
+            )
+        }
+        if (folds) {
+            SearchChip(
+                label = stringResource(if (expanded) R.string.search_show_less else R.string.search_show_all),
+                selected = false,
+                modifier = toggleModifier,
+                onClick = onToggle,
+            )
         }
     }
 }

@@ -1975,4 +1975,11 @@
   <string name="media_server_hide_libraries">Masquer les bibliothèques</string>
   <string name="media_server_whole_server">Serveur et toutes ses bibliothèques</string>
   <string name="media_server_use_server">Afficher dans StreamDek</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Films et séries</string>
+  <string name="search_section_your_library">Ta bibliothèque</string>
+  <string name="search_section_plugin">Plugin</string>
+  <string name="search_show_all">Tout afficher</string>
+  <string name="search_show_less">Afficher moins</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
 </resources>

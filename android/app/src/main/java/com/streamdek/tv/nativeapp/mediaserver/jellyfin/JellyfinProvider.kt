@@ -1,6 +1,7 @@
 package com.streamdek.tv.nativeapp.mediaserver.jellyfin
 
 import com.streamdek.tv.nativeapp.data.AddonStream
+import com.streamdek.tv.nativeapp.mediaserver.titleMatchesSearch
 import com.streamdek.tv.nativeapp.data.BehaviorHints
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleOrigin
@@ -683,6 +684,9 @@ internal class JellyfinProvider(
                         query(serverId, mapOf("searchTerm" to normalized, "recursive" to "true", "includeItemTypes" to "Movie,Series,Video", "limit" to limit.toString()))
                             ?.items.orEmpty()
                             .mapNotNull { JellyfinMapping.item(it, context) }
+                            // Jellyfin matches names, but can also answer with titles that only
+                            // share a person or a tag with the query; see MediaServerSearchMatch.kt.
+                            .filter { titleMatchesSearch(normalized, it.title) }
                     }.orEmpty()
                 }
             }.awaitAll().flatten().distinctBy { it.id }

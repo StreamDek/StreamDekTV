@@ -1061,10 +1061,11 @@ class MediaServerManager internal constructor(
             enabled = enabled != false,
             presence = presence == true,
             accessToken = token,
-            connections = connections.orEmpty().mapNotNull { connection ->
+            // A plain local address after each plex.direct one, for routers that will not resolve it.
+            connections = withPlexLanFallbacks(connections.orEmpty().mapNotNull { connection ->
                 val uri = connection.uri ?: return@mapNotNull null
                 MediaServerEndpoint(serverId, uri, connection.local == true, connection.relay == true, token)
-            },
+            }),
             libraryChoices = libraries.orEmpty(),
         ).remember()
     }
@@ -1079,10 +1080,11 @@ class MediaServerManager internal constructor(
             enabled = enabled != false,
             presence = presence == true,
             accessToken = accessToken,
-            connections = connections.orEmpty().mapNotNull { connection ->
+            // A plain local address after each plex.direct one, for routers that will not resolve it.
+            connections = withPlexLanFallbacks(connections.orEmpty().mapNotNull { connection ->
                 val uri = connection.uri ?: return@mapNotNull null
                 MediaServerEndpoint(serverId, uri, connection.local == true, connection.relay == true, accessToken)
-            },
+            }),
             libraryChoices = libraryChoices.orEmpty(),
         ).remember()
     }

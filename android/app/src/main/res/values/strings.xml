@@ -1928,4 +1928,11 @@
   <string name="media_server_hide_libraries">Hide libraries</string>
   <string name="media_server_whole_server">Server and all its libraries</string>
   <string name="media_server_use_server">Show in StreamDek</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Films and series</string>
+  <string name="search_section_your_library">Your library</string>
+  <string name="search_section_plugin">Plugin</string>
+  <string name="search_show_all">Show all</string>
+  <string name="search_show_less">Show less</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
 </resources>

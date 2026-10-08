@@ -1,6 +1,7 @@
 package com.streamdek.tv.nativeapp.mediaserver.plex
 
 import com.streamdek.tv.nativeapp.data.AddonStream
+import com.streamdek.tv.nativeapp.mediaserver.titleMatchesSearch
 import com.streamdek.tv.nativeapp.data.BehaviorHints
 import com.streamdek.tv.nativeapp.data.EpisodeContext
 import com.streamdek.tv.nativeapp.data.ExternalSubtitleOrigin
@@ -570,11 +571,20 @@ internal class PlexProvider(
                     withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
                         val sections = enabledLibraries(serverId).mapNotNull { it.first.key }.toSet()
                         val context = contextFor(serverId) ?: return@withTimeoutOrNull emptyList()
-                        get(serverId, "/hubs/search", mapOf("query" to normalized, "limit" to limit.toString(), "includeCollections" to "0", "includeGuids" to "1"))
+                        val found = get(serverId, "/hubs/search", mapOf("query" to normalized, "limit" to limit.toString(), "includeCollections" to "0", "includeGuids" to "1"))
                             ?.allMetadata().orEmpty()
                             .filter { it.librarySectionID == null || it.librarySectionID in sections }
                             .filter { PlexMapping.mediaType(it).let { type -> type == "movie" || type == "tv" } }
-                            .mapNotNull { PlexMapping.item(it, context) }
+                        // Plex also returns titles linked to the query through a person, a genre or
+                        // its own idea of what is related. Only titles that answer the query are
+                        // kept; see MediaServerSearchMatch.kt.
+                        val (matching, related) = found.partition { titleMatchesSearch(normalized, it.title, it.originalTitle) }
+                        if (related.isNotEmpty()) {
+                            // Why they came back, not what they are: no titles in the log.
+                            val why = related.groupingBy { it.reason ?: "related" }.eachCount().entries.joinToString { "${it.key}=${it.value}" }
+                            TvDebugLogger.i("Plex", "search server=$serverId kept=${matching.size} dropped=${related.size} ($why)")
+                        }
+                        matching.mapNotNull { PlexMapping.item(it, context) }
                     }.orEmpty()
                 }
             }.awaitAll().flatten().distinctBy { it.id }
