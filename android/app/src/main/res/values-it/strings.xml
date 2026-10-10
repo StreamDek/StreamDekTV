@@ -1947,4 +1947,12 @@
   <string name="search_show_all">Mostra tutto</string>
   <string name="search_show_less">Mostra meno</string>
   <string name="search_section_caption">%1$s · %2$s</string>
+  <string name="media_server_continue_location_title">Posizione di Continua a guardare</string>
+  <string name="media_server_continue_location_detail">Scegli dove appaiono i progressi di riproduzione di %1$s. I progressi restano sempre sul tuo server, quindi cambiare non perde alcuna posizione.</string>
+  <string name="media_server_continue_location_server">Libreria del server</string>
+  <string name="media_server_continue_location_server_detail">Mostra Continua a guardare solo nella tua pagina %1$s.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">Includi la riproduzione di %1$s anche nella riga Continua a guardare della Home e nella pagina Continua a guardare.</string>
+  <string name="media_server_continue_location_switch">Cambia</string>
+  <string name="media_server_continue_location_failed">Impossibile salvare la posizione di Continua a guardare. Riprova.</string>
 </resources>

@@ -1931,4 +1931,12 @@
   <string name="search_show_all">Alles tonen</string>
   <string name="search_show_less">Minder tonen</string>
   <string name="search_section_caption">%1$s · %2$s</string>
+  <string name="media_server_continue_location_title">Locatie van Verder kijken</string>
+  <string name="media_server_continue_location_detail">Kies waar je %1$s-afspeelvoortgang verschijnt. Voortgang blijft altijd op je server bewaard, dus wisselen kost nooit een positie.</string>
+  <string name="media_server_continue_location_server">Serverbibliotheek</string>
+  <string name="media_server_continue_location_server_detail">Verder kijken alleen op je %1$s-pagina tonen.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">%1$s-weergave ook opnemen in de rij Verder kijken op Home en op de pagina Verder kijken.</string>
+  <string name="media_server_continue_location_switch">Wisselen</string>
+  <string name="media_server_continue_location_failed">Kon niet opslaan waar Verder kijken verschijnt. Probeer het opnieuw.</string>
 </resources>

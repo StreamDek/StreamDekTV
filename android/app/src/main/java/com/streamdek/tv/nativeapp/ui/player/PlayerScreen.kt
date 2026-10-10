@@ -1237,6 +1237,7 @@ fun PlayerScreen(
                 paused -> MediaServerPlaybackState.Paused
                 else -> MediaServerPlaybackState.Playing
             },
+            sourceUrl = currentSourceUrl,
         )
     }
 

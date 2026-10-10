@@ -1982,4 +1982,12 @@
   <string name="search_show_all">Tout afficher</string>
   <string name="search_show_less">Afficher moins</string>
   <string name="search_section_caption">%1$s · %2$s</string>
+  <string name="media_server_continue_location_title">Emplacement de Reprendre la lecture</string>
+  <string name="media_server_continue_location_detail">Choisissez où apparaît votre progression de lecture %1$s. La progression reste toujours sur votre serveur, changer ne fait perdre aucune position.</string>
+  <string name="media_server_continue_location_server">Bibliothèque du serveur</string>
+  <string name="media_server_continue_location_server_detail">Afficher Reprendre la lecture uniquement sur votre page %1$s.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">Inclure aussi la lecture %1$s dans la rangée Reprendre la lecture de l’accueil et sur la page Reprendre la lecture.</string>
+  <string name="media_server_continue_location_switch">Changer</string>
+  <string name="media_server_continue_location_failed">Impossible d’enregistrer l’emplacement de Reprendre la lecture. Réessayez.</string>
 </resources>

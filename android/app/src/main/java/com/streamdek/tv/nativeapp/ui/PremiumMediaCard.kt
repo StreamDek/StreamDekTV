@@ -18,6 +18,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.focus.onFocusChanged
@@ -38,9 +40,14 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
-import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
+import com.streamdek.tv.nativeapp.data.CardArtworkScaling
 import com.streamdek.tv.nativeapp.data.MediaItem
+import com.streamdek.tv.nativeapp.data.PosterShape
+import com.streamdek.tv.nativeapp.data.cardArtworkUrl
+import com.streamdek.tv.nativeapp.data.chooseCardArtworkScaling
 
 /**
  * Hides the small Plex mark on cards. Provided by the Plex pages themselves, where every card is
@@ -73,35 +80,24 @@ fun PremiumMediaCard(
     metaOnTop: Boolean = false,
     /** Where the top meta line sits. Centred reads better on a bare poster with no title under it. */
     metaOnTopAlignment: Alignment = Alignment.TopStart,
+    /**
+     * The artwork's shape when the row decided one -- see [com.streamdek.tv.nativeapp.data.resolveRowPosterShape].
+     * Null keeps the shape the variant implies: portrait for [TvMediaCardVariant.Poster], wide otherwise.
+     */
+    artworkShape: PosterShape? = null,
     onClick: () -> Unit,
     onLongPress: () -> Unit = {},
     onFocused: () -> Unit = {},
 ) {
     val portrait = variant == TvMediaCardVariant.Poster
-    val shape = if (portrait) RoundedCornerShape(12.dp) else AppCardShape
-    val image = remember(item.poster, item.backdrop, portrait) {
-        highResolutionCardArtwork(
-            if (portrait) item.poster ?: item.backdrop else item.backdrop ?: item.poster,
-            portrait = portrait,
-        )
+    val artShape = artworkShape ?: if (portrait) PosterShape.Poster else PosterShape.Landscape
+    val shape = if (artShape != PosterShape.Landscape) RoundedCornerShape(12.dp) else AppCardShape
+    val image = remember(item.poster, item.backdrop, item.landscapePoster, item.posterShape, artShape) {
+        homeCardArtwork(item, artShape)
     }
     val focusScale = TvMotion.focusScale()
     val context = LocalContext.current
-    val imageRequest = remember(context, image, portrait) {
-        ImageRequest.Builder(context)
-            .data(image)
-            .memoryCacheKey(image)
-            .diskCacheKey(image)
-            .allowHardware(true)
-            // Preserve fine poster detail; RGB_565 is reserved for landscape thumbnails.
-            .allowRgb565(!portrait)
-            // Decode for the card, not at the source artwork's multi-megapixel size. Besides
-            // wasting memory, full-size decodes queued behind one another and made Home artwork
-            // appear card by card on lower-powered televisions.
-            .size(if (portrait) 360 else 480, if (portrait) 540 else 270)
-            .crossfade(false)
-            .build()
-    }
+    val imageRequest = remember(context, image, artShape) { cardImageRequest(context, image, artShape) }
     var focused by remember { mutableStateOf(false) }
     val configuration = LocalConfiguration.current
     val metaLine = remember(item.rating, item.year, configuration) {
@@ -149,12 +145,7 @@ fun PremiumMediaCard(
         scale = CardDefaults.scale(focusedScale = focusScale),
     ) {
         Box(Modifier.fillMaxSize().clip(shape).background(MaterialTheme.colorScheme.surface)) {
-            AsyncImage(
-                model = imageRequest,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
+            TvCardArtwork(imageRequest, Modifier.fillMaxSize())
             Box(
                 Modifier.fillMaxSize().background(
                     Brush.verticalGradient(
@@ -232,6 +223,72 @@ fun PremiumMediaCard(
                 }
             }
         }
+    }
+}
+
+/** The picture a card of [shape] shows for [item], at the resolution TV cards want. */
+internal fun homeCardArtwork(item: MediaItem, shape: PosterShape): String? = highResolutionCardArtwork(
+    cardArtworkUrl(item.poster, item.backdrop, item.landscapePoster, item.declaredPosterShape(), shape),
+    portrait = shape != PosterShape.Landscape,
+)
+
+/**
+ * The one request a card's artwork is loaded with, shared by Home's preloading so the card finds
+ * the image already decoded.
+ *
+ * Decoded for the card, not at the source artwork's multi-megapixel size. Besides wasting memory,
+ * full-size decodes queued behind one another and made Home artwork appear card by card on
+ * lower-powered televisions. RGB_565 is allowed only for wide thumbnails, and Coil only ever uses
+ * it for an image with no alpha channel, so transparent artwork keeps its transparency.
+ */
+internal fun cardImageRequest(context: android.content.Context, image: String?, shape: PosterShape): ImageRequest {
+    val (width, height) = when (shape) {
+        PosterShape.Poster -> 360 to 540
+        PosterShape.Square -> 400 to 400
+        PosterShape.Landscape -> 480 to 270
+    }
+    return ImageRequest.Builder(context)
+        .data(image)
+        .memoryCacheKey(image)
+        .diskCacheKey(image)
+        .allowHardware(true)
+        .allowRgb565(shape == PosterShape.Landscape)
+        .size(width, height)
+        .crossfade(false)
+        .build()
+}
+
+/**
+ * A card's picture, placed to suit what it turns out to be: cropped to fill when it fits the card,
+ * as before; shown whole when it is another shape, over a dimmed copy of itself when opaque and on
+ * the card's own surface when transparent. One decode serves both layers, and the choice is made
+ * before the image is first drawn, so focus and layout never move when artwork arrives.
+ */
+@Composable
+private fun TvCardArtwork(request: ImageRequest, modifier: Modifier) {
+    val painter = rememberAsyncImagePainter(model = request, contentScale = ContentScale.Crop)
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier) {
+        val scaling = (painter.state as? AsyncImagePainter.State.Success)?.let { success ->
+            val size = success.painter.intrinsicSize
+            val hasAlpha = (success.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.hasAlpha() == true
+            chooseCardArtworkScaling(size.width, size.height, constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat(), hasAlpha)
+        } ?: CardArtworkScaling.Crop
+        if (scaling == CardArtworkScaling.FitOverBackdrop) {
+            androidx.compose.foundation.Image(
+                painter = painter,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().blur(18.dp).alpha(0.38f),
+            )
+        }
+        androidx.compose.foundation.Image(
+            painter = painter,
+            contentDescription = null,
+            contentScale = if (scaling == CardArtworkScaling.Crop) ContentScale.Crop else ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .then(if (scaling == CardArtworkScaling.Fit) Modifier.padding(maxWidth * 0.08f) else Modifier),
+        )
     }
 }
 

@@ -109,7 +109,19 @@ data class MediaItem(
     val drmClearKeys: Map<String, String>? = null,
     val adult: Boolean = false,
     val genres: List<String>? = null,
+    /**
+     * The card shape the source asked for -- Stremio's per-item `posterShape`, normalised to
+     * "poster", "square" or "landscape" -- or null when it did not say. Stored as text so items
+     * cached before this existed, and anything Gson cannot map, read back as unspecified. See
+     * [PosterShape] and [declaredPosterShape].
+     */
+    val posterShape: String? = null,
+    /** A wide version of the card artwork, for landscape cards (`landscapePoster`, as TopX sends it). */
+    val landscapePoster: String? = null,
 ) {
+    /** The shape this item's source declared, if any. */
+    fun declaredPosterShape(): PosterShape? = PosterShape.parse(posterShape)
+
     /** TMDB detail routes require the numeric TMDB id, while add-ons often expose IMDb as id. */
     fun detailLookupId(): String = if (AddonMediaReference.decode(id) != null) id else if (!sourceAddonId.isNullOrBlank() && !sourceCatalogType.isNullOrBlank()) {
         AddonMediaReference(sourceAddonId, sourceCatalogType, id).encode()
@@ -716,6 +728,9 @@ data class HomePreferences(
     val vividAmbient: Boolean = true,
     val ambientTintPercent: Int = 100,
     val homeCatalogRows: List<HomeCatalogRowPreference> = emptyList(),
+    /** Where Plex's and Jellyfin's in-progress titles appear; see [MediaServerContinueLocation]. */
+    val plexContinueWatchingLocation: String? = null,
+    val jellyfinContinueWatchingLocation: String? = null,
 )
 
 /** One customised home row, as laid out on mobile or the web portal. */
@@ -986,6 +1001,13 @@ data class AddonCatalogMetaItem(
     val externalUrl: Any? = null,
     val headers: Map<String, Any?> = emptyMap(),
     val behaviorHints: Map<String, Any?>? = null,
+    /**
+     * Stremio's card shape and the wide artwork some add-ons send with it. Untyped on purpose: a
+     * typed field would let one add-on's malformed value fail the whole catalogue, where these are
+     * read leniently and anything unexpected simply leaves the row on its default.
+     */
+    val posterShape: Any? = null,
+    val landscapePoster: Any? = null,
 )
 
 data class AddonCatalogResponse(

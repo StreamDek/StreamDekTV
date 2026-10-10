@@ -1947,4 +1947,12 @@
   <string name="search_show_all">Ver tudo</string>
   <string name="search_show_less">Ver menos</string>
   <string name="search_section_caption">%1$s · %2$s</string>
+  <string name="media_server_continue_location_title">Local de Continuar assistindo</string>
+  <string name="media_server_continue_location_detail">Escolha onde aparece o seu progresso de reprodução do %1$s. O progresso fica sempre guardado no seu servidor, por isso mudar nunca perde uma posição.</string>
+  <string name="media_server_continue_location_server">Biblioteca do servidor</string>
+  <string name="media_server_continue_location_server_detail">Mostrar Continuar assistindo apenas na sua página do %1$s.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">Incluir também a reprodução do %1$s na fila Continuar assistindo do Início e na página Continuar assistindo.</string>
+  <string name="media_server_continue_location_switch">Mudar</string>
+  <string name="media_server_continue_location_failed">Não foi possível guardar onde aparece Continuar assistindo. Tente novamente.</string>
 </resources>

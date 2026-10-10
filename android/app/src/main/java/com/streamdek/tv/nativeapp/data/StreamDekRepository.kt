@@ -1438,6 +1438,8 @@ class StreamDekRepository(
         // The profile is settled by now, so this is the moment Plex is restored for it - from the
         // device at once, then refreshed from StreamDek in the background.
         mediaServers.onSessionChanged()
+        MediaServerSourceFinder.clear()
+        catalogueServerStreams.clear()
         return@withLock bootstrap
     }
 
@@ -1491,6 +1493,19 @@ class StreamDekRepository(
         homeCache.clear()
         return bootstrapState.value
     }
+
+    /**
+     * Where one provider's in-progress titles show. Display only: nothing reconnects, the server
+     * keeps every position, and Continue Watching is rebuilt from what is already known.
+     */
+    suspend fun setMediaServerContinueLocation(provider: String, location: MediaServerContinueLocation): AccountBootstrap? {
+        val result = updateHomePreferences(mapOf(MediaServerContinueLocations.keyFor(provider) to location.key)) ?: return null
+        libraryCache.clear()
+        return result
+    }
+
+    fun mediaServerContinueLocations(): MediaServerContinueLocations =
+        MediaServerContinueLocations.from(bootstrapState.value?.preferences?.home)
 
     suspend fun updateDetailPreferences(partial: Map<String, Any?>): AccountBootstrap? {
         if (!patchPreferences(PlatformPreferences.splitSectionUpdate("detail", partial))) return null
@@ -2078,13 +2093,19 @@ class StreamDekRepository(
         val mapped = rawNativeType.takeIf { it.isNotBlank() }?.let { mapAddonCatalogType(it) }
         val type = MediaClassification.item(rawNativeType, nativeFallbackType, resolvedId, meta.videos.any { (it.season ?: -1) >= 0 && (it.episode ?: 0) > 0 })
         val nativeType = if (mapped != null) rawNativeType else nativeFallbackType
+        val landscapePoster = (meta.landscapePoster as? String)?.trim()
+            ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
         return MediaItem(
             id = resolvedId,
             tmdbId = tmdbId,
             title = meta.name.orEmpty(),
             type = type,
             poster = meta.poster,
-            backdrop = meta.background ?: meta.poster,
+            backdrop = meta.background ?: landscapePoster ?: meta.poster,
+            // Carried onto the item, and from there through every cache, so a row draws in the
+            // shape its add-on chose however it was reached.
+            posterShape = PosterShape.parse(meta.posterShape)?.name?.lowercase(Locale.US),
+            landscapePoster = landscapePoster,
             description = sequenceOf(meta.description, meta.overview, meta.synopsis)
                 .mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }
                 .firstOrNull(),
@@ -3378,8 +3399,13 @@ class StreamDekRepository(
             // over that response instead of replacing the whole Library grid with stale state.
             continueWatching = applyPendingContinueDismissals(
                 cacheKey,
-                // One card per title across StreamDek and the viewer's media servers.
-                reconcileContinueWatching(mergedContinueWatching, mediaServerResumes?.await().orEmpty()),
+                // One card per title across StreamDek and the viewer's media servers - those whose
+                // Continue Watching the viewer has put here rather than on the server's own page.
+                reconcileContinueWatching(
+                    mergedContinueWatching,
+                    mediaServerResumes?.await().orEmpty()
+                        .shownInStreamDek(MediaServerContinueLocations.from(bootstrapState.value?.preferences?.home)),
+                ),
             ).filterNot { isLiveChannelResumeItem(it) },
             // A provider can briefly return its pre-write snapshot. Keep confirmed edits over
             // that answer long enough for Trakt/SIMKL/MDBList to converge, including when the
@@ -4340,6 +4366,8 @@ class StreamDekRepository(
         watchedHistoryCache.clear()
         // A Plex link belongs to a profile; the next one's servers are its own.
         mediaServers.onSessionChanged()
+        MediaServerSourceFinder.clear()
+        catalogueServerStreams.clear()
         // Responses are cached per URL, and the profile only travels in a header, so the previous
         // profile's rows would otherwise be replayed for this one whenever the network drops.
         StreamDekHttp.evictCache()
@@ -4684,8 +4712,19 @@ class StreamDekRepository(
         episode: EpisodeContext? = null,
         detail: MediaDetail? = null,
         mediaServerState: MediaServerPlaybackState = MediaServerPlaybackState.Playing,
+        /** The address playing, so a catalogue title played from a Plex or Jellyfin copy also tells that server. */
+        sourceUrl: String? = null,
     ) {
         if (positionSec <= 0.0 || durationSec <= 0.0) return
+        // StreamDek keeps the position as it does for any source (below), and the server hears it
+        // too, so its own history and resume point stay right whichever Continue Watching is shown.
+        sourceUrl?.let(catalogueServerStreams::get)?.let { (ref, serverEpisode) ->
+            mediaServers.providerFor(ref)?.let { provider ->
+                runCatching {
+                    provider.reportProgress(ref, serverEpisode, (positionSec * 1000).toLong(), (durationSec * 1000).toLong(), mediaServerState)
+                }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+            }
+        }
         mediaServerTarget(mediaId)?.let { (provider, ref) ->
             // The server holds a media server title's progress, and hears it from live playback
             // only: nothing StreamDek has stored is ever pushed to it, so a newer position made in
@@ -5058,6 +5097,13 @@ class StreamDekRepository(
         }
         return ok
     }
+
+    /**
+     * Which server copy each catalogue source plays, by its address, so playing one reports to that
+     * server as playing it from the server's own page would. Addresses carry no token; see
+     * [com.streamdek.tv.nativeapp.mediaserver.withMediaServerAuth].
+     */
+    private val catalogueServerStreams = java.util.concurrent.ConcurrentHashMap<String, Pair<MediaServerReference, EpisodeContext?>>()
 
     private suspend fun mediaServerStreams(
         provider: MediaServerProvider,
@@ -5575,11 +5621,33 @@ class StreamDekRepository(
         sourceAddonId: String? = null,
         sourceAddonName: String? = null,
         forceRefresh: Boolean = false,
+        /**
+         * Whether Plex and Jellyfin copies of the title are asked as well. Off only for the add-on
+         * half of a server title's own search, which has its server's sources already.
+         */
+        includeMediaServers: Boolean = true,
     ): kotlinx.coroutines.flow.Flow<StreamCandidatesProgress> = kotlinx.coroutines.flow.channelFlow {
         mediaServerTarget(mediaId)?.let { (provider, ref) ->
-            // The server is the only source a server title has; no add-on is asked.
             send(StreamCandidatesProgress(emptyList(), pendingSources = 1, done = false))
-            send(StreamCandidatesProgress(mediaServerStreams(provider, ref, episode), pendingSources = 0, done = true))
+            // The server's own sources first, in the server's order (Direct Play, Direct Stream,
+            // Transcode) - then the same title on the viewer's add-ons, asked by the TMDB or IMDb id
+            // the server holds for it. A title the server knows no id for is never looked up by name.
+            val serverStreams = mediaServerStreams(provider, ref, episode)
+            val serverDetail = peekCachedDetail(mediaId, mediaType)
+            val lookupId = serverDetail?.imdbId?.takeIf { it.isNotBlank() }
+                ?: serverDetail?.tmdbId?.takeIf { it > 0 }?.let { "tmdb:$it" }
+            if (serverDetail == null || lookupId == null) {
+                send(StreamCandidatesProgress(serverStreams, pendingSources = 0, done = true))
+                return@channelFlow
+            }
+            send(StreamCandidatesProgress(serverStreams, pendingSources = 1, done = false))
+            streamCandidates(
+                serverDetail.type, lookupId, serverDetail.imdbId, episode,
+                preferredStreamKey = preferredStreamKey, preferredAddonName = preferredAddonName,
+                preferredQualityGroup = preferredQualityGroup, forceRefresh = forceRefresh, includeMediaServers = false,
+            ).collect { progress ->
+                send(progress.copy(streams = serverStreams + progress.streams))
+            }
             return@channelFlow
         }
         AddonMediaReference.decode(mediaId)?.let { ref ->
@@ -5687,12 +5755,27 @@ class StreamDekRepository(
             loadedCloudStreamProviders().firstOrNull { it.name == name }?.let { it to url }
         }
         val originPending = if (cloudStreamOrigin == null) 0 else 1
+        // Plex and Jellyfin copies of this same title, asked beside the add-ons and matched by id;
+        // see MediaServerSourceMatch.kt. Not for live channels, and not for a series without an episode.
+        val serverIds = if (isLive || !includeMediaServers || cloudStreamTitle == null) {
+            TitleIds(null, null)
+        } else {
+            val known = peekCachedDetail(mediaId, mediaType)
+            TitleIds.ofCatalogue(mediaId, known?.tmdbId, imdbId ?: known?.imdbId)
+        }
+        val serverProviders = if (serverIds.isEmpty || (MediaClassification.canonical(mediaType) == "tv" && episode == null)) {
+            emptyList()
+        } else {
+            mediaServers.activeProviders().filter { provider ->
+                if (provider.id == com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID) mediaServers.jellyfinState.value.linked else mediaServers.state.value.linked
+            }
+        }
 
         val merged = java.util.concurrent.ConcurrentHashMap<String, AddonStream>()
         // All access is under mutex; copying the entire array for every inserted row made large
         // responses quadratic without adding any thread safety beyond that lock.
         val order = mutableListOf<String>()
-        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginProviderCount + cloudStreamPending + originPending)
+        val remaining = java.util.concurrent.atomic.AtomicInteger(supportingAddons.size + pluginProviderCount + cloudStreamPending + originPending + serverProviders.size)
         val mutex = kotlinx.coroutines.sync.Mutex()
         // Snapshot creation and channel publication must be one serialized operation. Otherwise
         // an earlier, smaller snapshot can suspend in send() and arrive after a later, larger one.
@@ -5750,6 +5833,24 @@ class StreamDekRepository(
 
         supervisorScope {
             activeDiscovery = coroutineContext[Job]
+            // Each server answers on its own time, like any add-on, so one that is away or slow
+            // never holds the others back.
+            serverProviders.forEach { provider ->
+                launch {
+                    val streams = runCatching {
+                        MediaServerSourceFinder.find(provider, mediaType, cloudStreamTitle.orEmpty(), serverIds).flatMap { ref ->
+                            mediaServerStreams(provider, ref, episode)
+                                .onEach { stream -> stream.url?.let { catalogueServerStreams[it] = ref to episode } }
+                        }
+                    }.onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        TvDebugLogger.w("MediaServer", "no catalogue sources from ${provider.id}", it)
+                    }.getOrDefault(emptyList())
+                    mergeStreams(streams)
+                    remaining.decrementAndGet()
+                    publish(done = false)
+                }
+            }
             if (cloudStreamOrigin != null) {
                 launch {
                     val (provider, url) = cloudStreamOrigin

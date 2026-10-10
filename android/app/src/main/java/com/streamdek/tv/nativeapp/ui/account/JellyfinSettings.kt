@@ -322,6 +322,8 @@ internal fun JellyfinSettingsPanel(
                 onToggle = { manager.setJellyfinAmbient(!ambient) },
             )
 
+            MediaServerContinueLocationRow(repository, com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID, stringResource(R.string.media_server_jellyfin), leftRequester, onStatus)
+
             PlexSectionHeading(stringResource(R.string.plex_manage))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(

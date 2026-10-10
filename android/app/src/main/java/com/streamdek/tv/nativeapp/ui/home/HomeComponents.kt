@@ -74,6 +74,9 @@ import com.streamdek.tv.nativeapp.data.HomeRail
 import com.streamdek.tv.nativeapp.data.MediaDetail
 import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.PendingRail
+import com.streamdek.tv.nativeapp.data.PosterShape
+import com.streamdek.tv.nativeapp.data.dominantPosterShape
+import com.streamdek.tv.nativeapp.data.resolveRowPosterShape
 import com.streamdek.tv.nativeapp.ui.AppCardShape
 import com.streamdek.tv.nativeapp.ui.AppPillShape
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
@@ -140,16 +143,39 @@ internal fun spotlightHeight(portraitCards: Boolean): Dp {
  */
 internal data class HomeCardSize(val width: Dp, val height: Dp)
 
-internal fun homeCardSize(item: MediaItem, portrait: Boolean, compact: Boolean, dense: Boolean): HomeCardSize {
+internal fun homeCardSize(
+    item: MediaItem,
+    portrait: Boolean,
+    compact: Boolean,
+    dense: Boolean,
+    /** The row's artwork shape (see [homeRowShape]); null keeps the viewer's card style. */
+    shape: PosterShape? = null,
+): HomeCardSize {
     val scale = (if (compact) CompactShelfScale else 1f) * (if (dense) 0.9f else 1f)
     return when {
         item.type == "network" -> HomeCardSize(190.dp * scale, 104.dp * scale)
         // Two cards wide and a card tall: a doorway, not one more title.
         item.type == com.streamdek.tv.nativeapp.data.FUSE_PORTAL_ITEM_TYPE ->
             HomeCardSize(430.dp * scale, (if (portrait) 174.dp else 117.dp) * scale)
-        portrait -> HomeCardSize(116.dp * scale, 174.dp * scale)
+        // Between the two heights, so a logo row neither towers over posters nor shrinks to a strip.
+        shape == PosterShape.Square -> HomeCardSize(150.dp * scale, 150.dp * scale)
+        shape == PosterShape.Poster || (shape == null && portrait) -> HomeCardSize(116.dp * scale, 174.dp * scale)
         else -> HomeCardSize(208.dp * scale, 117.dp * scale)
     }
+}
+
+/**
+ * The artwork shape a Home row is drawn in: the shape its add-on asks for when that is not the
+ * default, otherwise the viewer's Home card style. Continue Watching and live channels keep their
+ * own cards, which are settings of their own; see [resolveRowPosterShape] for the full order.
+ */
+internal fun homeRowShape(rowId: String, items: List<MediaItem>, portraitCards: Boolean): PosterShape? {
+    if (rowId == "continue-watching") return null
+    return resolveRowPosterShape(
+        userOverride = null,
+        declared = dominantPosterShape(items.filter { it.type != "live" }.map(MediaItem::declaredPosterShape)),
+        defaultShape = if (portraitCards) PosterShape.Poster else PosterShape.Landscape,
+    )
 }
 
 /**
@@ -403,6 +429,9 @@ internal fun HomeShelf(
     val dense = LocalTvExperienceSettings.current.denseCards
     // Duplicate keys in a lazy row are fatal, and a catalogue can legitimately repeat a title.
     val rowItems = remember(row.items) { row.items.distinctBy(::homeItemKey) }
+    val rowShape = remember(row.id, rowItems, portraitCards) { homeRowShape(row.id, rowItems, portraitCards) }
+    // Live channels keep their own card whatever the row's add-on asks for.
+    fun shapeOf(item: MediaItem): PosterShape? = if (item.type == "live") null else rowShape
 
     // Cards register their requesters as they compose, so a restore target that has not been laid
     // out yet is retried briefly rather than dropped.
@@ -446,7 +475,7 @@ internal fun HomeShelf(
     // and spacing move together; changing the LazyRow spacing itself would snap before the scale
     // animation finishes and briefly make the exiting row overlap.
     val representativeWidth = rowItems.firstOrNull()
-        ?.let { homeCardSize(it, portraitCards, compact = false, dense = dense).width }
+        ?.let { homeCardSize(it, portraitCards, compact = false, dense = dense, shape = shapeOf(it)).width }
         ?: 208.dp
     val representativeWidthPx = with(LocalDensity.current) { representativeWidth.toPx() }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -473,7 +502,7 @@ internal fun HomeShelf(
                 val key = "${row.id}:${homeItemKey(item)}"
                 val requester = requesters.getOrPut(key) { FocusRequester() }
                 val effective = if (index == 0 && firstCardRequester != null) firstCardRequester else requester
-                val cardSize = homeCardSize(item, portraitCards, compact = false, dense = dense)
+                val cardSize = homeCardSize(item, portraitCards, compact = false, dense = dense, shape = shapeOf(item))
                 val size = cardSize.width
                 val cardHeight = cardSize.height
 
@@ -517,15 +546,18 @@ internal fun HomeShelf(
                         onPressed = { onItemPressed(item) },
                     )
                 } else {
+                    val artworkShape = shapeOf(item)
                     val variant = when {
                         item.type == "live" -> TvMediaCardVariant.Live
                         row.id == "continue-watching" -> TvMediaCardVariant.ContinueWatching
-                        portraitCards -> TvMediaCardVariant.Poster
+                        artworkShape == PosterShape.Landscape -> TvMediaCardVariant.Landscape
+                        artworkShape != null || portraitCards -> TvMediaCardVariant.Poster
                         else -> TvMediaCardVariant.Landscape
                     }
                     PremiumMediaCard(
                         item = item,
                         variant = variant,
+                        artworkShape = artworkShape,
                         // Plain posters only. A live card is identified by its channel name and a
                         // Continue Watching card carries the episode and the progress bar in the
                         // same block -- dropping it there would take those with it, which is not

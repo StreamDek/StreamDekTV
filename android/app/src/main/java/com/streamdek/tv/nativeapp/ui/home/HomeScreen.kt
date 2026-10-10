@@ -69,7 +69,9 @@ import com.streamdek.tv.nativeapp.ui.TvMotion
 import com.streamdek.tv.nativeapp.ui.TvNavRailInset
 import com.streamdek.tv.nativeapp.ui.TvSpacing
 import com.streamdek.tv.nativeapp.ui.glideToItem
-import com.streamdek.tv.nativeapp.ui.highResolutionCardArtwork
+import com.streamdek.tv.nativeapp.data.PosterShape
+import com.streamdek.tv.nativeapp.ui.cardImageRequest
+import com.streamdek.tv.nativeapp.ui.homeCardArtwork
 import com.streamdek.tv.nativeapp.ui.requestFocusOrFalse
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -356,24 +358,26 @@ fun HomeScreen(
     // Once per identity. Home is revealed when its first screenful of artwork is ready and is
     // never un-revealed: later content replaces what is drawn, in place.
     var initialArtworkReady by remember(identityKey) { mutableStateOf(false) }
-    val initialArtworkUrls = remember(content, portraitCards) {
-        buildList {
+    // Each card image paired with the shape its row draws it in, so the warmed request is the very
+    // one the card makes and the card finds it decoded. Null marks the hero's own artwork.
+    val initialArtwork = remember(content, portraitCards) {
+        val defaultShape = if (portraitCards) PosterShape.Poster else PosterShape.Landscape
+        buildList<Pair<String, PosterShape?>> {
             (openingItem ?: content?.featured)?.let { opening ->
-                (opening.backdrop ?: opening.poster)?.let(::add)
-                opening.titleLogo?.let(::add)
+                (opening.backdrop ?: opening.poster)?.let { add(it to null) }
+                opening.titleLogo?.let { add(it to null) }
             }
             // Two shelves cover the first TV viewport. Warming more here competes with the hero
             // and first row for bandwidth without improving what is initially visible.
             content?.rails.orEmpty().take(2).forEach { rail ->
+                val shape = homeRowShape(rail.id, rail.items, portraitCards) ?: defaultShape
                 rail.items.take(6).forEach { item ->
-                    highResolutionCardArtwork(
-                        if (portraitCards) item.poster ?: item.backdrop else item.backdrop ?: item.poster,
-                        portrait = portraitCards,
-                    )?.let(::add)
+                    homeCardArtwork(item, if (item.type == "live") PosterShape.Landscape else shape)?.let { add(it to shape) }
                 }
             }
-        }.distinct()
+        }.distinctBy { it.first }
     }
+    val initialArtworkUrls = initialArtwork.map { it.first }
     val initialArtworkKey = initialArtworkUrls.joinToString("|")
 
     LaunchedEffect(identityKey, initialArtworkKey) {
@@ -386,19 +390,22 @@ fun HomeScreen(
         // one composed presentation instead of exposing individual Coil completions.
         withTimeoutOrNull(2_200L) {
             coroutineScope {
-                initialArtworkUrls.mapIndexed { index, url ->
+                initialArtwork.map { (url, shape) ->
                     async {
                         context.imageLoader.execute(
-                            ImageRequest.Builder(context)
-                                .data(url)
-                                .memoryCacheKey(url)
-                                .diskCacheKey(url)
-                                .size(if (index <= 1) 1280 else if (portraitCards) 360 else 480,
-                                    if (index <= 1) 720 else if (portraitCards) 540 else 270)
-                                .crossfade(false)
-                                .allowHardware(true)
-                                .allowRgb565(index > 1 && !portraitCards)
-                                .build(),
+                            if (shape != null) {
+                                cardImageRequest(context, url, shape)
+                            } else {
+                                ImageRequest.Builder(context)
+                                    .data(url)
+                                    .memoryCacheKey(url)
+                                    .diskCacheKey(url)
+                                    .size(1280, 720)
+                                    .crossfade(false)
+                                    .allowHardware(true)
+                                    .allowRgb565(false)
+                                    .build()
+                            },
                         )
                     }
                 }.awaitAll()
@@ -655,8 +662,10 @@ fun HomeScreen(
                     val artwork = buildList {
                         content.featured?.backdrop?.let(::add)
                         rows.take(3).forEach { rail ->
+                            val shape = homeRowShape(rail.id, rail.items, portraitCards)
+                                ?: if (portraitCards) PosterShape.Poster else PosterShape.Landscape
                             rail.items.take(5).forEach { item ->
-                                (if (portraitCards) item.poster else item.backdrop)?.let(::add)
+                                homeCardArtwork(item, shape)?.let(::add)
                             }
                         }
                     }.distinct().take(14)

@@ -299,6 +299,8 @@ internal fun MediaServerSettingsPanel(
                 onToggle = { manager.setAmbient(!ambient) },
             )
 
+            MediaServerContinueLocationRow(repository, com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID, stringResource(R.string.media_server_plex), leftRequester, onStatus)
+
             PlexSectionHeading(stringResource(R.string.plex_manage))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
@@ -888,5 +890,44 @@ internal fun mediaServerSummary(repository: StreamDekRepository): String {
         state.linked && state.needsAttention -> stringResource(R.string.plex_needs_attention)
         state.linked -> stringResource(R.string.plex_libraries_on, libraries)
         else -> stringResource(R.string.plex_not_connected)
+    }
+}
+
+/**
+ * Where a provider's in-progress titles appear - see
+ * [com.streamdek.tv.nativeapp.data.MediaServerContinueLocation]. One row that switches between the
+ * two places on select, naming the active one, on the Plex and Jellyfin pages alike. Synced with
+ * the phone and the web portal; changing it reconnects nothing.
+ */
+@Composable
+internal fun MediaServerContinueLocationRow(
+    repository: StreamDekRepository,
+    provider: String,
+    providerName: String,
+    leftRequester: FocusRequester,
+    onStatus: (String) -> Unit,
+) {
+    val bootstrap by repository.bootstrap.collectAsState()
+    val location = com.streamdek.tv.nativeapp.data.MediaServerContinueLocations.from(bootstrap?.preferences?.home).of(provider)
+    val scope = rememberCoroutineScope()
+    val resources = LocalContext.current.resources
+    val serverLibrary = location == com.streamdek.tv.nativeapp.data.MediaServerContinueLocation.ServerLibrary
+    PlexSectionHeading(stringResource(R.string.media_server_continue_location_title))
+    PlexNote(stringResource(R.string.media_server_continue_location_detail, providerName))
+    PlexChoiceRow(
+        title = stringResource(if (serverLibrary) R.string.media_server_continue_location_server else R.string.media_server_continue_location_streamdek),
+        detail = stringResource(
+            if (serverLibrary) R.string.media_server_continue_location_server_detail else R.string.media_server_continue_location_streamdek_detail,
+            providerName,
+        ),
+        value = stringResource(R.string.media_server_continue_location_switch),
+        leftRequester = leftRequester,
+    ) {
+        val next = if (serverLibrary) com.streamdek.tv.nativeapp.data.MediaServerContinueLocation.StreamDek else com.streamdek.tv.nativeapp.data.MediaServerContinueLocation.ServerLibrary
+        scope.launch {
+            if (repository.setMediaServerContinueLocation(provider, next) == null) {
+                onStatus(resources.getString(R.string.media_server_continue_location_failed))
+            }
+        }
     }
 }
