@@ -437,6 +437,8 @@ private const val MEDIA_SERVER_PREFS = "streamdek_tv_media_servers"
 private const val MEDIA_SERVER_REMOTE_QUALITY_KEY = "remote_quality_kbps"
 /** How long Home, Library and Search wait on a media server before going on without it. */
 private const val MEDIA_SERVER_READ_TIMEOUT_MS = 5_000L
+/** How long automatic playback waits for the viewer's media servers with the preference on; as the phone. */
+private const val MEDIA_SERVER_AUTOPLAY_WAIT_MS = 6_000L
 /**
  * The media page and Home's server rows wait longer, as the phone does: a Jellyfin server reads
  * each row within 12 s of its own after being reached, so a shorter wait here ended every read of a
@@ -4907,6 +4909,12 @@ class StreamDekRepository(
                 forceRefresh = mediaType == "live",
             )
         }
+        // "Prefer media server source": the viewer's own Plex, Jellyfin and Emby copies are asked
+        // beside the add-ons, with a bounded wait, and join the pool the ranking picks from. Not when
+        // a particular add-on is already the answer, and not for live channels.
+        val serverLookup = if (targetedStreams == null && mediaType != "live" && preferMediaServerSourceEnabled()) {
+            repositoryScope.async { preferredMediaServerStreams(mediaType, mediaId, imdbId, episode) }
+        } else null
         val (streamLookupType, addonStreams) = targetedStreams
             ?: Perf.timed(perf, "addonDiscovery") { fetchStreamsForPlayback(lookupTypes, videoId, isLive = mediaType == "live") }
         perf.mark("addonStreams", "count=${addonStreams.size}")
@@ -4918,7 +4926,10 @@ class StreamDekRepository(
                 if (targetedStreams != null) {
                     addonStreams
                 } else {
-                    dedupeStreams(addonStreams + Perf.timed(perf, "pluginDiscovery") { pluginStreams(mediaType, mediaId, imdbId, episode) })
+                    dedupeStreams(
+                        addonStreams + Perf.timed(perf, "pluginDiscovery") { pluginStreams(mediaType, mediaId, imdbId, episode) } +
+                            (serverLookup?.await() ?: emptyList()),
+                    )
                 },
             )
         }
@@ -5110,6 +5121,48 @@ class StreamDekRepository(
      * [com.streamdek.tv.nativeapp.mediaserver.withMediaServerAuth].
      */
     private val catalogueServerStreams = java.util.concurrent.ConcurrentHashMap<String, Pair<MediaServerReference, EpisodeContext?>>()
+
+    private fun preferMediaServerSourceEnabled(): Boolean =
+        bootstrapState.value?.preferences?.streams?.preferMediaServerSource == true
+
+    /**
+     * Every enabled server's copies of a catalogue title, for automatic playback with the media
+     * server preference on. Servers are asked together and given [MEDIA_SERVER_AUTOPLAY_WAIT_MS]
+     * between them; one that has not answered by then is left out rather than waited for.
+     */
+    private suspend fun preferredMediaServerStreams(
+        mediaType: String,
+        mediaId: String,
+        imdbId: String?,
+        episode: EpisodeContext?,
+    ): List<AddonStream> {
+        if (MediaClassification.canonical(mediaType) == "tv" && episode == null) return emptyList()
+        val known = peekCachedDetail(mediaId, mediaType)
+        val ids = TitleIds.ofCatalogue(mediaId, known?.tmdbId, imdbId ?: known?.imdbId)
+        if (ids.isEmpty) return emptyList()
+        val providers = mediaServers.activeProviders().filter { mediaServers.stateOf(it.id).value.linked }
+        if (providers.isEmpty()) return emptyList()
+        return kotlinx.coroutines.withTimeoutOrNull(MEDIA_SERVER_AUTOPLAY_WAIT_MS) {
+            // Servers are searched by title and confirmed by id; the page's own detail is normally cached.
+            val title = known?.title?.takeIf { it.isNotBlank() }
+                ?: runCatching { fetchDetail(mediaId, mediaType)?.title }.getOrNull().orEmpty()
+            coroutineScope {
+                providers.map { provider ->
+                    async {
+                        runCatching {
+                            MediaServerSourceFinder.find(provider, mediaType, title, ids).flatMap { ref ->
+                                mediaServerStreams(provider, ref, episode)
+                                    .onEach { stream -> stream.url?.let { catalogueServerStreams[it] = ref to episode } }
+                            }
+                        }.onFailure {
+                            if (it is kotlinx.coroutines.CancellationException) throw it
+                            TvDebugLogger.w("MediaServer", "no preferred sources from ${provider.id}", it)
+                        }.getOrDefault(emptyList())
+                    }
+                }.awaitAll().flatten()
+            }
+        }.orEmpty()
+    }
 
     private suspend fun mediaServerStreams(
         provider: MediaServerProvider,
@@ -7275,6 +7328,13 @@ class StreamDekRepository(
         val favouritePluginRepos = pluginState?.repos.orEmpty().filter { it.favourite }.mapTo(hashSetOf()) { it.url }
         val favouritePluginProviderIds = pluginState?.providers.orEmpty()
             .filter { it.repoUrl in favouritePluginRepos }.mapTo(hashSetOf()) { it.id }
+        // "Prefer media server source": server Direct Play, then Direct Stream, ahead of everything
+        // else, and server transcodes last. Off, every key below is 0 and the order is unchanged.
+        val priority = MediaServerPriority.of(
+            streams,
+            enabled = bootstrapState.value?.preferences?.streams?.preferMediaServerSource == true,
+            preferredQuality = preferredQuality,
+        )
         // Every stream list shown is ordered here first, whatever add-on or plugin produced it,
         // so this is the one place the block cannot be routed around by a new caller.
         return streams.filterNot { stream ->
@@ -7289,7 +7349,13 @@ class StreamDekRepository(
                 stream.description,
             )
         }.sortedWith(
-            compareByDescending<AddonStream> {
+            // A source the viewer chose and asked to be remembered still comes first: the preference
+            // decides between sources nobody picked, never over a choice.
+            compareBy<AddonStream> {
+                if (priority !== MediaServerPriority.Off && preferredStreamKey != null && streamSelectionKey(it) == preferredStreamKey) -1 else priority.tier(it)
+            }
+                .thenByDescending { priority.quality(it) }
+                .thenByDescending {
                 it.addonId in favouriteAddonIds || it.addonId.removePrefix("plugin:") in favouritePluginProviderIds
             }
                 .thenByDescending { it.cachedBy.isNotEmpty() }

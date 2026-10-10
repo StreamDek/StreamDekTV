@@ -73,6 +73,16 @@ class PlexPlanningTest {
         assertEquals(listOf(PlexPlaybackMode.DirectPlay, PlexPlaybackMode.DirectStream, PlexPlaybackMode.Transcode, PlexPlaybackMode.Transcode), plan.map { it.mode })
     }
 
+    @Test fun `Dolby Vision with no fallback layer needs a Dolby Vision decoder, unless mpv is chosen`() {
+        val dvOnly = PlexMediaFacts("mkv", "hevc", "eac3", 3840, 2160, 30_000, dolbyVisionWithoutFallback = true)
+        assertEquals(PlexPlaybackMode.Transcode, PlexPlaybackPlanner.plan(dvOnly, tv4k, MediaServerRoute.Local, null).first().mode)
+        val withDecoder = tv4k.copy(hardwareVideo = tv4k.hardwareVideo + ("dvhe" to (3840 to 2160)))
+        assertEquals(PlexPlaybackMode.DirectPlay, PlexPlaybackPlanner.plan(dvOnly, withDecoder, MediaServerRoute.Local, null).first().mode)
+        assertEquals(PlexPlaybackMode.DirectPlay, PlexPlaybackPlanner.plan(dvOnly, tv4k.copy(engine = "MPV"), MediaServerRoute.Local, null).first().mode)
+        // Profile 8, with its HDR10 layer, is not this case and plays directly as before.
+        assertEquals(PlexPlaybackMode.DirectPlay, PlexPlaybackPlanner.plan(dvOnly.copy(dolbyVisionWithoutFallback = false), tv4k, MediaServerRoute.Local, null).first().mode)
+    }
+
     @Test fun `a codec the device cannot decode is never tried directly`() {
         val plan = PlexPlaybackPlanner.plan(PlexMediaFacts("mkv", "hevc", "aac", 3840, 2160, 30_000), hd, MediaServerRoute.Local, null)
         assertEquals(PlexPlaybackMode.Transcode, plan.first().mode)

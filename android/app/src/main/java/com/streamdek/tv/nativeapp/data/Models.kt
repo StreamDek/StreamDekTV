@@ -693,6 +693,8 @@ data class StreamsPreferences(
     /** Mobile-managed: whether the stream picker is offered before playback starts. */
     val showStreamsList: Boolean = true,
     val rememberLastSource: Boolean = true,
+    /** Media server Direct Play, then Direct Stream, ahead of add-ons and plugins. Off by default; shared with mobile. */
+    val preferMediaServerSource: Boolean = false,
     val blurUnwatchedEpisodes: Boolean = true,
     val streamDekFormattingEnabled: Boolean = false,
     val showAddonTmdbRatings: Boolean = false,

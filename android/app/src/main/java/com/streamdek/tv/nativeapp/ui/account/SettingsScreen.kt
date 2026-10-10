@@ -213,7 +213,7 @@ private enum class SettingsDestination(
     Subtitles(R.string.settings_category_playback, R.string.player_subtitles, R.string.settings_dest_subtitles_description, "subtitles subtitle captions language secondary preferred only auto load sources addons timing delay sync", StreamDekPlayerIcons.Captions),
     Audio(R.string.settings_category_playback, R.string.player_audio, R.string.settings_dest_audio_description, "audio sound language spoken dub delay sync synchronisation lip sync lag latency soundbar receiver bluetooth", StreamDekPlayerIcons.Audio),
     SkipAndAutoplay(R.string.settings_category_playback, R.string.settings_dest_skip_autoplay, R.string.settings_dest_skip_autoplay_description, "skip intro recap ending credits autoplay next episode binge threshold", StreamDekPlayerIcons.Next),
-    Streams(R.string.settings_category_playback, R.string.settings_dest_streams, R.string.settings_dest_streams_description, "quality resolution 4k 1080p file size picker source badges labels", StreamDekSettingsIcons.Sliders),
+    Streams(R.string.settings_category_playback, R.string.settings_dest_streams, R.string.settings_dest_streams_description, "quality resolution 4k 1080p file size picker source badges labels prefer media server plex jellyfin emby direct play direct stream", StreamDekSettingsIcons.Sliders),
 
     Sources(R.string.settings_category_sources, R.string.settings_dest_sources, R.string.settings_dest_sources_description, "providers addon plugin cloudstream debrid premium install playlist", StreamDekPlayerIcons.Sources),
     // Personal media servers. Its own page rather than a row under Sources: linking, servers and
@@ -761,6 +761,9 @@ fun SettingsScreen(
                     }
                     SettingsToggleRow(stringResource(R.string.settings_tv_show_stream_picker), stringResource(R.string.settings_tv_choose_a_source_before_playback_instead_of), streamsPrefs?.showStreamsList != false, selectedRequester) { next, complete ->
                         savePreference(R.string.settings_tv_stream_picker, complete) { repository.updateStreamsPreferences(mapOf("showStreamsList" to next)) }
+                    }
+                    SettingsToggleRow(stringResource(R.string.settings_tv_prefer_media_server_source), stringResource(R.string.settings_tv_prefer_media_server_source_description), streamsPrefs?.preferMediaServerSource == true, selectedRequester) { next, complete ->
+                        savePreference(R.string.settings_tv_prefer_media_server_source, complete) { repository.updateStreamsPreferences(mapOf("preferMediaServerSource" to next)) }
                     }
                     SettingsToggleRow(stringResource(R.string.settings_tv_remember_last_source), stringResource(R.string.settings_tv_prefer_the_source_previously_used_for_the), streamsPrefs?.rememberLastSource != false, selectedRequester) { next, complete ->
                         savePreference(R.string.settings_tv_remember_last_source, complete) { repository.updateStreamsPreferences(mapOf("rememberLastSource" to next)) }
