@@ -16,6 +16,8 @@ import java.time.Instant
 import java.util.Locale
 
 internal data class JellyfinMappingContext(
+    /** "jellyfin" or "emby": which provider a title's id routes back to. */
+    val provider: String = JELLYFIN_PROVIDER_ID,
     val serverId: String,
     val baseUrl: String,
     /** "Jellyfin", or "Jellyfin · Home Server" when the profile uses more than one server. */
@@ -47,7 +49,7 @@ internal object JellyfinMapping {
     private const val TICKS_PER_MS = 10_000L
 
     fun reference(context: JellyfinMappingContext, itemId: String): MediaServerReference =
-        MediaServerReference(JELLYFIN_PROVIDER_ID, context.serverId, itemId)
+        MediaServerReference(context.provider, context.serverId, itemId)
 
     fun ms(ticks: Long?): Long? = ticks?.takeIf { it > 0 }?.div(TICKS_PER_MS)
 
@@ -116,7 +118,7 @@ internal object JellyfinMapping {
             progress = if (episodic) null else percent(positionMs, durationMs),
             positionSec = if (episodic) null else positionMs?.div(1000.0),
             durationSec = if (episodic) null else durationMs?.div(1000.0),
-            sourceAddonId = MediaServerReference.sourceIdOf(JELLYFIN_PROVIDER_ID, context.serverId),
+            sourceAddonId = MediaServerReference.sourceIdOf(context.provider, context.serverId),
             sourceAddonName = context.attribution,
             sourceMediaType = type,
             sourceCatalogId = libraryKey,
@@ -246,7 +248,7 @@ internal object JellyfinMapping {
                         episodeNumber = episode.episodeNumber,
                         updatedAt = updatedAt,
                         lastDevice = context.attribution,
-                        lastPlatform = JELLYFIN_PROVIDER_ID,
+                        lastPlatform = context.provider,
                     ),
                     lastViewedAtMs = lastViewed,
                     tmdbId = tmdb,
@@ -274,7 +276,7 @@ internal object JellyfinMapping {
                         resumeAt = positionSec,
                         updatedAt = updatedAt,
                         lastDevice = context.attribution,
-                        lastPlatform = JELLYFIN_PROVIDER_ID,
+                        lastPlatform = context.provider,
                     ),
                     lastViewedAtMs = lastViewed,
                     tmdbId = tmdb,

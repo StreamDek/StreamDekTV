@@ -228,11 +228,10 @@ private const val PlexBrowseRoutePattern = "plex-browse/{kind}/{provider}/{serve
 private fun plexBrowseRoute(kind: String, provider: String, serverId: String, key: String, title: String): String =
     "plex-browse/$kind/${Uri.encode(provider)}/${Uri.encode(serverId)}/${Uri.encode(key)}/${Uri.encode(title)}"
 
-/** The media entry's icon: the one server's mark, or both marks together when both are connected. */
+/** The media entry's icon: the one server's mark, or the stacked mark when more than one is connected. */
 private fun mediaNavIcon(providers: List<String>) = when {
     providers.size > 1 -> JellyfinIcons.Stack
-    providers.firstOrNull() == com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> JellyfinIcons.Mark
-    else -> PlexIcons.Chevron
+    else -> mediaServerBrand(providers.firstOrNull() ?: com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID).mark
 }
 private const val PersonRoutePattern = "person/{id}"
 
@@ -464,10 +463,12 @@ private fun StreamDekTvAppContent(repository: StreamDekRepository) {
     val fuseEnabled by repository.fuseEnabled.collectAsState()
     val mediaServerState by repository.mediaServers.state.collectAsState()
     val jellyfinServerState by repository.mediaServers.jellyfinState.collectAsState()
-    val mediaProviders = remember(mediaServerState.navigationVisible, jellyfinServerState.navigationVisible) {
+    val embyServerState by repository.mediaServers.embyState.collectAsState()
+    val mediaProviders = remember(mediaServerState.navigationVisible, jellyfinServerState.navigationVisible, embyServerState.navigationVisible) {
         buildList {
             if (mediaServerState.navigationVisible) add(com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID)
             if (jellyfinServerState.navigationVisible) add(com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID)
+            if (embyServerState.navigationVisible) add(com.streamdek.tv.nativeapp.mediaserver.EMBY_PROVIDER_ID)
         }
     }
     val plexVisible = mediaProviders.isNotEmpty()

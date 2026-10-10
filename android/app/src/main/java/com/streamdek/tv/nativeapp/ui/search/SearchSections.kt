@@ -1,6 +1,7 @@
 package com.streamdek.tv.nativeapp.ui.search
 
 import com.streamdek.tv.nativeapp.data.MediaItem
+import com.streamdek.tv.nativeapp.mediaserver.EMBY_PROVIDER_ID
 import com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerReference
 import com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
@@ -16,7 +17,7 @@ import com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
   */
 
 /** Where a section's results came from. The order is the order sections appear in. */
-internal enum class SearchSourceKind { Plex, Jellyfin, Catalogue, Addon, Plugin }
+internal enum class SearchSourceKind { Plex, Jellyfin, Emby, Catalogue, Addon, Plugin }
 
 internal data class SearchResultSection(
     /** Stable across recompositions and unique on the page; used as the list key and to remember expansion. */
@@ -39,7 +40,7 @@ internal fun mediaServerProviderOf(item: MediaItem): String? =
 
 /**
   * Splits everything a search found into sections, in this order: the viewer's own Plex servers,
-  * their Jellyfin servers, StreamDek's catalogue, each add-on, each plugin. Within a kind, sections
+  * their Jellyfin servers, their Emby servers, StreamDek's catalogue, each add-on, each plugin. Within a kind, sections
   * keep the order their first result arrived in. Empty sections are left out.
   *
   * A media server gets one section per server, so a second Plex server or a Jellyfin server is
@@ -52,10 +53,14 @@ internal fun searchResultSections(
     plugins: List<MediaItem>,
 ): List<SearchResultSection> = buildList {
     val byServer = library.groupBy { it.sourceAddonId ?: mediaServerProviderOf(it).orEmpty() }
-    listOf(SearchSourceKind.Plex, SearchSourceKind.Jellyfin).forEach { kind ->
+    listOf(SearchSourceKind.Plex, SearchSourceKind.Jellyfin, SearchSourceKind.Emby).forEach { kind ->
         byServer.forEach { (server, items) ->
             val provider = mediaServerProviderOf(items.first())
-            val itemKind = if (provider == JELLYFIN_PROVIDER_ID) SearchSourceKind.Jellyfin else SearchSourceKind.Plex
+            val itemKind = when (provider) {
+                JELLYFIN_PROVIDER_ID -> SearchSourceKind.Jellyfin
+                EMBY_PROVIDER_ID -> SearchSourceKind.Emby
+                else -> SearchSourceKind.Plex
+            }
             if (itemKind != kind) return@forEach
             add(
                 SearchResultSection(

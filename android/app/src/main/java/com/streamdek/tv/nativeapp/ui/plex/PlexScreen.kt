@@ -59,6 +59,7 @@ import com.streamdek.tv.nativeapp.data.MediaItem
 import com.streamdek.tv.nativeapp.data.StreamDekRepository
 import com.streamdek.tv.nativeapp.data.withoutAdult
 import com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
+import com.streamdek.tv.nativeapp.ui.mediaServerAmbientGlow
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerReachability
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerReference
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerSort
@@ -94,12 +95,33 @@ import kotlinx.coroutines.launch
  * than one, and a server that is asleep says so in one line rather than leaving a hole.
  */
 
-private val PlexGold = Color(0xFFE5A00D)
-private val JellyfinPurple = Color(0xFFAA5CC3)
 private val PageInset = 24.dp
 
 /** A card's route out of this page. */
 internal fun MediaItem.isPlexCollection(): Boolean = type == PlexMapping.COLLECTION_TYPE
+
+/**
+ * The media page as it was last left, for the app's lifetime: its rows, scroll position and the
+ * card that had the highlight, per profile and server. Only titles and positions, never a token.
+ */
+private object MediaServerPageMemory {
+    data class Page(
+        val rows: List<HomeRail>? = null,
+        val continueRow: HomeRail? = null,
+        val firstIndex: Int = 0,
+        val firstOffset: Int = 0,
+        val lastRowId: String? = null,
+        val lastItemKey: String? = null,
+    )
+
+    val pages = java.util.concurrent.ConcurrentHashMap<String, Page>()
+
+    fun key(profile: String?, provider: String): String = "${profile.orEmpty()}|$provider"
+
+    fun update(key: String, change: (Page) -> Page) {
+        pages[key] = change(pages[key] ?: Page())
+    }
+}
 
 @Composable
 fun PlexScreen(
@@ -113,27 +135,48 @@ fun PlexScreen(
 ) {
     val plexState by repository.mediaServers.state.collectAsState()
     val jellyfinState by repository.mediaServers.jellyfinState.collectAsState()
+    val embyState by repository.mediaServers.embyState.collectAsState()
     val revision by repository.mediaServers.revision.collectAsState()
-    val providers = remember(plexState.navigationVisible, jellyfinState.navigationVisible) { repository.mediaServers.navigableProviders() }
+    val providers = remember(plexState.navigationVisible, jellyfinState.navigationVisible, embyState.navigationVisible) { repository.mediaServers.navigableProviders() }
     // With both servers connected the page shows one at a time, and opens on the one seen last.
     var provider by rememberSaveable { mutableStateOf(repository.mediaServers.lastPageProvider) }
     if (providers.isNotEmpty() && provider !in providers) provider = providers.first()
-    val isJellyfin = provider == JELLYFIN_PROVIDER_ID
-    val state = if (isJellyfin) jellyfinState else plexState
+    val accounts = repository.mediaServers.accountsFor(provider)
+    val brand = com.streamdek.tv.nativeapp.ui.mediaServerBrand(provider)
+    val state = when (provider) {
+        JELLYFIN_PROVIDER_ID -> jellyfinState
+        com.streamdek.tv.nativeapp.mediaserver.EMBY_PROVIDER_ID -> embyState
+        else -> plexState
+    }
     val plexAmbient by repository.mediaServers.ambient.collectAsState()
     val jellyfinAmbient by repository.mediaServers.jellyfinAmbient.collectAsState()
-    val ambient = if (isJellyfin) jellyfinAmbient else plexAmbient
+    val embyAmbient by repository.mediaServers.embyAccounts.ambient.collectAsState()
+    val ambient = when (provider) {
+        JELLYFIN_PROVIDER_ID -> jellyfinAmbient
+        com.streamdek.tv.nativeapp.mediaserver.EMBY_PROVIDER_ID -> embyAmbient
+        else -> plexAmbient
+    }
     val scope = rememberCoroutineScope()
-    var rows by remember(provider) { mutableStateOf<List<HomeRail>?>(null) }
-    var continueRow by remember(provider) { mutableStateOf<HomeRail?>(null) }
+    // Where this page was left, so coming back to it - from a title, another page or the menu -
+    // finds it as it was instead of starting again from the top. Kept per profile and server.
+    val memoryKey = MediaServerPageMemory.key(repository.mediaServers.profileScope(), provider)
+    val remembered = remember(memoryKey) { MediaServerPageMemory.pages[memoryKey] }
+    var rows by remember(provider) { mutableStateOf(remembered?.rows) }
+    var continueRow by remember(provider) { mutableStateOf(remembered?.continueRow) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var menu by remember { mutableStateOf<Pair<MediaItem, FocusRequester>?>(null) }
-    val listState = rememberLazyListState()
+    val listState = remember { LazyListState(remembered?.firstIndex ?: 0, remembered?.firstOffset ?: 0) }
     val rowStates = remember { mutableStateMapOf<String, LazyListState>() }
     /** Which row and card had the highlight, so coming back from a title lands on it. */
-    var lastRowId by rememberSaveable(provider) { mutableStateOf<String?>(null) }
-    var lastItemKey by rememberSaveable(provider) { mutableStateOf<String?>(null) }
-    var restoreToken by remember(provider) { mutableIntStateOf(0) }
+    var lastRowId by rememberSaveable(provider) { mutableStateOf(remembered?.lastRowId) }
+    var lastItemKey by rememberSaveable(provider) { mutableStateOf(remembered?.lastItemKey) }
+    var restoreToken by remember(provider) { mutableIntStateOf(if (remembered?.lastRowId != null && remembered.rows != null) 1 else 0) }
+    // Written as it changes, so whichever way the viewer leaves, the page is remembered as it was.
+    LaunchedEffect(memoryKey, listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }.collect { (index, offset) ->
+            MediaServerPageMemory.update(memoryKey) { it.copy(firstIndex = index, firstOffset = offset) }
+        }
+    }
     val localEntry = remember { FocusRequester() }
     val firstChipRequester = entryFocusRequester ?: localEntry
     val sideNavOwnsFocus = LocalSideNavOwnsFocus.current
@@ -150,12 +193,14 @@ fun PlexScreen(
             val resumes = runCatching { repository.mediaServerContinueWatching(loadingProvider) }.getOrDefault(emptyList())
             currentCoroutineContext().ensureActive()
             continueRow = HomeRail("continue-watching", continueTitle, resumes).takeIf { resumes.isNotEmpty() }
+            MediaServerPageMemory.update(MediaServerPageMemory.key(repository.mediaServers.profileScope(), loadingProvider)) { it.copy(continueRow = continueRow) }
         }
         val loadedRows = runCatching { repository.mediaServerPageRows(loadingProvider) }.getOrDefault(emptyList())
             .map { row -> HomeRail(row.id, row.title, row.items.withoutAdult()) }
             .filter { it.items.isNotEmpty() }
         currentCoroutineContext().ensureActive()
         rows = loadedRows
+        MediaServerPageMemory.update(MediaServerPageMemory.key(repository.mediaServers.profileScope(), loadingProvider)) { it.copy(rows = loadedRows) }
         if (lastRowId != null) restoreToken++
     }
 
@@ -176,7 +221,7 @@ fun PlexScreen(
     val problem = remember(state) { state.servers.filter { it.enabled }.firstNotNullOfOrNull { it.problem } }
     val retryRows: () -> Unit = {
         scope.launch {
-            if (isJellyfin) repository.mediaServers.refreshJellyfin(force = true) else repository.mediaServers.refresh(force = true)
+            if (accounts != null) accounts.refresh(force = true) else repository.mediaServers.refresh(force = true)
             reloadToken++
         }
     }
@@ -189,9 +234,8 @@ fun PlexScreen(
             // top, enough to say where the viewer is without the page stopping looking like StreamDek.
             .then(
                 when {
-                    ambient && isJellyfin -> Modifier.jellyfinAmbientGlow()
-                    ambient -> Modifier.plexAmbientGlow()
-                    else -> Modifier.background(Brush.verticalGradient(0f to (if (isJellyfin) JellyfinPurple else PlexGold).copy(alpha = 0.10f), 0.35f to Color.Transparent))
+                    ambient -> Modifier.mediaServerAmbientGlow(provider)
+                    else -> Modifier.background(Brush.verticalGradient(0f to brand.accent.copy(alpha = 0.10f), 0.35f to Color.Transparent))
                 },
             ),
     ) {
@@ -211,7 +255,7 @@ fun PlexScreen(
                     ) {
                         providers.forEach { option ->
                             SearchChip(
-                                label = stringResource(if (option == JELLYFIN_PROVIDER_ID) R.string.media_server_jellyfin else R.string.media_server_plex),
+                                label = stringResource(com.streamdek.tv.nativeapp.ui.mediaServerBrand(option).name),
                                 selected = option == provider,
                                 modifier = if (option == providers.first()) Modifier.focusRequester(firstChipRequester) else Modifier,
                                 onClick = {
@@ -257,7 +301,7 @@ fun PlexScreen(
                     OfflineNotice(
                         names = offline.joinToString(", ") { it.name },
                         refused = offline.all { (it.reachability as? MediaServerReachability.Offline)?.reason == OfflineReason.Unauthorized },
-                        jellyfin = isJellyfin,
+                        provider = provider,
                         onRetry = retryRows,
                     )
                 }
@@ -277,15 +321,13 @@ fun PlexScreen(
                         title = stringResource(
                             when {
                                 offline.isEmpty() -> R.string.plex_page_empty_title
-                                isJellyfin -> R.string.jellyfin_page_offline_title
-                                else -> R.string.plex_page_offline_title
+                                else -> brand.pageOfflineTitle
                             },
                         ),
                         message = stringResource(
                             when {
                                 offline.isNotEmpty() -> R.string.plex_page_offline_note
-                                isJellyfin -> R.string.jellyfin_page_empty_note
-                                else -> R.string.plex_page_empty_note
+                                else -> brand.pageEmptyNote
                             },
                         ) + (problem?.takeIf { offline.isEmpty() }?.let { "\n\n$it" } ?: ""),
                         actionLabel = stringResource(R.string.action_retry),
@@ -307,6 +349,7 @@ fun PlexScreen(
                             rowGrowth.onFocused(baseRail, index)
                             lastRowId = rail.id
                             lastItemKey = "${rail.id}:${com.streamdek.tv.nativeapp.ui.home.homeItemKey(item)}"
+                            MediaServerPageMemory.update(memoryKey) { it.copy(lastRowId = lastRowId, lastItemKey = lastItemKey) }
                         },
                         onItemPressed = { item ->
                             when {
@@ -345,20 +388,20 @@ fun PlexScreen(
 
 @Composable
 private fun PlexHeader(provider: String, serverSummary: String) {
-    val jellyfin = provider == JELLYFIN_PROVIDER_ID
+    val plex = provider == com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
     Row(
         Modifier.fillMaxWidth().padding(horizontal = PageInset),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Image(
-            painter = painterResource(if (jellyfin) R.drawable.jellyfin_logo else R.drawable.plex_logo),
-            contentDescription = null,
-            modifier = if (jellyfin) Modifier.size(40.dp) else Modifier.size(44.dp).clip(CircleShape),
-        )
+        if (plex) {
+            Image(painter = painterResource(R.drawable.plex_logo), contentDescription = null, modifier = Modifier.size(44.dp).clip(CircleShape))
+        } else {
+            com.streamdek.tv.nativeapp.ui.MediaServerLogo(provider, 40.dp)
+        }
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                stringResource(if (jellyfin) R.string.media_server_jellyfin else R.string.media_server_plex),
+                stringResource(com.streamdek.tv.nativeapp.ui.mediaServerBrand(provider).name),
                 style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
                 color = MaterialTheme.colorScheme.onBackground,
             )
@@ -376,7 +419,7 @@ private fun PlexHeader(provider: String, serverSummary: String) {
 }
 
 @Composable
-private fun OfflineNotice(names: String, refused: Boolean, jellyfin: Boolean, onRetry: () -> Unit) {
+private fun OfflineNotice(names: String, refused: Boolean, provider: String, onRetry: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = PageInset)
             .background(Color(0x1FF59E0B), RoundedCornerShape(16.dp))
@@ -389,8 +432,7 @@ private fun OfflineNotice(names: String, refused: Boolean, jellyfin: Boolean, on
             stringResource(
                 when {
                     !refused -> R.string.plex_page_server_offline
-                    jellyfin -> R.string.jellyfin_page_server_refused
-                    else -> R.string.plex_page_server_refused
+                    else -> com.streamdek.tv.nativeapp.ui.mediaServerBrand(provider).pageServerRefused
                 },
                 names,
             ),
@@ -451,10 +493,14 @@ fun PlexBrowseScreen(
     onBack: () -> Unit,
 ) {
     val gridColumns = LocalTvExperienceSettings.current.gridColumns
-    val isJellyfin = provider == JELLYFIN_PROVIDER_ID
     val plexAmbient by repository.mediaServers.ambient.collectAsState()
     val jellyfinAmbient by repository.mediaServers.jellyfinAmbient.collectAsState()
-    val ambient = if (isJellyfin) jellyfinAmbient else plexAmbient
+    val embyAmbient by repository.mediaServers.embyAccounts.ambient.collectAsState()
+    val ambient = when (provider) {
+        JELLYFIN_PROVIDER_ID -> jellyfinAmbient
+        com.streamdek.tv.nativeapp.mediaserver.EMBY_PROVIDER_ID -> embyAmbient
+        else -> plexAmbient
+    }
     var sort by rememberSaveable { mutableStateOf(MediaServerSort.RecentlyAdded) }
     var items by remember(sort) { mutableStateOf<List<MediaItem>>(emptyList()) }
     var nextStart by remember(sort) { mutableIntStateOf(0) }
@@ -503,8 +549,7 @@ fun PlexBrowseScreen(
     androidx.compose.runtime.CompositionLocalProvider(com.streamdek.tv.nativeapp.ui.LocalHideMediaServerMark provides true) {
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).then(
         when {
-            ambient && isJellyfin -> Modifier.jellyfinAmbientGlow()
-            ambient -> Modifier.plexAmbientGlow()
+            ambient -> Modifier.mediaServerAmbientGlow(provider)
             else -> Modifier
         },
     )) {
@@ -513,11 +558,11 @@ fun PlexBrowseScreen(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Image(
-                painterResource(if (isJellyfin) R.drawable.jellyfin_logo else R.drawable.plex_logo),
-                contentDescription = null,
-                modifier = if (isJellyfin) Modifier.size(28.dp) else Modifier.size(30.dp).clip(CircleShape),
-            )
+            if (provider == com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID) {
+                Image(painterResource(R.drawable.plex_logo), contentDescription = null, modifier = Modifier.size(30.dp).clip(CircleShape))
+            } else {
+                com.streamdek.tv.nativeapp.ui.MediaServerLogo(provider, 28.dp)
+            }
             Text(title, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.onBackground)
         }
         if (collectionRef == null) {

@@ -1,12 +1,13 @@
 package com.streamdek.tv.nativeapp.data
 
+import com.streamdek.tv.nativeapp.mediaserver.EMBY_PROVIDER_ID
 import com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerReference
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerResume
 import com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
 
 /**
- * Where a media server's in-progress titles are shown, chosen for Plex and for Jellyfin apart -
+ * Where a media server's in-progress titles are shown, chosen for Plex, Jellyfin and Emby apart -
  * the same setting, with the same keys and values, as the phone and the web portal.
  *
  * It decides display and nothing else. Playback through a server is reported to that server in
@@ -30,10 +31,12 @@ enum class MediaServerContinueLocation(val key: String) {
 data class MediaServerContinueLocations(
     val plex: MediaServerContinueLocation = MediaServerContinueLocation.StreamDek,
     val jellyfin: MediaServerContinueLocation = MediaServerContinueLocation.StreamDek,
+    val emby: MediaServerContinueLocation = MediaServerContinueLocation.StreamDek,
 ) {
     fun of(provider: String?): MediaServerContinueLocation = when (provider) {
         PLEX_PROVIDER_ID -> plex
         JELLYFIN_PROVIDER_ID -> jellyfin
+        EMBY_PROVIDER_ID -> emby
         else -> MediaServerContinueLocation.StreamDek
     }
 
@@ -41,13 +44,19 @@ data class MediaServerContinueLocations(
         /** Setting keys, under `home`. */
         const val PLEX_KEY = "plexContinueWatchingLocation"
         const val JELLYFIN_KEY = "jellyfinContinueWatchingLocation"
+        const val EMBY_KEY = "embyContinueWatchingLocation"
 
         fun from(home: HomePreferences?): MediaServerContinueLocations = MediaServerContinueLocations(
             plex = MediaServerContinueLocation.fromKey(home?.plexContinueWatchingLocation),
             jellyfin = MediaServerContinueLocation.fromKey(home?.jellyfinContinueWatchingLocation),
+            emby = MediaServerContinueLocation.fromKey(home?.embyContinueWatchingLocation),
         )
 
-        fun keyFor(provider: String): String = if (provider == JELLYFIN_PROVIDER_ID) JELLYFIN_KEY else PLEX_KEY
+        fun keyFor(provider: String): String = when (provider) {
+            JELLYFIN_PROVIDER_ID -> JELLYFIN_KEY
+            EMBY_PROVIDER_ID -> EMBY_KEY
+            else -> PLEX_KEY
+        }
     }
 }
 

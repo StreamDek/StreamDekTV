@@ -58,7 +58,6 @@ import com.streamdek.tv.nativeapp.mediaserver.MediaServerReachability
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerRoute
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerView
 import com.streamdek.tv.nativeapp.mediaserver.OfflineReason
-import com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerManager
 import com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
 import com.streamdek.tv.nativeapp.mediaserver.RemovedMediaServerEntry
@@ -612,7 +611,7 @@ internal fun MediaServerGroups(
     removingServer?.let { server ->
         PlexConfirmDialog(
             title = stringResource(R.string.media_server_remove_title, server.name),
-            body = stringResource(if (provider == JELLYFIN_PROVIDER_ID) R.string.jellyfin_remove_server_body else R.string.media_server_remove_server_body),
+            body = stringResource(com.streamdek.tv.nativeapp.ui.mediaServerBrand(provider).removeServerBody),
             confirm = stringResource(R.string.media_server_remove),
             onConfirm = {
                 removingServer = null

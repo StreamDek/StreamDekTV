@@ -4537,7 +4537,12 @@ class StreamDekRepository(
         if (!rememberLastSourceEnabled()) return null
         val stored = sessionStore.rememberedPlaybackSource(mediaType, mediaId, buildEpisodeKey(episode))
             ?: return null
-        if (System.currentTimeMillis() - stored.savedAtMs > RememberedSourceTtlMs) {
+        // A media server's link is never replayed: its play session ended with the last viewing,
+        // and a server that opens one per viewing may never answer it. Entries written before this
+        // rule are dropped as they are met, server credentials and all.
+        if (MediaServerReference.providerOfSource(stored.addonId) != null ||
+            System.currentTimeMillis() - stored.savedAtMs > RememberedSourceTtlMs
+        ) {
             sessionStore.saveRememberedPlaybackSource(mediaType, mediaId, buildEpisodeKey(episode), null)
             return null
         }
@@ -4563,10 +4568,11 @@ class StreamDekRepository(
         val episodeKey = buildEpisodeKey(episode)
         val streamKey = streamSelectionKey(stream)
         sessionStore.savePreferredStreamKey(mediaType, mediaId, episodeKey, streamKey)
-        // Which kind of source played is worth remembering for a media server title; the source
-        // itself is not. Its headers carry the server's token, which is never written to plain
-        // preferences, and a transcoder session URL is dead by the next visit anyway.
-        if (MediaServerReference.isReference(mediaId)) return
+        // Which kind of source played is worth remembering for a media server title, or for a
+        // catalogue title played from a server's copy; the source itself is not. Its headers carry
+        // the server's token, which is never written to plain preferences, and its play session is
+        // over by the next visit, so resuming asks the server afresh.
+        if (MediaServerReference.isReference(mediaId) || MediaServerReference.providerOfSource(stream.addonId) != null) return
         sessionStore.saveRememberedPlaybackSource(
             mediaType,
             mediaId,
@@ -4959,7 +4965,7 @@ class StreamDekRepository(
     }
 
     private fun mediaServerFuseCatalogs(): List<FuseCatalog> =
-        listOf(mediaServers.state.value, mediaServers.jellyfinState.value).flatMap(::mediaServerFuseCatalogs)
+        (listOf(mediaServers.state.value) + mediaServers.mediaBrowserAccounts.map { it.state.value }).flatMap(::mediaServerFuseCatalogs)
 
     private fun mediaServerFuseCatalogs(state: com.streamdek.tv.nativeapp.mediaserver.MediaServerUiState): List<FuseCatalog> {
         if (!state.navigationVisible) return emptyList()
@@ -5767,7 +5773,7 @@ class StreamDekRepository(
             emptyList()
         } else {
             mediaServers.activeProviders().filter { provider ->
-                if (provider.id == com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID) mediaServers.jellyfinState.value.linked else mediaServers.state.value.linked
+                mediaServers.stateOf(provider.id).value.linked
             }
         }
 
@@ -7966,9 +7972,8 @@ internal fun mediaServerProviderOfRow(rowId: String): String? =
         ?.substringBefore('.')
         ?.takeIf { it.isNotBlank() }
 
-/** The media destination's name: "Plex" or "Jellyfin" alone, "My Media" when both are there. */
+/** The media destination's name: one server's own name alone, "My Media" when more than one is there. */
 internal fun mediaServerDestinationTitleRes(providers: List<String>): Int = when {
     providers.size > 1 -> R.string.media_server_my_media
-    providers.firstOrNull() == com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> R.string.media_server_jellyfin
-    else -> R.string.media_server_plex
+    else -> com.streamdek.tv.nativeapp.ui.mediaServerBrand(providers.firstOrNull() ?: com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID).name
 }

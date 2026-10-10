@@ -168,7 +168,7 @@ fun PremiumMediaCard(
             // copy beside a streaming result. A small mark in the corner says so without a label.
             val serverMark = com.streamdek.tv.nativeapp.mediaserver.MediaServerReference.providerOfSource(item.sourceAddonId)
             if (!LocalHideMediaServerMark.current && serverMark != null) {
-                val jellyfinMark = serverMark == com.streamdek.tv.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
+                val brand = mediaServerBrand(serverMark)
                 Box(
                     Modifier.align(Alignment.TopEnd).padding(8.dp).size(22.dp)
                         .clip(androidx.compose.foundation.shape.CircleShape)
@@ -176,10 +176,10 @@ fun PremiumMediaCard(
                     contentAlignment = Alignment.Center,
                 ) {
                     androidx.compose.material3.Icon(
-                        if (jellyfinMark) JellyfinIcons.Mark else PlexIcons.Chevron,
+                        brand.mark,
                         contentDescription = null,
-                        tint = if (jellyfinMark) Color(0xFF8E7CE6) else Color(0xFFE5A00D),
-                        modifier = Modifier.size(if (jellyfinMark) 12.dp else 14.dp),
+                        tint = brand.markTint,
+                        modifier = Modifier.size(if (serverMark == com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID) 14.dp else 12.dp),
                     )
                 }
             }

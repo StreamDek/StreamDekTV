@@ -101,8 +101,11 @@ internal class JellyfinProvider(
     private val onRowsChanged: () -> Unit = {},
     private val now: () -> Long = System::currentTimeMillis,
 ) : MediaServerProvider {
-    override val id: String = JELLYFIN_PROVIDER_ID
-    override val label: String = "Jellyfin"
+    /** Jellyfin or Emby, as the client was built for; see [MediaBrowserFlavor]. */
+    val flavor: MediaBrowserFlavor get() = client.flavor
+    override val id: String = client.flavor.providerId
+    override val label: String = client.flavor.label
+    private val tag: String get() = flavor.label
 
     private data class ServerState(
         val account: JellyfinAccount,
@@ -159,8 +162,8 @@ internal class JellyfinProvider(
     /** Headers for every address of every signed-in server, so artwork and streams carry the token and URLs never do. */
     fun registerAuth() {
         servers.values.forEach { state ->
-            val header = client.authorizationFor(state.account.token)
-            state.account.addresses.forEach { MediaServerAuth.registerHeader(it, AUTH_HEADER, header) }
+            val (name, value) = client.mediaHeaderFor(state.account.token)
+            state.account.addresses.forEach { MediaServerAuth.registerHeader(it, name, value) }
         }
     }
 
@@ -229,7 +232,7 @@ internal class JellyfinProvider(
             if (chosen != null) {
                 update(serverId) { it.copy(baseUrl = chosen, reachability = MediaServerReachability.Online(route(chosen)), failures = 0, retryAtMs = 0L) }
                 onAddressChosen(serverId, chosen)
-                TvDebugLogger.i("Jellyfin", "server=$serverId route=${route(chosen)}")
+                TvDebugLogger.i(tag, "server=$serverId route=${route(chosen)}")
             } else {
                 update(serverId) {
                     val failures = it.failures + 1
@@ -240,7 +243,7 @@ internal class JellyfinProvider(
                         retryAtMs = now() + backoffMs(failures),
                     )
                 }
-                TvDebugLogger.w("Jellyfin", "server=$serverId unreachable on ${candidates.size} addresses")
+                TvDebugLogger.w(tag, "server=$serverId unreachable on ${candidates.size} addresses")
             }
             chosen
         }
@@ -298,7 +301,8 @@ internal class JellyfinProvider(
     /** The route to ask first, and the one to fall back to on a 404. */
     private fun routesFor(serverId: String, path: String): Pair<String, String?> {
         val legacy = userId(serverId)?.let { legacyPath(path, it) } ?: return path to null
-        return if (legacyRoutes[serverId] == true) legacy to null else path to legacy
+        // Emby has only the older routes, so it is never asked the newer one first.
+        return if (!flavor.currentRoutes || legacyRoutes[serverId] == true) legacy to null else path to legacy
     }
 
     private fun isNotFound(result: Result<*>) = (result.exceptionOrNull() as? JellyfinClient.StatusException)?.code == 404
@@ -349,6 +353,7 @@ internal class JellyfinProvider(
         val base = state.baseUrl ?: return null
         val multiple = servers.values.count { it.account.enabled } > 1
         return JellyfinMappingContext(
+            provider = id,
             serverId = serverId,
             baseUrl = base,
             attribution = labels().attribution(label, state.account.name, multiple),
@@ -538,7 +543,7 @@ internal class JellyfinProvider(
         if (problems[serverId] != before) onStateChanged()
         return built.mapIndexed { index, row ->
             val catalogue = "${row.kind.name.lowercase(Locale.US)}-${row.libraryKey ?: "all"}"
-            row.copy(id = mediaServerHomeRowId(JELLYFIN_PROVIDER_ID, serverId, row.mediaType, catalogue, index))
+            row.copy(id = mediaServerHomeRowId(id, serverId, row.mediaType, catalogue, index))
         }
     }
 
@@ -744,7 +749,7 @@ internal class JellyfinProvider(
         val playSessionId = info?.playSessionId ?: UUID.randomUUID().toString().replace("-", "")
         val route = route(endpoint.baseUrl)
         val caps = PlexDeviceCaps(PlexDeviceCapabilities.hardwareVideo(), context.engine)
-        val headers = mapOf(AUTH_HEADER to client.authorizationFor(endpoint.token))
+        val headers = endpoint.token?.let { mapOf(client.mediaHeaderFor(it)) }.orEmpty()
         val text = labels()
         val attribution = contextFor(ref.serverId)?.attribution ?: label
         val deviceId = context.clientIdentifier
@@ -800,7 +805,7 @@ internal class JellyfinProvider(
                     behaviorHints = BehaviorHints(filename = filename),
                     quality = if (option.mode == PlexPlaybackMode.Transcode) option.maxResolution?.substringAfter('x')?.let { "${it}p" } else describeQuality(video),
                     size = formatSize(source.size).takeIf { option.mode == PlexPlaybackMode.DirectPlay },
-                    source = "$JELLYFIN_PROVIDER_ID:${option.mode.name.lowercase(Locale.US)}",
+                    source = "$id:${option.mode.name.lowercase(Locale.US)}",
                     requestHeaders = headers,
                 )
             }
@@ -814,7 +819,7 @@ internal class JellyfinProvider(
             }
             sessions[sessionKey(ref.serverId, itemId)] = Session(itemId, first, playSessionId, method)
         }
-        TvDebugLogger.i("Jellyfin", "plan server=${ref.serverId} route=$route options=${result.size}")
+        TvDebugLogger.i(tag, "plan server=${ref.serverId} route=$route options=${result.size}")
         return result
     }
 

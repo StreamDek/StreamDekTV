@@ -728,9 +728,10 @@ data class HomePreferences(
     val vividAmbient: Boolean = true,
     val ambientTintPercent: Int = 100,
     val homeCatalogRows: List<HomeCatalogRowPreference> = emptyList(),
-    /** Where Plex's and Jellyfin's in-progress titles appear; see [MediaServerContinueLocation]. */
+    /** Where Plex's, Jellyfin's and Emby's in-progress titles appear; see [MediaServerContinueLocation]. */
     val plexContinueWatchingLocation: String? = null,
     val jellyfinContinueWatchingLocation: String? = null,
+    val embyContinueWatchingLocation: String? = null,
 )
 
 /** One customised home row, as laid out on mobile or the web portal. */

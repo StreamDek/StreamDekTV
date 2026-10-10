@@ -39,6 +39,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.streamdek.tv.R
 import com.streamdek.tv.nativeapp.ui.AppPillShape
+import com.streamdek.tv.nativeapp.ui.EmbyIcons
 import com.streamdek.tv.nativeapp.ui.JellyfinIcons
 import com.streamdek.tv.nativeapp.ui.PlexIcons
 import com.streamdek.tv.nativeapp.ui.LocalTvExperienceSettings
@@ -233,7 +234,7 @@ internal fun SearchQueryDisplay(
  * The heading of one search section: whose results these are, what kind of source that is, how
  * many it found and, when the section is folded to two rows, the way to see the rest.
  *
- * Plex and Jellyfin sections carry the service's mark, so the viewer's own copies can be picked
+ * Plex, Jellyfin and Emby sections carry the service's mark, so the viewer's own copies can be picked
  * out from across the room.
  */
 @Composable
@@ -247,12 +248,13 @@ internal fun SearchSectionHeader(
     val title = when (section.kind) {
         SearchSourceKind.Plex -> section.name ?: stringResource(R.string.media_server_plex)
         SearchSourceKind.Jellyfin -> section.name ?: stringResource(R.string.media_server_jellyfin)
+        SearchSourceKind.Emby -> section.name ?: stringResource(R.string.media_server_emby)
         SearchSourceKind.Catalogue -> stringResource(R.string.search_section_catalogue)
         SearchSourceKind.Addon -> section.name ?: stringResource(R.string.source_origin_addon)
         SearchSourceKind.Plugin -> section.name ?: stringResource(R.string.search_section_plugin)
     }
     val caption = when (section.kind) {
-        SearchSourceKind.Plex, SearchSourceKind.Jellyfin -> stringResource(R.string.search_section_your_library)
+        SearchSourceKind.Plex, SearchSourceKind.Jellyfin, SearchSourceKind.Emby -> stringResource(R.string.search_section_your_library)
         SearchSourceKind.Catalogue -> stringResource(R.string.search_section_catalogue_caption)
         SearchSourceKind.Addon -> stringResource(R.string.source_origin_addon)
         SearchSourceKind.Plugin -> stringResource(R.string.search_section_plugin)
@@ -260,6 +262,7 @@ internal fun SearchSectionHeader(
     val mark = when (section.kind) {
         SearchSourceKind.Plex -> PlexIcons.Chevron
         SearchSourceKind.Jellyfin -> JellyfinIcons.Mark
+        SearchSourceKind.Emby -> EmbyIcons.Mark
         else -> null
     }
     val count = pluralStringResource(R.plurals.search_result_count, section.items.size, section.items.size)

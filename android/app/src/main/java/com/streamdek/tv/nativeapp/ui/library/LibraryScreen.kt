@@ -224,7 +224,8 @@ fun LibraryScreen(
      */
     val mediaServerState by repository.mediaServers.state.collectAsState()
     val jellyfinServerState by repository.mediaServers.jellyfinState.collectAsState()
-    val unified = mediaServerState.navigationVisible || jellyfinServerState.navigationVisible
+    val embyServerState by repository.mediaServers.embyState.collectAsState()
+    val unified = mediaServerState.navigationVisible || jellyfinServerState.navigationVisible || embyServerState.navigationVisible
     /** The card last highlighted on the unified page, so returning from a title lands back on it. */
     var lastFocusedKey by rememberSaveable { mutableStateOf<String?>(null) }
 
