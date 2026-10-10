@@ -29,6 +29,59 @@ internal fun mediaServerEntryKey(provider: String, serverId: String, libraryKey:
 internal fun mediaServerEntryListed(removed: Set<String>, key: String, enabled: Boolean): Boolean =
     enabled || key !in removed
 
+/**
+ * [this] servers in the viewer's chosen order (set on the phone, kept with the profile). [order]
+ * holds entry keys, most preferred first; a server it does not name keeps its place after those it
+ * does, in the order the servers arrived.
+ */
+internal fun List<MediaServerView>.inServerOrder(provider: String, order: List<String>): List<MediaServerView> {
+    if (order.isEmpty() || size < 2) return this
+    val rank = order.withIndex().associate { it.value to it.index }
+    return withIndex()
+        .sortedWith(compareBy({ rank[mediaServerEntryKey(provider, it.value.id)] ?: Int.MAX_VALUE }, { it.index }))
+        .map { it.value }
+}
+
+/** What a library's place is remembered by. It names the server, so each server keeps its own order. */
+internal fun mediaServerLibraryOrderKey(serverId: String, libraryKey: String): String =
+    mediaServerEntryKey("library", serverId, libraryKey)
+
+/** This server's libraries in the chosen order; libraries [order] does not name follow as the server gave them. */
+internal fun MediaServerView.withLibrariesInOrder(order: List<String>): MediaServerView {
+    if (order.isEmpty() || libraries.size < 2) return this
+    val rank = order.withIndex().associate { it.value to it.index }
+    val sorted = libraries.withIndex()
+        .sortedWith(compareBy({ rank[mediaServerLibraryOrderKey(id, it.value.key)] ?: Int.MAX_VALUE }, { it.index }))
+        .map { it.value }
+    return if (sorted == libraries) this else copy(libraries = sorted)
+}
+
+/** Servers, and the libraries in each, in the chosen order. */
+internal fun List<MediaServerView>.inChosenOrder(provider: String, order: List<String>, libraryOrder: List<String>): List<MediaServerView> =
+    if (order.isEmpty() && libraryOrder.isEmpty()) this
+    else inServerOrder(provider, order).map { it.withLibrariesInOrder(libraryOrder) }
+
+/**
+ * Page rows in the order Settings shows the servers: by server, then by library within a server,
+ * keeping each library's own rows in the order they came. A row that belongs to no one library
+ * (Next Up, Favourites) stays at the top of its server's rows; rows of a server not in [servers]
+ * follow the rest.
+ */
+internal fun List<MediaServerRow>.inPageOrder(servers: List<MediaServerView>): List<MediaServerRow> {
+    if (size < 2 || servers.isEmpty()) return this
+    val serverRank = servers.withIndex().associate { it.value.id to it.index }
+    val libraryRank = servers.associate { server -> server.id to server.libraries.withIndex().associate { it.value.key to it.index } }
+    return withIndex()
+        .sortedWith(
+            compareBy(
+                { serverRank[it.value.serverId] ?: Int.MAX_VALUE },
+                { row -> row.value.libraryKey?.let { libraryRank[row.value.serverId]?.get(it) ?: Int.MAX_VALUE } ?: -1 },
+                { it.index },
+            ),
+        )
+        .map { it.value }
+}
+
 /** One thing under "Removed", ready to be named and brought back. */
 internal data class RemovedMediaServerEntry(
     val key: String,

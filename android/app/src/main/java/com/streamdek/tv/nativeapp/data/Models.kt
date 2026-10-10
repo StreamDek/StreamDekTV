@@ -734,6 +734,13 @@ data class HomePreferences(
     val plexContinueWatchingLocation: String? = null,
     val jellyfinContinueWatchingLocation: String? = null,
     val embyContinueWatchingLocation: String? = null,
+    /**
+     * The media servers in the order the viewer put them in on the phone, and each server's
+     * libraries likewise; entry keys as [com.streamdek.tv.nativeapp.mediaserver.mediaServerEntryKey]
+     * makes them. The TV lists servers and orders its media page rows by these.
+     */
+    val mediaServerOrder: List<String>? = null,
+    val mediaServerLibraryOrder: List<String>? = null,
 )
 
 /** One customised home row, as laid out on mobile or the web portal. */

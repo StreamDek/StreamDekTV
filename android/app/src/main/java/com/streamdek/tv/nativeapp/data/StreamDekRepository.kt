@@ -11,6 +11,7 @@ import com.streamdek.tv.nativeapp.mediaserver.MediaServerProvider
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerReference
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerResume
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerSort
+import com.streamdek.tv.nativeapp.mediaserver.inPageOrder
 import com.streamdek.tv.nativeapp.mediaserver.withMediaServerAuth
 import com.streamdek.tv.nativeapp.mediaserver.plex.PlexClientIdentity
 import com.streamdek.tv.nativeapp.mediaserver.plex.PlexProvider
@@ -43,6 +44,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.last
@@ -975,6 +977,16 @@ class StreamDekRepository(
         runCatching { api.gson.fromJson(raw, AccountBootstrap::class.java) }.getOrNull()
     }
     private val bootstrapState = MutableStateFlow<AccountBootstrap?>(readSettingsBootstrap())
+    init {
+        // The media server order is set on the phone and kept with the profile; Settings and the
+        // media page here follow it.
+        repositoryScope.launch {
+            bootstrapState
+                .map { it?.preferences?.home?.let { home -> home.mediaServerOrder.orEmpty() to home.mediaServerLibraryOrder.orEmpty() } ?: (emptyList<String>() to emptyList()) }
+                .distinctUntilChanged()
+                .collect { (servers, libraries) -> mediaServers.applySyncedOrder(servers, libraries) }
+        }
+    }
     init {
         // Migrate only values actually present in the older local stores, never generated defaults.
         if (!settingsDisk.getBoolean("legacy_device_migrated_v1", false)) {
@@ -5034,6 +5046,12 @@ class StreamDekRepository(
     /** Every row a provider's page shows (or every provider's), collections and recently watched included. */
     suspend fun mediaServerPageRows(provider: String? = null): List<com.streamdek.tv.nativeapp.mediaserver.MediaServerRow> =
         eachMediaServerProvider(MEDIA_SERVER_PAGE_ROWS_TIMEOUT_MS, only = provider) { it.rows(includeCollections = true) }
+            .let { rows ->
+                // Servers, and libraries within each, in the order the viewer set on the phone.
+                val servers = mediaServers.activeProviders().filter { provider == null || it.id == provider }
+                    .flatMap { mediaServers.orderedServers(it.id) }
+                rows.inPageOrder(servers)
+            }
             .also(::rememberMediaServerRows)
 
     /**
@@ -5501,10 +5519,37 @@ class StreamDekRepository(
             }.getOrDefault(emptyList())
         }
 
-        // Direct add-on calls require the identifier shape the add-on understands.
+        // Direct add-on calls require the identifier shape the add-on understands. A title known
+        // only by its TMDB (or other) id is translated first, as the phone does, rather than
+        // skipped: that skip was most of the sources the TV listed fewer of.
         val requiresImdbId = !nativeIdentity && !isLive && (lookupType == "movie" || lookupType == "series" || lookupType == "tv")
-        if (requiresImdbId && !baseId.matches(Regex("^tt\\d+$", RegexOption.IGNORE_CASE))) return emptyList()
-        return fetchFreshStreamsFromAddon(addon, lookupType, videoId, forceNetwork = forceRefresh)
+        val directId = if (requiresImdbId && !baseId.matches(IMDB_ID_REGEX)) addonVideoIdFor(lookupType, videoId) else videoId
+        if (requiresImdbId && !directId.substringBefore(":").matches(IMDB_ID_REGEX)) return emptyList()
+        return fetchFreshStreamsFromAddon(addon, lookupType, directId, forceNetwork = forceRefresh)
+    }
+
+    /** Ids already translated for add-ons this session, by "type:id"; one request per title however many add-ons ask. */
+    private val resolvedAddonVideoIds = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<String>>()
+
+    /**
+     * The id add-ons look [videoId] up by - an IMDb id, keeping any season and episode - from the
+     * backend's resolver, which holds the TMDB key and contacts no add-on. [videoId] itself when it
+     * cannot be translated.
+     */
+    private suspend fun addonVideoIdFor(type: String, videoId: String): String {
+        if (videoId.substringBefore(":").matches(IMDB_ID_REGEX)) return videoId
+        val pending = resolvedAddonVideoIds.computeIfAbsent("$type:$videoId") {
+            repositoryScope.async {
+                runCatching {
+                    api.get<AddonVideoIdResolution>("/addons/resolve-id/${encodePathSegment(type)}/${encodePathSegment(videoId)}")
+                        ?.videoId?.takeIf { it.isNotBlank() }
+                }.getOrNull() ?: videoId
+            }
+        }
+        val resolved = runCatching { pending.await() }.getOrDefault(videoId)
+        // A miss is not remembered: the next play asks again, in case the resolver was only briefly unavailable.
+        if (resolved == videoId) resolvedAddonVideoIds.remove("$type:$videoId", pending)
+        return resolved
     }
 
     /** Fail closed to direct mode, matching mobile, and cache the entitlement once per account. */
@@ -8043,3 +8088,9 @@ internal fun mediaServerDestinationTitleRes(providers: List<String>): Int = when
     providers.size > 1 -> R.string.media_server_my_media
     else -> com.streamdek.tv.nativeapp.ui.mediaServerBrand(providers.firstOrNull() ?: com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID).name
 }
+
+/** An IMDb title id, the one add-ons look titles up by. */
+private val IMDB_ID_REGEX = Regex("^tt\\d+$", RegexOption.IGNORE_CASE)
+
+/** The backend's answer to /addons/resolve-id. */
+private data class AddonVideoIdResolution(val videoId: String? = null)

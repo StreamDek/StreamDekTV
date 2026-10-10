@@ -61,6 +61,7 @@ import com.streamdek.tv.nativeapp.mediaserver.OfflineReason
 import com.streamdek.tv.nativeapp.mediaserver.MediaServerManager
 import com.streamdek.tv.nativeapp.mediaserver.PLEX_PROVIDER_ID
 import com.streamdek.tv.nativeapp.mediaserver.RemovedMediaServerEntry
+import com.streamdek.tv.nativeapp.mediaserver.inChosenOrder
 import com.streamdek.tv.nativeapp.mediaserver.listedMediaServers
 import com.streamdek.tv.nativeapp.mediaserver.mediaServerEntryKey
 import com.streamdek.tv.nativeapp.mediaserver.removedMediaServerEntries
@@ -497,8 +498,12 @@ internal fun MediaServerGroups(
     var working by remember { mutableStateOf(false) }
     var removingServer by remember { mutableStateOf<MediaServerView?>(null) }
     var removingLibrary by remember { mutableStateOf<MediaServerLibrary?>(null) }
-    val listed = remember(provider, servers, removed) { listedMediaServers(provider, servers, removed) }
-    val gone = remember(provider, servers, removed) { removedMediaServerEntries(provider, servers, removed) }
+    val serverOrder by manager.serverOrder.collectAsState()
+    val libraryOrder by manager.libraryOrder.collectAsState()
+    // In the order the viewer put them in on the phone.
+    val ordered = remember(provider, servers, serverOrder, libraryOrder) { servers.inChosenOrder(provider, serverOrder, libraryOrder) }
+    val listed = remember(provider, ordered, removed) { listedMediaServers(provider, ordered, removed) }
+    val gone = remember(provider, ordered, removed) { removedMediaServerEntries(provider, ordered, removed) }
     val headerRequesters = remember { mutableMapOf<String, FocusRequester>() }
     var focusServerId by remember { mutableStateOf<String?>(null) }
     var focusServerRequest by remember { mutableStateOf(0) }

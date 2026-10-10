@@ -163,6 +163,24 @@ class MediaServerManager internal constructor(
     /** The servers whose libraries are folded away in Settings. */
     val collapsedServers: StateFlow<Set<String>> = _collapsedServers.asStateFlow()
 
+    private val _serverOrder = MutableStateFlow<List<String>>(emptyList())
+    /** The server order set on the phone and kept with the profile; see [inChosenOrder]. */
+    val serverOrder: StateFlow<List<String>> = _serverOrder.asStateFlow()
+
+    private val _libraryOrder = MutableStateFlow<List<String>>(emptyList())
+    /** Each server's library order, likewise. */
+    val libraryOrder: StateFlow<List<String>> = _libraryOrder.asStateFlow()
+
+    /** The order from the profile's settings, whenever they arrive or change. */
+    fun applySyncedOrder(servers: List<String>, libraries: List<String>) {
+        _serverOrder.value = servers.filter { it.isNotBlank() }
+        _libraryOrder.value = libraries.filter { it.isNotBlank() }
+    }
+
+    /** [provider]'s servers as they are now, in the chosen order. */
+    fun orderedServers(provider: String): List<MediaServerView> =
+        stateOf(provider).value.servers.inChosenOrder(provider, _serverOrder.value, _libraryOrder.value)
+
     private fun loadListTidy(key: String?) {
         _removedEntries.value = key?.let { displayPrefs?.getStringSet("$KEY_REMOVED_ENTRIES:$it", null) }.orEmpty().toSet()
         _collapsedServers.value = key?.let { displayPrefs?.getStringSet("$KEY_COLLAPSED_SERVERS:$it", null) }.orEmpty().toSet()
